@@ -184,10 +184,40 @@ def units_of(seq, feats):
     return out
 
 
-def run_itsx(stretches, itsx, threads=1):
-    """{stretch: ITSx's positions {region: (begin, end) 1-based}} for each distinct stretch."""
+# ITSx 1.1.3's profile sets by the NCBI taxon each stands for (checked against NCBI's taxdump of 2026-11-05). ITSx
+# searches every set with -t all, in turn and without HMMER's filters (--max): ~50 core-minutes per 2,000 published
+# reads (the 2026-11-05 trial). A record gets its lineage's sets; one in none of them (Blastocystis, Cryptista, ...)
+# all of them.
+ITSX_SETS = {33630: "A", 3208: "B", 2836: "C", 554915: "D", 33682: "E", 4751: "F", 3041: "G", 2763: "H", 2870: "I",
+             3195: "L", 33208: "M", 6029: "N", 4762: "O", 2830: "P", 38410: "Q", 543769: "R", 33859: "S", 58023: "T",
+             5747: "U", 554296: "X", 5719: "Y"}
+
+
+def itsx_groups(ncbi, taxid):
+    """ITSx's -t for a taxon: the profile sets of its lineage (comma-separated), else "all"."""
+    if taxid in (None, "", "-"):
+        return "all"
+    taxid = int(taxid)
+    sets = sorted({ITSX_SETS[a] for a in ncbi.ancestors(ncbi.merged.get(taxid, taxid)) if a in ITSX_SETS})
+    return ",".join(sets) or "all"
+
+
+def run_itsx(stretches, itsx, threads=1, groups=None):
+    """{stretch: ITSx's positions {region: (begin, end) 1-based}} for each distinct stretch. groups: {stretch: ITSx's
+    -t (itsx_groups)}, one ITSx run per distinct -t; none given: all sets."""
     if not stretches or not itsx:
         return {}
+    groups = groups or {}
+    by_set = collections.defaultdict(list)
+    for s in dict.fromkeys(stretches):
+        by_set[groups.get(s, "all")].append(s)
+    out = {}
+    for sets, part in sorted(by_set.items()):
+        out.update(_itsx(part, itsx, threads, sets))
+    return out
+
+
+def _itsx(stretches, itsx, threads, sets):
     with tempfile.TemporaryDirectory() as tmp:
         fasta, prefix = os.path.join(tmp, "its.fasta"), os.path.join(tmp, "itsx")
         names = {}
@@ -196,7 +226,7 @@ def run_itsx(stretches, itsx, threads=1):
                 if s not in names:
                     names[s] = f"u{len(names)}"
                     fh.write(f">{names[s]}\n{s}\n")
-        run = subprocess.run([itsx, "-i", fasta, "-o", prefix, "-t", "all", "--cpu", str(max(1, threads)),
+        run = subprocess.run([itsx, "-i", fasta, "-o", prefix, "-t", sets, "--cpu", str(max(1, threads)),
                               "--save_regions", "none", "--preserve", "T", "--complement", "F", "--graphical", "F",
                               "--summary", "F"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         # ITSx with --cpu over 1 exits 0 when HMMER fails on a profile set (a damaged ITSx_db): its stderr tells
@@ -235,9 +265,10 @@ def regions_text(regions):
     return ",".join(f"{n}:{a}-{b}" for n, a, b in regions) if regions else "-"
 
 
-def extract_genome(path, barrnap, itsx=None, threads=1):
+def extract_genome(path, barrnap, itsx=None, threads=1, itsx_sets="all"):
     """A genome's rRNA -> [dict(kind 18S or rDNA, contig, start, end, strand, sequence, exons, regions, lsu_complete)]:
-    each 18S span (MIN_LEN at least), and each unit with its 5.8S and 28S as an rDNA record, uncut."""
+    each 18S span (MIN_LEN at least), and each unit with its 5.8S and 28S as an rDNA record, uncut. itsx_sets: ITSx's
+    -t for the genome's taxon (itsx_groups)."""
     seqs, origin = {}, {}
     with tempfile.TemporaryDirectory() as tmp:
         win = os.path.join(tmp, "windows.fna")
@@ -257,7 +288,8 @@ def extract_genome(path, barrnap, itsx=None, threads=1):
             item.update(contig=contig, start=offset + item["span"][0], end=offset + item["span"][1],
                         strand=item["span"][2])
             items.append(item)
-    found = run_itsx([i["its"] for i in items if i.get("unit")], itsx, threads)
+    stretches = [i["its"] for i in items if i.get("unit")]
+    found = run_itsx(stretches, itsx, threads, dict.fromkeys(stretches, itsx_sets))
     rows = []
     for item in items:
         if len(item["sequence"]) >= MIN_LEN:
@@ -272,8 +304,9 @@ def extract_genome(path, barrnap, itsx=None, threads=1):
     return rows
 
 
-def published_regions(reads, barrnap, itsx=None, threads=1):
-    """Published long reads [(name, sequence)] -> {name: (regions, lsu_complete, 18S exons)}: each read as a window."""
+def published_regions(reads, barrnap, itsx=None, threads=1, sets=None):
+    """Published long reads [(name, sequence)] -> {name: (regions, lsu_complete, 18S exons)}: each read as a window.
+    sets: {name: ITSx's -t for its taxon (itsx_groups)}, else all sets."""
     if not reads:
         return {}
     with tempfile.TemporaryDirectory() as tmp:
@@ -288,7 +321,9 @@ def published_regions(reads, barrnap, itsx=None, threads=1):
         units = [u for u in units_of(seqs[name], f) if u.get("unit")]
         if units:
             items[name] = max(units, key=lambda u: len(u["unit"]))
-    found = run_itsx([u["its"] for u in items.values()], itsx, threads)
+    sets = sets or {}
+    found = run_itsx([u["its"] for u in items.values()], itsx, threads,
+                     {u["its"]: sets.get(n, "all") for n, u in items.items()})
     return {n: (refine(u, found.get(u["its"], {}))["regions"], u["lsu_complete"], u["exons"]) for n, u in items.items()}
 
 

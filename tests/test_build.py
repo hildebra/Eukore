@@ -84,6 +84,24 @@ class UnitTest(unittest.TestCase):
             with self.assertRaises(rrna.ItsxError):
                 rrna.run_itsx(["ACGT" * 50], broken)
 
+    def test_itsx_searches_the_lineages_sets(self):
+        # each record's ITSx profile sets by its NCBI lineage (fungi F, animals M), all sets for one in none of them;
+        # one ITSx run per distinct set
+        with tempfile.TemporaryDirectory() as tmp:
+            eukdetect = fx.world(tmp)[0]
+            fx.eukdetect1_world(tmp, eukdetect)
+            ncbi = ncbi_mod.Ncbi(os.path.join(eukdetect, "taxdump.tar.gz"))
+            self.assertEqual([rrna.itsx_groups(ncbi, t) for t in (559292, "6253", 952, None)],
+                             ["F", "M", "all", "all"])
+            log = os.path.join(tmp, "itsx_calls.txt")
+            logging = tool(tmp, "ITSx_log", f"#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -t ] && echo \"$2\" >> {log}; "
+                                            "shift; done\nexit 0\n")
+            got = rrna.run_itsx(["AAAA", "CCCC", "GGGG", "AAAA"], logging,
+                                groups={"AAAA": "F", "CCCC": "M", "GGGG": "F"})
+            self.assertEqual(set(got), {"AAAA", "CCCC", "GGGG"})
+            with open(log) as fh:
+                self.assertEqual(sorted(fh.read().split()), ["F", "M"])
+
     def test_labels_and_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
             eukdetect, *_ = fx.world(tmp)

@@ -104,11 +104,13 @@ def extra_rows(ncbi, src, assembly_dir, loci, refseq=True):
 def rrna_hook(path, job, out_folder, barrnap=None, itsx=None, threads=1):
     """A genome's rRNA into its done folder (rrna.extract_genome; a model species' curated rDNA unit where the genome
     gives no operon) -> its counts."""
-    rows = rrna.extract_genome(path, barrnap, itsx, threads)
+    sets = job.get("itsx", "all")  # ITSx's profile sets of the genome's lineage (plan)
+    rows = rrna.extract_genome(path, barrnap, itsx, threads, sets)
     if job.get("rdna_unit", "-") != "-" and not any(r["kind"] == "rDNA" for r in rows):
         unit = species.unit_fasta(job["rdna_unit"], os.path.join(out_folder, job["rdna_unit"] + ".fna"))
         if unit:
-            rows += [dict(r, contig=job["rdna_unit"]) for r in rrna.extract_genome(unit, barrnap, itsx, threads)]
+            rows += [dict(r, contig=job["rdna_unit"])
+                     for r in rrna.extract_genome(unit, barrnap, itsx, threads, sets)]
             os.remove(unit)
     return rrna.save(out_folder, rows)
 
@@ -152,6 +154,8 @@ def plan(opts, src, ncbi, assemblies):
             if opts.inside(r["ncbi_taxid"])]
     job_map = genomes.jobs(ncbi, src, loci, sources.read_locus_map(), assemblies, rows, [sources.PLACED_DIR])
     job_map = {a: j for a, j in job_map.items() if opts.inside(j["species_taxid"])}
+    for j in job_map.values():
+        j["itsx"] = rrna.itsx_groups(ncbi, j["species_taxid"])
     say(f"genome set: {len(job_map)} genomes ({dict(genomes.why_counts(job_map.values()))})")
     return job_map, rows
 
@@ -204,7 +208,9 @@ def published(opts, src_dir, ncbi):
             for line in fh:
                 name, regions, complete = line.rstrip("\n").split("\t")
                 known[name] = (regions, complete)
-    todo = [(n, s) for n, s, *_ in reads if n not in known]
+    # by ITSx's profile sets, so that a batch's reads share theirs (an ITSx run per distinct set)
+    todo = sorted(((n, s, rrna.itsx_groups(ncbi, t)) for n, s, t, *_ in reads if n not in known),
+                  key=lambda r: (r[2], r[0]))
     if todo and shutil.which("barrnap"):
         say(f"published reads: {len(todo)} to annotate (barrnap, ITSx)")
         batches = [todo[i:i + 2000] for i in range(0, len(todo), 2000)]
@@ -225,9 +231,10 @@ def published(opts, src_dir, ncbi):
 
 
 def _annotate_batch(batch, barrnap=None, itsx=None):
-    found = rrna.published_regions(batch, barrnap, itsx)
+    """[(name, sequence, ITSx's sets)] -> {name: (regions text, lsu_complete t/f)}."""
+    found = rrna.published_regions([(n, s) for n, s, _t in batch], barrnap, itsx, sets={n: t for n, _s, t in batch})
     return {name: (rrna.regions_text(found[name][0]) if name in found else "-",
-                   "t" if name in found and found[name][1] else "f") for name, _s in batch}
+                   "t" if name in found and found[name][1] else "f") for name, _s, _t in batch}
 
 
 def genome_rrna_records(opts, job_map, ncbi, assemblies):
