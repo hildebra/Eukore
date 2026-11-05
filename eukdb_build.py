@@ -7,12 +7,12 @@
     python3 EUKDBbuild/eukdb_build.py --work WORK --out OUT --stage package       #   then the package
 
 Stages:
-- fetch: the sources into WORK/sources (EukDetect2 and EukDetect1, NCBI's GenBank and RefSeq assembly tables of the
-  eukaryote groups, NCBI's taxdump, EUKARYOME 2.1, ROD v1.2), then the genome set (genomes.jobs) into OUT/genomes;
-- process: each genome's euk30 loci placed and its rRNA extracted (WORK/done/<accession>/), EukDetect2's copies' exon
-  models (WORK/exons), the published reads' regions (WORK/published); a genome not fetched yet waits for the next run;
-- package: OUT/EUKDB_<version>/ written (package.py), then OUT/genomes cut back to --keep_gb (genomes.prune: the
-  model species' and the smallest kept first).
+- fetch: the sources into WORK/sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
+  BUSCO's eukaryota_odb12, EUKARYOME 2.1, ROD v1.2), then each species' genome (genomes.jobs) into OUT/genomes;
+- process: each genome's euk30 loci called and its rRNA extracted (WORK/done/<accession>/); a genome not fetched yet
+  waits for the next run;
+- package: the copies' checks across species, the published rRNA reads' regions (WORK/published), OUT/genomes cut
+  back to --keep_gb (genomes.prune: the model species' and the smallest kept first), then OUT/EUKDB_<version>/.
 `all` runs them in turn. Every stage is resumable: a rerun does only what is not done.
 """
 
@@ -25,13 +25,13 @@ import multiprocessing
 import os
 import shutil
 import sys
-import tarfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from eukdb import exons, genomes, ncbi as ncbi_mod, package, rrna, sources, species, util  # noqa: E402
+from eukdb import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
+NO_ASSEMBLY = os.path.join(sources.DATA, "no_assembly.fna.gz")
 
 
 def say(text):
@@ -40,63 +40,27 @@ def say(text):
 
 # --- sources -----------------------------------------------------------------------------------------------------
 
-def fetch_sources(src_dir, refseq=True):
-    """Every source into src_dir (kept when there and whole) -> {name: folder or file}."""
-    out = {"eukdetect2": os.path.join(src_dir, "eukdetect2"), "eukdetect1": os.path.join(src_dir, "eukdetect1"),
-           "assemblies": os.path.join(src_dir, "ncbi_assemblies"), "taxdump": os.path.join(src_dir, "taxdump.tar.gz")}
-    for folder in (out["eukdetect2"], out["eukdetect1"], out["assemblies"]):
-        os.makedirs(folder, exist_ok=True)
-    for name, md5 in sources.EUKDETECT_MD5.items():
-        dest = os.path.join(out["eukdetect2"], name)
-        if not (os.path.isfile(dest) and util.md5(dest) == md5):
-            say(f"EukDetect2: fetching {name}")
-            sources.download(f"{sources.EUKDETECT_MIRROR.rstrip('/')}/{name}/content", dest, md5)
-    if not all(os.path.isfile(os.path.join(out["eukdetect1"], f)) for f in sources.EUKDETECT1_FILES):
-        archive = os.path.join(out["eukdetect1"], sources.EUKDETECT1_ARCHIVE[0])
-        say("EukDetect1: fetching its archive (1.7 GB)")
-        sources.download(sources.EUKDETECT1_URL, archive, sources.EUKDETECT1_ARCHIVE[1])
-        with tarfile.open(archive, "r:gz") as tar:
-            for member in tar:
-                if os.path.basename(member.name) in sources.EUKDETECT1_FILES:
-                    member.name = os.path.basename(member.name)
-                    tar.extract(member, out["eukdetect1"])
-        os.remove(archive)
-    for group in sources.ASSEMBLY_GROUPS:
+def fetch_sources(src_dir, groups):
+    """Every source into src_dir (kept when there and whole)."""
+    os.makedirs(os.path.join(src_dir, "ncbi_assemblies"), exist_ok=True)
+    for group in groups:
         for kind, base in (("genbank", sources.ASSEMBLIES_URL), ("refseq", sources.REFSEQ_URL)):
-            if kind == "refseq" and not refseq:
-                continue
-            dest = os.path.join(out["assemblies"], f"{kind}_{group}.txt")
+            dest = os.path.join(src_dir, "ncbi_assemblies", f"{kind}_{group}.txt")
             if not os.path.isfile(dest):
                 say(f"NCBI: fetching {kind}'s {group} assembly table")
                 sources.download(f"{base}/{group}/assembly_summary.txt", dest)
-    if not os.path.isfile(out["taxdump"]):
+    taxdump = os.path.join(src_dir, "taxdump.tar.gz")
+    if not os.path.isfile(taxdump):
         say("NCBI: fetching the taxdump")
-        sources.download(TAXDUMP_URL, out["taxdump"])
+        sources.download(TAXDUMP_URL, taxdump)
+    odb_mod.fetch(src_dir, sources.download, say)
     for name in ("EUKARYOME", "ROD"):
         sources.fetch(src_dir, name, sources.download, shutil.which("7za") or shutil.which("7z") or "7za", say)
-    return out
 
 
-def source_paths(src_dir):
-    return {"eukdetect2": os.path.join(src_dir, "eukdetect2"), "eukdetect1": os.path.join(src_dir, "eukdetect1"),
-            "assemblies": os.path.join(src_dir, "ncbi_assemblies"), "taxdump": os.path.join(src_dir, "taxdump.tar.gz")}
-
-
-def extra_rows(ncbi, src, assembly_dir, loci, refseq=True):
-    """The model species' rows (why model), then the RefSeq species' their sources lack (why refseq)."""
-    rows = [dict(r, why="model") for r in species.eukaryotes(species.read_table())]
-    if refseq:
-        have, _link = sources.species_loci(src["eukdetect2"], src["eukdetect1"], sources.read_locus_map(), ncbi,
-                                           set(loci))
-        refseq_rows = {}
-        for path in sorted(glob.glob(os.path.join(assembly_dir, "refseq_*.txt"))):
-            group = os.path.basename(path)[len("refseq_"):-len(".txt")]
-            if group in species.REFSEQ_GROUPS:
-                for taxid, row in species.refseq_genomes(path, group).items():
-                    refseq_rows.setdefault(taxid, row)
-        rows += [dict(r, why="refseq") for r in species.gap_rows(refseq_rows, have, ncbi,
-                                                                  exclude=[r["ncbi_taxid"] for r in rows])]
-    return rows
+def tables(src_dir, kind, groups):
+    return [p for g in groups for p in [os.path.join(src_dir, "ncbi_assemblies", f"{kind}_{g}.txt")]
+            if os.path.isfile(p)]
 
 
 # --- the genomes' rRNA hook --------------------------------------------------------------------------------------
@@ -104,7 +68,7 @@ def extra_rows(ncbi, src, assembly_dir, loci, refseq=True):
 def rrna_hook(path, job, out_folder, barrnap=None, itsx=None, threads=1):
     """A genome's rRNA into its done folder (rrna.extract_genome; a model species' curated rDNA unit where the genome
     gives no operon) -> its counts."""
-    sets = job.get("itsx", "all")  # ITSx's profile sets of the genome's lineage (plan)
+    sets = job.get("itsx", "all")  # ITSx's profile sets of the genome's lineage (genomes.jobs)
     rows = rrna.extract_genome(path, barrnap, itsx, threads, sets)
     if job.get("rdna_unit", "-") != "-" and not any(r["kind"] == "rDNA" for r in rows):
         unit = species.unit_fasta(job["rdna_unit"], os.path.join(out_folder, job["rdna_unit"] + ".fna"))
@@ -117,59 +81,37 @@ def rrna_hook(path, job, out_folder, barrnap=None, itsx=None, threads=1):
 
 # --- stages ------------------------------------------------------------------------------------------------------
 
-def clades(spec):
-    """--species: NCBI taxids, comma-separated or a file of one per line (# comments) -> a set, or None (all)."""
-    if not spec:
-        return None
-    if os.path.isfile(spec):
-        with open(spec) as fh:
-            spec = ",".join(line.split("#")[0].split("\t")[0].strip() for line in fh)
-    return {int(t) for t in spec.split(",") if t.strip()}
+def plan(opts, src_dir, ncbi):
+    """The genome set -> (jobs, GenBank rows)."""
+    assemblies = sources.read_assemblies(tables(src_dir, "genbank", opts.groups))
+    refseq_rows = sources.read_assemblies(tables(src_dir, "refseq", opts.groups))
+    no_assembly = genomes.no_assembly_genomes(NO_ASSEMBLY, os.path.join(opts.work, "no_assembly"), ncbi)
+    job_map = genomes.jobs(ncbi, assemblies, refseq_rows, species.eukaryotes(species.read_table()), opts.inside,
+                           no_assembly)
+    say(f"genome set: {len(job_map)} genomes ({dict(genomes.why_counts(job_map.values()))}); "
+        f"{sum(j['size'] or 0 for j in job_map.values()) / 1e9:.0f} Gb")
+    return job_map, assemblies
 
 
-def inside_of(ncbi, wanted):
-    """A test of a taxid: inside one of the clades `wanted` (None: every taxid is)."""
-    if wanted is None:
-        return lambda t: True
-
-    def inside(t):
-        if t in (None, "", "-"):
-            return False
-        t = int(t)
-        return any(a in wanted for a in ncbi.ancestors(ncbi.merged.get(t, t)))
-    return inside
-
-
-def subset(collected, inside):
-    """collect()'s result limited to the species inside the clades of --species."""
-    kept = {a: r for a, r in collected["genomes"].items() if inside(r["species_taxid"])}
-    return dict(genomes=kept, copies={a: c for a, c in collected["copies"].items() if a in kept},
-                features=[f for f in collected["features"] if f["accession"] in kept],
-                taxids={t for t in collected["taxids"] if inside(t)})
+def settings_of(opts, src_dir, ncbi, staged_only):
+    folder = odb_mod.folder_of(src_dir)
+    odb = odb_mod.Odb(folder, sources.read_loci_table())
+    hmm_db = odb.hmm_db(os.path.join(opts.work, "euk30_loci.hmm"))
+    tiara = None if opts.no_tiara else shutil.which("tiara")
+    return dict(work=opts.work, genomes=opts.genomes, miniprot=opts.miniprot, hmmsearch=opts.hmmsearch,
+                threads=opts.threads_per_genome, staged_only=staged_only, odb=folder, loci=odb.loci, hmm_db=hmm_db,
+                odb_lineages=odb_mod.species_lineages(odb, ncbi), tiara=tiara,
+                rrna=functools.partial(rrna_hook, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"),
+                                       threads=opts.threads_per_genome) if shutil.which("barrnap") else None)
 
 
-def plan(opts, src, ncbi, assemblies):
-    loci = sources.read_loci_table()
-    rows = [r for r in extra_rows(ncbi, src, src["assemblies"], loci, not opts.no_refseq)
-            if opts.inside(r["ncbi_taxid"])]
-    job_map = genomes.jobs(ncbi, src, loci, sources.read_locus_map(), assemblies, rows, [sources.PLACED_DIR])
-    job_map = {a: j for a, j in job_map.items() if opts.inside(j["species_taxid"])}
-    for j in job_map.values():
-        j["itsx"] = rrna.itsx_groups(ncbi, j["species_taxid"])
-    say(f"genome set: {len(job_map)} genomes ({dict(genomes.why_counts(job_map.values()))})")
-    return job_map, rows
-
-
-def run_genomes(opts, job_map, staged_only):
-    settings = dict(work=opts.work, genomes=opts.genomes, miniprot=opts.miniprot, threads=opts.threads_per_genome,
-                    staged_only=staged_only,
-                    rrna=functools.partial(rrna_hook, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"),
-                                           threads=opts.threads_per_genome) if shutil.which("barrnap") else None)
+def run_genomes(opts, job_map, settings):
     todo = [(j, settings) for a, j in sorted(job_map.items()) if not genomes.is_done(opts.work, a)]
-    say(f"genomes to run: {len(todo)} of {len(job_map)}")
+    say(f"genomes to run: {len(todo)} of {len(job_map)}" + ("" if settings["tiara"] else " (no tiara: windows not "
+                                                                                          "classified)"))
     waiting, failed = [], []
     with multiprocessing.Pool(max(1, opts.jobs)) as pool:
-        for i, (acc, summary, why) in enumerate(pool.imap_unordered(genomes.run, todo), 1):
+        for i, (acc, _summary, why) in enumerate(pool.imap_unordered(genomes.run, todo), 1):
             if why:
                 (waiting if why == "not fetched yet" else failed).append((acc, why))
             if i % max(1, len(todo) // 20) == 0 or i == len(todo):
@@ -179,7 +121,7 @@ def run_genomes(opts, job_map, staged_only):
 
 def published(opts, src_dir, ncbi):
     """The published reads (EUKARYOME, ROD) with their regions and NCBI labels -> records [(name, sequence, row)],
-    their regions kept in WORK/published/<source>.tsv (a rerun reads them)."""
+    their regions kept in WORK/published/regions.tsv (a rerun reads them)."""
     out = []
     index = rrna.name_index(ncbi)
     reads = []
@@ -220,6 +162,7 @@ def published(opts, src_dir, ncbi):
                 for name, (regions, complete) in got.items():
                     known[name] = (regions, complete)
                     fh.write(f"{name}\t{regions}\t{complete}\n")
+                fh.flush()
     for name, seq, taxid, source, how, accession in reads:
         regions, complete = known.get(name, ("-", "f"))
         regions_list = None if regions == "-" else [(p.rpartition(":")[0], int(p.rpartition(":")[2].split("-")[0]),
@@ -237,39 +180,65 @@ def _annotate_batch(batch, barrnap=None, itsx=None):
                    "t" if name in found and found[name][1] else "f") for name, _s, _t in batch}
 
 
-def genome_rrna_records(opts, job_map, ncbi, assemblies):
+def genome_rrna_records(opts, job_map, ncbi):
     """Every done genome's rRNA as records, labelled by its assembly's taxid."""
-    taxid_of = {r["accession"]: (r["taxid"], r["species_taxid"]) for r in assemblies}
     out = []
     for acc, job in sorted(job_map.items()):
         rows = rrna.load(genomes.done_dir(opts.work, acc))
-        if not rows:
-            continue
-        taxid, sp = taxid_of.get(acc, (job.get("species_taxid"), job.get("species_taxid")))
-        sp = sp or job.get("species_taxid")
-        if not sp:
-            continue
-        out += rrna.genome_records(acc, rows, taxid or sp, ncbi.species_of(int(sp)))
+        if rows:
+            out += rrna.genome_records(acc, rows, job.get("taxid") or job["species_taxid"],
+                                       ncbi.species_of(int(job["species_taxid"])))
     return out
+
+
+def clades(spec):
+    """--species: NCBI taxids, comma-separated or a file of one per line (# comments) -> a set, or None (all)."""
+    if not spec:
+        return None
+    if os.path.isfile(spec):
+        with open(spec) as fh:
+            spec = ",".join(line.split("#")[0].split("\t")[0].strip() for line in fh)
+    return {int(t) for t in spec.split(",") if t.strip()}
+
+
+def inside_of(ncbi, wanted):
+    """A test of a taxid: inside one of the clades `wanted` (None: every taxid is)."""
+    if wanted is None:
+        return lambda t: True
+
+    def inside(t):
+        if t in (None, "", "-"):
+            return False
+        t = int(t)
+        return any(a in wanted for a in ncbi.ancestors(ncbi.merged.get(t, t)))
+    return inside
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--work", required=True, help="the build's work folder (sources, placements, extractions)")
+    p.add_argument("--work", required=True, help="the build's work folder (sources, calls, extractions)")
     p.add_argument("--out", required=True, help="where EUKDB_<version>/ and genomes/ go")
     p.add_argument("--stage", choices=("all", "fetch", "process", "package"), default="all")
     p.add_argument("--version", default=datetime.date.today().strftime("%Y.%m"), help="the package's version (YYYY.MM)")
+    p.add_argument("--groups", default=",".join(sources.ASSEMBLY_GROUPS),
+                   help=f"NCBI's assembly groups whose species the package holds (default all: "
+                        f"{','.join(sources.ASSEMBLY_GROUPS)}; e.g. fungi,protozoa first)")
     p.add_argument("--keep_gb", type=float, default=1000.0,
                    help="the genomes kept in OUT/genomes once the package is written, GB (default 1000; the build may "
                         "hold more while it works)")
-    p.add_argument("--no_refseq", action="store_true",
-                   help="leave out the RefSeq species EukDetect lacks or holds on fewer than 20 loci")
     p.add_argument("--species", help="a partial build (a trial run): only the species inside these NCBI taxids' clades, "
                                      "comma-separated or a file of one per line; the manifest records them")
     p.add_argument("--miniprot", default="miniprot")
+    p.add_argument("--hmmsearch", default="hmmsearch")
+    p.add_argument("--no_tiara", action="store_true", help="do not classify the windows around the copies (tiara, "
+                                                           "where installed)")
     p.add_argument("-t", "--threads", type=int, default=8)
     p.add_argument("-j", "--jobs", type=int, default=None, help="genomes at a time (default threads / 4)")
     opts = p.parse_args(argv)
+    opts.groups = [g for g in opts.groups.split(",") if g]
+    unknown = set(opts.groups) - set(sources.ASSEMBLY_GROUPS)
+    if unknown:
+        p.error(f"--groups: {sorted(unknown)} (known: {', '.join(sources.ASSEMBLY_GROUPS)})")
     opts.jobs = opts.jobs or max(1, opts.threads // 4)
     opts.threads_per_genome = max(1, opts.threads // opts.jobs)
     opts.genomes = os.path.join(opts.out, "genomes")
@@ -277,17 +246,14 @@ def main(argv=None):
     os.makedirs(opts.genomes, exist_ok=True)
     src_dir = os.path.join(opts.work, "sources")
     if opts.stage in ("all", "fetch"):
-        fetch_sources(src_dir, not opts.no_refseq)
-    src = source_paths(src_dir)
-    ncbi = ncbi_mod.Ncbi(src["taxdump"])
+        fetch_sources(src_dir, opts.groups)
+    ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
     wanted = clades(opts.species)
     opts.inside = inside_of(ncbi, wanted)
-    assemblies = sources.read_assemblies(sorted(glob.glob(os.path.join(src["assemblies"], "genbank_*.txt"))) +
-                                         sorted(glob.glob(os.path.join(src["assemblies"], "refseq_*.txt"))))
-    job_map, rows = plan(opts, src, ncbi, assemblies)
+    job_map, assemblies = plan(opts, src_dir, ncbi)
     if opts.stage == "fetch":
-        todo = [j for a, j in sorted(job_map.items())
-                if not os.path.isfile(genomes.genome_file(opts.genomes, a)) and not genomes.is_done(opts.work, a)]
+        todo = [j for a, j in sorted(job_map.items()) if j["url"] and not j.get("path")
+                and not os.path.isfile(genomes.genome_file(opts.genomes, a)) and not genomes.is_done(opts.work, a)]
         say(f"fetching {len(todo)} genomes into {opts.genomes}")
         failed = 0
         for i, j in enumerate(todo, 1):
@@ -296,50 +262,42 @@ def main(argv=None):
             if i % max(1, len(todo) // 20) == 0 or i == len(todo):
                 say(f"  {i}/{len(todo)} fetched ({failed} failed)")
         return 0
-    if opts.stage in ("all", "process", "package"):
-        if not shutil.which("barrnap"):
-            say("WARNING: no barrnap: no rRNA records (install barrnap with nhmmer)")
-        elif not shutil.which("ITSx"):
-            say("WARNING: no ITSx: the ITS1/5.8S/ITS2/28S borders are barrnap's alone")
-        else:
-            why = rrna.check_itsx(shutil.which("ITSx"))
-            if why:  # a damaged ITSx_db gives silently wrong borders: stop before any work
-                sys.exit(f"{why}\n{shutil.which('ITSx')}: reinstall ITSx (bioconda's itsx) or give it its whole "
-                         "ITSx_db/HMMs folder")
+    if shutil.which("barrnap") and shutil.which("ITSx"):
+        why = rrna.check_itsx(shutil.which("ITSx"))
+        if why:  # a damaged ITSx_db gives silently wrong borders: stop before any work
+            sys.exit(f"{why}\n{shutil.which('ITSx')}: reinstall ITSx (bioconda's itsx) or give it its whole "
+                     "ITSx_db/HMMs folder")
+    elif not shutil.which("barrnap"):
+        say("WARNING: no barrnap: no rRNA records (install barrnap with nhmmer)")
+    else:
+        say("WARNING: no ITSx: the ITS1/5.8S/ITS2/28S borders are barrnap's alone")
+    for tool in (opts.miniprot, opts.hmmsearch):
+        if not shutil.which(tool):
+            sys.exit(f"{tool}: not found (bioconda's miniprot and hmmer)")
     if opts.stage in ("all", "process"):
-        waiting, failed = run_genomes(opts, job_map, staged_only=opts.stage == "process")
-        if shutil.which(opts.miniprot):
-            only = []
-            if wanted is not None:
-                link, _records = sources.read_link(os.path.join(src["eukdetect2"], "busco_taxid_genome_link.txt"))
-                only = ["--only", ",".join(sorted(g for g, (t, _grp) in link.items() if opts.inside(t))) or "-"]
-            exons.main(["--eukdetect", src["eukdetect2"], "--eukdetect1", src["eukdetect1"], "--work",
-                        os.path.join(opts.work, "exons"), "--out", os.path.join(opts.work, "exons"),
-                        "-j", str(opts.threads), "--miniprot", opts.miniprot] + only)
+        settings = settings_of(opts, src_dir, ncbi, staged_only=opts.stage == "process")
+        waiting, failed = run_genomes(opts, job_map, settings)
         if waiting or failed:
             say(f"{len(waiting)} genomes not fetched yet, {len(failed)} failed (e.g. {(waiting + failed)[:3]}): the "
                 "package waits for them (run again; --stage fetch first on a cluster)")
             return 0 if opts.stage == "process" else 1
     if opts.stage in ("all", "package"):
-        collected = package.collect(ncbi, src, assemblies, sources.read_loci_table(), sources.read_locus_map(), rows,
-                                    opts.work, [sources.PLACED_DIR],
-                                    [os.path.join(opts.work, "exons", exons.EXONS)])
-        if wanted is not None:
-            collected = subset(collected, opts.inside)
-        records = genome_rrna_records(opts, job_map, ncbi, assemblies) + published(opts, src_dir, ncbi)
-        records = rrna.finish(records, ncbi, shutil.which("vsearch"), opts.threads)
-        inputs = {"eukdetect2": sources.EUKDETECT_MD5, "eukdetect1": sources.EUKDETECT1_ARCHIVE[1],
-                  "taxdump_md5": util.md5(src["taxdump"]),
+        vsearch = shutil.which("vsearch")
+        collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads)
+        records = genome_rrna_records(opts, job_map, ncbi) + published(opts, src_dir, ncbi)
+        records = rrna.finish(records, ncbi, vsearch, opts.threads)
+        inputs = {"odb": odb_mod.state_of(src_dir), "taxdump_md5": util.md5(os.path.join(src_dir, "taxdump.tar.gz")),
                   "sources": {n: sources.state_of(src_dir, n).get("version") for n in ("EUKARYOME", "ROD")},
                   "assembly_tables": {os.path.basename(p): util.md5(p)
-                                      for p in sorted(glob.glob(os.path.join(src["assemblies"], "*.txt")))}}
+                                      for p in sorted(glob.glob(os.path.join(src_dir, "ncbi_assemblies", "*.txt")))},
+                  "groups": opts.groups, "no_assembly": util.md5(NO_ASSEMBLY) if os.path.isfile(NO_ASSEMBLY) else None}
         if wanted is not None:
             inputs["partial"] = {"species_clades": sorted(wanted)}  # a trial package: these clades only
-        # every genome is extracted: the kept ones cut back to the budget, then the package names those kept
+        # every genome is called and extracted: the kept ones cut back to the budget, then the package names those kept
         firsts = {a for r in species.read_table() for a in species.accessions(r)}
         rows_kept = genomes.prune(opts.genomes, opts.work, opts.keep_gb * 1e9, set(), firsts)
         kept = sum(s for _a, s, st in rows_kept if st != "deleted")
-        say(f"genomes kept in {opts.genomes}: {kept / 1e9:.0f} GB (--keep_gb {opts.keep_gb:g}), "
+        say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB (--keep_gb {opts.keep_gb:g}), "
             f"{sum(st == 'deleted' for *_x, st in rows_kept)} deleted")
         out = package.write(os.path.join(opts.out, f"EUKDB_{opts.version}"), opts.version, ncbi, collected,
                             sources.LOCI_TABLE, records, opts.genomes, inputs)

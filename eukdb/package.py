@@ -1,5 +1,5 @@
-"""EUKDB's package (FORMAT.md, since 2026-11-05): written from the build's sources and work, read and checked by its
-users (protal's converter).
+"""EUKDB's package (FORMAT.md; format 2 since 2026-11-05: EUKDB's own locus calls in NCBI's genomes), written from the
+build's genome set and work folder, read and checked by its users (protal's converter).
 """
 
 import collections
@@ -9,19 +9,19 @@ import json
 import os
 import shutil
 
-from . import copies as copies_mod
+from . import qc
 from . import sources as src
-from . import species as species_mod
 from . import util
 
-FORMAT = 1
+FORMAT = 2
 MANIFEST = "manifest.json"
-GENOME_COLUMNS = ("accession", "species_taxid", "taxid", "organism", "strain", "level", "genome_size", "contigs",
-                  "category", "ftp", "source", "representative", "loci", "local")
-FEATURE_COLUMNS = ("accession", "locus", "kind", "start", "end", "genome_contig", "genome_start", "genome_end", "strand",
-                   "method", "protein", "identity", "coverage")
-SPECIES_COLUMNS = ("taxid", "name", "representative", "loci", "sources", "rrna_records")
-SOURCE_ORDER = {"eukdetect2": 0, "eukdetect1": 1, "model": 2, "refseq": 3, "assembly": 4}
+GENOME_COLUMNS = ("accession", "fetched", "species_taxid", "taxid", "organism", "strain", "level", "genome_size",
+                  "contigs", "category", "flags", "ftp", "source", "representative", "loci", "local")
+COPY_COLUMNS = ("accession", "locus", "status", "contig", "contig_length", "start", "end", "strand", "length",
+                "cds_length", "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies",
+                "query", "protein_length", "window_class", "own_species", "same_as", "length_check")
+FEATURE_COLUMNS = ("accession", "locus", "kind", "start", "end")
+SPECIES_COLUMNS = ("taxid", "name", "representative", "source", "loci", "rrna_records")
 
 
 def _tsv(path, columns, rows):
@@ -32,124 +32,10 @@ def _tsv(path, columns, rows):
     os.replace(util.part_of(path), path)
 
 
-def collect(ncbi, sources, assemblies, loci, locus_map, extra_rows, work, placed_dirs=(), exon_tables=()):
-    """What the package holds of euk30 -> dict(genomes {accession: row}, copies {accession: {locus: sequence}},
-    features [FEATURE_COLUMNS dicts]). EukDetect2's genomes with their copies whole; EukDetect1's genomes of species
-    EukDetect2 lacks, each locus its placed copy where one was taken (WORK/done, then placed_dirs), else its coding one;
-    the model and RefSeq species' placed copies (WORK/done), as further genomes of their species; their exons from
-    exon_tables (exons.py's, EukDetect2's copies), the placements' features and, for a coding copy, one exon."""
-    eukdetect, eukdetect1 = sources["eukdetect2"], sources.get("eukdetect1")
-    loci = list(loci)
-    genomes2, records2 = src.read_link(os.path.join(eukdetect, "busco_taxid_genome_link.txt"))
-    copies2 = src.read_loci(os.path.join(eukdetect, "eukdb.fasta"), records2, set(loci))
-    genomes, copies, features = {}, {}, []
-    coding = set()  # (EukDetect1 genome, locus) whose copy is its coding sequence
-    taxid_of, source_of, row_of = {}, {}, {}
-    for genome, by_locus in copies2.items():
-        taxid_of[genome], source_of[genome] = genomes2[genome][0], "eukdetect2"
-        copies[genome] = {l: s for l, s in by_locus.items() if s.strip("N")}
-    # EukDetect1's genomes of species EukDetect2 lacks
-    known = {ncbi.species_of(t) for t, _g in genomes2.values()}
-    placed = collections.defaultdict(dict)  # EukDetect1 genome -> {euk30 locus: placed copy}
-    record_of = {}
-    if eukdetect1 and locus_map:
-        genomes1, records1 = src.read_link1(os.path.join(eukdetect1, "busco_taxid_link.txt"), locus_map)
-        copies1 = src.read_loci(os.path.join(eukdetect1, "ncbi_eukprot_met_arch_markers.fna"), records1)
-        record_of = {gl: r for r, gl in records1.items()}
-        for folder in placed_dirs:
-            path = os.path.join(folder, src.PLACED_FASTA)
-            if os.path.isfile(path):
-                placed.update(src.read_loci(path, records1))
-        for genome, by_locus in sorted(copies1.items()):
-            taxid, _group = genomes1[genome]
-            sp = ncbi.species_of(taxid)
-            if sp in known or genome in genomes2 or ncbi.rank.get(sp) != "species" or ncbi.is_placeholder(sp):
-                continue
-            taxid_of[genome], source_of[genome] = taxid, "eukdetect1"
-            copies[genome] = {}
-            for locus, seq in by_locus.items():
-                copies[genome][locus] = placed[genome].get(locus) or seq
-                if locus not in placed[genome]:
-                    coding.add((genome, locus))
-    # the model and RefSeq species' placed copies, as further genomes of their species
-    for row in extra_rows:
-        name = species_mod.genome_name(row)
-        got = done_copies(work, row["genbank"])
-        if got:
-            taxid_of[name], source_of[name] = int(row["ncbi_taxid"]), row.get("why", "model")
-            row_of[name] = species_mod.assembly_row(row)
-            copies[name] = got
-    # their assemblies: EukDetect's genomes by name (sources.match_genomes), each one's own
-    rep = {}
-    by_species = collections.defaultdict(list)
-    for g in copies:
-        by_species[ncbi.species_of(taxid_of[g])].append(g)
-    for sp, gs in by_species.items():
-        rep[sp] = min(gs, key=lambda g: (-len(copies[g]), SOURCE_ORDER[source_of[g]], g))
-    eukdetect_genomes = {g: (taxid_of[g], "-") for g in copies if g not in row_of}
-    matched = src.own_accessions(src.match_genomes(eukdetect_genomes, assemblies, ncbi),
-                                 {g: ncbi.species_of(taxid_of[g]) for g in eukdetect_genomes}, rep)
-    accession_of = {}
-    for g in copies:
-        row = row_of.get(g) or matched.get(g, (None,))[0]
-        acc = row["accession"] if row else "EUK_" + g.replace("/", "_")
-        accession_of[g] = acc
-        sp = ncbi.species_of(taxid_of[g])
-        genomes[acc] = dict(accession=acc, species_taxid=sp, taxid=row["taxid"] if row else taxid_of[g],
-                            organism=row["organism"] if row else ncbi.name.get(taxid_of[g], g),
-                            strain=(row or {}).get("strain") or (row or {}).get("isolate") or "-",
-                            level=(row or {}).get("level"), genome_size=(row or {}).get("size"),
-                            contigs=(row or {}).get("contigs"), category=(row or {}).get("category"),
-                            ftp=(row or {}).get("ftp"), source=source_of[g],
-                            representative="t" if rep[sp] == g else "f", loci=len(copies[g]), name=g)
-    # EukDetect1's copies this build's run placed (WORK/done of its assembly), in place of the coding ones
-    for g in copies:
-        if source_of[g] == "eukdetect1":
-            for locus, seq in done_copies(work, accession_of[g]).items():
-                copies[g][locus] = seq
-                coding.discard((g, locus))
-    for g, locus in sorted(coding):  # a coding copy: one exon over it
-        features.append(dict(accession=g, locus=locus, kind="exon", start=0, end=len(copies[g][locus]),
-                             method="coding", protein=g))
-    # further GenBank assemblies of EukDetect's species (the model and RefSeq species: their reference alone)
-    eukdetect_species = {ncbi.species_of(taxid_of[g]) for g in copies if g not in row_of}
-    for row in sorted(assemblies, key=src.assembly_rank):
-        if row["species_taxid"] in eukdetect_species and row["accession"] not in genomes \
-                and not ncbi.is_placeholder(row["species_taxid"]):
-            genomes[row["accession"]] = dict(accession=row["accession"], species_taxid=row["species_taxid"],
-                                             taxid=row["taxid"], organism=row["organism"],
-                                             strain=row["strain"] or row["isolate"] or "-", level=row["level"],
-                                             genome_size=row["size"], contigs=row["contigs"],
-                                             category=row["category"], ftp=row["ftp"], source="assembly",
-                                             representative="f", loci=0)
-    # the features: by accession
-    features = [dict(f, accession=accession_of[f["accession"]]) for f in features]
-    for g in copies:
-        for f in done_features(work, row_of[g]["accession"] if g in row_of else accession_of[g]):
-            features.append(dict(f, accession=accession_of[g]))
-    by_genome = {g: accession_of[g] for g in copies}
-    for table in exon_tables:
-        for r in copies_mod.read_features(table):
-            genome, _, locus = r[0].partition("~")
-            if genome in by_genome and r[3] in ("exon", "intron") and source_of.get(genome) == "eukdetect2":
-                features.append(dict(accession=by_genome[genome], locus=locus, kind=r[3], start=r[4], end=r[5],
-                                     strand=r[10], method="annotated", protein="-"))
-    return dict(genomes=genomes, copies={accession_of[g]: c for g, c in copies.items()}, features=features,
-                taxids={taxid_of[g] for g in copies} | {r["taxid"] for r in genomes.values() if r.get("taxid")})
-
-
-def done_copies(work, accession):
-    """A genome's copies taken in this build's run (WORK/done/<accession>/copies.fna) -> {locus: copy}."""
-    path = os.path.join(work or "", "done", accession.replace("/", "_"), "copies.fna")
-    if not os.path.isfile(path):
-        return {}
-    with open(path) as fh:
-        lines = [line.strip() for line in fh]
-    return {lines[i][1:]: lines[i + 1] for i in range(0, len(lines) - 1, 2)}
-
-
-def done_features(work, accession):
-    path = os.path.join(work or "", "done", accession.replace("/", "_"), "features.tsv")
+def done_table(work, accession, name):
+    """A done genome's table (WORK/done/<accession>/<name>, header first) -> [row dicts]."""
+    from .genomes import done_dir  # noqa: PLC0415
+    path = os.path.join(done_dir(work, accession), name)
     if not os.path.isfile(path):
         return []
     with open(path) as fh:
@@ -157,9 +43,70 @@ def done_features(work, accession):
         return [dict(zip(head, line.rstrip("\n").split("\t"))) for line in fh if line.strip()]
 
 
+def done_copies(work, accession):
+    """A genome's copies (WORK/done/<accession>/copies.fna) -> {locus: copy}."""
+    from .genomes import done_dir  # noqa: PLC0415
+    path = os.path.join(done_dir(work, accession), "copies.fna")
+    if not os.path.isfile(path):
+        return {}
+    with open(path) as fh:
+        lines = [line.strip() for line in fh]
+    return {lines[i][1:]: lines[i + 1] for i in range(0, len(lines) - 1, 2)}
+
+
+def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1):
+    """What the package holds of euk30 -> dict(genomes {accession: row}, copies {accession: {locus: sequence}},
+    features [FEATURE_COLUMNS dicts], copy_rows [COPY_COLUMNS dicts], taxids). Each species' genome (its job) with
+    the copies its run called; the species' other assemblies listed (source "assembly", no copies); the copies'
+    checks across species (qc.check)."""
+    by_accession = {r["accession"]: r for r in assemblies}
+    genomes, copies, features, copy_rows = {}, {}, [], []
+    for acc, job in sorted(job_map.items()):
+        got = done_copies(work, acc)
+        if not got:
+            continue
+        row = by_accession.get(acc, {})
+        genomes[acc] = dict(accession=acc, fetched=job.get("fetch", acc), species_taxid=job["species_taxid"],
+                            taxid=job.get("taxid") or job["species_taxid"],
+                            organism=row.get("organism") or job.get("organism", ""),
+                            strain=row.get("strain") or row.get("isolate") or "-", level=row.get("level") or job.get(
+                                "level", ""), genome_size=row.get("size") or job.get("size"),
+                            contigs=row.get("contigs"), category=row.get("category") or job.get("category", ""),
+                            flags=",".join(job.get("flags") or ()) or "-", ftp=row.get("ftp"), source=job["why"][0],
+                            representative="t", loci=len(got))
+        copies[acc] = got
+        for f in done_table(work, acc, "features.tsv"):
+            features.append(dict(accession=acc, locus=f["locus"], kind=f["kind"], start=int(f["start"]),
+                                 end=int(f["end"])))
+        for r in done_table(work, acc, "loci.tsv"):
+            if r["status"] != "Missing":
+                copy_rows.append(dict(r, accession=acc))
+        for other in job.get("others", ()):
+            o = by_accession.get(other)
+            if o and other not in genomes:
+                genomes[other] = dict(accession=other, fetched=other, species_taxid=job["species_taxid"],
+                                      taxid=o["taxid"], organism=o["organism"],
+                                      strain=o.get("strain") or o.get("isolate") or "-", level=o["level"],
+                                      genome_size=o["size"], contigs=o["contigs"], category=o["category"],
+                                      flags=",".join(o.get("flags") or ()) or "-", ftp=o["ftp"], source="assembly",
+                                      representative="f", loci=0)
+    exons = collections.defaultdict(list)
+    for f in features:
+        exons[(f["accession"], f["locus"])].append((f["kind"], f["start"], f["end"]))
+    cds = {(r["accession"], r["locus"]): qc.spliced(copies[r["accession"]][r["locus"]],
+                                                     exons[(r["accession"], r["locus"])]) for r in copy_rows}
+    checks = qc.check(cds, {a: g["species_taxid"] for a, g in genomes.items()}, ncbi, vsearch, threads,
+                      {(r["accession"], r["locus"]): int(r["protein_length"]) for r in copy_rows})
+    for r in copy_rows:
+        c = checks[(r["accession"], r["locus"])]
+        r.update(own_species=c["own_species"], same_as=c["same_as"], length_check=c["length"])
+    taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"}
+    return dict(genomes=genomes, copies=copies, features=features, copy_rows=copy_rows, taxids=taxids)
+
+
 def write(out, version, ncbi, collected, loci_table, rrna=None, genomes_folder=None, inputs=None):
     """The package into `out` (written beside it and renamed into place; the manifest last) -> its folder.
-    rrna: (records [(name, sequence, row dict of records.tsv)]) or None (no rRNA half yet)."""
+    rrna: (records [(name, sequence, row dict of records.tsv)]) or None."""
     part = util.part_of(out)
     shutil.rmtree(part, ignore_errors=True)
     for sub in ("taxonomy", "euk30/copies", "rrna"):
@@ -181,38 +128,43 @@ def write(out, version, ncbi, collected, loci_table, rrna=None, genomes_folder=N
             for acc in sorted(copies):
                 if copies[acc].get(locus):
                     fh.write(f">{acc}\n{copies[acc][locus].upper()}\n")
+    _tsv(os.path.join(part, "euk30", "copies.tsv"), COPY_COLUMNS,
+         sorted(collected["copy_rows"], key=lambda r: (r["accession"], loci.index(r["locus"])
+                                                       if r["locus"] in loci else 999)))
     _tsv(os.path.join(part, "euk30", "features.tsv"), FEATURE_COLUMNS,
-         sorted(collected["features"], key=lambda f: (f["accession"], f["locus"], int(f["start"]))))
+         sorted(collected["features"], key=lambda f: (f["accession"], f["locus"], int(f["start"]), f["kind"])))
     n_records = collections.Counter()
     if rrna:
         from . import rrna as rrna_mod  # noqa: PLC0415
         rrna_mod.write_records(os.path.join(part, "rrna"), rrna)
         for _name, _seq, row in rrna:
             n_records[int(row["species_taxid"])] += 1
-    by_species = collections.defaultdict(list)
-    for r in genomes.values():
-        by_species[int(r["species_taxid"])].append(r)
     rows = []
-    for sp, rs in sorted(by_species.items()):
-        rep = next((r for r in rs if r["representative"] == "t"), None)
-        if rep is None:
+    for acc, r in sorted(genomes.items(), key=lambda kv: int(kv[1]["species_taxid"])):
+        if r["representative"] != "t":
             continue
-        rows.append(dict(taxid=sp, name=ncbi.name.get(sp, rep["organism"]), representative=rep["accession"],
-                         loci=rep["loci"], rrna_records=n_records.get(sp, 0),
-                         sources=",".join(sorted({r["source"] for r in rs if r["source"] != "assembly"},
-                                                 key=SOURCE_ORDER.get))))
+        sp = int(r["species_taxid"])
+        rows.append(dict(taxid=sp, name=ncbi.name.get(sp, r["organism"]), representative=acc, source=r["source"],
+                         loci=r["loci"], rrna_records=n_records.get(sp, 0)))
+    held = {int(r["taxid"]) for r in rows}
+    rows += [dict(taxid=sp, name=ncbi.name.get(sp, str(sp)), representative="-", source="rrna", loci=0,
+                  rrna_records=n) for sp, n in sorted(n_records.items()) if sp not in held]
     _tsv(os.path.join(part, "species.tsv"), SPECIES_COLUMNS, rows)
     taxa = ncbi.write_subset(os.path.join(part, "taxonomy"),
-                             set(collected["taxids"]) | {int(r["species_taxid"]) for r in genomes.values()})
+                             set(collected["taxids"]) | {int(r["species_taxid"]) for r in genomes.values()} |
+                             set(n_records) | ({int(row["taxid"]) for _n, _s, row in rrna} if rrna else set()))
     files = {}
     for dirpath, _dirs, names in os.walk(part):
         for name in sorted(names):
             path = os.path.join(dirpath, name)
             files[os.path.relpath(path, part).replace(os.sep, "/")] = [os.path.getsize(path), util.md5(path)]
+    statuses = collections.Counter(r["status"] for r in collected["copy_rows"])
     manifest = {"format": FORMAT, "version": version, "built": datetime.datetime.now().isoformat(timespec="seconds"),
-                "inputs": inputs or {}, "counts": {"species": len(rows), "genomes": len(genomes),
-                                                   "copies": sum(len(c) for c in copies.values()),
-                                                   "rrna_records": sum(n_records.values()), "taxa": taxa},
+                "inputs": inputs or {},
+                "counts": {"species": sum(1 for r in rows if r["representative"] != "-"),
+                           "species_rrna_only": sum(1 for r in rows if r["representative"] == "-"),
+                           "genomes": len(genomes), "copies": sum(len(c) for c in copies.values()),
+                           "copy_status": dict(statuses), "rrna_records": sum(n_records.values()), "taxa": taxa},
                 "files": dict(sorted(files.items()))}
     with open(os.path.join(part, MANIFEST), "w", newline="\n") as fh:
         json.dump(manifest, fh, indent=1)
@@ -251,7 +203,8 @@ def check(folder, deep=False):
 
 
 def read_table(folder, name):
-    """A package table (genomes.tsv, species.tsv, euk30/features.tsv, rrna/records.tsv) -> [row dicts]."""
+    """A package table (genomes.tsv, species.tsv, euk30/copies.tsv, euk30/features.tsv, rrna/records.tsv) -> [row
+    dicts]."""
     with util.open_text(os.path.join(folder, name)) as fh:
         head = fh.readline().rstrip("\n").split("\t")
         return [dict(zip(head, line.rstrip("\n").split("\t"))) for line in fh if line.strip()]

@@ -1,7 +1,7 @@
 """EUKDB's sources (since 2026-11-05; copied from protal's scripts/mini_db/eukaryotes.py, rdna_sources.py and
-download_ref_data.py, so that EUKDBbuild imports nothing from them): EukDetect2's genomic euk30 copies (Zenodo
-19056625) and EukDetect1's coding ones (figshare 12670856), the loci table and its EukDetect1 locus map, NCBI's GenBank
-and RefSeq assembly tables, and the published eukaryote rDNA operons (EUKARYOME 2.1's long reads, ROD v1.2).
+download_ref_data.py, so that EUKDBbuild imports nothing from them): the loci table, NCBI's GenBank and RefSeq assembly
+tables, and the published eukaryote rDNA operons (EUKARYOME 2.1's long reads, ROD v1.2). EukDetect1's and EukDetect2's
+copies were sources until 2026-11-05: EUKDB now calls the loci in NCBI's genomes itself (odb.py, loci.py).
 """
 
 import collections
@@ -18,15 +18,9 @@ from .util import open_text
 
 DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 LOCI_TABLE = os.path.join(DATA, "euk30_loci.tsv")
-PLACED_DIR = os.path.join(DATA, "placed")      # the copies placed so far (eukdetect1_genomic.py's, then placement.py's)
-PLACED_FASTA = "ncbi_eukprot_met_arch_markers.genomic.fna.zst"
-PLACED_TABLE = "eukdetect1_genomic.tsv.zst"
 REFSEQ_URL = "https://ftp.ncbi.nlm.nih.gov/genomes/refseq"
+ASSEMBLIES_URL = "https://ftp.ncbi.nlm.nih.gov/genomes/genbank"
 ASSEMBLY_GROUPS = ("fungi", "protozoa", "plant", "invertebrate", "vertebrate_mammalian", "vertebrate_other")
-
-
-def is_placeholder(ncbi, taxid):
-    return ncbi.is_placeholder(taxid)
 
 
 def download(url, dest, md5=None):
@@ -44,147 +38,10 @@ LOCI = 30
 MAX_LOCUS = 16000
 
 
-EUKDETECT_FILES = ("eukdb.fasta", "busco_taxid_genome_link.txt", "taxdump.tar.gz")
-
-
-LOCUS_RE = re.compile(r"-(\d+at\d+)-S\d+$")
-
-
-LEVELS = {"Complete Genome": 0, "Chromosome": 1, "Scaffold": 2, "Contig": 3}
-
-
-def read_link(path):
-    """busco_taxid_genome_link.txt -> ({genome: (taxid, group)}, {record: (genome, locus)}); group Fungi or Protist."""
-    genomes, records = {}, {}
-    with open_text(path) as fh:
-        for line in fh:
-            fields = line.rstrip("\n").split("\t")
-            if len(fields) < 3:
-                continue
-            record, taxid, genome = fields[:3]
-            m = LOCUS_RE.search(record)
-            if not m:
-                continue
-            genomes[genome] = (int(taxid), "Fungi" if record.startswith("Fungi") else "Protist")
-            records[record] = (genome, m.group(1))
-    return genomes, records
-
-
-def read_loci(path, records, loci=None, lengths_only=False):
-    """eukdb.fasta -> {genome: {locus: sequence}}, a genome's longest sequence of a locus it has in several (-S1, -S2),
-    of the loci asked for (all without `loci`); with lengths_only the lengths instead of the sequences."""
-    result = collections.defaultdict(dict)
-    keep = None
-    with open_text(path) as fh:
-        for line in fh:
-            if line.startswith(">"):
-                keep = records.get(line[1:].split(None, 1)[0].strip())
-                if keep is not None and loci is not None and keep[1] not in loci:
-                    keep = None
-                continue
-            if keep is None:
-                continue
-            seq = line.strip()
-            genome, locus = keep
-            old = result[genome].get(locus)
-            old_length = (old if lengths_only else len(old)) if old is not None else -1
-            if len(seq) > old_length:
-                result[genome][locus] = len(seq) if lengths_only else seq.upper().replace("U", "T")
-            keep = None  # one line per sequence
-    return result
-
-
 def read_loci_table(path=LOCI_TABLE):
     """euk30_loci.tsv -> its loci, in its order."""
     with open(path) as fh:
         return [line.split("\t")[0] for line in fh if line.strip() and not line.startswith(("#", "locus\t"))]
-
-
-def read_locus_map(path=LOCI_TABLE):
-    """euk30_loci.tsv -> {locus: its EukDetect1 locus} (the column eukdetect1_locus; "-" or none: no such locus)."""
-    with open(path) as fh:
-        header = fh.readline().rstrip("\n").split("\t")
-        if "eukdetect1_locus" not in header:
-            return {}
-        col = header.index("eukdetect1_locus")
-        rows = (line.rstrip("\n").split("\t") for line in fh if line.strip() and not line.startswith("#"))
-        return {f[0]: f[col] for f in rows if len(f) > col and f[col] not in ("", "-")}
-
-
-# EukDetect1 (Lind & Pollard 2021, Microbiome 9:58; figshare 10.6084/m9.figshare.12670856.v7): BUSCO eukaryota_odb10's
-# genes of 3,713 eukaryotes, the non-vertebrate animals and the green algae among them, which EukDetect2 has none of.
-# Its records are named as EukDetect2's (<group>-<genome>-<locus>-<copy>), its loci are another OrthoDB's (odb10):
-# map_loci finds which of them each euk30 locus is. A copy S1 is single; D1, D2, ... a BUSCO found duplicated (left
-# out); a record of several species' identical copies (CD-HIT, "...Collapse...") names no species (left out).
-EUKDETECT1_FILES = ("busco_taxid_link.txt", "ncbi_eukprot_met_arch_markers.fna")
-
-
-# EukDetect1's copies are BUSCO's coding sequences, spliced (no introns), where a read of the genome holds them:
-# eukdetect1_genomic.py writes the copies it places in their genomes, introns and all, into this file beside them.
-# A locus takes its genomic copy where there is one that clean_copy keeps, else its coding one (a species keeps its loci).
-EUKDETECT1_GENOMIC = "ncbi_eukprot_met_arch_markers.genomic.fna"
-
-
-EUKDETECT1_GROUPS = {"fungi": "Fungi", "protist": "Protist", "insect": "Metazoa", "worm": "Metazoa",
-                     "metazoa": "Metazoa", "greenalgae": "Archaeplastida", "archaeplast": "Archaeplastida",
-                     "archaeplasta": "Archaeplastida"}
-
-
-# A EukDetect1 species with fewer of the euk30 loci EukDetect1 has (17 of 30) is left out: its reads would rarely reach
-# enough loci to tell it from its relatives (EukDetect2's species have 24.8 of the 30 on average).
-MIN_EUKDETECT1_LOCI = 6
-
-
-RECORD_RE = re.compile(r"^(?P<group>[^-]+)-(?P<genome>.+)-(?P<locus>\d+at\d+)-(?P<copy>[SD]\d+)$")
-
-
-def read_link1(path, locus_map):
-    """EukDetect1's busco_taxid_link.txt -> ({genome: (taxid, group)}, {record: (genome, euk30 locus)}) of the single
-    copies of the loci locus_map ({euk30 locus: EukDetect1 locus}) maps, a locus a genome has duplicated left out."""
-    euk30_of = {v: k for k, v in locus_map.items()}
-    genomes, single, duplicated = {}, {}, set()
-    with open_text(path) as fh:
-        for line in fh:
-            fields = line.rstrip("\n").split("\t")
-            m = RECORD_RE.match(fields[0]) if len(fields) >= 2 else None
-            if not m or m.group("group") not in EUKDETECT1_GROUPS:
-                continue
-            genome = m.group("genome")
-            genomes[genome] = (int(fields[1]), EUKDETECT1_GROUPS[m.group("group")])
-            locus = euk30_of.get(m.group("locus"))
-            if locus is None:
-                continue
-            if m.group("copy") == "S1":
-                single[fields[0]] = (genome, locus)
-            else:
-                duplicated.add((genome, locus))
-    return genomes, {r: gl for r, gl in single.items() if gl not in duplicated}
-
-
-def genomic_copies(eukdetect1, records1, placed_dir=PLACED_DIR):
-    """EukDetect1's genomic copies of the records read_link1 gave ({record: (genome, locus)}): placed_dir's (the
-    checkout's), then those beside EukDetect1's files, a genome's there in place of its copies in the checkout.
-    -> {genome: {locus: copy}}"""
-    result = {}
-    for path in (os.path.join(placed_dir, PLACED_FASTA) if placed_dir else "", os.path.join(eukdetect1, EUKDETECT1_GENOMIC)):
-        if path and os.path.isfile(path):
-            result.update(read_loci(path, records1))
-    return result
-
-
-def species_loci(eukdetect, eukdetect1, locus_map, ncbi, loci):
-    """The euk30 loci each NCBI species has in euk30's sources (EukDetect2's genomes, EukDetect1's single copies of the
-    loci locus_map maps; a download without EukDetect1: EukDetect2's alone) -> ({species taxid: {loci}}, EukDetect2's
-    (genomes, records))."""
-    genomes2, records2 = read_link(os.path.join(eukdetect, "busco_taxid_genome_link.txt"))
-    link1 = os.path.join(eukdetect1 or "", "busco_taxid_link.txt")
-    genomes1, records1 = read_link1(link1, locus_map) if locus_map and os.path.isfile(link1) else ({}, {})
-    have = collections.defaultdict(set)
-    for genomes, records in ((genomes2, records2), (genomes1, records1)):
-        for genome, locus in records.values():
-            if locus in loci:
-                have[ncbi.species_of(genomes[genome][0])].add(locus)
-    return have, (genomes2, records2)
 
 
 # No eukaryote's nuclear genome is smaller (microsporidia's, the smallest, are ~2.2 Mb): GenBank has records of 500-600
@@ -215,6 +72,7 @@ def read_assemblies(paths):
                 if f.get("version_status", "latest") != "latest":
                     continue
                 excluded = f.get("excluded_from_refseq", "")
+                flags = sorted({x.strip() for x in excluded.split(";") if x.strip() and x.strip() != "na"})
                 rows.append(dict(accession=f["assembly_accession"], taxid=int(f["taxid"]),
                                  species_taxid=int(f["species_taxid"]), organism=f.get("organism_name", ""),
                                  strain=re.sub(r"^\w+=", "", f.get("infraspecific_name", "")), isolate=f.get("isolate", ""),
@@ -222,7 +80,11 @@ def read_assemblies(paths):
                                  size=int(f["genome_size"]) if f.get("genome_size", "").isdigit() else None,
                                  contigs=int(f["contig_count"]) if f.get("contig_count", "").isdigit() else None,
                                  category="derived from metagenome" if "metagenome" in excluded else "isolate",
-                                 ftp=f.get("ftp_path", "")))
+                                 ftp=f.get("ftp_path", ""), flags=flags, refseq_category=f.get("refseq_category", ""),
+                                 paired=f.get("gbrs_paired_asm", "na"), date=f.get("seq_rel_date", ""),
+                                 submitter=f.get("submitter", ""),
+                                 group=re.sub(r"^(genbank|refseq|assembly_summary)_", "",
+                                              os.path.basename(path)).rsplit(".", 1)[0]))
     rows = [r for r in rows if r["size"] is None or r["size"] >= MIN_GENOME]
     sizes = collections.defaultdict(list)
     for r in rows:
@@ -231,68 +93,6 @@ def read_assemblies(paths):
     median = {t: sorted(s)[len(s) // 2] for t, s in sizes.items() if len(s) >= 3}
     return [r for r in rows if not r["size"] or r["species_taxid"] not in median
             or r["size"] >= PARTIAL_SHARE * median[r["species_taxid"]]]
-
-
-def norm(text):
-    return re.sub(r"[^a-z0-9]", "", text.lower())
-
-
-def assembly_rank(row):
-    """Better assemblies first: complete genomes, then chromosomes, scaffolds, contigs; then fewer contigs."""
-    return (LEVELS.get(row["level"], 4), row["contigs"] if row["contigs"] is not None else 1 << 30, row["accession"])
-
-
-def match_genomes(genomes, assemblies, ncbi):
-    """Each EukDetect2 genome's GenBank assembly: by its name (organism and strain or isolate, letters and digits alone)
-    among its taxid's species' assemblies, else among those of the name, else its taxid's best assembly (not for an
-    NCBI placeholder's taxid). -> {genome: (assembly row or None, how)}"""
-    by_species, by_name = collections.defaultdict(list), collections.defaultdict(list)
-    for row in assemblies:
-        by_species[row["species_taxid"]].append(row)
-        for key in {norm(row["organism"]), norm(row["organism"] + row["strain"]), norm(row["organism"] + row["isolate"]),
-                    norm(row["organism"] + row["strain"] + row["isolate"])}:
-            by_name[key].append(row)
-    result = {}
-    for genome, (taxid, _group) in genomes.items():
-        species = ncbi.species_of(taxid)
-        candidates = by_species.get(species, [])
-        named = [r for r in by_name.get(norm(genome), [])]
-        both = [r for r in named if r in candidates]
-        for rows, how in ((both, "name and taxid"), (named, "name"),
-                          ([] if ncbi.is_placeholder(species) else candidates, "taxid")):
-            if rows:
-                result[genome] = (min(rows, key=assembly_rank), how + (" (one)" if len(rows) == 1 else " (several)"))
-                break
-        else:
-            result[genome] = (None, "none")
-    return result
-
-
-def own_accessions(matched, species_of, rep_of):
-    """match_genomes' matches with each GenBank assembly a genome's alone (since 2026-11-03): of the genomes matched to
-    one assembly the one matched by its name keeps it, else the species' representative, else the first by name; the
-    others are matched "own accession" without an assembly, and so are written under an accession of their own
-    (EUK_<genome>, as a genome without an assembly). The taxid fallback gives each of a species' genomes its name finds
-    no assembly of the species' best one: r226's euk30 wrote up to 41 copies of a locus of Schizophyllum commune's
-    genomes as GB_GCA_000143185.2, of which the converter kept the first (5,005 copies of 107 species missing from the
-    full reference, 858 loci under a representative's accession another genome's copy; now 298 genomes of 109 species
-    have their own). -> {genome: (assembly row or None, how)}"""
-    claims = collections.defaultdict(list)
-    for genome, (row, _how) in matched.items():
-        if row:
-            claims[row["accession"]].append(genome)
-    result = dict(matched)
-    for genomes in claims.values():
-        keep = min(genomes, key=lambda g: (not matched[g][1].startswith("name"), rep_of.get(species_of[g]) != g, g))
-        for genome in genomes:
-            if genome != keep:
-                result[genome] = (None, f"own accession ({matched[keep][0]['accession']} is {keep}'s)")
-    return result
-
-
-def base_name(name):
-    """A name without PR2's "(Fungi)" (Cryptococcus(Fungi)) and NCBI's brackets ([Candida] boidinii)."""
-    return re.sub(r"\([^()]*\)", "", name).replace("[", "").replace("]", "")
 
 
 STATE = "source.json"
@@ -418,29 +218,6 @@ def eukaryome_compromised(folder):
         next(fh)
         return {line.strip() for line in fh if line.strip()}
 
-
-# EukDetect2's files (Zenodo record 19056625, CC BY 4.0) and their MD5s, into OUT/eukdetect2 (2.1 GB), and NCBI's
-# GenBank assembly tables of the groups its genomes are in, into OUT/ncbi_assemblies (~16 MB).
-EUKDETECT_MIRROR = "https://zenodo.org/api/records/19056625/files"
-
-
-EUKDETECT_MD5 = {"eukdb.fasta": "91f3883f231ead6853f6883449cd331f",
-                 "busco_taxid_genome_link.txt": "3eae92e5928da5af74eb262937ab96b8",
-                 "taxdump.tar.gz": "5b89e986aa5dee81b9d54e6044d515ac"}
-
-
-# EukDetect1's database (figshare 10.6084/m9.figshare.12670856.v7, 1.7 GB): its species EukDetect2 lacks (non-vertebrate
-# animals, green algae, more fungi and protists) join euk30 (since 2026-10-26); the two files eukaryotes.py reads are
-# kept in OUT/eukdetect1 (0.96 GB), the archive is removed.
-EUKDETECT1_URL = "https://ndownloader.figshare.com/files/26173346"
-
-
-EUKDETECT1_ARCHIVE = ("ncbi_eukprot_met_arch_database.tar.gz", "d2cd9ed430b63a1e1c52cb9866411b70")
-
-
-ASSEMBLIES_URL = "https://ftp.ncbi.nlm.nih.gov/genomes/genbank"
-
-
 SOURCES = {
     "ROD": {
         "dir": "ROD", "version": "v1.2",
@@ -510,5 +287,3 @@ def fetch(inputs, name, download, seven_zip="7za", log=print):
     log(f"{name} {spec['version']}: " + ("ready, " + f"{counted} records as published" if not problems else
                                           "NOT READY: " + "; ".join(problems)))
     return state
-
-

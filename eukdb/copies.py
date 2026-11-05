@@ -16,10 +16,9 @@ a copy was left out, or cut to the run of its exons with the most coding bases (
 - a gene whose exons alone are longer than MAX_LOCUS (none of euk30's loci in the genomes checked) keeps the run of its
   exons with the most coding bases (model_species.window), marked "exon window".
 
-What was kept and cut is a copy's annotation (FEATURES, rows of features()): its exons and introns on the copy as the
-reference holds it (0-based, end excluded, the copy's own strand), each with where it lies in the genome, and each cut
-as a zero-width row with the bases it removed. eukaryotes.build_release writes them for every copy with an exon model
-(euk30_exons_r<R>.tsv), and protal counts a eukaryote's aligned bases inside exons from them.
+What was kept and cut is a copy's annotation (fit's features): its exons and introns on the copy as the reference
+holds it (0-based, end excluded, the copy's own strand), each with where it lies in the genome, and each cut as a
+zero-width row with the bases it removed. EUKDB fits nothing (no cap: loci.call); protal's converter does.
 """
 
 import os
@@ -30,8 +29,6 @@ import sys
 FLANK = 50          # an intron's bases kept at either end at least
 MAX_LOCUS = 16000   # eukaryotes.MAX_LOCUS (the caller passes it: a test may lower it)
 MASK_MIN = 100      # eukdetect1_genomic.MASK_MIN: soft-masked runs this long outside the exons become N
-FEATURES = ("record", "accession", "locus", "kind", "start", "end", "removed", "genome_contig", "genome_start",
-            "genome_end", "strand", "how")
 COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
 
 
@@ -140,67 +137,3 @@ def fit(contig_seq, start, end, strand, exons, max_len=MAX_LOCUS, flank=FLANK, m
         features = sorted(((k, length - e, length - s, r, g1, g2) for k, s, e, r, g1, g2 in features),
                           key=lambda f: (f[1], f[0] == "cut"))
     return dict(copy=copy, spliced=spliced, masked=masked, features=features, how=how)
-
-
-def feature_rows(record, accession, locus, contig, strand, fitted):
-    """A fitted copy's features as FEATURES rows (lists of strings)."""
-    return [[record, accession, locus, kind, str(s), str(e), str(r), contig, str(g1), str(g2), strand, fitted["how"]]
-            for kind, s, e, r, g1, g2 in fitted["features"]]
-
-
-def exons_of(fasta):
-    """The features file beside a copies' FASTA (x.genomic.fna -> x.genomic.exons.tsv, .zst kept)."""
-    return re.sub(r"\.(fna|fasta)(\.zst)?$", r".exons.tsv\2", fasta)
-
-
-def read_features(path):
-    """A features file (FEATURES header; plain or .zst) -> its rows, split; [] where there is none."""
-    if not path or not os.path.isfile(path):
-        return []
-    if path.endswith(".zst"):
-        from . import util  # noqa: PLC0415
-        lines = util.read_text(path).splitlines()
-    else:
-        with open(path) as fh:
-            lines = fh.read().splitlines()
-    return [line.split("\t") for line in lines if line and not line.startswith("record\t")]
-
-
-def write_features(path, rows):
-    """Rows of FEATURES into path (zstd level 19 where it ends in .zst), under the writer's own name first."""
-    text = "\t".join(FEATURES) + "\n" + "".join("\t".join(r) + "\n" for r in rows)
-    from .util import part_of  # noqa: PLC0415  (its compression still told by the name)
-    part = part_of(path)
-    if path.endswith(".zst"):
-        from . import util  # noqa: PLC0415
-        with util.open_write(part, level=19) as fh:
-            fh.write(text.encode())
-    else:
-        with open(part, "w", newline="\n") as fh:
-            fh.write(text)
-    os.replace(part, path)
-
-
-def coding_rows(record, accession, locus, seq):
-    """A coding copy's features (EukDetect1's, not placed in its genome): one exon over all of it."""
-    return [[record, accession, locus, "exon", "0", str(len(seq)), "0", "", "", "", "+", "coding"]]
-
-
-def stripped(seq, rows):
-    """A copy with the Ns at its ends cut (eukaryotes.clean_copy's) and its features shifted to it, those outside it
-    dropped and those over its ends clipped -> (sequence, rows)."""
-    lead = len(seq) - len(seq.lstrip("N"))
-    out = seq.strip("N")
-    shifted = []
-    for r in rows:
-        s, e = max(0, int(r[4]) - lead), min(len(out), int(r[5]) - lead)
-        if r[3] == "cut" and 0 <= int(r[4]) - lead <= len(out):
-            shifted.append(r[:4] + [str(int(r[4]) - lead)] * 2 + r[6:])
-        elif r[3] != "cut" and e > s:
-            shifted.append(r[:4] + [str(s), str(e)] + r[6:])
-    return out, shifted
-
-
-def exon_intervals(rows):
-    """FEATURES rows of one copy -> [(start, end)] of its exons on the copy, in order."""
-    return sorted((int(r[4]), int(r[5])) for r in rows if r[3] == "exon")

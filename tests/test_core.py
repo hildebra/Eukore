@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests of EUKDB's core modules: the NCBI taxonomy and its subset (written into a package and read back the same for
-the package's taxa), the EukDetect readers on the test world, the model species table; and that EUKDBbuild imports
-nothing from protal's scripts/.
+the package's taxa), NCBI's assembly tables read, the model species table; and that EUKDBbuild imports nothing
+from protal's scripts/.
 
     python3 -m unittest discover EUKDBbuild/tests
 """
@@ -21,8 +21,7 @@ import fixtures as fx  # noqa: E402
 class CoreTest(unittest.TestCase):
     def test_taxonomy_subset(self):
         with tempfile.TemporaryDirectory() as tmp:
-            eukdetect, *_ = fx.world(tmp)
-            full = ncbi.Ncbi(os.path.join(eukdetect, "taxdump.tar.gz"))
+            full = ncbi.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
             self.assertEqual(full.species_of(559292), 4932)
             n = full.write_subset(os.path.join(tmp, "taxonomy"), [559292, 28985])
             sub = ncbi.Ncbi(os.path.join(tmp, "taxonomy"))
@@ -32,22 +31,15 @@ class CoreTest(unittest.TestCase):
             self.assertEqual(sub.synonyms[28985], ["Candida sphaerica"])
             self.assertNotIn(40410, sub.name)  # not on the lineages asked for
 
-    def test_eukdetect_readers(self):
+    def test_assembly_tables(self):
         with tempfile.TemporaryDirectory() as tmp:
-            eukdetect, _ksgp, assemblies, _gtdb = fx.world(tmp)
-            eukdetect1 = fx.eukdetect1_world(tmp, eukdetect)
-            genomes, records = sources.read_link(os.path.join(eukdetect, "busco_taxid_genome_link.txt"))
-            copies = sources.read_loci(os.path.join(eukdetect, "eukdb.fasta"), records)
-            self.assertEqual(sorted(copies["Saccharomyces_cerevisiae_S288C"]), ["1at2759", "2at2759", "3at2759"])
-            self.assertEqual(len(copies["Candida_albicans_SC5314"]["1at2759"]), 400)  # the longer of its two pieces
-            genomes1, records1 = sources.read_link1(os.path.join(eukdetect1, "busco_taxid_link.txt"), fx.MAP1)
-            self.assertIn(("Ascaris_lumbricoides", "1at2759"), set(records1.values()))
-            self.assertNotIn(("Ascaris_lumbricoides", "3at2759"), set(records1.values()))  # duplicated: left out
-            rows = sources.read_assemblies([assemblies])
-            self.assertNotIn("GCA_000000560.1", {r["accession"] for r in rows})  # a gene's record, no genome
-            taxonomy = ncbi.Ncbi(os.path.join(eukdetect, "taxdump.tar.gz"))
-            have, _link = sources.species_loci(eukdetect, eukdetect1, fx.MAP1, taxonomy, {"1at2759", "2at2759"})
-            self.assertEqual(have[6253], {"1at2759", "2at2759"})
+            rows = sources.read_assemblies([fx.assembly_table(os.path.join(tmp, "genbank_fungi.txt"), fx.GENBANK)])
+            by = {r["accession"]: r for r in rows}
+            self.assertNotIn("GCA_000000560.1", by)  # a gene's record as a "complete genome": no genome
+            self.assertEqual(by["GCA_000000011.1"]["flags"], ["contaminated"])
+            self.assertEqual(by["GCA_000000012.1"]["category"], "derived from metagenome")
+            self.assertEqual((by["GCA_000146045.2"]["refseq_category"], by["GCA_000146045.2"]["paired"],
+                              by["GCA_000146045.2"]["group"]), ("reference genome", "GCF_000146045.2", "fungi"))
 
     def test_the_model_species_table(self):
         rows = species.read_table()

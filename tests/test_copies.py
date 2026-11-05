@@ -101,13 +101,6 @@ class FitTest(unittest.TestCase):
         self.assertLessEqual(len(got["copy"]), 1000)
         self.assertEqual([x[2] - x[1] for x in got["features"] if x[0] == "exon"], [600, 300])  # 900 coding bases in 1,000
 
-    def test_rows(self):
-        contig, s, e, exons = gene(random.Random(8), [100, 100], [3000])
-        got = ec.fit(contig, s, e, "+", exons, max_len=1000)
-        rows = ec.feature_rows("rec", "GCA_1.1", "1at2759", "c1", "+", got)
-        self.assertTrue(all(len(r) == len(ec.FEATURES) for r in rows))
-        self.assertEqual(ec.exon_intervals(rows), [(0, 100), (900, 1000)])
-
 
 if __name__ == "__main__":
     unittest.main()
