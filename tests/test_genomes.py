@@ -131,7 +131,7 @@ class RunTest(unittest.TestCase):
             with open(os.path.join(out, "manifest.json")) as fh:
                 manifest = json.load(fh)
             self.assertEqual((manifest["format"], manifest["counts"]["species"], manifest["counts"]["copies"]),
-                             (2, 2, 4))
+                             (3, 2, 4))
             sp = {r["taxid"]: r for r in package.read_table(out, "species.tsv")}
             self.assertEqual((sp["4932"]["representative"], sp["4932"]["source"]), (YEAST, "ncbi"))
             # the prune: the model species' genome kept first

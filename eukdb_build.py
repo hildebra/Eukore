@@ -8,11 +8,14 @@
 
 Stages:
 - fetch: the sources into WORK/sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
-  BUSCO's eukaryota_odb12, EUKARYOME 2.1, ROD v1.2), then each species' genome (genomes.jobs) into OUT/genomes;
+  BUSCO's eukaryota_odb12, EUKARYOME 2.1, ROD v1.2, RefSeq's organelle genomes), then each species' genome
+  (genomes.jobs) into OUT/genomes;
 - process: each genome's euk30 loci called and its rRNA extracted (WORK/done/<accession>/); a genome not fetched yet
-  waits for the next run;
-- package: the copies' checks across species, the published rRNA reads' regions (WORK/published), OUT/genomes cut
-  back to --keep_gb (genomes.prune: the model species' and the smallest kept first), then OUT/EUKDB_<version>/.
+  waits for the next run; then the organelle genes (mitochondrial and plastid rRNA, mitochondrial COX1) of RefSeq's
+  organelle genomes, and of the assemblies' own organelle molecules where RefSeq has none (WORK/organelle);
+- package: the copies' checks across species, the published rRNA reads' regions (WORK/published), the organelle genes
+  of any assembly not searched yet, OUT/genomes cut back to --keep_gb (genomes.prune: the model species' and the
+  smallest kept first), then OUT/EUKDB_<version>/.
 `all` runs them in turn. Every stage is resumable: a rerun does only what is not done.
 """
 
@@ -29,6 +32,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from eukdb import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
+from eukdb import organelle as organelle_mod  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
 NO_ASSEMBLY = os.path.join(sources.DATA, "no_assembly.fna.gz")
@@ -57,6 +61,7 @@ def fetch_sources(src_dir, groups):
     odb_mod.fetch(src_dir, sources.download, say)
     for name in ("EUKARYOME", "ROD"):
         sources.fetch(src_dir, name, sources.download, shutil.which("7za") or shutil.which("7z") or "7za", say)
+    organelle_mod.fetch(src_dir, sources.download, say)
 
 
 def tables(src_dir, kind, groups):
@@ -193,6 +198,24 @@ def genome_rrna_records(opts, job_map, ncbi):
     return out
 
 
+def organelle_genes(opts, src_dir, job_map, ncbi):
+    """The organelle genes' sources (eukdb/organelle.py): RefSeq's organelle genomes, parsed once, and each species'
+    own assembly where RefSeq has neither of its organelles' records (barrnap, nhmmer) -> RefSeq's records chosen,
+    {(species taxid, organelle): rows}."""
+    folder = os.path.join(opts.work, "organelle")
+    chosen = organelle_mod.choose(organelle_mod.refseq_genes(src_dir, folder, ncbi, say), ncbi)
+    if not chosen:
+        say("WARNING: no RefSeq organelle release (--stage fetch fetches it): organelle genes of the assemblies "
+            "alone, and no COX1 among them")
+    barrnap, nhmmer = shutil.which("barrnap"), shutil.which("nhmmer")
+    if barrnap and nhmmer:
+        organelle_mod.assembly_pass(folder, job_map, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
+                                    barrnap, nhmmer, opts.jobs, opts.threads_per_genome, say)
+    else:
+        say("WARNING: no barrnap or nhmmer: the assemblies' organelle molecules not searched")
+    return chosen
+
+
 def clades(spec):
     """--species: NCBI taxids, comma-separated or a file of one per line (# comments) -> a set, or None (all)."""
     if not spec:
@@ -285,6 +308,7 @@ def main(argv=None):
     if opts.stage in ("all", "process"):
         settings = settings_of(opts, src_dir, ncbi, staged_only=opts.stage == "process")
         waiting, failed = run_genomes(opts, job_map, settings)
+        organelle_genes(opts, src_dir, job_map, ncbi)
         if waiting or failed:
             say(f"{len(waiting)} genomes not fetched yet, {len(failed)} failed (e.g. {(waiting + failed)[:3]}): the "
                 "package waits for them (run again; --stage fetch first on a cluster)")
@@ -304,11 +328,17 @@ def main(argv=None):
         collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads)
         records = genome_rrna_records(opts, job_map, ncbi) + published(opts, src_dir, ncbi)
         records = rrna.finish(records, ncbi, vsearch, opts.threads)
+        chosen = organelle_genes(opts, src_dir, job_map, ncbi)  # before the prune: the genomes searched while there
+        held = {int(g["species_taxid"]) for g in collected["genomes"].values() if g["representative"] == "t"}
+        organelle = organelle_mod.collect(ncbi, job_map, held | {int(r["species_taxid"]) for _n, _s, r in records},
+                                          chosen, os.path.join(opts.work, "organelle"))
         inputs = {"odb": odb_mod.state_of(src_dir), "taxdump_md5": util.md5(os.path.join(src_dir, "taxdump.tar.gz")),
                   "sources": {n: sources.state_of(src_dir, n).get("version") for n in ("EUKARYOME", "ROD")},
                   "assembly_tables": {os.path.basename(p): util.md5(p)
                                       for p in sorted(glob.glob(os.path.join(src_dir, "ncbi_assemblies", "*.txt")))},
-                  "groups": opts.groups, "no_assembly": util.md5(NO_ASSEMBLY) if os.path.isfile(NO_ASSEMBLY) else None}
+                  "groups": opts.groups, "no_assembly": util.md5(NO_ASSEMBLY) if os.path.isfile(NO_ASSEMBLY) else None,
+                  "refseq_organelle": {os.path.basename(p): util.md5(p)
+                                       for p in organelle_mod.release_files(src_dir) if os.path.isfile(p)}}
         if wanted is not None:
             inputs["partial"] = {"species_clades": sorted(wanted)}  # a trial package: these clades only
         # every genome is called and extracted: the kept ones cut back to the budget, then the package names those kept
@@ -318,7 +348,7 @@ def main(argv=None):
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB (--keep_gb {opts.keep_gb:g}), "
             f"{sum(st == 'deleted' for *_x, st in rows_kept)} deleted")
         out = package.write(os.path.join(opts.out, f"EUKDB_{opts.version}"), opts.version, ncbi, collected,
-                            sources.LOCI_TABLE, records, opts.genomes, inputs)
+                            sources.LOCI_TABLE, records, opts.genomes, inputs, organelle)
         say(f"EUKDB: {out} ({json.dumps(package.read(out)['counts'])})")
     return 0
 

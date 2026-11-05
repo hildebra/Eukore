@@ -3,9 +3,11 @@
 EUKDB is a standalone eukaryote reference, and this repository builds it. It holds:
 - the euk30 marker genes, complete with all their introns;
 - the rDNA operons, complete and uncut;
+- the mitochondrial and plastid rRNA and the mitochondrial COX1, where NCBI has them;
 
-of every eukaryote species with an NCBI genome. Both are called in NCBI's own assemblies, checked, and labelled by
-NCBI's taxonomy, tied to no GTDB release or KSGP version. The package format is in `FORMAT.md` (version 2).
+of every eukaryote species with an NCBI genome. The first two are called in NCBI's own assemblies and checked; the
+organelle genes come from NCBI's RefSeq organelle genomes, else the assemblies. All are labelled by NCBI's taxonomy, tied
+to no GTDB release or KSGP version. The package format is in `FORMAT.md` (version 3).
 
 A user converts a package to its own needs. protal's database build (`download_ref_data.py --eukdb`) does it with its
 own reader of the format: KSGP names, masking, copies fitted into 16 kb, records cut to 8,191 bases. EUKDB imports
@@ -74,6 +76,25 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
   - the part screen (`eukdb/screen.py`, `screen`): a record whose 18S, junction or 28S half is another organism's,
     by the nearest records of other genomes on NCBI's lineages (a contaminant contig, a mosaic, a chimeric read).
 
+## How the organelle genes are made
+
+`eukdb/organelle.py`, for each species of the package and each of its organelles, from one source:
+- **RefSeq's organelle genomes** (its release's mitochondrion and plastid GenBank files, ~2.2 GB, parsed once into
+  `WORK/organelle`). Their annotated rRNA features (SSU, LSU, 5S; the 16S is an animal mitochondrion's LSU, elsewhere
+  the SSU) and COX1 CDS. Of a species' records, the one with the most of these genes, then its own taxid's, then the
+  longest.
+- **Else its own assembly's organelle molecules**, those NCBI's FASTA titles name a mitochondrion, chloroplast, plastid
+  or apicoplast. nhmmer finds each gene, queried with that gene of the 3 nearest RefSeq species (its exons joined);
+  barrnap the rRNA nhmmer misses (`--kingdom mito` in animals' mitochondria, `bac` elsewhere). This runs after the
+  genomes in the process stage, and again in the package stage before the prune, on the genomes still on disk.
+
+A gene is kept whole, introns and all (fungi's and plants' COX1 hold group I and II introns). Checked on real genomes
+(2026-11-05): human's mitochondrion (queried with the chimpanzee's) gave its 12S, 16S and COX1 within 6 bases of
+RefSeq's annotation; yeast's (queried with *Kluyveromyces lactis*') its COX1 exactly (13,818-26,701, 8 exons), its 15S
+and 21S within 90 bases. barrnap alone found no rRNA in yeast's mitochondrion, and Arabidopsis' plastid 16S and 23S
+but not its 5S. A species with neither source has no organelle genes. The organelle genes have no checks across species
+yet.
+
 ## Layout
 
 | path | contents |
@@ -83,6 +104,7 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
 | `eukdb/genomes.py` | the genome set, one worker per genome (loci, windows, tiara, rRNA), FCS-GX, the prune |
 | `eukdb/qc.py` | the copies' checks across species |
 | `eukdb/rrna.py`, `eukdb/screen.py` | the rRNA records and their checks; the part screen |
+| `eukdb/organelle.py` | the mitochondrial and plastid rRNA and COX1 |
 | `eukdb/package.py` | collect, write, read and check a package |
 | `eukdb/ncbi.py`, `eukdb/sources.py`, `eukdb/species.py` | NCBI's taxonomy; the sources; the model species |
 | `eukdb/placement.py`, `eukdb/copies.py`, `eukdb/util.py` | genome files; a copy's exons and introns; I/O |
@@ -107,13 +129,15 @@ python3 eukdb_build.py --work WORK --out OUT --stage package --groups fungi,prot
   - NCBI's GenBank and RefSeq assembly tables of the `--groups`;
   - NCBI's taxdump;
   - BUSCO's eukaryota_odb12;
-  - EUKARYOME 2.1 and ROD v1.2.
-- **process** calls every genome it was given.
+  - EUKARYOME 2.1 and ROD v1.2;
+  - RefSeq's organelle genomes (mitochondrion and plastid).
+- **process** calls every genome it was given, then takes the organelle genes.
 - **package**, in turn:
   - runs FCS-GX where asked;
   - checks the copies across species;
   - annotates the published rRNA reads (barrnap and ITSx over `-t` threads, 250 reads a batch);
   - runs the rRNA checks and part screen;
+  - takes the organelle genes of any genome not searched yet;
   - prunes `OUT/genomes` to `--keep_gb` (the model species first, then the smallest);
   - writes `OUT/EUKDB_<version>/` (`--version`, YYYY.MM by default).
 
@@ -168,3 +192,5 @@ panel holds neither.
 ## Not done yet
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
 - Whether to replace the four loci with prokaryote homologues ("The loci in prokaryotes") by other odb12 BUSCOs.
+- The organelle genes (format 3, 2026-11-05) have been built in tests only, not on NCBI's release; they have no checks
+  across species (own_species, contaminants). protal's reader takes format 2 until it is told of 3.
