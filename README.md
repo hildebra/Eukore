@@ -1,14 +1,15 @@
 # EUKDB
 
 EUKDB is a standalone eukaryote reference, and this repository builds it. It holds:
-- the euk30 marker genes, complete with all their introns;
+- every BUSCO gene of BUSCO's eukaryota_odb12 (129), complete with all its introns;
 - the rDNA operons, complete and uncut;
 
 of every eukaryote species with an NCBI genome. Both are called in NCBI's own assemblies, checked, and labelled by
-NCBI's taxonomy, tied to no GTDB release or KSGP version. The package format is in `FORMAT.md` (version 2).
+NCBI's taxonomy, tied to no GTDB release or KSGP version. The package format is in `FORMAT.md` (version 4).
 
 A user converts a package to its own needs. protal's database build (`download_ref_data.py --eukdb`) does it with its
-own reader of the format: KSGP names, masking, copies fitted into 16 kb, records cut to 8,191 bases. EUKDB imports
+own reader of the format: the 30 BUSCOs of its euk30 (its choice, by `busco/loci.tsv` and "Choosing loci" below),
+KSGP names, masking, copies fitted into 16 kb, records cut to 8,191 bases. EUKDB imports
 nothing from protal. It started inside protal's repository (`EUKDBbuild/`, 2026-11-05) and keeps that history.
 
 ## Install
@@ -19,10 +20,10 @@ micromamba activate eukdb
 micromamba create -f envs/tiara.yaml      # optional: tiara apart, as it needs a Python of 3.9 or older
 ```
 
-## How the euk30 copies are made
+## How the BUSCO copies are made
 
-EUKDB calls the 30 loci itself, as compleasm does, on BUSCO's eukaryota_odb12 (OrthoDB 12.1; the 30 loci are among
-its 129 BUSCOs). EukDetect1 and EukDetect2 were its sources of copies until 2026-11-05.
+EUKDB calls every BUSCO of eukaryota_odb12 itself (OrthoDB 12.1, 129 BUSCOs; `--loci` restricts a trial), as
+compleasm does. EukDetect1 and EukDetect2 were its sources of copies (30 loci) until 2026-11-05.
 1. **The genome set.** For each NCBI species with a GenBank assembly in the `--groups`, the assembly that ranks best
    (`eukdb/genomes.py`):
    - never one NCBI flags as contaminated, of an unverified source organism, misassembled, chimeric or of low
@@ -47,7 +48,7 @@ its 129 BUSCOs). EukDetect1 and EukDetect2 were its sources of copies until 2026
    - tiara classifies them where installed (`--tiara`).
    - NCBI's FCS-GX screens them with `--fcs_gx_db` (its ~470 GB database; a node of ~512 GB). A copy overlapping a
      range FCS-GX calls another organism's gets an `fcs` column.
-4. **The checks across species** (`eukdb/qc.py`), each a column of `euk30/copies.tsv`. They cover what EukDetect
+4. **The checks across species** (`eukdb/qc.py`), each a column of `busco/copies.tsv`. They cover what EukDetect
    checked with its alien index, its 99% collapse and its length filter:
    - `own_species`: the copy's nearest copies of other species agree with its lineage, or are another clade's
      (a contaminant, a misidentified genome);
@@ -142,6 +143,31 @@ Seven clades: *Saccharomyces*, *Candida albicans*, *Blastocystis*, *Drosophila m
 - Where the genome is the same (the yeasts, *C. albicans*), its copies hold all of EukDetect2's copy's 21-mers, at
   the same length.
 - The model species got 29-30 loci each.
+
+## Choosing loci
+
+The package holds every BUSCO; a user picks the ones it indexes. `busco/loci.tsv` gives each BUSCO's call rate over all
+the package's species and per supergroup, its duplications and fragments, and its lengths. Three tools measure more:
+- `tools/rank_loci.py` ranks the BUSCOs by:
+  - presence in BUSCO's own dataset;
+  - conservation: the dataset proteins' bits per residue against the BUSCO's HMM;
+  - EukDetect2's fungus and protist shares;
+  - call rates in a eukaryote panel (`tools/eukaryote_panel.py`: one genome per order per supergroup);
+  - prokaryote calls (`tools/prokaryote_panel.py`).
+
+  `--select N` writes the best N as a loci table.
+- `tools/prokaryote_separation.py` measures how far a BUSCO's prokaryote homologues are from its eukaryote copies at
+  the nucleotide level.
+
+What the 2026-11-05 checks showed:
+- **BUSCO's dataset overstates universality outside animals, fungi and plants.** It holds 837 species: 479 animals,
+  201 fungi, 119 plants, 22 SAR, 6 Discoba, 6 Amoebozoa. Of the BUSCOs its presence and conservation ranked best, four
+  of the seven not in euk30 were missing in *Blastocystis*' genomes. Choose by call rates in real genomes (the package's
+  `busco/loci.tsv`, a eukaryote panel), not by the dataset's species list.
+- **Prokaryote homologues do not matter for read profiling.** The best nucleotide identity of any prokaryote
+  homologue to a eukaryote copy was 56% (the archaeal ribosome biogenesis protein); for the cytochrome c oxidase
+  assembly proteins it was 50-53%, and most reached no eukaryote copy at 50%. A read aligner needing ~85% cannot cross
+  between domains on them.
 
 ## The loci in prokaryotes
 

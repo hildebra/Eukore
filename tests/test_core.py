@@ -43,7 +43,7 @@ class CoreTest(unittest.TestCase):
         rows = species.read_table()
         self.assertIn("Homo sapiens", {r["species"] for r in species.eukaryotes(rows)})
         self.assertTrue(os.path.isfile(species.UNITS))
-        self.assertEqual(len(sources.read_loci_table()), 30)
+        self.assertFalse(os.path.exists(os.path.join(sources.DATA, "euk30_loci.tsv")))  # the user picks loci
 
 
 if __name__ == "__main__":

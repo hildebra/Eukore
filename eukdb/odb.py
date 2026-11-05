@@ -1,4 +1,4 @@
-"""BUSCO's eukaryota_odb12 dataset (since 2026-11-05): the euk30 loci's proteins, HMMs and score cutoffs, from which
+"""BUSCO's eukaryota_odb12 dataset (since 2026-11-05): its BUSCOs' proteins, HMMs and score cutoffs, from which
 EUKDB calls the loci in every genome itself (loci.py), in place of EukDetect1's and EukDetect2's copies.
 
 The dataset (busco-data.ezlab.org; OrthoDB 12.1, 129 BUSCOs of 456 species, 2026-05-22) holds per BUSCO:
@@ -88,6 +88,25 @@ def hmm_header(path):
     return name, length
 
 
+def all_loci(folder):
+    """Every BUSCO of a dataset (its scores_cutoff), in its order."""
+    with open(os.path.join(folder, "scores_cutoff")) as fh:
+        return [line.split()[0] for line in fh if line.strip()]
+
+
+def names_of(folder):
+    """{BUSCO: OrthoDB's name of it} (links_to_ODB12.txt; {} without one)."""
+    path = os.path.join(folder, "links_to_ODB12.txt")
+    out = {}
+    if os.path.isfile(path):
+        with open(path) as fh:
+            for line in fh:
+                f = line.rstrip("\n").split("\t")
+                if len(f) > 1:
+                    out[f[0]] = f[1]
+    return out
+
+
 class Odb:
     """A dataset's loci: proteins (refseq_db and ancestral variants), HMMs, cutoffs. loci: the BUSCOs to keep."""
 
@@ -105,6 +124,7 @@ class Odb:
         if missing:
             raise ValueError(f"{folder}: no {sorted(missing)[:5]} (another dataset?)")
         self.hmm = {locus: os.path.join(folder, "hmms", f"{locus}.hmm") for locus in self.loci}
+        self.names = names_of(folder)
         headers = {locus: hmm_header(path) for locus, path in self.hmm.items()}
         self.length = {locus: h[1] for locus, h in headers.items()}
         self.locus_of_hmm = {h[0] or locus: locus for locus, h in headers.items()}  # hmmsearch's names -> loci

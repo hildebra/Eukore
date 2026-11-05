@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Are euk30's loci called in prokaryote genomes by EUKDB's caller? (since 2026-11-05; EukDetect2 dropped the BUSCOs it
+"""Are BUSCO genes called in prokaryote genomes by EUKDB's caller? (since 2026-11-05; EukDetect2 dropped the BUSCOs it
 found in 971 gut bacteria, which hold almost no archaea or alphaproteobacteria.) A panel of prokaryote genomes (one per
 GTDB genus of a genome table, isolates first, then the most complete) is searched with ALL dataset proteins of the
 loci and their ancestral variants (stricter than a build, which takes the 30 nearest species'), miniprot then
@@ -92,7 +92,7 @@ def main(argv=None):
     p.add_argument("--table", required=True)
     p.add_argument("--genome_dir", required=True)
     p.add_argument("--odb", required=True)
-    p.add_argument("--loci", help="loci, one per line (default data/euk30_loci.tsv's)")
+    p.add_argument("--loci", help="loci, one per line (default: every BUSCO of the dataset)")
     p.add_argument("--out", required=True)
     p.add_argument("--limit", type=int)
     p.add_argument("-j", "--jobs", type=int, default=3)
@@ -102,7 +102,7 @@ def main(argv=None):
         with open(opts.loci) as fh:
             wanted = [line.split("\t")[0].strip() for line in fh if line.strip() and not line.startswith("locus")]
     else:
-        wanted = sources.read_loci_table()
+        wanted = odb_mod.all_loci(opts.odb)
     os.makedirs(os.path.join(opts.out, "done"), exist_ok=True)
     odb_mod.Odb(opts.odb, wanted).hmm_db(os.path.join(opts.out, "euk30.hmm"))  # the loci searched (rank_loci reads it)
     items = panel(opts.table, opts.genome_dir, opts.limit)

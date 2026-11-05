@@ -42,12 +42,12 @@ def regions(panels):
 def eukaryote_cds(folder, loci):
     """{locus: {accession: coding sequence}} of a package's copies (their exons joined)."""
     exons = collections.defaultdict(list)
-    for r in package.read_table(folder, "euk30/features.tsv"):
+    for r in package.read_table(folder, "busco/features.tsv"):
         if r["kind"] == "exon" and r["locus"] in loci:
             exons[(r["accession"], r["locus"])].append((int(r["start"]), int(r["end"])))
     out = collections.defaultdict(dict)
     for locus in loci:
-        path = os.path.join(folder, "euk30", "copies", f"{locus}.fna.gz")
+        path = os.path.join(folder, "busco", "copies", f"{locus}.fna.gz")
         if not os.path.isfile(path):
             continue
         for acc, seq in package.read_copies(folder, locus).items():

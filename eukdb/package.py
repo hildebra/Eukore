@@ -1,5 +1,6 @@
-"""EUKDB's package (FORMAT.md; format 2 since 2026-11-05: EUKDB's own locus calls in NCBI's genomes), written from the
-build's genome set and work folder, read and checked by its users (protal's converter).
+"""EUKDB's package (FORMAT.md; format 2 since 2026-11-05: EUKDB's own locus calls in NCBI's genomes; format 4 since
+2026-11-05: every BUSCO of the dataset, in busco/, with busco/loci.tsv), written from the build's genome set and work
+folder, read and checked by its users (protal's converter).
 """
 
 import collections
@@ -10,11 +11,12 @@ import os
 import shutil
 
 from . import qc
-from . import sources as src
 from . import util
 
-FORMAT = 2
+FORMAT = 4
 MANIFEST = "manifest.json"
+LOCI_COLUMNS = ("locus", "name", "cutoff", "hmm_length", "species", "called", "duplicated", "fragmented", "call_rate",
+                "median_length", "median_cds_length", "median_protein_length")
 GENOME_COLUMNS = ("accession", "fetched", "species_taxid", "taxid", "organism", "strain", "level", "genome_size",
                   "contigs", "category", "flags", "ftp", "source", "representative", "loci", "local")
 COPY_COLUMNS = ("accession", "locus", "status", "contig", "contig_length", "start", "end", "strand", "length",
@@ -55,7 +57,7 @@ def done_copies(work, accession):
 
 
 def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1):
-    """What the package holds of euk30 -> dict(genomes {accession: row}, copies {accession: {locus: sequence}},
+    """What the package holds of the BUSCO genes -> dict(genomes {accession: row}, copies {accession: {locus: sequence}},
     features [FEATURE_COLUMNS dicts], copy_rows [COPY_COLUMNS dicts], taxids). Each species' genome (its job) with
     the copies its run called; the species' other assemblies listed (source "assembly", no copies); the copies'
     checks across species (qc.check)."""
@@ -108,12 +110,46 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1):
     return dict(genomes=genomes, copies=copies, features=features, copy_rows=copy_rows, taxids=taxids)
 
 
-def write(out, version, ncbi, collected, loci_table, rrna=None, genomes_folder=None, inputs=None):
+def loci_rows(loci, collected, ncbi):
+    """busco/loci.tsv's rows: each BUSCO (loci: dicts of locus, name, cutoff, hmm_length) with how the package's
+    species hold it: species with a genome, called (Single or Duplicated), duplicated, fragmented, the call rate over
+    all and per supergroup (groups.GROUPS), the median copy, coding and protein lengths."""
+    from . import groups  # noqa: PLC0415
+    genomes = collected["genomes"]
+    reps = {a: g for a, g in genomes.items() if g.get("representative") == "t"}
+    group = {a: groups.group_of(ncbi, g["species_taxid"]) for a, g in reps.items()}
+    sizes = collections.Counter(group.values())
+    by_locus = collections.defaultdict(list)
+    for r in collected["copy_rows"]:
+        if r["accession"] in reps:
+            by_locus[r["locus"]].append(r)
+    out = []
+    for item in loci:
+        rs = by_locus.get(item["locus"], [])
+        called = [r for r in rs if r["status"] in ("Single", "Duplicated")]
+        per_group = collections.Counter(group[r["accession"]] for r in called)
+
+        def median(key):
+            values = sorted(int(r[key]) for r in called if str(r.get(key, "")).isdigit())
+            return values[len(values) // 2] if values else 0
+        row = dict(item, species=len(reps), called=len(called),
+                   duplicated=sum(r["status"] == "Duplicated" for r in rs),
+                   fragmented=sum(r["status"] == "Fragmented" for r in rs),
+                   call_rate=f"{len(called) / max(len(reps), 1):.3f}", median_length=median("length"),
+                   median_cds_length=median("cds_length"), median_protein_length=median("protein_length"))
+        for name in sorted(sizes):
+            row[f"call_{name}"] = f"{per_group[name] / sizes[name]:.3f}"
+        out.append(row)
+    return out, [f"call_{name}" for name in sorted(sizes)]
+
+
+def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None):
     """The package into `out` (written beside it and renamed into place; the manifest last) -> its folder.
-    rrna: (records [(name, sequence, row dict of records.tsv)]) or None."""
+    loci: the BUSCOs called ([{locus, name, cutoff, hmm_length}], in the dataset's order); rrna: (records [(name,
+    sequence, row dict of records.tsv)]) or None."""
     part = util.part_of(out)
     shutil.rmtree(part, ignore_errors=True)
-    for sub in ("taxonomy", "euk30/copies", "rrna"):
+    for sub in ("taxonomy", "busco/copies", "rrna"):
         os.makedirs(os.path.join(part, sub))
     genomes = collected["genomes"]
     local = set()
@@ -123,19 +159,20 @@ def write(out, version, ncbi, collected, loci_table, rrna=None, genomes_folder=N
         r["local"] = f"genomes/{acc}.fna.gz" if acc in local else "-"
     _tsv(os.path.join(part, "genomes.tsv"), GENOME_COLUMNS,
          sorted(genomes.values(), key=lambda r: (str(r["species_taxid"]), r["representative"] != "t", r["accession"])))
-    loci = src.read_loci_table(loci_table)
-    shutil.copyfile(loci_table, os.path.join(part, "euk30", "loci.tsv"))
+    rows_of_loci, call_columns = loci_rows(loci, collected, ncbi)
+    _tsv(os.path.join(part, "busco", "loci.tsv"), LOCI_COLUMNS + tuple(call_columns), rows_of_loci)
+    order = {item["locus"]: i for i, item in enumerate(loci)}
     copies = collected["copies"]
-    for locus in loci:
-        path = os.path.join(part, "euk30", "copies", f"{locus}.fna.gz")
+    for item in loci:
+        locus = item["locus"]
+        path = os.path.join(part, "busco", "copies", f"{locus}.fna.gz")
         with gzip.open(path, "wt", compresslevel=6) as fh:
             for acc in sorted(copies):
                 if copies[acc].get(locus):
                     fh.write(f">{acc}\n{copies[acc][locus].upper()}\n")
-    _tsv(os.path.join(part, "euk30", "copies.tsv"), COPY_COLUMNS,
-         sorted(collected["copy_rows"], key=lambda r: (r["accession"], loci.index(r["locus"])
-                                                       if r["locus"] in loci else 999)))
-    _tsv(os.path.join(part, "euk30", "features.tsv"), FEATURE_COLUMNS,
+    _tsv(os.path.join(part, "busco", "copies.tsv"), COPY_COLUMNS,
+         sorted(collected["copy_rows"], key=lambda r: (r["accession"], order.get(r["locus"], 1 << 20))))
+    _tsv(os.path.join(part, "busco", "features.tsv"), FEATURE_COLUMNS,
          sorted(collected["features"], key=lambda f: (f["accession"], f["locus"], int(f["start"]), f["kind"])))
     n_records = collections.Counter()
     if rrna:
@@ -207,7 +244,8 @@ def check(folder, deep=False):
 
 
 def read_table(folder, name):
-    """A package table (genomes.tsv, species.tsv, euk30/copies.tsv, euk30/features.tsv, rrna/records.tsv) -> [row
+    """A package table (genomes.tsv, species.tsv, busco/loci.tsv, busco/copies.tsv, busco/features.tsv,
+    rrna/records.tsv) -> [row
     dicts]."""
     with util.open_text(os.path.join(folder, name)) as fh:
         head = fh.readline().rstrip("\n").split("\t")
@@ -217,7 +255,7 @@ def read_table(folder, name):
 def read_copies(folder, locus):
     """A locus's copies -> {accession: sequence}."""
     out, name = {}, None
-    with gzip.open(os.path.join(folder, "euk30", "copies", f"{locus}.fna.gz"), "rt") as fh:
+    with gzip.open(os.path.join(folder, "busco", "copies", f"{locus}.fna.gz"), "rt") as fh:
         for line in fh:
             if line.startswith(">"):
                 name = line[1:].strip()

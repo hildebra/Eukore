@@ -1,5 +1,5 @@
 """EUKDB's genome set (since 2026-11-05: NCBI's own assemblies, no EukDetect): which eukaryote genome stands for each
-species, one genome's run (fetched, its euk30 loci called, its rRNA extracted, its results kept in the work folder),
+species, one genome's run (fetched, its BUSCO genes called, its rRNA extracted, its results kept in the work folder),
 and the prune of the kept genomes to a budget.
 
 The species are NCBI's species with a GenBank or RefSeq assembly in the groups asked for (sources.ASSEMBLY_GROUPS:
@@ -269,7 +269,7 @@ def fcs_of_copy(ranges, locus, contig, start, end):
 
 def run(args):
     """One genome (a job of jobs(), with settings): fetched into settings["genomes"] unless there (or settings
-    "staged_only": not fetched, left for a later run), its euk30 loci called (loci.call with odb's queries for its
+    "staged_only": not fetched, left for a later run), its BUSCO genes called (loci.call with odb's queries for its
     lineage), its rRNA extracted (settings["rrna"]: a function of (genome path, job, out folder) -> its summary),
     the windows around its copies classified (settings["tiara"]), its results written into WORK/done/<accession>/
     (RESULT_FILES, then done.json) -> (accession, summary or None, why it is not done or None)."""

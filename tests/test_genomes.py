@@ -3,7 +3,8 @@
 NCBI's flags (contaminated never, a metagenome's only without better), RefSeq's category, level, contigs and date; its
 RefSeq copy fetched where it has one; NCBI's placeholder species left out; a model species' reference whatever the
 ranking; a species without an assembly from its records; --species. One genome's run with stand-in tools into its done
-folder, then the package (format 2): genomes, copies whole, copies.tsv with the checks across species, features,
+folder, then the package (format 4): genomes, copies whole, busco/loci.tsv (each BUSCO's calls over the species),
+copies.tsv with the checks across species, features,
 species, manifest; the prune.
 
     python3 -m unittest discover -s tests -t tests
@@ -108,12 +109,10 @@ class RunTest(unittest.TestCase):
             self.assertEqual(rows[(YEAST, "1at2759")]["status"], "Duplicated")
             self.assertEqual(rows[(YEAST, "1at2759")]["same_as"], "4930")  # identical in two species: their genus
             self.assertEqual(rows[(YEAST, "1at2759")]["own_species"], "t")  # nearest agree to the genus
-            loci_table = os.path.join(tmp, "loci.tsv")
-            with open(loci_table, "w") as fh:
-                fh.write("locus\tfungi_share\tprotist_share\tmedian_length\n")
-                fh.writelines(f"{locus}\t1\t1\t400\n" for locus in fx.LOCI)
+            loci = [dict(locus=l, name=odb.names.get(l, "-"), cutoff=odb.cutoff[l], hmm_length=odb.length[l])
+                    for l in odb.loci]
             out = package.write(os.path.join(tmp, "out", "EUKDB_2026.11"), "2026.11", ncbi, collected,
-                                loci_table, None, genomes_dir, {"test": True})
+                                loci, None, genomes_dir, {"test": True})
             self.assertIsNone(package.check(out, deep=True))
             g = {r["accession"]: r for r in package.read_table(out, "genomes.tsv")}
             self.assertEqual((g[YEAST]["source"], g[YEAST]["representative"], g[YEAST]["loci"], g[YEAST]["local"]),
@@ -121,17 +120,23 @@ class RunTest(unittest.TestCase):
             self.assertEqual((g["GCA_000000003.1"]["source"], g["GCA_000000003.1"]["loci"]), ("assembly", "0"))
             a, b = spans["1at2759"]
             self.assertEqual(package.read_copies(out, "1at2759")[YEAST], seq[a - 1:b].upper())
-            feats = [(f["kind"], f["start"], f["end"]) for f in package.read_table(out, "euk30/features.tsv")
+            feats = [(f["kind"], f["start"], f["end"]) for f in package.read_table(out, "busco/features.tsv")
                      if f["accession"] == YEAST and f["locus"] == "1at2759"]
             self.assertIn(("intron", "180", "480"), feats)
             self.assertIn("soft_masked", {k for k, _s, _e in feats})
-            copies = package.read_table(out, "euk30/copies.tsv")
+            copies = package.read_table(out, "busco/copies.tsv")
             self.assertEqual({c["locus"] for c in copies if c["accession"] == YEAST}, {"1at2759", "2at2759"})
             self.assertEqual(set(copies[0]), set(package.COPY_COLUMNS))
             with open(os.path.join(out, "manifest.json")) as fh:
                 manifest = json.load(fh)
             self.assertEqual((manifest["format"], manifest["counts"]["species"], manifest["counts"]["copies"]),
-                             (2, 2, 4))
+                             (4, 2, 4))
+            # each BUSCO's calls over the package's species: two fungi, 1at2759 and 2at2759 called in both
+            got = {r["locus"]: r for r in package.read_table(out, "busco/loci.tsv")}
+            self.assertEqual([got[l]["called"] for l in fx.LOCI], ["2", "2", "0"])
+            self.assertEqual((got["1at2759"]["duplicated"], got["1at2759"]["call_rate"], got["1at2759"]["call_Fungi"],
+                              got["3at2759"]["call_rate"], got["1at2759"]["cutoff"], got["1at2759"]["hmm_length"]),
+                             ("2", "1.000", "1.000", "0.000", "50.0", "120"))
             sp = {r["taxid"]: r for r in package.read_table(out, "species.tsv")}
             self.assertEqual((sp["4932"]["representative"], sp["4932"]["source"]), (YEAST, "ncbi"))
             # the prune: the model species' genome kept first

@@ -1,4 +1,4 @@
-"""The euk30 loci called in a genome (since 2026-11-05; compleasm's method on BUSCO's eukaryota_odb12, odb.py): EUKDB's
+"""The BUSCO genes called in a genome (since 2026-11-05; compleasm's method on BUSCO's eukaryota_odb12, odb.py): EUKDB's
 own copies, in place of EukDetect1's and EukDetect2's.
 
 1. miniprot aligns the genome's queries (odb.Odb.queries: the nearest species' proteins and the ancestral variants of
@@ -172,7 +172,7 @@ def on_copy(intervals, start, end, strand):
 
 def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearch", threads=1, tmp=None,
          hmm_db=None):
-    """The euk30 loci of a genome -> dict(loci {locus: dict(status, copy, spliced, features [(kind, start, end)],
+    """The BUSCO genes of a genome -> dict(loci {locus: dict(status, copy, spliced, features [(kind, start, end)],
     contig, start, end, strand, identity, coverage, score, hmm_score, hmm_coverage, cutoff, copies, query, protein)},
     failed (why the genome could not be called, or None), windows {name: sequence} of the copies' flanks)."""
     lengths = {q: len(p) for q, p in queries.items()}

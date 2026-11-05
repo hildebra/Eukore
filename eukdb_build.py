@@ -9,7 +9,7 @@
 Stages:
 - fetch: the sources into WORK/sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
   BUSCO's eukaryota_odb12, EUKARYOME 2.1, ROD v1.2), then each species' genome (genomes.jobs) into OUT/genomes;
-- process: each genome's euk30 loci called and its rRNA extracted (WORK/done/<accession>/); a genome not fetched yet
+- process: each genome's BUSCO genes called and its rRNA extracted (WORK/done/<accession>/); a genome not fetched yet
   waits for the next run;
 - package: the copies' checks across species, the published rRNA reads' regions (WORK/published), OUT/genomes cut
   back to --keep_gb (genomes.prune: the model species' and the smallest kept first), then OUT/EUKDB_<version>/.
@@ -94,10 +94,29 @@ def plan(opts, src_dir, ncbi):
     return job_map, assemblies
 
 
+def loci_of(opts, src_dir):
+    """The BUSCOs called: every one of the dataset (since 2026-11-05: the user picks among them, protal its euk30),
+    or --loci's."""
+    every = odb_mod.all_loci(odb_mod.folder_of(src_dir))
+    if not opts.loci:
+        return every
+    with open(opts.loci) as fh:
+        wanted = {line.split("\t")[0].strip() for line in fh if line.strip() and not line.startswith(("#", "locus"))}
+    return [locus for locus in every if locus in wanted]
+
+
+def loci_items(opts, src_dir):
+    """The BUSCOs called as package.write takes them: locus, OrthoDB name, cutoff, the HMM's length."""
+    folder = odb_mod.folder_of(src_dir)
+    odb = odb_mod.Odb(folder, loci_of(opts, src_dir))
+    return [dict(locus=l, name=odb.names.get(l, "-"), cutoff=odb.cutoff[l], hmm_length=odb.length[l])
+            for l in odb.loci]
+
+
 def settings_of(opts, src_dir, ncbi, staged_only):
     folder = odb_mod.folder_of(src_dir)
-    odb = odb_mod.Odb(folder, sources.read_loci_table())
-    hmm_db = odb.hmm_db(os.path.join(opts.work, "euk30_loci.hmm"))
+    odb = odb_mod.Odb(folder, loci_of(opts, src_dir))
+    hmm_db = odb.hmm_db(os.path.join(opts.work, "busco_loci.hmm"))
     tiara = None if opts.no_tiara else shutil.which(opts.tiara)
     return dict(work=opts.work, genomes=opts.genomes, miniprot=opts.miniprot, hmmsearch=opts.hmmsearch,
                 threads=opts.threads_per_genome, staged_only=staged_only, odb=folder, loci=odb.loci, hmm_db=hmm_db,
@@ -228,6 +247,8 @@ def main(argv=None):
     p.add_argument("--keep_gb", type=float, default=1000.0,
                    help="the genomes kept in OUT/genomes once the package is written, GB (default 1000; the build may "
                         "hold more while it works)")
+    p.add_argument("--loci", help="call only these BUSCOs (a file, one per line or a loci table's first column; "
+                                  "default: every BUSCO of the dataset)")
     p.add_argument("--species", help="a partial build (a trial run): only the species inside these NCBI taxids' clades, "
                                      "comma-separated or a file of one per line; the manifest records them")
     p.add_argument("--miniprot", default="miniprot")
@@ -318,7 +339,7 @@ def main(argv=None):
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB (--keep_gb {opts.keep_gb:g}), "
             f"{sum(st == 'deleted' for *_x, st in rows_kept)} deleted")
         out = package.write(os.path.join(opts.out, f"EUKDB_{opts.version}"), opts.version, ncbi, collected,
-                            sources.LOCI_TABLE, records, opts.genomes, inputs)
+                            loci_items(opts, src_dir), records, opts.genomes, inputs)
         say(f"EUKDB: {out} ({json.dumps(package.read(out)['counts'])})")
     return 0
 

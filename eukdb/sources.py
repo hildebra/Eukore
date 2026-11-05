@@ -17,7 +17,6 @@ from . import util
 from .util import open_text
 
 DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-LOCI_TABLE = os.path.join(DATA, "euk30_loci.tsv")
 REFSEQ_URL = "https://ftp.ncbi.nlm.nih.gov/genomes/refseq"
 ASSEMBLIES_URL = "https://ftp.ncbi.nlm.nih.gov/genomes/genbank"
 ASSEMBLY_GROUPS = ("fungi", "protozoa", "plant", "invertebrate", "vertebrate_mammalian", "vertebrate_other")
@@ -38,8 +37,8 @@ LOCI = 30
 MAX_LOCUS = 16000
 
 
-def read_loci_table(path=LOCI_TABLE):
-    """euk30_loci.tsv -> its loci, in its order."""
+def read_loci_table(path):
+    """A loci table (a header line starting "locus", then a locus a line, its first column) -> its loci, in order."""
     with open(path) as fh:
         return [line.split("\t")[0] for line in fh if line.strip() and not line.startswith(("#", "locus\t"))]
 
