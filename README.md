@@ -145,7 +145,26 @@ Seven clades: *Saccharomyces*, *Candida albicans*, *Blastocystis*, *Drosophila m
 
 ## The loci in prokaryotes
 
-PENDING
+EukDetect2 dropped the BUSCOs it found in 971 gut bacteria, and the 30 loci are among those it kept. On 2026-11-05 that
+check was redone on EUKDB's own caller. The panel was 176 prokaryote genomes, one per GTDB genus of protal's local
+inputs: 158 bacteria of 22 phyla and 18 archaea of 6. Each was searched with all ~23,000 dataset proteins of the 30
+loci, which is stricter than a build (the 30 nearest species' proteins). The results:
+
+| locus | OrthoDB name | called at the cutoff (the caller's gates) | without the identity/coverage gates |
+|---|---|---|---|
+| 10262062at2759 | ribosome biogenesis protein | 10 of 18 archaea (methanogens, haloarchaea, Thermoplasmata), 1.9-2.3x the cutoff, full length | 17 archaea |
+| 1704689at2759 | cytochrome c oxidase assembly protein | 1 Pseudomonadota | 7 Pseudomonadota |
+| 1726137at2759 | cytochrome c oxidase assembly | 1 Pseudomonadota | 4 Pseudomonadota |
+| 1925287at2759 | tRNA m1A58 methyltransferase | 1 Desulfobacterota (half the profile) | 3 Desulfobacterota, 2 archaea |
+| the other 26 | | none | 6 more calls, 5 loci, 0.3-0.8 of the profile |
+
+These are the loci eukaryotes share with archaea, and the mitochondrion's alphaproteobacterial genes. A gut-bacteria
+panel holds neither.
+- **In a build**, a eukaryote's own copy outscores such a homologue. A prokaryote contig's copy is taken only where
+  the eukaryote's own is missing; `own_species`, tiara and FCS-GX then catch it.
+- **For a read profiler**, the nucleotide distance across domains is far beyond read alignment.
+- **Still, these four loci** are the ones to watch, or to replace by BUSCOs without prokaryote homologues.
 
 ## Not done yet
-- Nothing of the 2026-11-05 list; FCS-GX has been run with stand-ins only (its database is ~470 GB).
+- FCS-GX has been run with stand-ins only (its database is ~470 GB).
+- Whether to replace the four loci with prokaryote homologues ("The loci in prokaryotes") by other odb12 BUSCOs.
