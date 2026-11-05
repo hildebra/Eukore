@@ -1,0 +1,21 @@
+# The model and host species protal makes an extra effort for (since 2026-11-05; model_species.py, docs/databases.md).
+# genbank: the reference assembly as euk30 names it (GenBank accession; refseq: NCBI's RefSeq copy of it, which a
+# download may hold already: download_ref_data.py's host genome is GCF_009914755.1). genome_bases: NCBI's
+# assembly_stats total-length of the GenBank assembly. rdna_unit: a curated GenBank rDNA unit (model_rdna_units.fna.gz)
+# whose rRNA is the species' operon where its assembly gives none ("-": none curated). Eukaryotes get the euk30 loci
+# their euk30 copies lack, placed in the assembly by miniprot whatever its size; prokaryotes are checked, not placed.
+species	ncbi_taxid	domain	group	genbank	refseq	assembly_name	level	genome_bases	rdna_unit	note
+Homo sapiens	9606	Eukaryota	Metazoa	GCA_009914755.4	GCF_009914755.1	T2T-CHM13v2.0	Complete Genome	3117292070	U13369.1	host; T2T holds the rDNA arrays (U13369.1: complete repeating unit, 42,999 bp)
+Mus musculus	10090	Eukaryota	Metazoa	GCA_000001635.9	GCF_000001635.27	GRCm39	Chromosome	2728222451	BK000964.3	host and model; GRCm39 holds few rDNA units (BK000964.3: complete repeating unit, 45,306 bp)
+Rattus norvegicus	10116	Eukaryota	Metazoa	GCA_036323735.1	GCF_036323735.1	GRCr8	Chromosome	2849597507	NR_046239.1	host and model (NR_046239.1: 45S pre-rRNA, 8,647 bp, its 28S partial)
+Danio rerio	7955	Eukaryota	Metazoa	GCA_000002035.4	GCF_000002035.6	GRCz11	Chromosome	1679186873	-	model (RefSeq's reference; GRCz12tu is not flagged so yet)
+Bos taurus	9913	Eukaryota	Metazoa	GCA_002263795.4	GCF_002263795.3	ARS-UCD2.0	Chromosome	2770686122	-	host and food
+Sus scrofa	9823	Eukaryota	Metazoa	GCA_000003025.6	GCF_000003025.6	Sscrofa11.1	Chromosome	2501895775	-	host and food (GenBank also has T2T-Sscrofa, GCA_000003025.7)
+Gallus gallus	9031	Eukaryota	Metazoa	GCA_016699485.1	GCF_016699485.2	bGalGal1.mat.broiler.GRCg7b	Chromosome	1053332251	KT445934.2	host and food (KT445934.2: 5'ETS to 3'ETS, 11,863 bp)
+Drosophila melanogaster	7227	Eukaryota	Metazoa	GCA_000001215.4	GCF_000001215.4	Release_6_plus_ISO1_MT	Chromosome	143726002	M21017.1	model; in euk30 on EukDetect1's 12 loci (M21017.1: 18S to 28S, 12,026 bp)
+Caenorhabditis elegans	6239	Eukaryota	Metazoa	GCA_000002985.3	GCF_000002985.6	WBcel235	Complete Genome	100272607	X03680.1	model; in euk30 on EukDetect1's 11 loci (X03680.1: rDNA tandem repeat, 7,203 bp)
+Saccharomyces cerevisiae	4932	Eukaryota	Fungi	GCA_000146045.2	GCF_000146045.2	R64	Complete Genome	12071326	NR_132207.1	model and food; in euk30 on 27 loci, R64 its representative (NR_132207.1: 35S pre-rRNA RDN37-1, 6,858 bp)
+Arabidopsis thaliana	3702	Eukaryota	Archaeplastida	GCA_000001735.2	GCF_000001735.4	TAIR10.1	Chromosome	119668634	-	model plant
+Akkermansia muciniphila	239935	Bacteria	-	GCA_000020225.1	GCF_000020225.1	ASM2022v1	Complete Genome	-	-	gut model (ATCC BAA-835)
+Escherichia coli	562	Bacteria	-	GCA_000005845.2	GCF_000005845.2	ASM584v2	Complete Genome	-	-	model (K-12 MG1655)
+Bacillus subtilis	1423	Bacteria	-	GCA_000009045.1	GCF_000009045.1	ASM904v1	Complete Genome	-	-	model (168)
