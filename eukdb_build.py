@@ -115,10 +115,43 @@ def rrna_hook(path, job, out_folder, barrnap=None, itsx=None, threads=1):
 
 # --- stages ------------------------------------------------------------------------------------------------------
 
+def clades(spec):
+    """--species: NCBI taxids, comma-separated or a file of one per line (# comments) -> a set, or None (all)."""
+    if not spec:
+        return None
+    if os.path.isfile(spec):
+        with open(spec) as fh:
+            spec = ",".join(line.split("#")[0].split("\t")[0].strip() for line in fh)
+    return {int(t) for t in spec.split(",") if t.strip()}
+
+
+def inside_of(ncbi, wanted):
+    """A test of a taxid: inside one of the clades `wanted` (None: every taxid is)."""
+    if wanted is None:
+        return lambda t: True
+
+    def inside(t):
+        if t in (None, "", "-"):
+            return False
+        t = int(t)
+        return any(a in wanted for a in ncbi.ancestors(ncbi.merged.get(t, t)))
+    return inside
+
+
+def subset(collected, inside):
+    """collect()'s result limited to the species inside the clades of --species."""
+    kept = {a: r for a, r in collected["genomes"].items() if inside(r["species_taxid"])}
+    return dict(genomes=kept, copies={a: c for a, c in collected["copies"].items() if a in kept},
+                features=[f for f in collected["features"] if f["accession"] in kept],
+                taxids={t for t in collected["taxids"] if inside(t)})
+
+
 def plan(opts, src, ncbi, assemblies):
     loci = sources.read_loci_table()
-    rows = extra_rows(ncbi, src, src["assemblies"], loci, not opts.no_refseq)
+    rows = [r for r in extra_rows(ncbi, src, src["assemblies"], loci, not opts.no_refseq)
+            if opts.inside(r["ncbi_taxid"])]
     job_map = genomes.jobs(ncbi, src, loci, sources.read_locus_map(), assemblies, rows, [sources.PLACED_DIR])
+    job_map = {a: j for a, j in job_map.items() if opts.inside(j["species_taxid"])}
     say(f"genome set: {len(job_map)} genomes ({dict(genomes.why_counts(job_map.values()))})")
     return job_map, rows
 
@@ -149,7 +182,7 @@ def published(opts, src_dir, ncbi):
     rod = sources.ready(src_dir, "ROD")
     if rod:
         for r in sources.rod_operons(rod):
-            if r.get("taxid", "").isdigit() and r.get("sequence"):
+            if r.get("taxid", "").isdigit() and r.get("sequence") and opts.inside(r["taxid"]):
                 t = int(r["taxid"])
                 reads.append((f"ROD_{r['seqid']}", r["sequence"].upper(), t, "ROD", "rod_taxid",
                               r.get("assembly_id") or "-"))
@@ -160,7 +193,7 @@ def published(opts, src_dir, ncbi):
             if acc in bad:
                 continue
             t, how = rrna.eukaryome_taxid(label, index, ncbi)
-            if t:
+            if t and opts.inside(t):
                 reads.append((f"EUK_{acc}", seq, t, "EUKARYOME", how, "-"))
     cache_dir = os.path.join(opts.work, "published")
     os.makedirs(cache_dir, exist_ok=True)
@@ -224,6 +257,8 @@ def main(argv=None):
                         "hold more while it works)")
     p.add_argument("--no_refseq", action="store_true",
                    help="leave out the RefSeq species EukDetect lacks or holds on fewer than 20 loci")
+    p.add_argument("--species", help="a partial build (a trial run): only the species inside these NCBI taxids' clades, "
+                                     "comma-separated or a file of one per line; the manifest records them")
     p.add_argument("--miniprot", default="miniprot")
     p.add_argument("-t", "--threads", type=int, default=8)
     p.add_argument("-j", "--jobs", type=int, default=None, help="genomes at a time (default threads / 4)")
@@ -238,6 +273,8 @@ def main(argv=None):
         fetch_sources(src_dir, not opts.no_refseq)
     src = source_paths(src_dir)
     ncbi = ncbi_mod.Ncbi(src["taxdump"])
+    wanted = clades(opts.species)
+    opts.inside = inside_of(ncbi, wanted)
     assemblies = sources.read_assemblies(sorted(glob.glob(os.path.join(src["assemblies"], "genbank_*.txt"))) +
                                          sorted(glob.glob(os.path.join(src["assemblies"], "refseq_*.txt"))))
     job_map, rows = plan(opts, src, ncbi, assemblies)
@@ -252,12 +289,26 @@ def main(argv=None):
             if i % max(1, len(todo) // 20) == 0 or i == len(todo):
                 say(f"  {i}/{len(todo)} fetched ({failed} failed)")
         return 0
+    if opts.stage in ("all", "process", "package"):
+        if not shutil.which("barrnap"):
+            say("WARNING: no barrnap: no rRNA records (install barrnap with nhmmer)")
+        elif not shutil.which("ITSx"):
+            say("WARNING: no ITSx: the ITS1/5.8S/ITS2/28S borders are barrnap's alone")
+        else:
+            why = rrna.check_itsx(shutil.which("ITSx"))
+            if why:  # a damaged ITSx_db gives silently wrong borders: stop before any work
+                sys.exit(f"{why}\n{shutil.which('ITSx')}: reinstall ITSx (bioconda's itsx) or give it its whole "
+                         "ITSx_db/HMMs folder")
     if opts.stage in ("all", "process"):
         waiting, failed = run_genomes(opts, job_map, staged_only=opts.stage == "process")
         if shutil.which(opts.miniprot):
+            only = []
+            if wanted is not None:
+                link, _records = sources.read_link(os.path.join(src["eukdetect2"], "busco_taxid_genome_link.txt"))
+                only = ["--only", ",".join(sorted(g for g, (t, _grp) in link.items() if opts.inside(t))) or "-"]
             exons.main(["--eukdetect", src["eukdetect2"], "--eukdetect1", src["eukdetect1"], "--work",
                         os.path.join(opts.work, "exons"), "--out", os.path.join(opts.work, "exons"),
-                        "-j", str(opts.threads), "--miniprot", opts.miniprot])
+                        "-j", str(opts.threads), "--miniprot", opts.miniprot] + only)
         if waiting or failed:
             say(f"{len(waiting)} genomes not fetched yet, {len(failed)} failed (e.g. {(waiting + failed)[:3]}): the "
                 "package waits for them (run again; --stage fetch first on a cluster)")
@@ -266,6 +317,8 @@ def main(argv=None):
         collected = package.collect(ncbi, src, assemblies, sources.read_loci_table(), sources.read_locus_map(), rows,
                                     opts.work, [sources.PLACED_DIR],
                                     [os.path.join(opts.work, "exons", exons.EXONS)])
+        if wanted is not None:
+            collected = subset(collected, opts.inside)
         records = genome_rrna_records(opts, job_map, ncbi, assemblies) + published(opts, src_dir, ncbi)
         records = rrna.finish(records, ncbi, shutil.which("vsearch"), opts.threads)
         inputs = {"eukdetect2": sources.EUKDETECT_MD5, "eukdetect1": sources.EUKDETECT1_ARCHIVE[1],
@@ -273,6 +326,8 @@ def main(argv=None):
                   "sources": {n: sources.state_of(src_dir, n).get("version") for n in ("EUKARYOME", "ROD")},
                   "assembly_tables": {os.path.basename(p): util.md5(p)
                                       for p in sorted(glob.glob(os.path.join(src["assemblies"], "*.txt")))}}
+        if wanted is not None:
+            inputs["partial"] = {"species_clades": sorted(wanted)}  # a trial package: these clades only
         # every genome is extracted: the kept ones cut back to the budget, then the package names those kept
         firsts = {a for r in species.read_table() for a in species.accessions(r)}
         rows_kept = genomes.prune(opts.genomes, opts.work, opts.keep_gb * 1e9, set(), firsts)

@@ -56,8 +56,11 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(len(sources.read_loci_table()), 30)
 
     def test_self_contained(self):
-        # EUKDBbuild imports nothing from protal's scripts/ (its modules import each other relatively)
-        protal = {os.path.splitext(f)[0] for d in ("scripts", os.path.join("scripts", "mini_db"))
+        # EUKDBbuild imports nothing from protal's scripts/ (its modules import each other relatively); outside
+        # protal's repository there is nothing to check
+        if not os.path.isdir(os.path.join(os.path.dirname(os.path.dirname(HERE)), "scripts", "mini_db")):
+            self.skipTest("not inside protal's repository")
+        protal ={os.path.splitext(f)[0] for d in ("scripts", os.path.join("scripts", "mini_db"))
                   for f in os.listdir(os.path.join(os.path.dirname(os.path.dirname(HERE)), d)) if f.endswith(".py")}
         folder = os.path.join(os.path.dirname(HERE), "eukdb")
         for name in os.listdir(folder):

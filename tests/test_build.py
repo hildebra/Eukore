@@ -59,6 +59,30 @@ class UnitTest(unittest.TestCase):
         # no 5.8S, no unit: the 18S span alone
         alone = rrna.units_of(seq, {"18S_rRNA": [(1001, 2800, "+", False)]})[0]
         self.assertIsNone(alone["unit"])
+        # barrnap's 28S hit reaching back over the 5.8S (Drosophila's units, 2026-11-05 trial): the 28S starts at the
+        # 5.8S's end, no ITS2 (ITSx gives it where installed), the regions in order on either strand
+        over = dict(feats, **{"28S_rRNA": [(3300, 12100, "+", False)]})
+        for strand_seq, f in ((seq, over), (rc, {k: [(n - b + 1, n - a + 1, "-" if s == "+" else "+", p)
+                                                      for a, b, s, p in v] for k, v in over.items()})):
+            regions = rrna.units_of(strand_seq, f)[0]["regions"]
+            self.assertEqual([r[0] for r in regions], ["18S", "ITS1", "5.8S", "28S", "5S"])
+            self.assertTrue(all(a < b for _n, a, b in regions))
+            self.assertTrue(all(x[2] <= y[1] for x, y in zip(regions, regions[1:])))
+
+    def test_itsx_failures_are_seen(self):
+        # ITSx with --cpu over 1 exits 0 when HMMER fails on a missing profile set: the build sees it, before any work
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = tool(tmp, "ITSx_broken", "#!/bin/sh\necho 'Error: File existence/permissions problem in trying "
+                                              "to open HMM file F.hmm' >&2\necho 'ERROR! HMMER search terminated "
+                                              "unexpectedly.' >&2\nexit 0\n")
+            failing = tool(tmp, "ITSx_failing", "#!/bin/sh\nexit 1\n")
+            good = tool(tmp, "ITSx_good", "#!/bin/sh\necho 'Preparing HMM database (should be quick)...' >&2\n"
+                                          "exit 0\n")
+            self.assertIn("F.hmm", rrna.check_itsx(broken))
+            self.assertIn("exit 1", rrna.check_itsx(failing))
+            self.assertIsNone(rrna.check_itsx(good))
+            with self.assertRaises(rrna.ItsxError):
+                rrna.run_itsx(["ACGT" * 50], broken)
 
     def test_labels_and_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,6 +101,32 @@ class UnitTest(unittest.TestCase):
         b = a[:500] + ("A" if a[500] != "A" else "C") + a[501:]  # 99.9% identical: one type
         c = "".join(random.Random(3).choice("ACGT") for _ in range(1000))
         self.assertEqual(rrna.types_of([a, a, b, c]), {a: 1, b: 1, c: 2})
+
+
+class PartialTest(unittest.TestCase):
+    def test_species_clades_limit_the_package(self):
+        # --species (a trial build): the genus Saccharomyces and Candida albicans, as taxids or a file; a strain's
+        # taxid is inside its species' clade; the collected genomes, copies, features and taxids of the rest left out
+        import eukdb_build  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            eukdetect = fx.world(tmp)[0]
+            ncbi = ncbi_mod.Ncbi(os.path.join(eukdetect, "taxdump.tar.gz"))
+            listed = os.path.join(tmp, "clades.txt")
+            with open(listed, "w") as fh:
+                fh.write("# trial\n4930\t# Saccharomyces\n5476\n")
+            self.assertEqual(eukdb_build.clades(listed), {4930, 5476})
+            self.assertEqual(eukdb_build.clades("4930,5476"), {4930, 5476})
+            self.assertIsNone(eukdb_build.clades(None))
+            inside = eukdb_build.inside_of(ncbi, {4930, 5476})
+            self.assertEqual([inside(t) for t in (559292, 4932, "5476", 28985, None, "-")],
+                             [True, True, True, False, False, False])
+            self.assertTrue(eukdb_build.inside_of(ncbi, None)(28985))
+            collected = dict(genomes={"A": dict(species_taxid=4932), "B": dict(species_taxid=28985)},
+                             copies={"A": {"1at2759": "ACGT"}, "B": {"1at2759": "ACGT"}},
+                             features=[dict(accession="A"), dict(accession="B")], taxids={559292, 28985})
+            got = eukdb_build.subset(collected, inside)
+            self.assertEqual((set(got["genomes"]), set(got["copies"]), [f["accession"] for f in got["features"]],
+                              got["taxids"]), ({"A"}, {"A"}, ["A"], {559292}))
 
 
 class RunTest(unittest.TestCase):

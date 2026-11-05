@@ -9,7 +9,8 @@ on the sequence as the package holds it, unless named `genome_*` (1-based, inclu
 
 ## manifest.json
 `format` (1), `version` (`YYYY.MM`), `built` (ISO time), `inputs` (each source with its version, URL and MD5s, and the
-date of NCBI's tables and taxdump), `counts` (species, genomes, copies, records), and `files`: every file of the
+date of NCBI's tables and taxdump; `inputs.partial.species_clades` in a trial package limited to those clades, which
+a user should not take for EUKDB), `counts` (species, genomes, copies, records), and `files`: every file of the
 package with `[bytes, md5]`. The manifest is written last: a package without one is unfinished.
 
 ## taxonomy/

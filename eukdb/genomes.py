@@ -188,7 +188,7 @@ def run(args):
     if settings.get("rrna"):
         try:
             rrna = settings["rrna"](path, job, tmp)
-        except (OSError, ValueError, EOFError) as e:
+        except (OSError, ValueError, EOFError, RuntimeError) as e:  # RuntimeError: barrnap's, ITSx's
             shutil.rmtree(tmp, ignore_errors=True)
             return acc, None, f"rRNA extraction failed: {e}"
     summary = {"accession": acc, "why": job["why"], "copies_taken": taken, "rrna": rrna,

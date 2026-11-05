@@ -57,6 +57,19 @@ class BarrnapError(RuntimeError):
     pass
 
 
+class ItsxError(RuntimeError):
+    pass
+
+
+def check_itsx(itsx, threads=2):
+    """Why ITSx cannot be used (it fails on a short sequence, every profile set searched), or None."""
+    try:
+        run_itsx(["ACGTTGCA" * 40], itsx, threads)
+    except (ItsxError, OSError) as e:
+        return str(e)
+    return None
+
+
 def barrnap_gff(barrnap, fasta, threads=1):
     command = [barrnap, "--kingdom", "euk", "--threads", str(threads), "--quiet", fasta]
     run = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -157,11 +170,13 @@ def units_of(seq, feats):
                 def at(x1, x2):  # a feature's [start, end) on the unit
                     return (x1 - a, x2 - a + 1) if fwd else (b - x2, b - x1 + 1)
 
-                regions = [("18S",) + at(start, end), ("5.8S",) + at(f58[0], f58[1]), ("28S",) + at(f28[0], f28[1])]
-                regions += [("5S",) + at(f[0], f[1]) for f in five]
-                r18, r58 = regions[0], regions[1]
-                regions.insert(1, ("ITS1", r18[2], r58[1]))
-                regions.insert(3, ("ITS2", r58[2], regions[3][1]))
+                r18, r58 = ("18S",) + at(start, end), ("5.8S",) + at(f58[0], f58[1])
+                r28 = ("28S",) + at(f28[0], f28[1])
+                # barrnap's 28S model can reach back over the 5.8S (Drosophila's units): the 28S starts after it
+                r28 = ("28S", max(r28[1], r58[2]), r28[2])
+                regions = [r18, ("ITS1", r18[2], r58[1]), r58, r28] + [("5S",) + at(f[0], f[1]) for f in five]
+                if r28[1] > r58[2]:
+                    regions.insert(3, ("ITS2", r58[2], r28[1]))
                 item.update(unit=unit, regions=sorted(regions, key=lambda r: r[1]), lsu_complete=not f28[3],
                             its=unit[max(0, r18[2] - 300):min(len(unit), r58[2] + 3300)],
                             its_at=max(0, r18[2] - 300))
@@ -181,9 +196,13 @@ def run_itsx(stretches, itsx, threads=1):
                 if s not in names:
                     names[s] = f"u{len(names)}"
                     fh.write(f">{names[s]}\n{s}\n")
-        subprocess.run([itsx, "-i", fasta, "-o", prefix, "-t", "all", "--cpu", str(max(1, threads)), "--save_regions",
-                        "none", "--preserve", "T", "--complement", "F", "--graphical", "F", "--summary", "F"],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run = subprocess.run([itsx, "-i", fasta, "-o", prefix, "-t", "all", "--cpu", str(max(1, threads)),
+                              "--save_regions", "none", "--preserve", "T", "--complement", "F", "--graphical", "F",
+                              "--summary", "F"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        # ITSx with --cpu over 1 exits 0 when HMMER fails on a profile set (a damaged ITSx_db): its stderr tells
+        if run.returncode or "ERROR" in run.stderr:
+            lines = [x for x in run.stderr.splitlines() if "rror" in x or "not found" in x]
+            raise ItsxError(f"ITSx failed (exit {run.returncode}): {' | '.join(lines[:4]) or run.stderr[-300:]}")
         found = {}
         if os.path.isfile(prefix + ".positions.txt"):
             with open(prefix + ".positions.txt") as fh:

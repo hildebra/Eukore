@@ -45,6 +45,10 @@ stage prunes `OUT/genomes` to `--keep_gb` (the model species first, then the sma
 or holds on fewer than 20 loci (~1,700 genomes, ~735 GB gzipped). Each genome's results go into
 `WORK/done/<accession>/`, so a rerun continues where the last one stopped.
 
+`--species 4930,7227,...` (NCBI taxids, or a file of one per line) builds a trial package of the species inside those
+clades alone: the genome set, the exon models, the published rRNA and the package are limited to them, and the
+manifest's `inputs.partial` names the clades. The sources are fetched whole all the same.
+
 A package is checked against its manifest by `eukdb.package.check(folder, deep=True)` (None when whole).
 
 protal takes a package with `scripts/download_ref_data.py --eukdb OUT/EUKDB_<version>`.
