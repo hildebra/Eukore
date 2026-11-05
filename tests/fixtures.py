@@ -233,17 +233,24 @@ VSEARCH = '''#!/usr/bin/env python3
 difference for those of one length), written to --userout (query, target, id), self hits left out."""
 import sys
 args = sys.argv[1:]
-q, out = args[args.index("--usearch_global") + 1], args[args.index("--userout") + 1]
-seqs, name = {}, None
-for line in open(q):
-    if line.startswith(">"):
-        name = line[1:].strip()
-        seqs[name] = ""
-    else:
-        seqs[name] += line.strip()
+q, db, out = (args[args.index(o) + 1] for o in ("--usearch_global", "--db", "--userout"))
+
+
+def read(path):
+    seqs, name = {}, None
+    for line in open(path):
+        if line.startswith(">"):
+            name = line[1:].strip()
+            seqs[name] = ""
+        else:
+            seqs[name] += line.strip()
+    return seqs
+
+
+seqs, targets = read(q), read(db)
 with open(out, "w") as fh:
     for a, s in seqs.items():
-        for b, t in seqs.items():
+        for b, t in targets.items():
             if a == b:
                 continue
             n = max(len(s), len(t))

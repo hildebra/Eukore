@@ -492,12 +492,14 @@ def finish(records, ncbi, vsearch=None, threads=1):
         for name, part in items:
             type_of[name] = types[part]
     own = own_species(records, ncbi, vsearch, threads)
+    from . import screen as screen_mod  # noqa: PLC0415
+    screened, _counts = screen_mod.screen(records, ncbi, vsearch, threads)
     out = []
     for name, seq, row in records:
         row = dict(row, record=name, length=len(seq), regions=regions_text(row.get("regions_list")),
                    lsu_complete="t" if row.get("lsu_complete") else "f", ambiguous=f"{ambiguous(seq):.4f}",
                    homopolymer=homopolymer(seq), type=type_of.get(name, "-"), own_species=own.get(name, "-"),
-                   screen=row.get("screen", "-"))
+                   screen=screened.get(name, "-"))
         out.append((name, seq, row))
     return sorted(out, key=lambda r: (int(r[2]["species_taxid"]), r[0]))
 

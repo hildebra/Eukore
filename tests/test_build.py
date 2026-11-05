@@ -4,7 +4,7 @@ EUKARYOME read's NCBI taxid by its species name, else its genus's; the record ch
 (stand-in miniprot and barrnap: its locus placed whole over 16 kb, its operon over 8,191 bases whole) and the package
 written from it and the test world, read back and checked.
 
-    python3 -m unittest discover -s EUKDBbuild/tests -t EUKDBbuild/tests
+    python3 -m unittest discover -s tests -t tests
 """
 
 import gzip

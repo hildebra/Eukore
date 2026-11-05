@@ -1,0 +1,13 @@
+# tiara alone (bioconda's pins numba 0.52, which conda-forge no longer has; PyPI's needs a Python of 3.9 or older and
+# PyTorch): micromamba create -f envs/tiara.yaml; the build takes it with
+# --tiara <MAMBA_ROOT_PREFIX>/envs/eukdb-tiara/bin/tiara
+name: eukdb-tiara
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - pip
+  - pytorch-cpu
+  - numba
+  - pip:
+      - tiara

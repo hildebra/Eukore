@@ -208,6 +208,65 @@ def tiara_classes(windows_fasta, tiara, threads=1, folder=None):
     return out
 
 
+FCS_COLUMNS = ("window", "start", "end", "action", "division", "top_taxon")
+
+
+def fcs_screen(work, accession, taxid, gx_db, run_gx="run_gx", threads=1):
+    """NCBI's FCS-GX on a done genome's windows (since 2026-11-05; run_gx of bioconda's ncbi-fcs-gx, its database of
+    ~470 GB best in /dev/shm): each range it calls another organism's -> WORK/done/<accession>/fcs.tsv (FCS_COLUMNS:
+    the window, the range on it 1-based, FCS-GX's action EXCLUDE/TRIM/FIX/REVIEW, its division and top taxon) -> the
+    ranges, or None where it could not run (no windows, run_gx failed)."""
+    folder = done_dir(work, accession)
+    windows = os.path.join(folder, "windows.fna.gz")
+    if not os.path.isfile(windows):
+        return None
+    import tempfile  # noqa: PLC0415
+    with tempfile.TemporaryDirectory(dir=folder) as tmp:
+        names, fasta = {}, os.path.join(tmp, "w.fna")
+        with gzip.open(windows, "rt") as src, open(fasta, "w") as out:
+            for line in src:  # short ids: FCS-GX reads NCBI-style ids with | as fields
+                if line.startswith(">"):
+                    names[f"w{len(names)}"] = line[1:].strip()
+                    out.write(f">w{len(names) - 1}\n")
+                else:
+                    out.write(line)
+        run = subprocess.run([run_gx, "--fasta", fasta, "--tax-id", str(taxid), "--gx-db", gx_db, "--out-dir", tmp],
+                             capture_output=True, text=True, check=False,
+                             env=dict(os.environ, GX_NUM_CORES=str(max(1, threads))))
+        report = next((os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith("fcs_gx_report.txt")), None)
+        if run.returncode != 0 or report is None:
+            return None
+        ranges = []
+        with open(report) as fh:
+            for line in fh:
+                if line.startswith("#") or not line.strip():
+                    continue
+                f = line.rstrip("\n").split("\t")
+                if len(f) >= 5 and f[0] in names:
+                    ranges.append(dict(window=names[f[0]], start=int(f[1]), end=int(f[2]), action=f[4],
+                                       division=f[5] if len(f) > 5 else "-", top_taxon=f[7] if len(f) > 7 else "-"))
+    path = os.path.join(folder, "fcs.tsv")
+    with open(util.part_of(path), "w", newline="\n") as fh:
+        fh.write("\t".join(FCS_COLUMNS) + "\n")
+        fh.writelines("\t".join(str(r[c]) for c in FCS_COLUMNS) + "\n" for r in ranges)
+    os.replace(util.part_of(path), path)
+    return ranges
+
+
+def fcs_of_copy(ranges, locus, contig, start, end):
+    """The FCS-GX call over a copy (its contig span, 1-based): ACTION:division:taxon of the first range on its window
+    overlapping it, or "-"."""
+    for r in ranges:
+        name = r["window"].split("|")
+        if len(name) < 3 or name[0] != locus or name[1] != contig:
+            continue
+        w1 = int(name[2].split("-")[0])
+        a, b = w1 + r["start"] - 1, w1 + r["end"] - 1
+        if a <= int(end) and b >= int(start):
+            return f"{r['action']}:{r['division']}:{r['top_taxon']}"
+    return "-"
+
+
 def run(args):
     """One genome (a job of jobs(), with settings): fetched into settings["genomes"] unless there (or settings
     "staged_only": not fetched, left for a later run), its euk30 loci called (loci.call with odb's queries for its

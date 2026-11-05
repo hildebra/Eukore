@@ -4,7 +4,7 @@ one over it loses bases from its introns' middles in proportion to their lengths
 either end; the features say where every exon, intron and cut is, on either strand, and give the genome back; the
 exons joined are the coding sequence; soft-masked intron runs are N; exons alone over the cap keep their best window.
 
-    python3 -m unittest discover EUKDBbuild/tests
+    python3 -m unittest discover -s tests -t tests
 """
 
 import os

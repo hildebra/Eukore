@@ -6,7 +6,7 @@ ranking; a species without an assembly from its records; --species. One genome's
 folder, then the package (format 2): genomes, copies whole, copies.tsv with the checks across species, features,
 species, manifest; the prune.
 
-    python3 -m unittest discover -s EUKDBbuild/tests -t EUKDBbuild/tests
+    python3 -m unittest discover -s tests -t tests
 """
 
 import functools
@@ -138,6 +138,33 @@ class RunTest(unittest.TestCase):
             size = os.path.getsize(genomes.genome_file(genomes_dir, YEAST))
             kept = genomes.prune(genomes_dir, work, size, set(), {YEAST})
             self.assertEqual(sorted(kept), sorted([(YEAST, size, "kept"), (other, size, "deleted")]))
+
+
+class FcsTest(unittest.TestCase):
+    def test_fcs_gx_on_the_windows(self):
+        # run_gx's stand-in: a TRIM of 1,000-3,000 on the first window (its report beside the FASTA it was given)
+        with tempfile.TemporaryDirectory() as tmp:
+            work = os.path.join(tmp, "work")
+            folder = genomes.done_dir(work, YEAST)
+            os.makedirs(folder)
+            with gzip.open(os.path.join(folder, "windows.fna.gz"), "wt") as fh:
+                fh.write(">1at2759|c1|1001-61000\n" + "A" * 60000 + "\n>2at2759|c1|9001-70000\n" + "C" * 61000 + "\n")
+            run_gx = fx.tool(tmp, "run_gx", "#!/bin/sh\nwhile [ $# -gt 0 ]; do case $1 in --out-dir) out=$2;; "
+                                            "--tax-id) t=$2;; esac; shift; done\n"
+                                            "printf '#seq_id\\tstart_pos\\tend_pos\\tseq_len\\taction\\tdiv\\t"
+                                            "agg_cont_cov\\ttop_tax_name\\nw0\\t1000\\t3000\\t60000\\tTRIM\\t"
+                                            "prok:CFB group bacteria\\t3\\tBacteroides\\n' "
+                                            "> $out/w.$t.fcs_gx_report.txt\n")
+            ranges = genomes.fcs_screen(work, YEAST, 559292, "/db/gxdb/all", run_gx)
+            self.assertEqual([(r["window"], r["action"]) for r in ranges], [("1at2759|c1|1001-61000", "TRIM")])
+            self.assertTrue(os.path.isfile(os.path.join(folder, "fcs.tsv")))
+            # the range is 2,000-4,000 on the contig: a copy over it flagged, one elsewhere or another locus not
+            self.assertEqual(genomes.fcs_of_copy(ranges, "1at2759", "c1", 3500, 5000),
+                             "TRIM:prok:CFB group bacteria:Bacteroides")
+            self.assertEqual(genomes.fcs_of_copy(ranges, "1at2759", "c1", 5000, 6000), "-")
+            self.assertEqual(genomes.fcs_of_copy(ranges, "2at2759", "c1", 3500, 5000), "-")
+            failing = fx.tool(tmp, "run_gx_fail", "#!/bin/sh\nexit 3\n")
+            self.assertIsNone(genomes.fcs_screen(work, YEAST, 559292, "/db", failing))
 
 
 class QcTest(unittest.TestCase):

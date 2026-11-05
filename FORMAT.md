@@ -70,6 +70,7 @@ newer.
 | `query` | the dataset protein that placed it (`<busco>_<taxid>_<id>`, or an ancestral variant) |
 | `protein_length` | of its translation |
 | `window_class` | tiara's class of the 50 kb around it (`eukarya`, `bacteria`, `archaea`, `organelle`, `unknown`), `-` where not classified |
+| `fcs` | NCBI FCS-GX's call over the copy (`ACTION:division:top taxon`, its action `EXCLUDE`, `TRIM`, `FIX` or `REVIEW`), `-` for none or where not screened |
 | `own_species` | `t`, `f` or `-`: its coding sequence's nearest copies of other species agree with its NCBI lineage to the family or deeper; or share no more than the phylum at 90% or more (another clade's gene: a contaminant, a misidentified genome) |
 | `same_as` | the NCBI taxid of the lowest common ancestor of the species with a copy 99% identical to it, `-` for none |
 | `length_check` | `short`, `long` (its protein in its locus' bottom or top 5%), `ok` |
@@ -102,7 +103,7 @@ A copy failing a check is kept and flagged, so that a user chooses.
 | `ambiguous`, `homopolymer` | the share of non-ACGT bases; the longest one-base run |
 | `type` | its 99% 18S type within the species (`1`, `2`, ...) |
 | `own_species` | `t`, `f`, or `-`: whether its nearest records of other sources agree with its NCBI lineage to the family or deeper (a genome's contaminant rDNA fails) |
-| `screen` | the part screen's verdict: `-`, or the rank a part's nearest records disagree at |
+| `screen` | the part screen's flags: `-`, or `part:rank,...`, each a part (`18S`, `junction`, `28S 5'`, `28S 3'`) whose nearest records of other genomes are another clade's at that rank (`kingdom` .. `family`) |
 | `label_from` | how its taxid was found: `assembly`, `rod_taxid`, `eukaryome_name`, `eukaryome_genus` |
 
 A record that fails a check is kept and flagged, so that a user chooses.

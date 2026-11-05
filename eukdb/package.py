@@ -19,7 +19,7 @@ GENOME_COLUMNS = ("accession", "fetched", "species_taxid", "taxid", "organism", 
                   "contigs", "category", "flags", "ftp", "source", "representative", "loci", "local")
 COPY_COLUMNS = ("accession", "locus", "status", "contig", "contig_length", "start", "end", "strand", "length",
                 "cds_length", "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies",
-                "query", "protein_length", "window_class", "own_species", "same_as", "length_check")
+                "query", "protein_length", "window_class", "fcs", "own_species", "same_as", "length_check")
 FEATURE_COLUMNS = ("accession", "locus", "kind", "start", "end")
 SPECIES_COLUMNS = ("taxid", "name", "representative", "source", "loci", "rrna_records")
 
@@ -78,9 +78,13 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1):
         for f in done_table(work, acc, "features.tsv"):
             features.append(dict(accession=acc, locus=f["locus"], kind=f["kind"], start=int(f["start"]),
                                  end=int(f["end"])))
+        from .genomes import done_dir, fcs_of_copy  # noqa: PLC0415
+        fcs = [dict(f, start=int(f["start"]), end=int(f["end"])) for f in done_table(work, acc, "fcs.tsv")]
+        screened = os.path.isfile(os.path.join(done_dir(work, acc), "fcs.tsv"))
         for r in done_table(work, acc, "loci.tsv"):
             if r["status"] != "Missing":
-                copy_rows.append(dict(r, accession=acc))
+                copy_rows.append(dict(r, accession=acc, fcs=fcs_of_copy(fcs, r["locus"], r["contig"], r["start"],
+                                                                         r["end"]) if screened else "-"))
         for other in job.get("others", ()):
             o = by_accession.get(other)
             if o and other not in genomes:

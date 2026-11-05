@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Build EUKDB, the standalone eukaryote reference (FORMAT.md; since 2026-11-05).
 
-    python3 EUKDBbuild/eukdb_build.py --work WORK --out OUT -t 16                 # all stages on a node with internet
-    python3 EUKDBbuild/eukdb_build.py --work WORK --out OUT --stage fetch -t 8    # a cluster: the node with internet,
-    python3 EUKDBbuild/eukdb_build.py --work WORK --out OUT --stage process -t 32 #   then any node (nothing fetched),
-    python3 EUKDBbuild/eukdb_build.py --work WORK --out OUT --stage package       #   then the package
+    python3 eukdb_build.py --work WORK --out OUT -t 16                 # all stages on a node with internet
+    python3 eukdb_build.py --work WORK --out OUT --stage fetch -t 8    # a cluster: the node with internet,
+    python3 eukdb_build.py --work WORK --out OUT --stage process -t 32 #   then any node (nothing fetched),
+    python3 eukdb_build.py --work WORK --out OUT --stage package       #   then the package
 
 Stages:
 - fetch: the sources into WORK/sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
@@ -32,6 +32,7 @@ from eukdb import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sour
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
 NO_ASSEMBLY = os.path.join(sources.DATA, "no_assembly.fna.gz")
+PUBLISHED_BATCH = 250  # published reads a barrnap + ITSx run
 
 
 def say(text):
@@ -97,7 +98,7 @@ def settings_of(opts, src_dir, ncbi, staged_only):
     folder = odb_mod.folder_of(src_dir)
     odb = odb_mod.Odb(folder, sources.read_loci_table())
     hmm_db = odb.hmm_db(os.path.join(opts.work, "euk30_loci.hmm"))
-    tiara = None if opts.no_tiara else shutil.which("tiara")
+    tiara = None if opts.no_tiara else shutil.which(opts.tiara)
     return dict(work=opts.work, genomes=opts.genomes, miniprot=opts.miniprot, hmmsearch=opts.hmmsearch,
                 threads=opts.threads_per_genome, staged_only=staged_only, odb=folder, loci=odb.loci, hmm_db=hmm_db,
                 odb_lineages=odb_mod.species_lineages(odb, ncbi), tiara=tiara,
@@ -155,9 +156,10 @@ def published(opts, src_dir, ncbi):
                   key=lambda r: (r[2], r[0]))
     if todo and shutil.which("barrnap"):
         say(f"published reads: {len(todo)} to annotate (barrnap, ITSx)")
-        batches = [todo[i:i + 2000] for i in range(0, len(todo), 2000)]
+        # small batches over every thread: barrnap (nhmmer) runs one thread a batch and dominates (~0.5 s a read)
+        batches = [todo[i:i + PUBLISHED_BATCH] for i in range(0, len(todo), PUBLISHED_BATCH)]
         work = functools.partial(_annotate_batch, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"))
-        with multiprocessing.Pool(max(1, opts.jobs)) as pool, open(cache, "a", newline="\n") as fh:
+        with multiprocessing.Pool(max(1, opts.threads)) as pool, open(cache, "a", newline="\n") as fh:
             for got in pool.imap_unordered(work, batches):
                 for name, (regions, complete) in got.items():
                     known[name] = (regions, complete)
@@ -230,8 +232,14 @@ def main(argv=None):
                                      "comma-separated or a file of one per line; the manifest records them")
     p.add_argument("--miniprot", default="miniprot")
     p.add_argument("--hmmsearch", default="hmmsearch")
-    p.add_argument("--no_tiara", action="store_true", help="do not classify the windows around the copies (tiara, "
-                                                           "where installed)")
+    p.add_argument("--fcs_gx_db", help="NCBI FCS-GX's database (the gxdb folder's prefix, ~470 GB, best copied to "
+                                       "/dev/shm; a node of ~512 GB): the package stage screens each genome's windows "
+                                       "around its copies (copies.tsv's fcs)")
+    p.add_argument("--run_gx", default="run_gx", help="FCS-GX's runner (bioconda's ncbi-fcs-gx)")
+    p.add_argument("--tiara", default="tiara", help="tiara, which classifies the windows around the copies (default: "
+                                                    "tiara on the PATH, else none; envs/tiara.yaml's, as it needs a "
+                                                    "Python of 3.9 or older)")
+    p.add_argument("--no_tiara", action="store_true", help="do not classify the windows around the copies")
     p.add_argument("-t", "--threads", type=int, default=8)
     p.add_argument("-j", "--jobs", type=int, default=None, help="genomes at a time (default threads / 4)")
     opts = p.parse_args(argv)
@@ -281,6 +289,16 @@ def main(argv=None):
             say(f"{len(waiting)} genomes not fetched yet, {len(failed)} failed (e.g. {(waiting + failed)[:3]}): the "
                 "package waits for them (run again; --stage fetch first on a cluster)")
             return 0 if opts.stage == "process" else 1
+    if opts.stage in ("all", "package") and opts.fcs_gx_db:
+        todo = [a for a in sorted(job_map) if genomes.is_done(opts.work, a)
+                and not os.path.isfile(os.path.join(genomes.done_dir(opts.work, a), "fcs.tsv"))]
+        say(f"FCS-GX: {len(todo)} genomes' windows to screen ({opts.fcs_gx_db})")
+        failed = 0
+        for i, acc in enumerate(todo, 1):
+            got = genomes.fcs_screen(opts.work, acc, job_map[acc]["taxid"], opts.fcs_gx_db, opts.run_gx, opts.threads)
+            failed += got is None
+            if i % max(1, len(todo) // 20) == 0 or i == len(todo):
+                say(f"  {i}/{len(todo)} screened ({failed} failed)")
     if opts.stage in ("all", "package"):
         vsearch = shutil.which("vsearch")
         collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads)

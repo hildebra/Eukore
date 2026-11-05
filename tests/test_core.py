@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Tests of EUKDB's core modules: the NCBI taxonomy and its subset (written into a package and read back the same for
-the package's taxa), NCBI's assembly tables read, the model species table; and that EUKDBbuild imports nothing
-from protal's scripts/.
+the package's taxa), NCBI's assembly tables read, the model species table.
 
-    python3 -m unittest discover EUKDBbuild/tests
+    python3 -m unittest discover -s tests -t tests
 """
 
-import ast
 import os
 import sys
 import tempfile
@@ -46,28 +44,6 @@ class CoreTest(unittest.TestCase):
         self.assertIn("Homo sapiens", {r["species"] for r in species.eukaryotes(rows)})
         self.assertTrue(os.path.isfile(species.UNITS))
         self.assertEqual(len(sources.read_loci_table()), 30)
-
-    def test_self_contained(self):
-        # EUKDBbuild imports nothing from protal's scripts/ (its modules import each other relatively); outside
-        # protal's repository there is nothing to check
-        if not os.path.isdir(os.path.join(os.path.dirname(os.path.dirname(HERE)), "scripts", "mini_db")):
-            self.skipTest("not inside protal's repository")
-        protal ={os.path.splitext(f)[0] for d in ("scripts", os.path.join("scripts", "mini_db"))
-                  for f in os.listdir(os.path.join(os.path.dirname(os.path.dirname(HERE)), d)) if f.endswith(".py")}
-        folder = os.path.join(os.path.dirname(HERE), "eukdb")
-        for name in os.listdir(folder):
-            if not name.endswith(".py"):
-                continue
-            with open(os.path.join(folder, name)) as fh:
-                tree = ast.parse(fh.read())
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    bad = [a.name for a in node.names if a.name.split(".")[0] in protal]
-                elif isinstance(node, ast.ImportFrom) and node.level == 0:
-                    bad = [node.module] if (node.module or "").split(".")[0] in protal else []
-                else:
-                    continue
-                self.assertEqual(bad, [], f"eukdb/{name} imports {bad} from protal's scripts/")
 
 
 if __name__ == "__main__":

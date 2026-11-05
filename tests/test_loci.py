@@ -5,7 +5,7 @@ alignments one region; a region confirmed by its locus' HMM at the cutoff; a loc
 regions), Fragmented (a short HMM alignment) or Missing; the copy whole on its own strand with its exons and introns, its
 soft-masked and low-complexity runs; the windows around it.
 
-    python3 -m unittest discover -s EUKDBbuild/tests -t EUKDBbuild/tests
+    python3 -m unittest discover -s tests -t tests
 """
 
 import gzip

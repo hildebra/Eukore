@@ -5,8 +5,8 @@ in EUKDB (since 2026-11-05). EukDetect2 took them from EukProt's genomes and tra
 Dientamoeba fragilis' transcriptome; NCBI has no assembly of them. The build calls the loci in these records as in a
 genome (loci.py), which gives them exon models and the same checks as every other copy.
 
-    python3 EUKDBbuild/tools/no_assembly_records.py --eukdetect2 DIR --assemblies WORK/sources/ncbi_assemblies \\
-        --taxdump WORK/sources/taxdump.tar.gz [--out EUKDBbuild/data/no_assembly.fna.gz]
+    python3 tools/no_assembly_records.py --eukdetect2 DIR --assemblies WORK/sources/ncbi_assemblies \\
+        --taxdump WORK/sources/taxdump.tar.gz [--out data/no_assembly.fna.gz]
 
 Records: >species taxid|organism|EukDetect2 record (its locus in it); one per EukDetect2 record of the species, of
 every BUSCO EukDetect2 holds (the caller keeps the loci it calls). Records naming no species (EukDetect2's copies

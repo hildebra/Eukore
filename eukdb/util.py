@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""EUKDB's small helpers (since 2026-11-05; copied here so that EUKDBbuild imports nothing from protal's scripts/):
+"""EUKDB's small helpers (since 2026-11-05; copied here so that EUKDB imports nothing from protal's scripts/):
 compressed files (zstd or gzip, as protal's scripts/compressed.py), a writer's temporary name, MD5s, downloads.
 
 open_write(path) writes zstd if the name ends in .zst, gzip if in .gz (a trailing .partial does not count), plain
