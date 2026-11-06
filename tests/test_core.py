@@ -61,6 +61,36 @@ class CoreTest(unittest.TestCase):
             self.assertEqual(len(list(rrna.contigs(path))), 5)
 
 
+class FetchTest(unittest.TestCase):
+    def test_scratch_and_a_checker_process(self):
+        # a whole gzip file and one cut short (its announced length right): the check, in a process of its own,
+        # keeps the cut one out; the .part files stay in the scratch folder, none is left anywhere
+        import concurrent.futures, functools, gzip, http.server, multiprocessing, threading  # noqa: E401, PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            served, out, scratch = (os.path.join(tmp, d) for d in ("served", "out", "scratch"))
+            for d in (served, out, scratch):
+                os.makedirs(d)
+            whole = gzip.compress(os.urandom(1 << 16))
+            with open(os.path.join(served, "whole.fna.gz"), "wb") as fh:
+                fh.write(whole)
+            with open(os.path.join(served, "cut.fna.gz"), "wb") as fh:
+                fh.write(whole[:len(whole) // 2])
+            quiet = type("Quiet", (http.server.SimpleHTTPRequestHandler,), {"log_message": lambda *a: None})
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(quiet, directory=served))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            url = f"http://127.0.0.1:{server.server_address[1]}/"
+            with concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as checker:
+                got = {name: util.fetch_file(url + name, os.path.join(out, name), attempts=1, scratch=scratch,
+                                             checker=checker) for name in ("whole.fna.gz", "cut.fna.gz")}
+            server.shutdown()
+            self.assertEqual(got["whole.fna.gz"], "")
+            self.assertTrue(got["cut.fna.gz"].startswith("EOFError"), got)
+            self.assertEqual(sorted(os.listdir(out)), ["whole.fna.gz"])
+            self.assertEqual(os.listdir(scratch), [])
+            with open(os.path.join(out, "whole.fna.gz"), "rb") as fh:
+                self.assertEqual(fh.read(), whole)
+
+
 class ProgressTest(unittest.TestCase):
     def test_reports_every_interval_with_the_time_left(self):
         # four genomes of 1, 1, 2 and 4 Gb; a report every 600 s; a Gb takes 100 s

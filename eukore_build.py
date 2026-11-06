@@ -433,6 +433,9 @@ def main(argv=None):
     p.add_argument("--downloads", type=int, default=8,
                    help="the fetch stage's genomes and annotations downloaded at a time (default 8; one NCBI "
                         "connection gives ~10 MB/s)")
+    p.add_argument("--scratch", help="the fetch stage's unfinished downloads (.part files) and their gzip checks, e.g. "
+                                     "a node's local disk or a scratch file system without backups; each file is "
+                                     "copied into OUT/genomes once whole (default: beside it)")
     p.add_argument("--report_minutes", type=float, default=util.REPORT_EVERY / 60,
                    help="minutes between progress reports of the genomes' downloads and runs: genomes left, time left "
                         "(default 10)")
@@ -475,10 +478,16 @@ def main(argv=None):
         progress = util.Progress("genomes fetched", [j.get("size") or 0 for j in todo], say, opts.report_minutes * 60,
                                  early=[s for s in util.REPORT_EARLY if s < opts.report_minutes * 60])
         fetched = 0
+        # each download's gzip check in a process of its own (a core apart from the downloads' threads; spawned, as
+        # a process with threads is not forked), its .part file in --scratch
+        checker = concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"))
+        how = {"scratch": opts.scratch, "checker": checker}
+        if opts.scratch:
+            os.makedirs(opts.scratch, exist_ok=True)
 
         def fetch_genome(j):
             path = genomes.genome_file(opts.genomes, j["accession"])
-            why = genomes.fetch_genome(j, path)
+            why = genomes.fetch_genome(j, path, **how)
             return j, why, 0 if why else os.path.getsize(path)
 
         for done in at_a_time(fetch_genome, todo, downloads):
@@ -495,13 +504,15 @@ def main(argv=None):
         say(f"fetching {len(todo):,} genomes' annotations (the first of {', '.join(annotation.SOURCES)} that has one) "
             f"into {opts.genomes}")
         progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1)
-        get = functools.partial(annotation.fetch, genomes_folder=opts.genomes, veupathdb_key=opts.veupathdb_key)
+        get = functools.partial(annotation.fetch, genomes_folder=opts.genomes,
+                                veupathdb_key=opts.veupathdb_key, **how)
         for done in at_a_time(get, todo, downloads):
             try:
                 done.result()
                 progress.step(1)
             except OSError as e:
                 progress.step(1, failed=True, note=f" ({e})")
+        checker.shutdown()
         return 0
     if shutil.which("barrnap") and shutil.which("ITSx"):
         why = rrna.check_itsx(shutil.which("ITSx"))

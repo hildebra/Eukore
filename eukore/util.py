@@ -174,12 +174,22 @@ def open_text(path):
     return open(path)
 
 
-def fetch_file(url, dest, attempts=None, gzip_check=True, headers=None):
+def gzip_whole(path):
+    """Reads a gzip file to its end: raises (EOFError, OSError, zlib.error) where it is cut short or damaged."""
+    with gzip.open(path, "rb") as gz:
+        while gz.read(1 << 22):
+            pass
+
+
+def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=None, headers=None):
     """Downloads url to dest: "" if it arrived whole (the length it announced, and, a gzip file, gzip reads it to its end),
     else why not. A missing file ("not found") or another refusal (HTTP 4xx but 429) is not asked for again; other
     failures are (ATTEMPTS times), after growing waits, or as long as the server asks (Retry-After, a minute at most).
-    headers: the request's others (an API key's)."""
-    why, part, asked = "", dest + ".part", 0.0
+    scratch: the folder of the download's .part file (eukore_build.py --scratch: dest's storage then gets the whole
+    file once, written in one go), else beside dest; checker: a process pool the gzip check runs in (a core of its own),
+    else this thread; headers: the request's others (an API key's)."""
+    why, asked = "", 0.0
+    part = os.path.join(scratch, os.path.basename(dest) + ".part") if scratch else dest + ".part"
     for attempt in range(attempts or ATTEMPTS):
         if attempt:
             time.sleep(max(RETRY_WAIT * 2 ** (attempt - 1), asked))
@@ -193,10 +203,16 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, headers=None):
                 why = f"{os.path.getsize(part)} of {expected} bytes arrived"
                 continue
             if gzip_check and dest.endswith(".gz"):
-                with gzip.open(part, "rb") as gz:
-                    while gz.read(1 << 22):
-                        pass
-            os.replace(part, dest)
+                if checker:
+                    checker.submit(gzip_whole, part).result()
+                else:
+                    gzip_whole(part)
+            if scratch:  # another file system: copied beside dest, then renamed into place
+                shutil.copyfile(part, dest + ".part")
+                os.replace(dest + ".part", dest)
+                os.remove(part)
+            else:
+                os.replace(part, dest)
             return ""
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -209,8 +225,9 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, headers=None):
                 asked = min(60.0, float(retry))
         except (OSError, EOFError, http.client.HTTPException, zlib.error) as e:
             why = f"{type(e).__name__}: {e}"
-    if os.path.exists(part):
-        os.remove(part)
+    for left in {part, dest + ".part"}:
+        if os.path.exists(left):
+            os.remove(left)
     return why
 
 
