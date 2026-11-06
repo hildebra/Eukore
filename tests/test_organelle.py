@@ -155,6 +155,25 @@ class JoinTest(unittest.TestCase):
         a = dict(start=15200, end=16000, q1=1, q2=800, strand="+")
         b = dict(start=1, end=800, q1=801, q2=1600, strand="+")
         self.assertEqual(organelle.collinear(a, [a, b]), [a])
+        # one turn on (across_origin), the second half follows the first: the gene joined across the origin, its
+        # start after its end, its sequence the molecule's end then its start
+        chain = organelle.collinear(a, [a, b] + organelle.across_origin([a, b], 16000))
+        self.assertEqual([(h["start"], h["q1"]) for h in chain], [(15200, 1), (16001, 801)])
+        self.assertEqual(organelle.gene_span(chain, "+", 1600, 16000), (15200, 800))
+        rng = random.Random(8)
+        molecule = "".join(rng.choice("ACGT") for _ in range(16000))
+        gene = molecule[15199:] + molecule[:800]
+        self.assertEqual(organelle.subsequence(molecule, 15200, 800, "+"), gene)
+        # on the minus strand: the gene's first half at the molecule's start, its second at its end
+        m_a = dict(start=1, end=800, q1=1, q2=800, strand="-")
+        m_b = dict(start=15200, end=16000, q1=801, q2=1600, strand="-")
+        chain = organelle.collinear(m_a, [m_a, m_b] + organelle.across_origin([m_a, m_b], 16000))
+        self.assertEqual(organelle.gene_span(chain, "-", 1600, 16000), (15200, 800))
+        self.assertEqual(organelle.subsequence(molecule, 15200, 800, "-"), rrna.revcomp(gene))
+        # a gene inside the molecule: as before, its ends clipped to the molecule
+        inside = dict(start=100, end=900, q1=11, q2=800, strand="+")
+        self.assertEqual(organelle.gene_span([inside], "+", 800, 16000), (90, 900))
+        self.assertEqual(organelle.gene_span([dict(inside, start=5, end=805)], "+", 800, 16000), (1, 805))
         # a gene's exons in order on either strand, a concatemer's next copy (the query again) left out
         c = dict(start=17000, end=17800, q1=801, q2=1600, strand="+")
         again = dict(start=18000, end=18800, q1=1, q2=800, strand="+")

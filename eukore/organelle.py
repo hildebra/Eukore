@@ -424,24 +424,40 @@ def nhmmer_genes(molecules, queries, nhmmer, threads=1):
     out = {}
     for gene, gene_hits in by_gene.items():
         best = max(gene_hits, key=lambda h: (h["score"], h["target"], -h["start"]))
-        same = collinear(best, [h for h in gene_hits if (h["target"], h["query"], h["strand"]) ==
-                                (best["target"], best["query"], best["strand"])])
+        seq = seqs[best["target"]]
+        mine = [h for h in gene_hits if (h["target"], h["query"], h["strand"]) ==
+                (best["target"], best["query"], best["strand"])]
+        same = collinear(best, mine + across_origin(mine, len(seq)))
         q_len = q_lens[best["query"]]
         covered = set()
         for h in same:
             covered.update(range(h["q1"], h["q2"] + 1))
-        seq = seqs[best["target"]]
-        q_first, q_last = min(h["q1"] for h in same), max(h["q2"] for h in same)
-        start, end = min(h["start"] for h in same), max(h["end"] for h in same)
-        lead, tail = q_first - 1, q_len - q_last  # the query's ends the hits leave out: the gene reaches them
-        if best["strand"] == "+":
-            start, end = max(1, start - lead), min(len(seq), end + tail)
-        else:
-            start, end = max(1, start - tail), min(len(seq), end + lead)
+        start, end = gene_span(same, best["strand"], q_len, len(seq))
         out[gene] = dict(gene=gene, organelle=organelle, seqid=best["target"], start=start, end=end,
                          strand=best["strand"], exons=len(same), copies=1, partial=len(covered) < MIN_COVER * q_len,
                          sequence=subsequence(seq, start, end, best["strand"]))
     return out
+
+
+def across_origin(hits, length):
+    """Hits of a molecule of `length` bases as they lie one turn on and one back (its coordinates + and - length): a
+    circular molecule opened inside a gene holds the gene's other end at its start (collinear chains them; until
+    2026-11-06 such a gene was its half by the origin, partial)."""
+    return [dict(h, start=h["start"] + k, end=h["end"] + k) for k in (length, -length) for h in hits]
+
+
+def gene_span(chain, strand, q_len, length):
+    """A gene's (start, end) on its molecule, 1-based, from its chained hits (collinear's; coordinates beyond the
+    molecule where the chain crosses its origin), reaching the query's ends the hits leave out: start after end where
+    it crosses the origin (subsequence joins it), else clipped to the molecule."""
+    q_first, q_last = min(h["q1"] for h in chain), max(h["q2"] for h in chain)
+    start, end = min(h["start"] for h in chain), max(h["end"] for h in chain)
+    lead, tail = q_first - 1, q_len - q_last  # the query's ends the hits leave out: the gene reaches them
+    start, end = (start - lead, end + tail) if strand == "+" else (start - tail, end + lead)
+    crossing = any(h["start"] < 1 or h["end"] > length for h in chain)
+    if crossing and end - start + 1 < length:  # across the origin: each end back on the molecule
+        return (start + length if start < 1 else start), (end - length if end > length else end)
+    return max(1, start), min(length, end)
 
 
 def assembly_file(work_folder, accession):
