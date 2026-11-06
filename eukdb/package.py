@@ -1,6 +1,7 @@
-"""EUKDB's package (FORMAT.md; format 2 since 2026-11-05: EUKDB's own locus calls in NCBI's genomes; format 4 since
-2026-11-05: every BUSCO of the dataset, in busco/, with busco/loci.tsv), written from the build's genome set and work
-folder, read and checked by its users (protal's converter).
+"""EUKDB's package (FORMAT.md; format 2 since 2026-11-05: EUKDB's own locus calls in NCBI's genomes; format 3 since
+2026-11-05: the organelle genes; format 4 since 2026-11-05: every BUSCO of the dataset, in busco/, with
+busco/loci.tsv), written from the build's genome set and work folder, read and checked by its users (protal's
+converter).
 """
 
 import collections
@@ -23,7 +24,7 @@ COPY_COLUMNS = ("accession", "locus", "status", "contig", "contig_length", "star
                 "cds_length", "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies",
                 "query", "protein_length", "window_class", "fcs", "own_species", "same_as", "length_check")
 FEATURE_COLUMNS = ("accession", "locus", "kind", "start", "end")
-SPECIES_COLUMNS = ("taxid", "name", "representative", "source", "loci", "rrna_records")
+SPECIES_COLUMNS = ("taxid", "name", "representative", "source", "loci", "rrna_records", "organelle_genes")
 
 
 def _tsv(path, columns, rows):
@@ -143,13 +144,14 @@ def loci_rows(loci, collected, ncbi):
     return out, [f"call_{name}" for name in sorted(sizes)]
 
 
-def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None):
+def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None, organelle=None):
     """The package into `out` (written beside it and renamed into place; the manifest last) -> its folder.
     loci: the BUSCOs called ([{locus, name, cutoff, hmm_length}], in the dataset's order); rrna: (records [(name,
-    sequence, row dict of records.tsv)]) or None."""
+    sequence, row dict of records.tsv)]) or None; organelle: the organelle genes' records (organelle.collect) or
+    None."""
     part = util.part_of(out)
     shutil.rmtree(part, ignore_errors=True)
-    for sub in ("taxonomy", "busco/copies", "rrna"):
+    for sub in ("taxonomy", "busco/copies", "rrna", "organelle"):
         os.makedirs(os.path.join(part, sub))
     genomes = collected["genomes"]
     local = set()
@@ -180,20 +182,26 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
         rrna_mod.write_records(os.path.join(part, "rrna"), rrna)
         for _name, _seq, row in rrna:
             n_records[int(row["species_taxid"])] += 1
+    from . import organelle as organelle_mod  # noqa: PLC0415
+    organelle = organelle or []
+    organelle_mod.write_genes(os.path.join(part, "organelle"), organelle)
+    n_organelle = collections.Counter(int(row["species_taxid"]) for _n, _s, row in organelle)
     rows = []
     for acc, r in sorted(genomes.items(), key=lambda kv: int(kv[1]["species_taxid"])):
         if r["representative"] != "t":
             continue
         sp = int(r["species_taxid"])
         rows.append(dict(taxid=sp, name=ncbi.name.get(sp, r["organism"]), representative=acc, source=r["source"],
-                         loci=r["loci"], rrna_records=n_records.get(sp, 0)))
+                         loci=r["loci"], rrna_records=n_records.get(sp, 0), organelle_genes=n_organelle.get(sp, 0)))
     held = {int(r["taxid"]) for r in rows}
     rows += [dict(taxid=sp, name=ncbi.name.get(sp, str(sp)), representative="-", source="rrna", loci=0,
-                  rrna_records=n) for sp, n in sorted(n_records.items()) if sp not in held]
+                  rrna_records=n, organelle_genes=n_organelle.get(sp, 0))
+             for sp, n in sorted(n_records.items()) if sp not in held]
     _tsv(os.path.join(part, "species.tsv"), SPECIES_COLUMNS, rows)
     taxa = ncbi.write_subset(os.path.join(part, "taxonomy"),
                              set(collected["taxids"]) | {int(r["species_taxid"]) for r in genomes.values()} |
-                             set(n_records) | ({int(row["taxid"]) for _n, _s, row in rrna} if rrna else set()))
+                             set(n_records) | ({int(row["taxid"]) for _n, _s, row in rrna} if rrna else set()) |
+                             {int(row["taxid"]) for _n, _s, row in organelle})
     files = {}
     for dirpath, _dirs, names in os.walk(part):
         for name in sorted(names):
@@ -205,7 +213,11 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                 "counts": {"species": sum(1 for r in rows if r["representative"] != "-"),
                            "species_rrna_only": sum(1 for r in rows if r["representative"] == "-"),
                            "genomes": len(genomes), "copies": sum(len(c) for c in copies.values()),
-                           "copy_status": dict(statuses), "rrna_records": sum(n_records.values()), "taxa": taxa},
+                           "copy_status": dict(statuses), "rrna_records": sum(n_records.values()),
+                           "organelle_genes": {k: dict(collections.Counter(row["gene"] for _n, _s, row in organelle
+                                                                           if row["organelle"] == k))
+                                               for k in organelle_mod.KINDS},
+                           "species_organelle_genes": len(n_organelle), "taxa": taxa},
                 "files": dict(sorted(files.items()))}
     with open(os.path.join(part, MANIFEST), "w", newline="\n") as fh:
         json.dump(manifest, fh, indent=1)
@@ -245,8 +257,7 @@ def check(folder, deep=False):
 
 def read_table(folder, name):
     """A package table (genomes.tsv, species.tsv, busco/loci.tsv, busco/copies.tsv, busco/features.tsv,
-    rrna/records.tsv) -> [row
-    dicts]."""
+    rrna/records.tsv, organelle/genes.tsv) -> [row dicts]."""
     with util.open_text(os.path.join(folder, name)) as fh:
         head = fh.readline().rstrip("\n").split("\t")
         return [dict(zip(head, line.rstrip("\n").split("\t"))) for line in fh if line.strip()]

@@ -70,8 +70,8 @@ def check_itsx(itsx, threads=2):
     return None
 
 
-def barrnap_gff(barrnap, fasta, threads=1):
-    command = [barrnap, "--kingdom", "euk", "--threads", str(threads), "--quiet", fasta]
+def barrnap_gff(barrnap, fasta, threads=1, kingdom="euk"):
+    command = [barrnap, "--kingdom", kingdom, "--threads", str(threads), "--quiet", fasta]
     run = subprocess.run(command, capture_output=True, text=True, check=False)
     if run.returncode != 0:
         raise BarrnapError(f"barrnap failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")

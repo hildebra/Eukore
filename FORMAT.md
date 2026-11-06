@@ -1,18 +1,20 @@
 # EUKDB package format, version 4
 
-EUKDB is a standalone eukaryote reference. It holds every BUSCO gene of eukaryota_odb12 and the rDNA operons of every eukaryote
-species with an NCBI genome, complete (genes with all their introns, operons uncut) and checked. Its taxonomy is NCBI's,
-tied to no GTDB release and no KSGP version. A user of the package (protal's build) takes what it needs (protal: the
-30 BUSCOs of its euk30, chosen by `busco/loci.tsv`'s figures) and converts it: naming, length limits, masking,
-record cuts. Paths below are relative to the package folder, `EUKDB_<YYYY.MM>/`. A
+EUKDB is a standalone eukaryote reference. It holds every BUSCO gene of eukaryota_odb12 and the rDNA operons of every
+eukaryote species with an NCBI genome, complete (genes with all their introns, operons uncut) and checked, and the
+species' mitochondrial and plastid rRNA and mitochondrial COX1 where NCBI has them. Its taxonomy is NCBI's, tied to no
+GTDB release and no KSGP version. A user of the package (protal's build) takes what it needs (protal: the 30 BUSCOs of
+its euk30, chosen by `busco/loci.tsv`'s figures) and converts it: naming, length limits, masking, record cuts. Paths
+below are relative to the package folder, `EUKDB_<YYYY.MM>/`. A
 `.tsv` has a header line, tab-separated columns and no quoting. `-` means "none". Coordinates are 0-based, end
 excluded, on the sequence as the package holds it, unless they are a contig's (1-based, inclusive).
 
 ## manifest.json
 `format` (4), `version` (`YYYY.MM`), `built` (ISO time), `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
-EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5;
-`inputs.partial.species_clades` in a trial package limited to those clades, which a user should not take for EUKDB),
-`counts` (species, species with rRNA alone, genomes, copies and their calls, rRNA records, taxa), and `files`: every
+EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
+organelle release files' MD5s (`refseq_organelle`); `inputs.partial.species_clades` in a trial package limited to those
+clades, which a user should not take for EUKDB), `counts` (species, species with rRNA alone, genomes, copies and their
+calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa), and `files`: every
 file of the package with `[bytes, md5]`. The manifest is written last: a package without one is unfinished.
 
 ## taxonomy/
@@ -30,6 +32,7 @@ One row per NCBI species the package holds:
 | `source` | `ncbi` (NCBI's genome of the species by EUKDB's ranking), `model` (a model species' reference), `no_assembly` (records of a species NCBI has no assembly of), `rrna` (rRNA records alone) |
 | `loci` | BUSCO genes called in its genome |
 | `rrna_records` | its records in `rrna/records.tsv` |
+| `organelle_genes` | its records in `organelle/genes.tsv` |
 
 ## genomes.tsv
 The species' genomes and their other assemblies:
@@ -122,6 +125,31 @@ A copy failing a check is kept and flagged, so that a user chooses.
 
 A record that fails a check is kept and flagged, so that a user chooses.
 
+## organelle/
+Each species' mitochondrial rRNA, plastid rRNA and mitochondrial COX1, where NCBI has them. Of each organelle, a
+species' genes come from one source: its RefSeq organelle genome (the one with the most of these genes, then of the
+species' own taxid, then the longest), else the organelle molecules of its own assembly (those NCBI's FASTA titles
+name a mitochondrion, chloroplast, plastid or apicoplast).
+- `genes.fna.gz`: one record per gene, `>record`, the gene from its first base to its last on its strand, introns and
+  all, upper case.
+- `genes.tsv`:
+
+| column | |
+|---|---|
+| `record` | its name: `<seqid>_<gene>` |
+| `gene` | `SSU` (12S in animals' mitochondria, 16S in plastids, 18S in plants' mitochondria, ...), `LSU` (16S in animals' mitochondria, 23S, 26S, ...), `5S`, `COX1` |
+| `organelle` | `mitochondrion` or `plastid` (chloroplasts, apicoplasts and other plastids) |
+| `taxid`, `species_taxid` | NCBI's |
+| `source` | `refseq` (RefSeq's organelle genome, its annotated features) or `assembly` (the species' assembly: each gene by nhmmer with that gene of the 3 nearest RefSeq species, its exons joined; rRNA nhmmer misses by barrnap, `--kingdom mito` in animals' mitochondria, `bac` elsewhere) |
+| `seqid` | the organelle sequence (RefSeq's accession, or the assembly's molecule) |
+| `accession` | its assembly (`genomes.tsv`), `-` for RefSeq's |
+| `start`, `end`, `strand` | on `seqid` (1-based, inclusive); `start` after `end` where the gene crosses a circular genome's origin |
+| `length` | of the record |
+| `exons` | RefSeq's feature's parts (a COX1's exons), or the nhmmer hits joined; 1 for barrnap's |
+| `copies` | the gene's copies on the source (a plastid's inverted repeat: 2): the record is the first, or barrnap's longest whole hit |
+| `partial` | `t` where RefSeq marks the feature partial, barrnap's hit is partial, or nhmmer's hits cover under 80% of the query's exons |
+| `ambiguous` | the share of non-ACGT bases |
+
 ## genomes/ (beside the package, optional)
 The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz`, as NCBI serves them). `genomes.tsv`'s
 `local` column names them. A user simulating eukaryotes, or a host, takes them from here instead of downloading them.
@@ -132,6 +160,8 @@ The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz
   a species; `busco/copies.tsv` with the calls and checks; `features.tsv` without `method`, `protein`, `identity` and
   `coverage` (in `copies.tsv`), with `soft_masked` and `low_complexity`; copies unmasked; `genomes.tsv` with `fetched`
   and `flags`; `species.tsv`'s `source` in place of `sources`, and species with rRNA alone.
-- 3 (2026-11-05): the organelle genes (`organelle/`; see that change's notes).
+- 3 (2026-11-05): `organelle/` (mitochondrial and plastid rRNA, mitochondrial COX1); `species.tsv`'s
+  `organelle_genes`; the manifest's `inputs.refseq_organelle` and organelle counts.
 - 4 (2026-11-05): every BUSCO gene of the dataset, not the 30 of euk30 (the user picks its loci); `euk30/` renamed
-  `busco/`; `busco/loci.tsv` of each BUSCO's calls over the package's species, in place of the euk30 loci table.
+  `busco/`; `busco/loci.tsv` of each BUSCO's calls over the package's species, in place of the euk30 loci table;
+  `taxonomy/nodes.tsv`'s `gencode`.

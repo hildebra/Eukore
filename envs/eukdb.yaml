@@ -9,7 +9,7 @@ dependencies:
   - python>=3.12
   - zstd                 # zstd files where the Python is older than 3.14
   - miniprot>=0.18       # the euk30 loci placed (eukdb/loci.py: --trans)
-  - hmmer>=3.4           # hmmsearch: the loci confirmed by BUSCO's HMMs
+  - hmmer>=3.4           # hmmsearch: the loci confirmed by BUSCO's HMMs; nhmmer: the assemblies' organelle genes
   - barrnap              # the genomes' and published reads' rRNA genes
   - itsx                 # ITS1/5.8S/ITS2/28S borders (the build refuses an incomplete ITSx_db)
   - vsearch              # the checks across species and the part screen
