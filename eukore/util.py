@@ -50,6 +50,7 @@ import collections  # noqa: E402
 import datetime  # noqa: E402
 import hashlib  # noqa: E402
 import os  # noqa: E402
+import re  # noqa: E402
 import socket  # noqa: E402
 import time  # noqa: E402
 import urllib.error  # noqa: E402
@@ -98,16 +99,37 @@ def open_text(path):
 CURL = shutil.which("curl")
 
 
-def curl_get(url, path):
+def curl_get(url, path, check=None):
     """url into path by curl (a stall of a minute is a failure; a transfer cut short of its announced length curl's own
-    error): raises urllib.error.HTTPError (a status of 400 or more) or OSError (curl failed)."""
-    run = subprocess.run([CURL, "-sS", "-L", "-A", USER_AGENT, "--connect-timeout", "60", "-y", "60", "-Y", "1024",
-                          "-o", path, "-w", "%{http_code}", url], capture_output=True, text=True)
-    if run.returncode:
-        raise OSError(f"curl exit {run.returncode}: {run.stderr.strip()}")
-    code = int(run.stdout.strip() or 0)
-    if code >= 400:
-        raise urllib.error.HTTPError(url, code, f"HTTP {code}", None, None)
+    error): raises urllib.error.HTTPError (a status of 400 or more) or OSError (curl failed). check: a gzip tool
+    (GZIP_TEST) whose -t reads the transfer as it arrives, curl | tee path | check -t: the file is not read again
+    (2026-11-06: the check of each file read back from --scratch, one at a time, held 16 downloads to ~75 MB/s)."""
+    command = [CURL, "-sS", "-L", "--fail", "-A", USER_AGENT, "--connect-timeout", "60", "-y", "60", "-Y", "1024", url]
+    pipe = subprocess.PIPE
+    if not check:
+        run = subprocess.run(command + ["-o", path], stdout=subprocess.DEVNULL, stderr=pipe)
+        code, err = run.returncode, run.stderr
+    else:
+        curl = subprocess.Popen(command, stdout=pipe, stderr=pipe)
+        tee = subprocess.Popen(["tee", path], stdin=curl.stdout, stdout=pipe, stderr=pipe)
+        curl.stdout.close()  # tee's alone: curl stops where tee does
+        test = subprocess.Popen([check, "-t"], stdin=tee.stdout, stdout=subprocess.DEVNULL, stderr=pipe)
+        tee.stdout.close()
+        test_err = test.communicate()[1]
+        tee_err = tee.communicate()[1]
+        code, err = curl.wait(), curl.stderr.read()
+        curl.stderr.close()
+    err = err.decode(errors="replace").strip()
+    if code == 22:  # --fail: an HTTP status of 400 or more, in curl's message
+        status = re.search(r"error: (\d{3})", err)
+        if status:
+            raise urllib.error.HTTPError(url, int(status.group(1)), err, None, None)
+    if code:
+        raise OSError(f"curl exit {code}: {err}")
+    if check and tee.returncode:
+        raise OSError(f"tee exit {tee.returncode}: {tee_err.decode(errors='replace').strip()}")
+    if check and test.returncode:
+        raise OSError(f"{os.path.basename(check)} -t: {test_err.decode(errors='replace').strip() or test.returncode}")
 
 
 # fetch_file's gzip check where there: ISA-L's igzip (conda-forge isa-l, apt isal; ~3.5x Python's zlib, 2026-11-06,
@@ -136,7 +158,7 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
     asks (Retry-After, a minute at most; urllib's alone).
     scratch: the folder of the download's .part file (eukore_build.py --scratch: dest's storage then gets the whole
     file once, written in one go), else beside dest; checker: a process pool the gzip check runs in (a core of its own),
-    else this thread; times: a dict (a Counter) its seconds of transfer, check (with its wait for the checker) and
+    else this thread, where it is not checked as it arrives (curl and GZIP_TEST there: curl_get); times: a dict (a Counter) its seconds of transfer, check (with its wait for the checker) and
     copy (from scratch) are added to, and the bytes of the file it placed."""
     why, asked = "", 0.0
     times = collections.Counter() if times is None else times
@@ -150,8 +172,10 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
         asked = 0.0
         try:
             expected, started = None, time.monotonic()
+            # by curl and a gzip tool: the check as it arrives (curl_get), in the transfer's time
+            streamed = bool(gzip_check and dest.endswith(".gz") and CURL and GZIP_TEST)
             if CURL:
-                curl_get(url, part)
+                curl_get(url, part, GZIP_TEST if streamed else None)
             else:
                 request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
                 with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as fh:
@@ -162,7 +186,7 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
                 why = f"{os.path.getsize(part)} of {expected} bytes arrived"
                 continue
             started = time.monotonic()
-            if gzip_check and dest.endswith(".gz"):
+            if gzip_check and dest.endswith(".gz") and not streamed:
                 if checker:
                     checker.submit(gzip_whole, part, GZIP_TEST).result()
                 else:
