@@ -87,6 +87,20 @@ class ProgressTest(unittest.TestCase):
         q.step(None)
         self.assertIn("~10s left", said[-1])
 
+    def test_early_reports_then_every_interval(self):
+        # the downloads' first reports at 1, 2, 3, 5 and 8 minutes, then every 10; an item finishing every 30 s
+        now, said = [0.0], []
+        p = util.Progress("genomes fetched", [1] * 100, said.append, every=600, clock=lambda: now[0],
+                          early=util.REPORT_EARLY)
+        at = []
+        for _ in range(60):
+            now[0] += 30
+            n = len(said)
+            p.step(1)
+            if len(said) > n:
+                at.append(now[0])
+        self.assertEqual(at, [60, 120, 180, 300, 480, 1080, 1680])
+
 
 if __name__ == "__main__":
     unittest.main()

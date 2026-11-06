@@ -216,6 +216,7 @@ def fetch_file(url, dest, attempts=None, gzip_check=True):
 # --- progress of a long loop (since 2026-11-06: the genomes' downloads and runs) ----------------------------------
 
 REPORT_EVERY = 600  # seconds between progress reports (eukore_build.py --report_minutes)
+REPORT_EARLY = (60, 120, 180, 300, 480)  # the genomes' downloads' first reports, seconds in: is the rate right?
 
 
 def duration(seconds):
@@ -231,9 +232,10 @@ class Progress:
     """A long loop's progress, said every `every` seconds (after the item that passes it) and at its end: items done,
     failed and left, the work left, the time so far, the time left and when it should end. weights: each item's share
     of the work (a genome's size), so that the time left follows the work left, not the count of items; an item
-    without one weighs the median. clock: time.time (a test's own)."""
+    without one weighs the median. early: seconds in of the first reports (REPORT_EARLY), `every` seconds apart after
+    the last of them. clock: time.time (a test's own)."""
 
-    def __init__(self, what, weights, say, every=REPORT_EVERY, unit="Gb", scale=1e9, clock=time.time):
+    def __init__(self, what, weights, say, every=REPORT_EVERY, unit="Gb", scale=1e9, clock=time.time, early=()):
         known = sorted(w for w in weights if w)
         typical = known[len(known) // 2] if known else 1
         self.weights = [w or typical for w in weights]
@@ -241,6 +243,7 @@ class Progress:
         self.total = sum(self.weights)
         self.n, self.done, self.failed, self.skipped, self.worked = len(self.weights), 0, 0, 0, 0.0
         self.started = self.last = clock()
+        self.early = sorted(early)
 
     def step(self, weight, failed=False, skipped=False, note=""):
         """One item finished (weight: its own; skipped: no work done, e.g. a genome not fetched yet, its work out of
@@ -254,8 +257,11 @@ class Progress:
         else:
             self.worked += weight
         now = self.clock()
-        if now - self.last >= self.every or self.done == self.n:
+        due = now - self.started >= self.early[0] if self.early else now - self.last >= self.every
+        if due or self.done == self.n:
             self.last = now
+            while self.early and now - self.started >= self.early[0]:
+                self.early.pop(0)
             self.say(self.line(now) + note)
 
     def line(self, now=None):

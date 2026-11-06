@@ -141,8 +141,8 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   - RefSeq's organelle genomes (mitochondrion and plastid);
   - PR2 5.1.1's taxonomy (5 MB) and KSGP 4.0's (243 MB; not with `--ksgp_tax`).
 
-  Then it fetches each species' genome into `OUT/genomes` (its RefSeq copy where it has one). Every 10 minutes
-  (`--report_minutes`) it says the genomes fetched, failed and left, the Gb left, the download rate and the time
+  Then it fetches each species' genome into `OUT/genomes` (its RefSeq copy where it has one). After 1, 2, 3, 5 and
+  8 minutes, then every 10 (`--report_minutes`), it says the genomes fetched, failed and left, the Gb left, the download rate and the time
   left, estimated by the genomes' sizes; the process stage reports its genomes alike. Beside each genome it fetches
   NCBI's gene models (a GFF: RefSeq's or a GenBank submitter's) and the assembly report, but for the genomes whose
   assembly summary gives no protein-coding genes (a 404 or a GFF without coding sequences: no annotation); the process stage takes a BUSCO copy's model from it where the HMM confirms it
