@@ -8,7 +8,8 @@
 
 Stages:
 - fetch: the sources into WORK/sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
-  BUSCO's eukaryota_odb12, EUKARYOME 2.1, ROD v1.2, RefSeq's organelle genomes), then each species' genome
+  BUSCO's eukaryota_odb12, EUKARYOME 2.1, ROD v1.2, RefSeq's organelle genomes, NCBI's FCS-GX and ANI reports, which
+  rank the genomes: eukdb/quality.py), then each species' genome
   (genomes.jobs) into OUT/genomes;
 - process: each genome's BUSCO genes called and its rRNA extracted (WORK/done/<accession>/); a genome not fetched yet
   waits for the next run; then the organelle genes (mitochondrial and plastid rRNA, mitochondrial COX1) of RefSeq's
@@ -33,6 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from eukdb import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
 from eukdb import organelle as organelle_mod  # noqa: E402
+from eukdb import quality  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
 NO_ASSEMBLY = os.path.join(sources.DATA, "no_assembly.fna.gz")
@@ -62,6 +64,7 @@ def fetch_sources(src_dir, groups):
     for name in ("EUKARYOME", "ROD"):
         sources.fetch(src_dir, name, sources.download, shutil.which("7za") or shutil.which("7z") or "7za", say)
     organelle_mod.fetch(src_dir, sources.download, say)
+    quality.fetch(src_dir, sources.download, say)
 
 
 def tables(src_dir, kind, groups):
@@ -91,7 +94,11 @@ def plan(opts, src_dir, ncbi):
     """The genome set -> (jobs, GenBank rows)."""
     assemblies = sources.read_assemblies(tables(src_dir, "genbank", opts.groups))
     refseq_rows = sources.read_assemblies(tables(src_dir, "refseq", opts.groups))
-    no_assembly = genomes.no_assembly_genomes(NO_ASSEMBLY, os.path.join(opts.work, "no_assembly"), ncbi)
+    if quality.paths(src_dir):
+        say(f"NCBI's FCS-GX and ANI reports: {quality.annotate(assemblies, refseq_rows, src_dir)} assemblies flagged")
+    else:
+        say("WARNING: no NCBI FCS-GX or ANI reports (--stage fetch fetches them): genomes ranked without them")
+    no_assembly =genomes.no_assembly_genomes(NO_ASSEMBLY, os.path.join(opts.work, "no_assembly"), ncbi)
     job_map = genomes.jobs(ncbi, assemblies, refseq_rows, species.eukaryotes(species.read_table()), opts.inside,
                            no_assembly)
     say(f"genome set: {len(job_map)} genomes ({dict(genomes.why_counts(job_map.values()))}); "
@@ -358,6 +365,7 @@ def main(argv=None):
                   "assembly_tables": {os.path.basename(p): util.md5(p)
                                       for p in sorted(glob.glob(os.path.join(src_dir, "ncbi_assemblies", "*.txt")))},
                   "groups": opts.groups, "no_assembly": util.md5(NO_ASSEMBLY) if os.path.isfile(NO_ASSEMBLY) else None,
+                  "ncbi_quality": {os.path.basename(p): util.md5(p) for p in quality.paths(src_dir)},
                   "refseq_organelle": {os.path.basename(p): util.md5(p)
                                        for p in organelle_mod.release_files(src_dir) if os.path.isfile(p)}}
         if wanted is not None:

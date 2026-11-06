@@ -8,9 +8,10 @@ fungi, protozoa, plant, invertebrate, vertebrate_mammalian, vertebrate_other), b
 - not one NCBI flags as contaminated, of an unverified source organism, misassembled, chimeric or of low quality
   (EXCLUDE: never taken); one with another flag (NCBI's: too large or small for its species, a metagenome's, a
   single cell's, ...; "partial genome": NCBI's genome_rep; SMALL: under a quarter of its clade's typical genome) only
-  where the species has nothing better;
-- then a RefSeq reference, then a representative genome; then the better assembly level; then the fewer contigs per
-  megabase; then the newer.
+  where the species has nothing better; NCBI's own FCS-GX and ANI reports add their flags (quality.py: mostly another
+  organism, a failed species check, never; contaminated, an inconclusive check, demoted);
+- then a RefSeq reference, then a representative genome; then the better assembly level; then one FCS-GX finds no
+  contaminant in; then the fewer contigs per megabase; then the newer.
 A model species (data/model_species.tsv) takes its reference assembly whatever the ranking (why "model"). Where a
 genome has a RefSeq copy (gbrs_paired_asm), that copy is fetched: RefSeq screens eukaryote genomes for contamination
 (FCS-GX) before it takes them. A species with no assembly takes its records in data/no_assembly.fna.gz (why
@@ -30,9 +31,10 @@ import subprocess
 
 from . import loci as loci_mod
 from . import odb as odb_mod
-from . import placement, species, util
+from . import placement, quality, species, util
 
-EXCLUDE = {"contaminated", "unverified source organism", "misassembled", "chimeric", "low quality sequence"}
+EXCLUDE = {"contaminated", "unverified source organism", "misassembled", "chimeric", "low quality sequence"} \
+    | quality.EXCLUDE
 # NCBI's interspecies hybrids ("Saccharomyces cerevisiae x Saccharomyces eubayanus") have species rank: their genomes
 # hold both parents' copies of nearly every locus (the 2026-11-05 trial: 24-30 of 30 Duplicated), and their reads are
 # their parents'. A named hybrid species (Saccharomyces pastorianus) stays, its duplicated loci flagged.
@@ -58,8 +60,8 @@ def rank(row):
     size_mb = (row.get("size") or 0) / 1e6
     per_mb = (row.get("contigs") or 1 << 20) / max(size_mb, 1.0)
     return (bool(flags), row.get("category") == "derived from metagenome", CATEGORY.get(row.get("refseq_category"), 2),
-            LEVEL.get(row.get("level"), 4), per_mb, -int(re.sub(r"\D", "", row.get("date") or "") or 0),
-            row["accession"])
+            LEVEL.get(row.get("level"), 4), bool(row.get("fcs_bp")), per_mb,
+            -int(re.sub(r"\D", "", row.get("date") or "") or 0), row["accession"])
 
 
 def representatives(assemblies, ncbi, inside=None):

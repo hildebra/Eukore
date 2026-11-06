@@ -30,11 +30,19 @@ compleasm does. EukDetect1 and EukDetect2 were its sources of copies (30 loci) u
    (`eukdb/genomes.py`):
    - never one NCBI flags as contaminated, of an unverified source organism, misassembled, chimeric or of low
      quality;
-   - another flagged one, or a metagenome's, only without better. EUKDB adds two flags: `partial genome` (NCBI's
-     `genome_rep`) and `small for its clade`, an assembly under a quarter of the typical genome of its genus (else
-     family, else order): a part of the genome, whatever NCBI calls it;
-   - then a RefSeq reference, then a representative genome; then the better assembly level, fewer contigs per
-     megabase, newer.
+   - never one that NCBI's own FCS-GX screen finds mostly another organism's (50% or more), or that fails NCBI's ANI
+     species check (Saccharomycotina against their type strains; `eukdb/quality.py`);
+   - another flagged one, or a metagenome's, only without better. EUKDB adds its flags: `partial genome` (NCBI's
+     `genome_rep`); `small for its clade`, an assembly under a quarter of the typical genome of its genus (else
+     family, else order): a part of the genome, whatever NCBI calls it; `FCS-GX: contaminated` (1% or more
+     contaminant, or 100 kb or more of another eukaryote's sequence); `ANI: inconclusive`;
+   - then a RefSeq reference, then a representative genome; then the better assembly level, one FCS-GX finds no
+     contaminant in, fewer contigs per megabase, newer.
+
+   On NCBI's tables and reports of 2026-11-05/06, NCBI's reports changed 249 species' genomes (189 contaminated, 28
+   inconclusive ANI, 29 contaminant-free of two equal, 3 mostly foreign) and left out 24 species whose only genomes are
+   another organism's (5 *Azolla* ferns' are their cyanobacterium's, *Setophaga vitellina*'s a bacterium's). 1,352
+   species' genomes stay flagged contaminated and 218 inconclusive, having nothing better (`genomes.tsv`'s `flags`).
 
    Its RefSeq copy is fetched where it has one (RefSeq screens eukaryote genomes for contamination). A model species
    (`data/model_species.tsv`) takes its reference assembly. NCBI's placeholder species and interspecies hybrids
@@ -113,6 +121,7 @@ yet.
 | `eukdb/qc.py` | the copies' checks across species |
 | `eukdb/rrna.py`, `eukdb/screen.py` | the rRNA records and their checks; the part screen |
 | `eukdb/organelle.py` | the mitochondrial and plastid rRNA and COX1 |
+| `eukdb/quality.py` | NCBI's FCS-GX and ANI reports, as the genomes' flags |
 | `eukdb/package.py` | collect, write, read and check a package |
 | `eukdb/ncbi.py`, `eukdb/sources.py`, `eukdb/species.py` | NCBI's taxonomy; the sources; the model species |
 | `eukdb/placement.py`, `eukdb/copies.py`, `eukdb/util.py` | genome files; a copy's exons and introns; I/O |
@@ -136,6 +145,7 @@ python3 eukdb_build.py --work WORK --out OUT --stage package --groups fungi,prot
 - **fetch** gets the sources, then the genomes:
   - NCBI's GenBank and RefSeq assembly tables of the `--groups`;
   - NCBI's taxdump;
+  - NCBI's FCS-GX summaries of its GenBank and RefSeq assemblies, and its Saccharomycotina ANI report (~70 MB);
   - BUSCO's eukaryota_odb12;
   - EUKARYOME 2.1 and ROD v1.2;
   - RefSeq's organelle genomes (mitochondrion and plastid).

@@ -12,8 +12,9 @@ excluded, on the sequence as the package holds it, unless they are a contig's (1
 ## manifest.json
 `format` (4), `version` (`YYYY.MM`), `built` (ISO time), `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
-organelle release files' MD5s (`refseq_organelle`); `inputs.partial.species_clades` in a trial package limited to those
-clades, which a user should not take for EUKDB), `counts` (species, species with rRNA alone, genomes, copies and their
+organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`);
+`inputs.partial.species_clades` in a trial package limited to those clades, which a user should not take for EUKDB),
+`counts` (species, species with rRNA alone, genomes, copies and their
 calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa), and `files`: every
 file of the package with `[bytes, md5]`. The manifest is written last: a package without one is unfinished.
 
@@ -44,7 +45,7 @@ The species' genomes and their other assemblies:
 | `species_taxid`, `taxid` | NCBI's |
 | `organism`, `strain` | as NCBI names them |
 | `level`, `genome_size`, `contigs`, `category` | the assembly's (`category`: isolate or derived from metagenome) |
-| `flags` | NCBI's reasons it would not take the assembly into RefSeq (`excluded_from_refseq`), comma-separated |
+| `flags` | NCBI's reasons it would not take the assembly into RefSeq (`excluded_from_refseq`), and NCBI's quality reports' (`FCS-GX: mostly foreign`, `FCS-GX: contaminated`, `ANI: failed`, `ANI: inconclusive`; see below), comma-separated |
 | `ftp` | the assembly's folder on NCBI's FTP server |
 | `source` | as `species.tsv`'s; `assembly` for a further assembly of the species (no copies) |
 | `representative` | `t` for the species' genome |
@@ -52,9 +53,12 @@ The species' genomes and their other assemblies:
 | `local` | the genome's file in the build's kept genomes (`genomes/<accession>.fna.gz` beside the package), `-` where it is not kept |
 
 A species' genome is NCBI's best by EUKDB's ranking: never one NCBI flags as contaminated, of an unverified source
-organism, misassembled, chimeric or of low quality; another flagged one, or a metagenome's, only without better; then
-a RefSeq reference, then a representative genome; then the better assembly level, the fewer contigs per megabase, the
-newer.
+organism, misassembled, chimeric or of low quality, nor one NCBI's FCS-GX screen finds 50% or more another organism's
+(`FCS-GX: mostly foreign`) or that fails NCBI's ANI species check (`ANI: failed`; Saccharomycotina); another flagged
+one, or a metagenome's, only without better (`FCS-GX: contaminated`: 1% or more contaminant, or 100 kb or more of
+another eukaryote's sequence; `ANI: inconclusive`); then a RefSeq reference, then a representative genome; then the
+better assembly level, one FCS-GX finds no contaminant in, the fewer contigs per megabase, the newer. FCS-GX's summary
+is the fetched assembly's (its RefSeq copy where it has one).
 
 ## busco/
 Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) called in every species' genome.
