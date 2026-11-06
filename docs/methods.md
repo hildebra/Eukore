@@ -46,7 +46,9 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
      miniprot finds no seed for many genes with the distant proteins: *Blastocystis hominis* called without its own
      proteins lost 27 of the 98 BUSCOs OrthoDB annotates in it (its genes compact, its introns ~30 bases), though its
      HMMs find 26 of them in its six-frame ORFs, on the right gene. So for each locus still Missing, its HMM is searched
-     in the genome's ORFs (esl-translate, ORFs of 20 residues or more; domains of E-value 1e-3 or less); its best hit
+     in the genome's ORFs (esl-translate, ORFs of 20 residues or more, split at runs of 10 or more X: an assembly
+     gap's Ns, which do not end an ORF and would make it longer than hmmsearch's 100,000 residues; domains of E-value
+     1e-3 or less); its best hit
      and the hits on that contig and strand within 20 kb of it, not overlapping on the HMM, place it and, joined in the
      HMM's order, make a "self" protein (nearly the genome's own). miniprot aligns the locus' queries and the self
      protein on that place and 5 kb each side again, with sensitive seeding (`-k5 -M0 -n1 -l4`, introns as long as the

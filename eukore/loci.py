@@ -59,6 +59,10 @@ WINDOW = 50_000      # a copy's flanks held for a contamination screen (windows.
 # ~30 bp), but the HMM finds them in the six-frame ORFs (26 of the 27 on the right gene). Aligned again on that place
 # with sensitive seeding, 32 missed went to 9 (all on the right gene, spans shorter: median overlap 0.62).
 ORF_MIN = 20                 # esl-translate's shortest ORF (residues)
+# An assembly gap's Ns are X in esl-translate's ORFs, not stops: a gap of ~300 kb made six ORFs over hmmsearch's limit
+# of HMMSEARCH_MAX residues, which aborts it (Takifugu rubripes, 2026-11-06). The ORFs are split at runs of GAP_X X.
+GAP_X = 10
+HMMSEARCH_MAX = 100_000
 RESCUE_DOM_E = 1e-3          # a domain's independent E-value in the ORFs
 RESCUE_JOIN = 20_000         # the hits joined to the best one: on its contig and strand, this far from it
 RESCUE_FLANK = 5_000         # bases each side of the hits' place aligned again
@@ -288,10 +292,43 @@ def confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work):
     return confirmed
 
 
+def orf_pieces(seq, a, b):
+    """An ORF (esl-translate's coords a..b, a > b on the reverse strand) split at its runs of GAP_X or more X (an
+    assembly gap) -> [(piece, a, b)], the pieces of ORF_MIN to HMMSEARCH_MAX residues (hmmsearch's limit)."""
+    step, out, at = (1 if a <= b else -1), [], 0
+    for m in [*re.finditer(f"X{{{GAP_X},}}", seq), None]:
+        end = m.start() if m else len(seq)
+        if ORF_MIN <= end - at <= HMMSEARCH_MAX:
+            out.append((seq[at:end], a + step * 3 * at, a + step * (3 * end - 1)))
+        at = m.end() if m else at
+    return out
+
+
+def split_orfs(lines, out):
+    """esl-translate's FASTA (lines) written to out as orf_pieces' pieces, each on one line: >name.k source=..
+    coords=.. length=.."""
+    def flush(header, seq):
+        name, _, desc = header[1:].partition(" ")
+        kv = dict(x.split("=", 1) for x in desc.split() if "=" in x)
+        a, b = (int(v) for v in kv["coords"].split(".."))
+        out.writelines(f">{name}.{k} source={kv['source']} coords={x}..{y} length={len(p)}\n{p}\n"
+                       for k, (p, x, y) in enumerate(orf_pieces("".join(seq), a, b)))
+    header, seq = None, []
+    for line in lines:
+        if line.startswith(">"):
+            if header:
+                flush(header, seq)
+            header, seq = line.strip(), []
+        else:
+            seq.append(line.strip())
+    if header:
+        flush(header, seq)
+
+
 def orf_hits(target, loci_, odb, table, hmmsearch_bin, threads, work, translate="esl-translate"):
-    """The loci's HMMs in a genome's six-frame ORFs (esl-translate, ORF_MIN residues or more) -> {locus: [dict(contig,
-    strand, start, end (the ORF's span on the contig), score, hmm_from, hmm_to, protein (the domain's envelope on the
-    ORF))]}, the domains of RESCUE_DOM_E or less."""
+    """The loci's HMMs in a genome's six-frame ORFs (esl-translate, ORF_MIN residues or more, split at assembly gaps:
+    split_orfs) -> {locus: [dict(contig, strand, start, end (the ORF's span on the contig), score, hmm_from, hmm_to,
+    protein (the domain's envelope on the ORF))]}, the domains of RESCUE_DOM_E or less."""
     hmm, wanted = os.path.join(work, "rescue.hmm"), set(loci_)
     with open(hmm, "w") as out:
         for locus in loci_:
@@ -300,11 +337,15 @@ def orf_hits(target, loci_, odb, table, hmmsearch_bin, threads, work, translate=
     hits = collections.defaultdict(list)
     for i, part in enumerate(placement.chunks(target, work)):
         orfs, dom = os.path.join(work, f"orfs{i}.faa"), os.path.join(work, f"orfs{i}.dom")
-        with open(orfs, "w") as fh:
-            run = subprocess.run([translate, "-l", str(ORF_MIN), "-c", str(table or 1), part], stdout=fh,
-                                 stderr=subprocess.PIPE, text=True, check=False)
-        if run.returncode != 0:
-            raise RuntimeError(f"esl-translate failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+        err = os.path.join(work, "translate.err")
+        with open(orfs, "w") as fh, open(err, "w") as eh:
+            run = subprocess.Popen([translate, "-l", str(ORF_MIN), "-c", str(table or 1), part],
+                                   stdout=subprocess.PIPE, stderr=eh, text=True)
+            split_orfs(run.stdout, fh)
+            run.stdout.close()
+        if run.wait() != 0:
+            with open(err) as eh:
+                raise RuntimeError(f"esl-translate failed (exit {run.returncode}): {eh.read().strip()[-200:]}")
         run = subprocess.run([hmmsearch_bin, "--cpu", str(max(1, threads)), "--noali", "-o", os.devnull, "--domE",
                               str(RESCUE_DOM_E), "--domtblout", dom, hmm, orfs], capture_output=True, text=True,
                              check=False)
@@ -327,7 +368,7 @@ def orf_hits(target, loci_, odb, table, hmmsearch_bin, threads, work, translate=
                 name, _, desc = line[1:].partition(" ")
                 if name not in found:
                     continue
-                seq = next(lines).strip()  # esl-translate writes an ORF on one line
+                seq = next(lines).strip()  # split_orfs writes an ORF on one line
                 kv = dict(x.split("=", 1) for x in desc.split() if "=" in x)
                 a, b = (int(v) for v in kv["coords"].split(".."))  # a > b on the reverse strand
                 for locus, score, hf, ht, ef, et in found[name]:

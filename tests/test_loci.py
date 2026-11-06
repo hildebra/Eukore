@@ -182,6 +182,48 @@ class LociTest(unittest.TestCase):
                          "Missing")
         self.assertEqual(loci.call(*args, translate="no-such-tool")["loci"]["3at2759"]["status"], "Missing")
 
+    def test_a_gene_rescued_after_an_assembly_gap(self):
+        # a gap of 310 kb of N right before locus 3's gene: six ORFs over hmmsearch's 100,000 residues, split at their
+        # X runs; the gene's piece found and placed (Takifugu rubripes' build failed on such a gap, 2026-11-06)
+        rng = __import__("random").Random(9)
+        pad = "".join(rng.choice("ACGT") for _ in range(400))
+        gene = fx.cds_of(fx.PROTEINS["3at2759"])
+        path = os.path.join(self.dir, "g3.fna.gz")
+        with gzip.open(path, "wt") as fh:
+            fh.write(f">c1 a test contig\n{self.seq + pad + 'N' * 310_000 + gene + pad}\n")
+        start = len(self.seq) + len(pad) + 310_000 + 1
+        queries = fx.QUERIES | {k.replace("1at", "3at"): fx.PROTEINS["3at2759"] for k in fx.QUERIES
+                                if k.startswith("1at")}
+        got = loci.call(path, queries, self.odb, fx.miniprot(self.dir, self.gff), fx.hmmsearch(self.dir), 1, self.dir,
+                        translate=fx.esl_translate(self.dir))
+        self.assertIsNone(got["failed"])
+        three = got["loci"]["3at2759"]
+        self.assertEqual((three["status"], three["rescued"], three["start"], three["end"]),
+                         ("Single", True, start, start + len(gene) - 4))
+        self.assertEqual(got["loci"]["1at2759"]["status"], "Duplicated")
+
+    def test_orfs_split_at_gaps(self):
+        # esl-translate's own output (a contig of 24 bases, 57 N, 42 bases): both strands' coords kept on the pieces
+        text = (">orf2 source=ctg coords=1..120 length=40 frame=1 desc=\n"
+                "MKPGFKPGXXXXXXXXXXXXXXXXXXXKPGFKPGFKPGFK\n"
+                ">orf6 source=ctg coords=123..1 length=41 frame=4 desc=\n"
+                "LFKPGFKPGFKPGFXXXXXXXXXXXXXXXXXXXPGFKPGFH\n")
+        self.assertEqual(loci.orf_pieces("MKPGFKPGXXXXXXXXXXXXXXXXXXXKPGFKPGFKPGFK", 1, 120), [])  # pieces under 20
+        old = loci.ORF_MIN
+        loci.ORF_MIN = 5
+        try:
+            out = __import__("io").StringIO()
+            loci.split_orfs(text.splitlines(True), out)
+        finally:
+            loci.ORF_MIN = old
+        self.assertEqual(out.getvalue(), ">orf2.0 source=ctg coords=1..24 length=8\nMKPGFKPG\n"
+                                         ">orf2.1 source=ctg coords=82..120 length=13\nKPGFKPGFKPGFK\n"
+                                         ">orf6.0 source=ctg coords=123..82 length=14\nLFKPGFKPGFKPGF\n"
+                                         ">orf6.1 source=ctg coords=24..1 length=8\nPGFKPGFH\n")
+        seq = "M" * 30 + "X" * 9 + "M" * 30  # a short run of X (an ambiguous base or two) kept
+        self.assertEqual(loci.orf_pieces(seq, 1, 3 * len(seq)), [(seq, 1, 3 * len(seq))])
+        self.assertEqual(loci.orf_pieces("M" * (loci.HMMSEARCH_MAX + 1), 1, 3 * (loci.HMMSEARCH_MAX + 1)), [])
+
     def test_located(self):
         def hit(start, score, hf, ht, protein, contig="c1", strand="+"):
             return dict(contig=contig, strand=strand, start=start, end=start + 3 * len(protein) - 1, score=score,

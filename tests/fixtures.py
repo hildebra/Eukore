@@ -309,6 +309,8 @@ for line in open(faa):
         proteins[name] = ""
     else:
         proteins[name] += line.strip()
+if any(len(s) > 100000 for s in proteins.values()):  # as hmmsearch 3.4 aborts
+    sys.exit("Target sequence length > 100K, over comparison pipeline limit.")
 LOCI = %r
 with open(dom, "w") as out:
     out.write("# target\\n")
