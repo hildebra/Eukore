@@ -255,6 +255,31 @@ class FatesTest(unittest.TestCase):
                              (["toga2"], "https://t/A2.2bit", [("toga2", "https://t/a.gtf.gz")], False))
             self.assertEqual(genomes.toga2_jobs(ncbi, rows, job_map, groups=("fungi",)), {})
             self.assertEqual(genomes.fates(ncbi, gb, dict(job_map, **got))[6253], "TOGA2's genome")
+            # in place of NCBI's genome where its contig N50 is twice NCBI's or more and its length 90% of it or more
+            par = next(a for a, j in job_map.items() if j["species_taxid"] == 27291)
+            better = [dict(row, accession="TOGA2_P", species_taxid="27291", contig_n50="2000")]
+            ncbi_stats = dict(contig_n50=1000, total_length=10_000)
+            swaps = genomes.prefer_toga2(ncbi, better, job_map, lambda job: ncbi_stats, lambda r: 9_000)
+            self.assertEqual(list(swaps), [par])
+            self.assertEqual((swaps[par]["accession"], swaps[par]["why"], swaps[par]["others"][0]),
+                             ("TOGA2_P", ["toga2"], par))
+            for theirs, length in ((dict(ncbi_stats, contig_n50=1001), 9_000),  # under twice the contig N50
+                                   (ncbi_stats, 8_999),  # contiguous but short: a part of the genome
+                                   (None, 9_000), (ncbi_stats, None)):  # either not known: NCBI's kept
+                self.assertEqual(genomes.prefer_toga2(ncbi, better, job_map, lambda job: theirs, lambda r: length),
+                                 {})
+            stats = os.path.join(tmp, "stats.txt")
+            with open(stats, "w") as fh:
+                fh.write("# Assembly name: x\nall\tall\tall\tall\ttotal-length\t9000\n"
+                         "all\tall\tall\tall\tscaffold-N50\t900\nall\tall\tall\tall\tcontig-N50\t450\n")
+            self.assertEqual(genomes.assembly_stats(stats), dict(contig_n50=450, total_length=9000))
+            self.assertEqual(genomes.stats_url(dict(url="https://x/GCA_1.1_a_genomic.fna.gz")),
+                             "https://x/GCA_1.1_a_assembly_stats.txt")
+            sizes = os.path.join(tmp, "chrom.sizes")
+            with open(sizes, "w") as fh:
+                fh.write("c1\t700\nc2\t300\n")
+            self.assertEqual(genomes.total_length(sizes), 1000)
+            self.assertEqual(genomes.chrom_sizes_url(dict(genome="https://t/G/A/x.2bit")), "https://t/G/A/chrom.sizes")
 
     def test_two_bit_genomes(self):
         # a .2bit of two sequences (version 0, little-endian): N blocks and soft-masked blocks

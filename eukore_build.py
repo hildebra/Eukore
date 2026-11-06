@@ -114,8 +114,27 @@ def plan(opts, src_dir, ncbi):
     no_assembly =genomes.no_assembly_genomes(NO_ASSEMBLY, os.path.join(opts.work, "no_assembly"), ncbi)
     job_map = genomes.jobs(ncbi, assemblies, refseq_rows, species.eukaryotes(species.read_table()), opts.inside,
                            no_assembly)
-    # TOGA2's genomes of the vertebrate species NCBI has none of (DNA Zoo's, Bat1K's), with their gene models
-    job_map.update(genomes.toga2_jobs(ncbi, annotation.read_toga2(src_dir), job_map, opts.inside, opts.groups))
+    # TOGA2's genomes of the vertebrate species NCBI has none of (DNA Zoo's, Bat1K's), with their gene models, and in
+    # place of NCBI's where far more contiguous and as long
+    toga2 = annotation.read_toga2(src_dir)
+    job_map.update(genomes.toga2_jobs(ncbi, toga2, job_map, opts.inside, opts.groups))
+    sizes_dir = os.path.join(src_dir, annotation.INDEX_DIR, "assembly_sizes")
+
+    def kept(url, name):  # a small file of the genome comparison, kept in SRC (the fetch stage's: every stage the same)
+        path = os.path.join(sizes_dir, name)
+        if url and not os.path.isfile(path) and opts.stage in ("all", "fetch"):
+            os.makedirs(sizes_dir, exist_ok=True)
+            util.fetch_file(url, path, gzip_check=False)
+        return path
+    swaps = genomes.prefer_toga2(
+        ncbi, toga2, job_map, lambda j: genomes.assembly_stats(kept(genomes.stats_url(j), f"{j['fetch']}.stats.txt")),
+        lambda r: genomes.total_length(kept(genomes.chrom_sizes_url(r), f"{r['accession']}.chrom.sizes")))
+    for old, new in swaps.items():
+        del job_map[old]
+        job_map[new["accession"]] = new
+    if swaps:
+        say(f"TOGA2: {len(swaps)} species' genomes TOGA2's in place of NCBI's (contig N50 {genomes.TOGA2_BETTER:g} "
+            f"times or more, {genomes.TOGA2_LENGTH:.0%} of its length or more)")
     say(f"genome set: {len(job_map)} genomes ({dict(genomes.why_counts(job_map.values()))}); "
         f"{sum(j['size'] or 0 for j in job_map.values()) / 1e9:.0f} Gb")
     others = annotation.assign(job_map, annotation.read_index(src_dir), veupathdb=bool(opts.veupathdb_key))

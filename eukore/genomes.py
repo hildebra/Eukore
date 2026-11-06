@@ -156,6 +156,7 @@ def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assemb
             lineage=list(ncbi.ancestors(ncbi.merged.get(sp, sp))), itsx=rrna.itsx_groups(ncbi, sp), rdna_unit=unit,
             flags=sorted(row.get("flags") or ()), others=[o["accession"] for o in others], path=path,
             level=row.get("level", ""), category=row.get("category", ""),
+            refseq_category=(refseq.get(row["accession"]) or row).get("refseq_category", ""),
             gencode=ncbi.code_of(int(row.get("taxid") or sp)), annotated=None if genes is None else genes > 0)
 
     reps = representatives(assemblies, ncbi, inside)
@@ -191,7 +192,6 @@ def toga2_jobs(ncbi, rows, job_map, inside=None, groups=("vertebrate_mammalian",
     of a species' the one of the longest scaffold N50, its genome TOGA2's .2bit (fetch_genome), its gene models TOGA2's
     (job["annotations"]). groups: NCBI's assembly groups wanted (a mammal's vertebrate_mammalian, else
     vertebrate_other)."""
-    from . import rrna  # noqa: PLC0415
     have = {int(j["species_taxid"]) for j in job_map.values()}
     best = {}
     for r in rows:
@@ -204,14 +204,86 @@ def toga2_jobs(ncbi, rows, job_map, inside=None, groups=("vertebrate_mammalian",
             continue
         if sp not in best or int(r["scaffold_n50"]) > int(best[sp]["scaffold_n50"]):
             best[sp] = r
+    return {r["accession"]: toga2_job(ncbi, sp, r) for sp, r in sorted(best.items())}
+
+
+def toga2_job(ncbi, sp, r, others=()):
+    """A job of TOGA2's assembly r (annotation.read_toga2's row) of species sp."""
+    from . import rrna  # noqa: PLC0415
+    return dict(accession=r["accession"], fetch=r["accession"], url=r["genome"], size=None, species_taxid=sp, taxid=sp,
+                organism=r["organism"], why=["toga2"], lineage=list(ncbi.ancestors(sp)), itsx=rrna.itsx_groups(ncbi, sp),
+                rdna_unit="-", flags=[], others=list(others), path=None, level="", category="isolate",
+                gencode=ncbi.code_of(sp), annotated=False, annotations=[("toga2", r["annotation"])],
+                assembly_source=r["assembly_source"])
+
+
+TOGA2_BETTER = 2.0  # TOGA2's assembly takes the place of NCBI's chosen one at this many times its contig N50 or more,
+TOGA2_LENGTH = 0.9  # and at this share of its total length or more (not a part of the genome, however contiguous)
+
+
+def prefer_toga2(ncbi, rows, job_map, ncbi_stats, toga2_length):
+    """The NCBI genomes to replace by TOGA2's assemblies outside NCBI (since 2026-11-06) -> {NCBI accession: TOGA2
+    job}: a species' TOGA2 assembly of the longest contig N50 where it is TOGA2_BETTER times that of the NCBI genome
+    chosen for it and its total length TOGA2_LENGTH of that genome's or more (ncbi_stats(job): NCBI's assembly stats,
+    dict(contig_n50, total_length); toga2_length(row): the sum of its chrom.sizes; either None where not known: NCBI's
+    kept). A model species' genome stays. The swap gives up NCBI's contamination screens of the genome and its NCBI
+    gene models (TOGA2's come with it); the NCBI genome is listed among the species' others."""
+    by_species = {int(j["species_taxid"]): (a, j) for a, j in job_map.items()}
+    best = {}
+    for r in rows:
+        if r.get("genome", "-") == "-" or r.get("ncbi_accession", "-") != "-" or not r.get("contig_n50", "").isdigit():
+            continue
+        sp = ncbi.species_of(ncbi.merged.get(int(r["species_taxid"]), int(r["species_taxid"])))
+        acc, job = by_species.get(sp, (None, None))
+        if not job or job["why"] != ["ncbi"]:
+            continue
+        if sp not in best or int(r["contig_n50"]) > int(best[sp]["contig_n50"]):
+            best[sp] = r
     out = {}
     for sp, r in sorted(best.items()):
-        out[r["accession"]] = dict(
-            accession=r["accession"], fetch=r["accession"], url=r["genome"], size=None, species_taxid=sp, taxid=sp,
-            organism=r["organism"], why=["toga2"], lineage=list(ncbi.ancestors(sp)), itsx=rrna.itsx_groups(ncbi, sp),
-            rdna_unit="-", flags=[], others=[], path=None, level="", category="isolate", gencode=ncbi.code_of(sp),
-            annotated=False, annotations=[("toga2", r["annotation"])], assembly_source=r["assembly_source"])
+        acc, job = by_species[sp]
+        theirs = ncbi_stats(job) or {}
+        if not theirs.get("contig_n50") or not theirs.get("total_length"):
+            continue
+        if int(r["contig_n50"]) < TOGA2_BETTER * theirs["contig_n50"]:
+            continue
+        length = toga2_length(r)
+        if length and length >= TOGA2_LENGTH * theirs["total_length"]:
+            out[acc] = toga2_job(ncbi, sp, r, [acc] + list(job.get("others", ())))
     return out
+
+
+def stats_url(job):
+    """NCBI's assembly statistics beside a job's genome (its contig N50, its total length)."""
+    url = job.get("url") or ""
+    return url[:-len("_genomic.fna.gz")] + "_assembly_stats.txt" if url.endswith("_genomic.fna.gz") else None
+
+
+def assembly_stats(stats):
+    """NCBI's assembly statistics file -> dict(contig_n50, total_length) (None each where not given), or None."""
+    if not stats or not os.path.isfile(stats):
+        return None
+    out = dict(contig_n50=None, total_length=None)
+    with open(stats) as fh:
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if f[:4] == ["all"] * 4 and len(f) > 5 and f[5].isdigit() and f[4] in ("contig-N50", "total-length"):
+                out[f[4].replace("-N50", "_n50").replace("-", "_")] = int(f[5])
+    return out
+
+
+def chrom_sizes_url(row):
+    """TOGA2's chrom.sizes beside its genome (annotation.read_toga2's row)."""
+    return row["genome"].rsplit("/", 1)[0] + "/chrom.sizes" if row.get("genome", "-") != "-" else None
+
+
+def total_length(chrom_sizes):
+    """A chrom.sizes file (name, length) -> the lengths' sum, or None."""
+    if not chrom_sizes or not os.path.isfile(chrom_sizes):
+        return None
+    with open(chrom_sizes) as fh:
+        sizes = [line.split() for line in fh if line.strip()]
+    return sum(int(f[1]) for f in sizes if len(f) > 1 and f[1].isdigit()) or None
 
 
 def fetch_genome(job, path, **how):

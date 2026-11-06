@@ -164,11 +164,12 @@ def toga2_rows(assemblies_tsv, listings, classes=None):
             if folder not in where or not name or not r.get("Species Taxonomy ID", "").isdigit():
                 continue
             acc = r.get("NCBI accession", "")
-            n50 = r.get("scaffold N50 (bp)", "")
+            n50, contigs = r.get("scaffold N50 (bp)", ""), r.get("contig N50 (bp)", "")
             out.append(dict(
                 accession=f"TOGA2_{name}", ncbi_accession=acc if acc.startswith("GC") else "-",
                 species_taxid=r["Species Taxonomy ID"], organism=r.get("Species", "-") or "-",
-                scaffold_n50=n50 if n50.isdigit() else "0", reference=where[folder],
+                scaffold_n50=n50 if n50.isdigit() else "0", contig_n50=contigs if contigs.isdigit() else "0",
+                reference=where[folder],
                 annotation=f"{TOGA2_URL}/TOGA2/{where[folder]}/{folder}/query_annotation.gtf.gz",
                 genome=f"{TOGA2_URL}/Genomes/{cls[folder]}/{folder}/{name}.2bit" if folder in cls else "-",
                 assembly_source=r.get("Source of assembly", "-") or "-"))
@@ -182,12 +183,12 @@ def toga2_index(assemblies_tsv, listings):
             for r in toga2_rows(assemblies_tsv, listings) if r["ncbi_accession"] != "-"}
 
 
-TOGA2_COLUMNS = ("accession", "ncbi_accession", "species_taxid", "organism", "scaffold_n50", "reference", "annotation",
-                 "genome", "assembly_source")
+TOGA2_COLUMNS = ("accession", "ncbi_accession", "species_taxid", "organism", "scaffold_n50", "contig_n50", "reference",
+                 "annotation", "genome", "assembly_source")
 
 
 def toga2_file(src_dir):
-    return os.path.join(src_dir, INDEX_DIR, "toga2_genomes.tsv")
+    return os.path.join(src_dir, INDEX_DIR, "toga2_genomes.2.tsv")  # 2: with contig_n50 (2026-11-06)
 
 
 def read_toga2(src_dir):
