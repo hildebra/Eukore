@@ -41,6 +41,9 @@ FOREIGN_ID = 97.0
 PREFIX = 1000       # a published read's first bases: its 18S, for the own-species pool
 COMPLEMENT = str.maketrans("ACGTN", "TGCAN")
 ITSX_FIELD = re.compile(r"(SSU|ITS1|5\.8S|ITS2|LSU): (\d+)-(\d+)")
+# ITSx 1.1.3 without both of the 5.8S's ends still writes ITS1 and ITS2, their inner borders guessed (an ITS2 45
+# bases after the 5.8S start where it found no end: Arabidopsis with set T, Blastocystis, 2026-11-06)
+ITSX_58_PROBLEM = re.compile(r"5\.8S: (No start|No end|Not found|Overlap SSU|Overlap LSU)")
 RECORD_COLUMNS = ("record", "kind", "taxid", "species_taxid", "accession", "source", "regions", "length",
                   "lsu_complete", "ambiguous", "homopolymer", "type", "own_species", "screen", "label_from",
                   "contig", "start", "end", "strand", "contig_edge", "introns", "gaps", "confidence", "flags")
@@ -83,17 +86,23 @@ def barrnap_gff(barrnap, fasta, threads=1, kingdom="euk"):
     return run.stdout
 
 
-def contigs(path):
-    name, parts = None, []
+# an organelle molecule's FASTA title (organelle.py's too)
+ORGANELLE_TITLE = re.compile(r"\b(mitochondrion|chloroplast|plastid|apicoplast)\b", re.IGNORECASE)
+
+
+def contigs(path, nuclear=False):
+    """A FASTA's (name, sequence); nuclear: without the organelle molecules (ORGANELLE_TITLE in their titles)."""
+    name, parts, keep = None, [], True
     with util.open_text(path) as fh:
         for line in fh:
             if line.startswith(">"):
-                if name is not None:
+                if name is not None and keep:
                     yield name, "".join(parts)
                 name, parts = (line[1:].split() or [""])[0], []
-            else:
+                keep = not (nuclear and ORGANELLE_TITLE.search(line))
+            elif keep:
                 parts.append(line.strip())
-    if name is not None:
+    if name is not None and keep:
         yield name, "".join(parts)
 
 
@@ -248,21 +257,27 @@ def _itsx(stretches, itsx, threads, sets):
             with open(prefix + ".positions.txt") as fh:
                 for line in fh:
                     f = line.rstrip("\n").split("\t")
-                    found[f[0]] = {m.group(1): (int(m.group(2)), int(m.group(3)))
-                                   for m in (ITSX_FIELD.match(x) for x in f[2:]) if m}
+                    got = {m.group(1): (int(m.group(2)), int(m.group(3)))
+                           for m in (ITSX_FIELD.match(x) for x in f[2:]) if m}
+                    problem = [m.group(1) for m in (ITSX_58_PROBLEM.match(x) for x in f[2:]) if m]
+                    if problem:
+                        got["5.8S problem"] = problem[0]
+                    found[f[0]] = got
         return {s: found.get(n, {}) for s, n in names.items()}
 
 
 def refine(item, found):
-    """A unit's ITS1/5.8S/ITS2/28S borders from ITSx where it found ITS1 and ITS2 (barrnap's otherwise)."""
+    """A unit's ITS1/5.8S/ITS2/28S borders from ITSx where it found ITS1 and ITS2 (barrnap's otherwise); the 5.8S's
+    start (ITS1's end) and end (ITS2's start) ITSx's only where it found them (ITSX_58_PROBLEM), barrnap's otherwise."""
     if not item.get("unit") or not all(k in found for k in ("ITS1", "ITS2")):
         return item
-    at = item["its_at"]
-    its1 = (at + found["ITS1"][0] - 1, at + found["ITS1"][1])
-    its2 = (at + found["ITS2"][0] - 1, at + found["ITS2"][1])
-    if its1[1] >= its2[0]:
-        return item
     regions = {r[0]: r for r in item["regions"]}
+    problem = found.get("5.8S problem")
+    at = item["its_at"]
+    its1 = (at + found["ITS1"][0] - 1, at + found["ITS1"][1] if problem in (None, "No end") else regions["5.8S"][1])
+    its2 = (at + found["ITS2"][0] - 1 if problem in (None, "No start") else regions["5.8S"][2], at + found["ITS2"][1])
+    if not its1[0] <= its1[1] < its2[0] <= its2[1]:
+        return item
     end28 = regions["28S"][2]
     new = [r for r in item["regions"] if r[0] not in ("18S", "ITS1", "5.8S", "ITS2", "28S")]
     new += [("18S", regions["18S"][1], its1[0]), ("ITS1",) + its1, ("5.8S", its1[1], its2[0]), ("ITS2",) + its2,
@@ -278,12 +293,14 @@ def regions_text(regions):
 def extract_genome(path, barrnap, itsx=None, threads=1, itsx_sets="all"):
     """A genome's rRNA -> [dict(kind 18S or rDNA, contig, start, end, strand, sequence, exons, regions, lsu_complete)]:
     each 18S span (MIN_LEN at least), and each unit with its 5.8S and 28S as an rDNA record, uncut. itsx_sets: ITSx's
-    -t for the genome's taxon (itsx_groups)."""
+    -t for the genome's taxon (itsx_groups). Organelle molecules are left out: barrnap's eukaryote models call a
+    mitochondrial SSU an 18S (Arabidopsis' BK010421.1, 2026-11-06), whose bacterial kind then takes bacterial reads;
+    organelle.py takes their rRNA."""
     seqs, origin, lengths = {}, {}, {}
     with tempfile.TemporaryDirectory() as tmp:
         win = os.path.join(tmp, "windows.fna")
         with open(win, "w") as fh:
-            for name, seq in contigs(path):
+            for name, seq in contigs(path, nuclear=True):
                 seq = seq.upper()
                 lengths[name] = len(seq)
                 for a, b in windows(seq):

@@ -32,6 +32,7 @@ Eukore_*/
 *.tmp
 *.swp
 *~
+docs/paper
 
 # editors and OS
 .vscode/

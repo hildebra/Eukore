@@ -16,7 +16,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import loci, ncbi as ncbi_mod, odb as odb_mod  # noqa: E402
+from eukore import loci, ncbi as ncbi_mod, odb as odb_mod, qc  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 
@@ -118,6 +118,45 @@ class LociTest(unittest.TestCase):
         failing = fx.tool(self.dir, "mp_fail", "#!/bin/sh\necho 'out of memory' >&2\nexit 1\n")
         got = loci.call(self.path, fx.QUERIES, self.odb, failing, fx.hmmsearch(self.dir), 1, self.dir)
         self.assertTrue(got["failed"].startswith("miniprot failed: out of memory"))
+
+    def test_frameshifts_left_out_of_the_coding_sequence(self):
+        # miniprot's CIGAR: amino acids (M, D: 3 bases each), a protein insertion (I: none), introns (N, U, V: not
+        # coding), frameshifts (F, G: their bases, out of frame)
+        self.assertEqual(loci.frameshifts("3M1F2M35V4M2G1I1M"), [(9, 1), (28, 2)])
+        self.assertEqual(loci.in_frame("AAACCCGGGtTTTAAA", [(9, 1)]), "AAACCCGGGTTTAAA")
+        self.assertEqual(loci.in_frame("ACGT", []), "ACGT")
+        text = ("##PAF\t1at2759~q\t120\t0\t120\t+\tc1\t9000\t99\t500\t1\t1\t0\tAS:i:1\tcg:Z:3M1F37M\tcs:Z::1\n"
+                "##STA\tMAK\nc1\tminiprot\tmRNA\t100\t500\t9\t+\t.\tID=MP1;Identity=0.9;Target=1at2759~q 1 120\n"
+                "c1\tminiprot\tCDS\t100\t500\t9\t+\t0\tParent=MP1;Target=1at2759~q 1 120\n")
+        self.assertEqual(loci.parse_alignments(text)[0]["shifts"], [(9, 1)])
+        # on the copy: a frameshift's two bases across an intron (exons 0-10 and 20-40), the copy's coding sequence
+        # (qc.spliced, the package's) the same as the call's
+        copy = "".join("ACGT"[i % 4] for i in range(40))
+        exons = [(0, 10), (20, 40)]
+        feats = loci.frameshift_features(exons, [(9, 2)])
+        self.assertEqual(feats, [("frameshift", 9, 10), ("frameshift", 20, 21)])
+        joined = copy[0:10] + copy[20:40]
+        self.assertEqual(qc.spliced(copy, [("exon", s, e) for s, e in exons] + feats), loci.in_frame(joined, [(9, 2)]))
+
+    def test_annotated_models_taken_where_their_hmm_holds(self):
+        a, b = self.spans["1at2759"]
+        c, d = self.spans["2at2759"]
+        gff = os.path.join(self.dir, "ann.gff.gz")
+        with gzip.open(gff, "wt") as fh:  # locus 1: one base before the gene, phase 1 (its translation the protein)
+            fh.write("##gff-version 3\n"
+                     f"c1\tRefSeq\tCDS\t{a - 1}\t{a + 179}\t.\t+\t1\tID=c1;Parent=rna-1;gene=ONE\n"
+                     f"c1\tRefSeq\tCDS\t{a + 480}\t{b}\t.\t+\t0\tID=c1;Parent=rna-1;gene=ONE\n"
+                     f"c1\tRefSeq\tCDS\t{c}\t{d - 1}\t.\t-\t0\tID=c2;Parent=rna-2;gene=TWO\n")  # locus 2: out of frame
+        got = loci.call(self.path, fx.QUERIES, self.odb, fx.miniprot(self.dir, self.gff), fx.hmmsearch(self.dir), 1,
+                        self.dir, annotation=(gff, None))
+        one, two = got["loci"]["1at2759"], got["loci"]["2at2759"]
+        self.assertEqual((one["model"], one["transcript"], one["start"], one["exons"]),
+                         ("ncbi", "rna-1", a, [(a, a + 179), (a + 480, b)]))
+        self.assertEqual((one["spliced"], one["miniprot"]["start"]), (fx.cds_of(fx.PROTEINS["1at2759"]), a))
+        self.assertEqual((two["model"], two["transcript"], two["start"], two["end"]), ("miniprot", "-", c, d))
+        plain = loci.call(self.path, fx.QUERIES, self.odb, fx.miniprot(self.dir, self.gff), fx.hmmsearch(self.dir), 1,
+                          self.dir)
+        self.assertEqual(plain["loci"]["1at2759"]["model"], "miniprot")
 
     def test_a_missed_gene_rescued(self):
         # locus 3's gene after the others: miniprot's first pass (the fixed GFF) does not align it, its HMM finds it in

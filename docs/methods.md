@@ -55,6 +55,18 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
      ends (median overlap 0.65 with the call made with its own proteins), and its exon ends come from distant proteins.
      A genome over 1 Gb is not rescued (its ORFs' search too long; such genomes are mostly animals' and plants', near
      the dataset's species).
+   - **Frameshifts** (since 2026-11-06). miniprot's GFF keeps a frameshift's bases inside its CDS, so that the exons
+     joined read out of frame after it (17 of 69 held-out *B. hominis* copies had an internal stop). The copy's coding
+     sequence leaves them out (the alignment's CIGAR places them; `frameshift` features of the copy): its held-out
+     copies concordant with OrthoDB's went from 21 to 24, its own-protein ones from 52 to 55.
+   - **NCBI's gene models** (since 2026-11-06). Where the genome has an annotation at NCBI (about 37% of fungal and
+     protist species, 11-29% of the other groups', RefSeq's or a submitter's), a copy takes the annotated transcript
+     sharing the most coding bases with miniprot's model where the locus' HMM confirms its translation (its best HMM,
+     at the cutoff) at 95% of miniprot's score or more (`model` ncbi in copies.tsv); else miniprot's model stays.
+     Against NCBI's curated models miniprot's are exact (every intron) for 81% of *Drosophila*'s and *Arabidopsis*'
+     BUSCOs, 38% of *C. elegans*' and 46% of *B. hominis*'; every curated model passed its HMM. Re-aligning doubtful
+     models (other miniprot settings, GeneWise, exonerate on the gene's window) did not do better: it gained 2 exact
+     models of 67 in held-out *B. hominis* and lost up to 43 of 129 in *Arabidopsis*.
 3. **The copy.** The gene from first to last codon, introns and all, uncut and unmasked. Its features are its exons
    and introns, the assembly's soft-masked runs and its low-complexity runs (DUST); the user masks as it sees fit.
    - The 50 kb around each copy are kept for contamination screens.
@@ -79,7 +91,12 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
 
 - **Genomes.** Each genome's 18S spans and whole rDNA units, from the 18S start to the 28S end (18S, ITS1, 5.8S,
   ITS2, 28S). A 5S is included only where it lies in the same block. barrnap finds the genes; ITSx sets the
-  ITS1/5.8S/ITS2/28S borders, searching the profile sets of the genome's lineage.
+  ITS1/5.8S/ITS2/28S borders, searching the profile sets of the genome's lineage. Where ITSx finds only one end
+  of the 5.8S, it still reports both ITS spans, with the other border guessed (a 45-base 5.8S); barrnap's border
+  is used there instead. Sequences titled as a
+  mitochondrion, chloroplast, plastid or apicoplast are left out: barrnap's eukaryote models call a mitochondrial
+  SSU an 18S, and that bacterial-type gene then takes bacterial reads. Organelle rRNA comes from the organelle
+  pass below.
 - **Published records.** EUKARYOME 2.1's long reads and ROD v1.2's operons, labelled by NCBI taxid.
 - **Checks**, each a column of `rrna/records.tsv`:
   - ambiguous bases and homopolymers;

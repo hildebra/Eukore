@@ -36,12 +36,17 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
-from eukore import benchmarks, labels, organelle as organelle_mod, quality  # noqa: E402
+from eukore import annotation, benchmarks, labels, organelle as organelle_mod, quality  # noqa: E402
+from eukore import reads as reads_mod  # noqa: E402
 from eukore import __version__  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
 NO_ASSEMBLY = os.path.join(sources.DATA, "no_assembly.fna.gz")
 PUBLISHED_BATCH = 250  # published reads a barrnap + ITSx run
+# the published reads' regions, kept in WORK/published: a new name where their borders change (2: ITSx's guessed 5.8S
+# borders no longer taken, 2026-11-06), so that a rerun annotates them again
+PUBLISHED_REGIONS = "regions.2.tsv"
+READ_BACKGROUND = os.path.join(sources.DATA, "read_background.tsv")  # the read benchmark's bacteria and archaea
 
 
 def say(text):
@@ -69,6 +74,8 @@ def fetch_sources(src_dir, groups, ksgp_tax=None):
     organelle_mod.fetch(src_dir, sources.download, say)
     quality.fetch(src_dir, sources.download, say)
     labels.fetch(src_dir, sources.download, say, ksgp_tax)
+    if os.path.isfile(READ_BACKGROUND):
+        reads_mod.fetch_background(READ_BACKGROUND, os.path.join(src_dir, "read_background"), say)
 
 
 def tables(src_dir, kind, groups):
@@ -165,7 +172,7 @@ def run_genomes(opts, job_map, settings):
 
 def published(opts, src_dir, ncbi):
     """The published reads (EUKARYOME, ROD) with their regions and NCBI labels -> records [(name, sequence, row)],
-    their regions kept in WORK/published/regions.tsv (a rerun reads them)."""
+    their regions kept in WORK/published/PUBLISHED_REGIONS (a rerun reads them)."""
     out = []
     index = rrna.name_index(ncbi)
     reads = []
@@ -187,7 +194,7 @@ def published(opts, src_dir, ncbi):
                 reads.append((f"EUK_{acc}", seq, t, "EUKARYOME", how, "-"))
     cache_dir = os.path.join(opts.work, "published")
     os.makedirs(cache_dir, exist_ok=True)
-    cache = os.path.join(cache_dir, "regions.tsv")
+    cache = os.path.join(cache_dir, PUBLISHED_REGIONS)
     known = {}
     if os.path.isfile(cache):
         with open(cache) as fh:
@@ -236,6 +243,25 @@ def genome_rrna_records(opts, job_map, ncbi):
     return out
 
 
+def annotate_pass(opts, job_map, may_fetch):
+    """The done genomes with an NCBI annotation compared with it (annotation.py: its GFF beside the genome, from the
+    fetch stage, or fetched here where may_fetch), the GFF deleted after."""
+    todo = [j for _a, j in sorted(job_map.items()) if annotation.missing(opts.work, j)]
+    if not todo:
+        return
+    say(f"NCBI's annotation: {len(todo)} genomes' calls to compare")
+    compared, left, failed = 0, 0, []
+    for j in todo:
+        try:
+            n = annotation.annotate_genome(opts.work, j, opts.genomes, may_fetch)
+        except OSError as e:
+            failed.append((j["accession"], str(e)[:100]))
+            continue
+        compared, left = compared + (n is not None), left + (n is None)
+    say(f"  {compared} genomes compared, {left} without their annotation fetched yet (--stage fetch), "
+        f"{len(failed)} failed{' (e.g. ' + str(failed[:2]) + ')' if failed else ''}")
+
+
 def organelle_genes(opts, src_dir, job_map, ncbi):
     """The organelle genes' sources (eukore/organelle.py): RefSeq's organelle genomes, parsed once, and each species'
     own assembly where RefSeq has neither of its organelles' records (barrnap, nhmmer) -> RefSeq's records chosen,
@@ -262,14 +288,34 @@ def timed(stages, step):
     stages.append((step, time.time() - started))
 
 
-def measure(part, opts, src_dir, ncbi, collected, vsearch, stages):
+def databases_of(src_dir, ncbi, references, inside=None):
+    """{name: NCBI species} of the other references the build read, for overlap.tsv: PR2, EUKARYOME's long reads and
+    KSGP (labels.references, by their species names) and ROD (by its taxids)."""
+    out = benchmarks.reference_species(references, ncbi, inside)
+    rod = sources.ready(src_dir, "ROD")
+    if rod:
+        taxa = {ncbi.species_of(int(r["taxid"])) for r in sources.rod_operons(rod) if r.get("taxid", "").isdigit()}
+        out["ROD"] = {sp for sp in taxa if sp and ncbi.rank.get(sp) == "species" and (inside is None or inside(sp))}
+    return out
+
+
+def measure(part, opts, src_dir, ncbi, collected, vsearch, stages, fates=None, tests=(), references=()):
     """The package's benchmarks (eukore/benchmarks.py) into its unfinished folder -> their figures, or None where
-    they failed: a benchmark never stops the package."""
+    they failed: a benchmark never stops the package. fates: genomes.fates (selection.tsv); tests: the read
+    benchmark's genomes (reads.choose), kept through the prune; references: labels.references (overlap.tsv)."""
     nearest = {(r["accession"], r["locus"]): (r.get("nearest_id"), r.get("nearest_depth"))
                for r in collected["copy_rows"]} if vsearch else None
+    minimap2 = shutil.which(opts.minimap2)
+    if tests and not minimap2:
+        say(f"WARNING: {opts.minimap2} not found: no read benchmark (bioconda's minimap2)")
+    reads = dict(genomes_folder=opts.genomes, tests=list(tests), minimap2=minimap2,
+                 background=reads_mod.read_background(READ_BACKGROUND, os.path.join(src_dir, "read_background")),
+                 work=os.path.join(opts.work, "read_benchmark"))
+    inside = opts.inside if opts.wanted is not None else None
     try:
         return benchmarks.run(part, ncbi, odb_mod.folder_of(src_dir), vsearch, opts.threads, opts.work, nearest,
-                              stages, log=say)
+                              stages, log=say, fates=fates, compare=opts.read_compare, inside=inside, reads=reads,
+                              databases=databases_of(src_dir, ncbi, references, inside))
     except Exception as e:  # noqa: BLE001
         say(f"WARNING: the benchmarks failed ({type(e).__name__}: {e}): the package is written without them")
         shutil.rmtree(os.path.join(part, benchmarks.FOLDER), ignore_errors=True)
@@ -318,6 +364,13 @@ def main(argv=None):
     p.add_argument("--species", help="a partial build (a trial run): only the species inside these NCBI taxids' clades, "
                                      "comma-separated or a file of one per line; the manifest records them")
     p.add_argument("--miniprot", default="miniprot")
+    p.add_argument("--minimap2", default="minimap2", help="minimap2, the read benchmark's aligner")
+    p.add_argument("--read_genomes", type=int, default=reads_mod.PER_GROUP,
+                   help=f"the read benchmark's test genomes per supergroup, kept through the prune (default "
+                        f"{reads_mod.PER_GROUP}; 0: no read benchmark)")
+    p.add_argument("--read_compare", metavar="NAME=FASTA,TABLE",
+                   help="another reference for the read benchmark and breadth.tsv, e.g. "
+                        "EukDetect2=eukdb.fasta,busco_taxid_genome_link.txt (TABLE: record<TAB>NCBI taxid)")
     p.add_argument("--hmmsearch", default="hmmsearch")
     p.add_argument("--fcs_gx_db", help="NCBI FCS-GX's database (the gxdb folder's prefix, ~470 GB, best copied to "
                                        "/dev/shm; a node of ~512 GB): the package stage screens each genome's windows "
@@ -340,6 +393,12 @@ def main(argv=None):
                         "(default 10)")
     opts = p.parse_args(argv)
     opts.groups = [g for g in opts.groups.split(",") if g]
+    if opts.read_compare:
+        name, _eq, files = opts.read_compare.partition("=")
+        fasta, _comma, table = files.partition(",")
+        if not (name and os.path.isfile(fasta) and os.path.isfile(table)):
+            p.error(f"--read_compare {opts.read_compare}: NAME=FASTA,TABLE, both files there")
+        opts.read_compare = (name, fasta, table)
     unknown = set(opts.groups) - set(sources.ASSEMBLY_GROUPS)
     if unknown:
         p.error(f"--groups: {sorted(unknown)} (known: {', '.join(sources.ASSEMBLY_GROUPS)})")
@@ -352,7 +411,7 @@ def main(argv=None):
     if opts.stage in ("all", "fetch"):
         fetch_sources(src_dir, opts.groups, opts.ksgp_tax)
     ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
-    wanted = clades(opts.species)
+    wanted = opts.wanted = clades(opts.species)
     opts.inside = inside_of(ncbi, wanted)
     job_map, assemblies = plan(opts, src_dir, ncbi)
     if opts.stage == "fetch":
@@ -372,6 +431,20 @@ def main(argv=None):
             fetched += 0 if why else os.path.getsize(path)
             rate = fetched / max(1e-9, time.time() - progress.started) / 1e6
             progress.step(j.get("size") or 0, failed=bool(why), note=f"; {fetched / 1e9:,.1f} GB at {rate:,.1f} MB/s")
+        # NCBI's own gene models (RefSeq's, a GenBank submitter's) beside the genomes, of all but those whose assembly
+        # summary gives no protein-coding genes, for the process stage's copies' models and their comparison
+        # (annotation.py)
+        todo = [j for a, j in sorted(job_map.items()) if annotation.gff_url(j)
+                and not os.path.isfile(annotation.gff_file(opts.genomes, a))
+                and not os.path.isfile(os.path.join(genomes.done_dir(opts.work, a), annotation.TABLE))]
+        say(f"fetching {len(todo):,} genomes' NCBI annotations into {opts.genomes}")
+        progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1)
+        for j in todo:
+            try:
+                annotation.fetch(j, opts.genomes)
+                progress.step(1)
+            except OSError as e:
+                progress.step(1, failed=True, note=f" ({e})")
         return 0
     if shutil.which("barrnap") and shutil.which("ITSx"):
         why = rrna.check_itsx(shutil.which("ITSx"))
@@ -391,6 +464,7 @@ def main(argv=None):
         settings = settings_of(opts, src_dir, ncbi, staged_only=opts.stage == "process")
         waiting, failed = run_genomes(opts, job_map, settings)
         organelle_genes(opts, src_dir, job_map, ncbi)
+        annotate_pass(opts, job_map, may_fetch=opts.stage == "all")
         if waiting or failed:
             say(f"{len(waiting)} genomes not fetched yet, {len(failed)} failed (e.g. {(waiting + failed)[:3]}): the "
                 "package waits for them (run again; --stage fetch first on a cluster)")
@@ -437,14 +511,21 @@ def main(argv=None):
             inputs["partial"] = {"species_clades": sorted(wanted)}  # a trial package: these clades only
         # every genome is called and extracted: the kept ones cut back to the budget, then the package names those kept
         firsts = {a for r in species.read_table() for a in species.accessions(r)}
-        rows_kept = genomes.prune(opts.genomes, opts.work, opts.keep_gb * 1e9, set(), firsts)
+        annotate_pass(opts, job_map, may_fetch=opts.stage == "all")
+        # the read benchmark's genomes (reads.py), chosen while all are on disk and kept through the prune
+        reps = {a: (int(g["species_taxid"]), genomes.genome_file(opts.genomes, a))
+                for a, g in collected["genomes"].items() if g["representative"] == "t" and not job_map[a].get("path")}
+        tests = reads_mod.choose(ncbi, reps, opts.read_genomes) if opts.read_genomes and not opts.no_benchmarks else []
+        rows_kept = genomes.prune(opts.genomes, opts.work, opts.keep_gb * 1e9, set(tests), firsts)
         kept = sum(s for _a, s, st in rows_kept if st != "deleted")
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB (--keep_gb {opts.keep_gb:g}), "
             f"{sum(st == 'deleted' for *_x, st in rows_kept)} deleted")
         with timed(stages, "reference labels"):
             references = labels.references(src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say)
         hook = None if opts.no_benchmarks else functools.partial(
-            measure, opts=opts, src_dir=src_dir, ncbi=ncbi, collected=collected, vsearch=vsearch, stages=stages)
+            measure, opts=opts, src_dir=src_dir, ncbi=ncbi, collected=collected, vsearch=vsearch, stages=stages,
+            fates=genomes.fates(ncbi, assemblies, job_map, opts.inside if wanted is not None else None), tests=tests,
+            references=references)
         out = package.write(os.path.join(opts.out, f"Eukore_{opts.version}"), opts.version, ncbi, collected,
                             loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook)
         say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")

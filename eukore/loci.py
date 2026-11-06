@@ -15,7 +15,13 @@ own copies, in place of EukDetect1's and EukDetect2's.
 5. the rescue pass (rescue(), since 2026-11-06) of a Missing locus: its HMM searched in the genome's six-frame ORFs
    (esl-translate) places it, and miniprot aligns its queries and the HMM's hits joined (the "self" protein) on that
    place again, with sensitive seeding; the HMMs confirm as in 3. Its copy is `rescued` (a medium confidence: its span
-   may be short of the gene's ends, and no own-protein run confirmed it).
+   may be short of the gene's ends, and no own-protein run confirmed it);
+6. the gene model (annotated(), since 2026-11-06): in a genome with NCBI gene models (annotation.py), a copy takes the
+   annotated transcript sharing the most coding bases with miniprot's model where the locus' HMM confirms its
+   translation at ANNOTATION_SHARE of miniprot's score or more (`model` ncbi), else keeps miniprot's.
+
+A copy's coding sequence (`spliced`) leaves out the bases of miniprot's frameshifts (its CIGAR's F and G), which its
+GFF keeps inside the CDS; they are `frameshift` features of the copy.
 
 A copy is the genome from the gene's first codon to its last on its own strand, introns and all, uncut and in upper
 case (copies.fit, no length cap), with its features on it: exons and introns, the assembly's soft-masked runs of
@@ -25,6 +31,7 @@ user masks as it sees fit.
 
 import collections
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -57,16 +64,53 @@ RESCUE_JOIN = 20_000         # the hits joined to the best one: on its contig an
 RESCUE_FLANK = 5_000         # bases each side of the hits' place aligned again
 RESCUE_OPTIONS = ["-k5", "-M0", "-n1", "-l4"]  # miniprot's seeding: shorter k-mers, all of them, a chain of one
 RESCUE_MAX_BASES = 1_000_000_000  # a genome over this is not rescued (its six-frame ORFs' search too long)
+# Step 6 (since 2026-11-06): the genome's own NCBI annotation's gene model in place of miniprot's, where the locus' HMM
+# scores its translation at this share of miniprot's or more. Against NCBI's curated models miniprot's are exact (every
+# intron) for 81% of Drosophila's and Arabidopsis' BUSCOs and 38% of C. elegans'; all their annotated models pass the
+# cutoff. Blastocystis hominis' 2011 annotation is weaker: miniprot's model outscores it by 5% or more in 23 of 94.
+ANNOTATION_SHARE = 0.95
 STATUS = ("Single", "Duplicated", "Fragmented", "Missing")
+
+
+def frameshifts(cigar):
+    """miniprot's CIGAR (cg:Z) -> [(index, n)]: n bases at an index of the coding sequence (the exons joined, on the
+    gene's strand) that a frameshift (F, G) leaves out of the reading frame; M and D read 3 bases an amino acid, I none,
+    introns (N, U, V) are not in the coding sequence."""
+    out, at = [], 0
+    for n, op in re.findall(r"(\d+)([MIDFGNUV])", cigar):
+        if op in "MD":
+            at += 3 * int(n)
+        elif op in "FG":
+            out.append((at, int(n)))
+            at += int(n)
+    return out
+
+
+def in_frame(cds, shifts):
+    """A coding sequence without its frameshifts' bases (frameshifts()). miniprot's GFF keeps them in the CDS, so that
+    the exons joined read out of frame after the first (until 2026-11-06: 17 of 69 held-out Blastocystis hominis calls
+    with an internal stop; left out, 3, and 21 -> 24 of its BUSCOs concordant with OrthoDB's). The exons stay as they
+    are: a copy's coding sequence can be a base or two shorter than its exons."""
+    if not shifts:
+        return cds
+    parts, at = [], 0
+    for i, n in shifts:
+        parts.append(cds[at:i])
+        at = i + n
+    return "".join(parts) + cds[at:]
 
 
 def parse_alignments(text):
     """miniprot's GFF with --trans -> [dict(query, locus, contig, start, end, strand, score, identity, qstart, qend,
-    exons [(start, end)] in genome order, protein)] (positions 1-based inclusive). miniprot writes an alignment's
-    ##PAF and ##STA (its translation) before its mRNA line; until 2026-11-06 the translation was taken for the alignment
-    before, so that the HMM scored a neighbour's protein (a copy at one place confirmed by another's: false duplicates)."""
-    out, cur, pending = [], None, ""
+    exons [(start, end)] in genome order, protein, shifts (frameshifts())] (positions 1-based inclusive). miniprot
+    writes an alignment's ##PAF (its CIGAR) and ##STA (its translation) before its mRNA line; until 2026-11-06 the
+    translation was taken for the alignment before, so that the HMM scored a neighbour's protein (a copy at one place
+    confirmed by another's: false duplicates)."""
+    out, cur, pending, cigar = [], None, "", ""
     for line in text.splitlines():
+        if line.startswith("##PAF"):
+            cigar = next((t[5:] for t in line.split("\t") if t.startswith("cg:Z:")), "")
+            continue
         if line.startswith("##STA"):
             pending = line.split("\t", 1)[1].strip() if "\t" in line else line[5:].strip()
             continue
@@ -81,9 +125,9 @@ def parse_alignments(text):
             cur = dict(query=target[0], locus=target[0].split("~", 1)[0], contig=f[0], start=int(f[3]),
                        end=int(f[4]), strand=f[6], score=float(f[5]) if f[5] != "." else 0.0,
                        identity=float(attrs.get("Identity", 0)), qstart=int(target[1]), qend=int(target[2]),
-                       exons=[], protein=pending)
+                       exons=[], protein=pending, shifts=frameshifts(cigar))
             out.append(cur)
-            pending = ""
+            pending, cigar = "", ""
         elif f[2] == "CDS" and cur is not None:
             cur["exons"].append((int(f[3]), int(f[4])))
     for a in out:
@@ -355,13 +399,79 @@ def rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads,
             if locus in places and locus in missing}
 
 
+def frameshift_features(exons, shifts):
+    """A copy's frameshifts (shifts: frameshifts() on its coding sequence) as features: [("frameshift", start, end)]
+    on the copy (0-based, end excluded), exons: the copy's [(start, end)] in its order."""
+    out = []
+    for i, n in shifts or ():
+        at = 0
+        for s, e in sorted(exons):
+            for k in range(n):  # a frameshift's bases, each where the exons put it (rarely across two exons)
+                if at <= i + k < at + e - s:
+                    p = s + i + k - at
+                    if out and out[-1][2] == p:
+                        out[-1] = ("frameshift", out[-1][1], p + 1)
+                    else:
+                        out.append(("frameshift", p, p + 1))
+            at += e - s
+    return out
+
+
+def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hmm_db, table):
+    """Step 6: the genome's own annotated gene model (annotation: (NCBI GFF, assembly report or None)) in place of a
+    call's, where the GFF holds a transcript on the call's contig and strand sharing coding bases with it (the most:
+    annotation_mod.best_transcript) whose translation the locus' own HMM confirms (its best HMM, at the cutoff) at
+    ANNOTATION_SHARE of the call's HMM score or more. chosen: {locus: alignment} -> the same, an annotated model with
+    model="ncbi", the transcript, and miniprot's model kept as miniprot=dict(start, end, exons) (annotation.py's
+    benchmark compares that). The annotation's exons are its CDS: its 5' piece's phase left out (a partial gene)."""
+    from . import annotation as annotation_mod  # noqa: PLC0415
+    from .benchmarks import translate  # noqa: PLC0415 (benchmarks imports this module's users)
+    gff, report = annotation
+    spans = collections.defaultdict(list)
+    for a in chosen.values():
+        spans[a["contig"]].append((a["start"], a["end"]))
+    transcripts = annotation_mod.read_cds(gff, spans, annotation_mod.aliases(report))
+    models, proteins = {}, {}
+    for locus, a in chosen.items():
+        name = annotation_mod.best_transcript(a, transcripts)
+        if not name:
+            continue
+        t = transcripts[name]
+        exons = [list(x) for x in t["cds"]]
+        five = exons[0] if t["strand"] == "+" else exons[-1]
+        phase = t.get("phase", {}).get(tuple(five), 0)
+        if phase:
+            five[0 if t["strand"] == "+" else 1] += phase if t["strand"] == "+" else -phase
+        exons = [tuple(x) for x in exons if x[0] <= x[1]]
+        seq = contigs[a["contig"]]
+        cds = "".join(seq[x - 1:y] for x, y in exons).upper()
+        cds = cds.translate(str.maketrans("ACGTacgt", "TGCAtgca"))[::-1] if t["strand"] == "-" else cds
+        models[locus] = dict(exons=exons, start=exons[0][0], end=exons[-1][1], transcript=name)
+        proteins[locus] = translate(cds, table).rstrip("*")
+    scores = hmmsearch(proteins, hmm_db, hmmsearch_bin, threads, work)
+    out = dict(chosen)
+    for locus, m in models.items():
+        got = {odb.locus_of_hmm.get(h, h): v for h, v in scores.get(locus, {}).items()}
+        if not got or max(got, key=lambda h: got[h][0]) != locus:
+            continue
+        s, cov = got[locus]
+        a = chosen[locus]
+        if s >= odb.cutoff[locus] and s >= ANNOTATION_SHARE * a["hmm_score"]:
+            out[locus] = dict(a, exons=m["exons"], start=m["start"], end=m["end"], shifts=[], hmm_score=s,
+                              hmm_coverage=cov, protein=proteins[locus], model="ncbi", transcript=m["transcript"],
+                              miniprot=dict(start=a["start"], end=a["end"], exons=a["exons"]))
+    return out
+
+
 def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearch", threads=1, tmp=None,
-         hmm_db=None, table=1, rescue_missing=True, translate="esl-translate"):
+         hmm_db=None, table=1, rescue_missing=True, translate="esl-translate", annotation=None):
     """The BUSCO genes of a genome (table: its NCBI genetic code) -> dict(loci {locus: dict(status, copy, spliced,
     features [(kind, start, end)],
     contig, start, end, strand, identity, coverage, score, hmm_score, hmm_coverage, cutoff, copies, query, protein,
-    rescued)}, failed (why the genome could not be called, or None), windows {name: sequence} of the copies' flanks).
-    rescue_missing: the rescue pass (step 5) of the loci left Missing, in a genome of RESCUE_MAX_BASES or less."""
+    rescued, model (miniprot or ncbi), miniprot (its model: start, end, exons))}, failed (why the genome could not be
+    called, or None), windows {name: sequence} of the copies' flanks).
+    rescue_missing: the rescue pass (step 5) of the loci left Missing, in a genome of RESCUE_MAX_BASES or less;
+    annotation: (the genome's NCBI GFF, its assembly report or None) for step 6 (annotated()), or None."""
     lengths = {q: len(p) for q, p in queries.items()}
     with tempfile.TemporaryDirectory(dir=tmp) as work:
         hmm_db = hmm_db or odb.hmm_db(os.path.join(work, "loci.hmm"))
@@ -373,31 +483,42 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
         if rescue_missing and missing and genome_bases(genome_path) <= RESCUE_MAX_BASES and shutil.which(translate):
             confirmed.update(rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads, table,
                                     hmm_db, work, translate))
-    contigs =placement.read_contigs(genome_path, {r["contig"] for rs in confirmed.values() for r in rs})
+        contigs = placement.read_contigs(genome_path, {r["contig"] for rs in confirmed.values() for r in rs})
+        chosen, statuses = {}, {}
+        for locus in odb.loci:
+            rs = confirmed.get(locus, [])
+            complete = [r for r in rs if r["hmm_coverage"] >= COMPLETE]
+            if rs:
+                chosen[locus] = max(complete or rs, key=lambda r: (r["hmm_score"], r["score"]))
+                statuses[locus] = ("Single" if len(complete) == 1 else "Duplicated" if complete else "Fragmented",
+                                   complete)
+        if annotation and annotation[0] and chosen:
+            chosen = annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hmm_db, table)
     loci, windows = {}, {}
     for locus in odb.loci:
-        rs = confirmed.get(locus, [])
-        complete = [r for r in rs if r["hmm_coverage"] >= COMPLETE]
-        if not rs:
+        if locus not in chosen:
             loci[locus] = dict(status="Missing")
             continue
-        pool = complete or rs
-        best = max(pool, key=lambda r: (r["hmm_score"], r["score"]))
-        status = "Single" if len(complete) == 1 else "Duplicated" if complete else "Fragmented"
+        best = chosen[locus]
+        status, complete = statuses[locus]
         seq = contigs[best["contig"]]
         fitted = copies_mod.fit(seq, best["start"], best["end"], best["strand"], best["exons"], 10 ** 12,
                                 mask_min=10 ** 12)
         raw = seq[best["start"] - 1:best["end"]]
         feats = [(k, s, e) for k, s, e, _r, _g1, _g2 in fitted["features"] if k in ("exon", "intron")]
+        feats += frameshift_features([(s, e) for k, s, e in feats if k == "exon"], best.get("shifts"))
         feats += [("soft_masked", a, b) for a, b in on_copy(soft_runs(raw), best["start"], best["end"], best["strand"])]
         feats += [("low_complexity", a, b) for a, b in dust(fitted["copy"])]
-        loci[locus] = dict(status=status, copy=fitted["copy"], spliced=fitted["spliced"], features=sorted(
+        loci[locus] = dict(status=status, copy=fitted["copy"], spliced=in_frame(fitted["spliced"], best.get("shifts")),
+                           features=sorted(
             feats, key=lambda f: (f[1], f[0])), contig=best["contig"], contig_length=len(seq), start=best["start"],
             end=best["end"], strand=best["strand"], identity=best["identity"], coverage=best["coverage"],
             score=best["score"], hmm_score=best["hmm_score"], hmm_coverage=best["hmm_coverage"],
             cutoff=odb.cutoff[locus], copies=len(complete), others=[(r["contig"], r["start"], r["end"], r["hmm_score"])
             for r in complete if r is not best], query=best["query"].split("~", 1)[1],
-            protein=best["protein"], exons=best["exons"], rescued=bool(best.get("rescued")))
+            protein=best["protein"], exons=best["exons"], rescued=bool(best.get("rescued")),
+            model=best.get("model", "miniprot"), transcript=best.get("transcript", "-"),
+            miniprot=best.get("miniprot") or dict(start=best["start"], end=best["end"], exons=best["exons"]))
         w1, w2 = max(1, best["start"] - WINDOW), min(len(seq), best["end"] + WINDOW)
         windows[f"{locus}|{best['contig']}|{w1}-{w2}"] = seq[w1 - 1:w2].upper()
     return dict(loci=loci, failed=None, windows=windows)

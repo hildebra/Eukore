@@ -25,7 +25,7 @@ GENOME_COLUMNS = ("accession", "fetched", "species_taxid", "taxid", "organism", 
                   "rdna_complete", "rdna_contigs", "local")
 COPY_COLUMNS = ("accession", "locus", "status", "contig", "contig_length", "start", "end", "strand", "length",
                 "cds_length", "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies",
-                "query", "rescued", "protein_length", "window_class", "fcs", "own_species", "same_as", "length_check",
+                "query", "rescued", "model", "protein_length", "window_class", "fcs", "own_species", "same_as", "length_check",
                 "contig_edge", "gaps", "confidence", "flags")
 FEATURE_COLUMNS = ("accession", "locus", "kind", "start", "end")
 SPECIES_COLUMNS = ("taxid", "name", "representative", "source", "loci", "rrna_records", "organelle_genes",

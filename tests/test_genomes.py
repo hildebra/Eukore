@@ -19,7 +19,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import genomes, labels, ncbi as ncbi_mod, odb as odb_mod, package, qc, rrna, sources  # noqa: E402
+from eukore import annotation, genomes, labels, ncbi as ncbi_mod, odb as odb_mod, package, qc, rrna, sources  # noqa: E402,E501
 import fixtures as fx  # noqa: E402
 
 YEAST = "GCA_000146045.2"
@@ -186,6 +186,40 @@ class RunTest(unittest.TestCase):
             size = os.path.getsize(genomes.genome_file(genomes_dir, YEAST))
             kept = genomes.prune(genomes_dir, work, size, set(), {YEAST})
             self.assertEqual(sorted(kept), sorted([(YEAST, size, "kept"), (other, size, "deleted")]))
+
+
+    def test_a_genome_with_its_ncbi_annotation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            root = fx.odb_world(tmp)
+            odb = odb_mod.Odb(root, fx.LOCI)
+            seq, gff, spans = fx.genome()
+            genomes_dir = os.path.join(tmp, "out", "genomes")
+            os.makedirs(genomes_dir)
+            with gzip.open(genomes.genome_file(genomes_dir, YEAST), "wt") as fh:
+                fh.write(f">c1\n{seq}\n")
+            a, b = spans["1at2759"]
+            ann = annotation.gff_file(genomes_dir, YEAST)  # the fetch stage's, beside the genome
+            with gzip.open(ann, "wt") as fh:
+                fh.write(f"c1\tRefSeq\tCDS\t{a}\t{a + 179}\t.\t+\t0\tParent=rna-1\n"
+                         f"c1\tRefSeq\tCDS\t{a + 480}\t{b}\t.\t+\t0\tParent=rna-1\n")
+            work = os.path.join(tmp, "work")
+            settings = dict(work=work, genomes=genomes_dir, miniprot=fx.miniprot(tmp, gff),
+                            hmmsearch=fx.hmmsearch(tmp), threads=1, staged_only=True, odb=root, loci=fx.LOCI,
+                            hmm_db=odb.hmm_db(os.path.join(tmp, "loci.hmm")),
+                            odb_lineages=odb_mod.species_lineages(odb, ncbi), tiara=None, rrna=None)
+            gb = sources.read_assemblies([fx.assembly_table(os.path.join(tmp, "genbank_fungi.txt"), fx.GENBANK)])
+            job = dict(genomes.jobs(ncbi, gb)[YEAST], annotated=True)  # the summary: protein-coding genes
+            self.assertTrue(annotation.gff_url(job).endswith("_genomic.gff.gz"))
+            acc, summary, why = genomes.run((job, settings))
+            self.assertEqual((why, summary["annotated"], summary["ncbi_models"]), (None, True, 1))
+            done = genomes.done_dir(work, YEAST)
+            models = {r["locus"]: r["model"] for r in fx.read_tsv(os.path.join(done, "loci.tsv"))}
+            self.assertEqual(models, {"1at2759": "ncbi", "2at2759": "miniprot", "3at2759": "-"})
+            compared = {r["locus"]: r for r in fx.read_tsv(os.path.join(done, annotation.TABLE))}
+            self.assertEqual((compared["1at2759"]["exact_introns"], compared["2at2759"]["transcript"]), ("1", "-"))
+            self.assertFalse(os.path.isfile(ann))  # taken and compared: deleted
+            self.assertIsNone(annotation.gff_url(dict(job, annotated=False)))
 
 
 class FcsTest(unittest.TestCase):

@@ -370,13 +370,293 @@ def median_of(values):
     return round(statistics.median(values), 4) if values else None
 
 
+# --- the paper's tables (since 2026-11-06; docs/benchmarks.md, "The paper's figures") ------------------------------
+
+SELECTION_COLUMNS = ("supergroup", "fate", "taxa")
+BREADTH_COLUMNS = ("supergroup", "ncbi_species", "eukore", "eukore_rrna_only", "compared", "both", "eukore_only",
+                   "compared_only")
+GENE_COLUMNS = ("accession", "species_taxid", "supergroup", "odb_nearest", "odb_self", "exon_bases", "intron_bases")
+ANNOTATION_COLUMNS = ("accession", "species_taxid", "supergroup", "odb_nearest", "odb_self", "locus", "status",
+                      "transcript", "gene", "exons", "ann_exons", "exact_exons", "introns", "ann_introns",
+                      "exact_introns", "bases", "ann_bases", "shared_bases")
+FLAG_COLUMNS = ("supergroup", "confidence", "flags", "copies")
+REGION_COLUMNS = ("supergroup", "source", "region", "records") + tuple(q for q, _f in QUANTILES)
+ORGANELLE_COLUMNS = ("supergroup", "species", "organelle", "gene", "with_gene")
+OVERLAP_COLUMNS = ("supergroup", "database", "species", "both", "eukore_only", "database_only")
+COPY_COLUMNS = ("accession", "species_taxid", "supergroup", "level", "contigs", "rrna_18s", "rdna_units",
+                "rdna_complete")
+ODB_NAME = "BUSCO (OrthoDB)"
+NEAREST_RANKS = ("genus", "family", "order", "class", "phylum")
+
+
+def supergroup_of(ncbi, taxid, cache):
+    if taxid not in cache:
+        from . import labels  # noqa: PLC0415
+        cache[taxid] = labels.supergroup(ncbi, taxid)
+    return cache[taxid]
+
+
+def selection_rows(fates, ncbi):
+    """selection.tsv: per supergroup what became of NCBI's taxa with an assembly (genomes.fates)."""
+    counts, cache = collections.Counter(), {}
+    for taxid, fate in fates.items():
+        counts[(supergroup_of(ncbi, taxid, cache), fate)] += 1
+    return [dict(supergroup=g, fate=f, taxa=n) for (g, f), n in sorted(counts.items())]
+
+
+def compared_species(table, ncbi, inside=None):
+    """The species another reference holds (its record<TAB>taxid table), within inside's clades."""
+    out = set()
+    with util.open_text(table) as fh:
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if len(f) >= 2 and f[1].isdigit():
+                sp = ncbi.species_of(int(f[1]))
+                if ncbi.rank.get(sp) == "species" and (inside is None or inside(sp)):
+                    out.add(sp)
+    return out
+
+
+def breadth_rows(species, fates, other, ncbi):
+    """breadth.tsv: per supergroup (and `all`) NCBI's species with an assembly, Eukore's species (with a genome; with
+    rRNA alone), another reference's (other: its species, or None) and the two's overlap."""
+    cache = {}
+    ncbi_species = collections.Counter(supergroup_of(ncbi, t, cache) for t, f in (fates or {}).items()
+                                       if f not in ("not a species", "placeholder", "hybrid"))
+    with_genome = {int(t): r["supergroup"] for t, r in species.items() if r["representative"] != "-"}
+    rrna_only = collections.Counter(r["supergroup"] for r in species.values() if r["representative"] == "-")
+    theirs = {sp: supergroup_of(ncbi, sp, cache) for sp in (other or ())}
+    groups = sorted(set(ncbi_species) | set(with_genome.values()) | set(rrna_only) | set(theirs.values()))
+    rows = []
+    for g in groups + ["all"]:
+        mine = {sp for sp, x in with_genome.items() if g in (x, "all")}
+        their = {sp for sp, x in theirs.items() if g in (x, "all")}
+        rows.append(dict(supergroup=g, ncbi_species=sum(ncbi_species.values()) if g == "all" else ncbi_species[g],
+                         eukore=len(mine), eukore_rrna_only=sum(rrna_only.values()) if g == "all" else rrna_only[g],
+                         compared=len(their) if other is not None else "-",
+                         both=len(mine & their) if other is not None else "-",
+                         eukore_only=len(mine - their) if other is not None else "-",
+                         compared_only=len(their - mine) if other is not None else "-"))
+    return rows
+
+
+def reference_species(references, ncbi, inside=None, index=None):
+    """{reference name: its NCBI species} of labels.Reference's (PR2, EUKARYOME's long reads, KSGP): each species name
+    of the reference that is an NCBI species' name or synonym (rrna.name_index), within inside's clades."""
+    index = index if index is not None else rrna.name_index(ncbi)
+    out = {}
+    for ref in references:
+        found = set()
+        for name in ref.species:
+            t = index.get(name)
+            sp = ncbi.species_of(t) if t else None
+            if sp and ncbi.rank.get(sp) == "species" and (inside is None or inside(sp)):
+                found.add(sp)
+        out[ref.name] = found
+    return out
+
+
+def overlap_rows(species, databases, ncbi):
+    """overlap.tsv: per supergroup (and `all`) and database ({name: its NCBI species}) the database's species, those
+    in Eukore too, Eukore's alone and the database's alone. Eukore's: every species of species.tsv (genome or rRNA)."""
+    cache = {}
+    mine = {int(t): r.get("supergroup", "-") for t, r in species.items()}
+    rows = []
+    for name, theirs in databases.items():
+        their = {sp: mine.get(sp) or supergroup_of(ncbi, sp, cache) for sp in theirs}
+        for g in sorted(set(mine.values()) | set(their.values())) + ["all"]:
+            a = {sp for sp, x in mine.items() if g in (x, "all")}
+            b = {sp for sp, x in their.items() if g in (x, "all")}
+            rows.append(dict(supergroup=g, database=name, species=len(b), both=len(a & b), eukore_only=len(a - b),
+                             database_only=len(b - a)))
+    return rows
+
+
+def copy_rows(genomes, species):
+    """rrna_copies.tsv: each species' genome's rRNA as extracted (genomes.tsv: its 18S spans, rDNA units, whole
+    units). An assembly collapses a tandem rDNA array: these are the copies assembled, not the genome's."""
+    return [dict(accession=a, species_taxid=g["species_taxid"],
+                 supergroup=species.get(g["species_taxid"], {}).get("supergroup", "-"), level=g.get("level", "-"),
+                 contigs=g.get("contigs", "-"), rrna_18s=g.get("rrna_18s", "-"), rdna_units=g.get("rdna_units", "-"),
+                 rdna_complete=g.get("rdna_complete", "-"))
+            for a, g in sorted(genomes.items()) if g.get("source") != "no_assembly"]
+
+
+def odb_distance(odb, ncbi, held):
+    """{species: (rank shared with the nearest other species of BUSCO's dataset: genus .. phylum, or none; whether
+    the species is itself in the dataset)} of the package's species (held)."""
+    theirs = {ncbi.species_of(t) for t in odb.species()}
+    names = {r: collections.Counter() for r in NEAREST_RANKS}
+    for sp in theirs:
+        for r, name in ncbi.ranks(sp).items():
+            if r in names and name:
+                names[r][name] += 1
+    out = {}
+    for sp in held:
+        mine, own = ncbi.ranks(sp), sp in theirs
+        out[sp] = (next((r for r in NEAREST_RANKS if mine.get(r) and names[r][mine[r]] - (1 if own else 0) > 0),
+                        "none"), "t" if own else "f")
+    return out
+
+
+def annotation_rows(work, genomes, species, distance):
+    """annotation.tsv: each compared copy (WORK/done/<accession>/annotation.tsv, annotation.py) with its genome's
+    supergroup and distance to BUSCO's dataset."""
+    from . import annotation as ann  # noqa: PLC0415
+    from .genomes import done_dir  # noqa: PLC0415
+    out = []
+    for acc, g in sorted(genomes.items()):
+        sp = int(g["species_taxid"])
+        near, own = distance.get(sp, ("-", "-"))
+        for r in rows_of(os.path.join(done_dir(work, acc), ann.TABLE)):
+            out.append(dict(r, accession=acc, species_taxid=sp, odb_nearest=near, odb_self=own,
+                            supergroup=species.get(str(sp), {}).get("supergroup", "-")))
+    return out
+
+
+def region_rows(folder, species):
+    """rrna_regions.tsv: per supergroup, source and region the region's length's quantiles; the organelle genes'
+    (organelle/genes.tsv, those not partial) as source `mitochondrion` or `plastid`, region the gene (SSU: 12S in
+    animals' mitochondria; COX1 from its first base to its last, introns and all)."""
+    lengths = collections.defaultdict(list)
+    for r in rows_of(os.path.join(folder, "rrna", "records.tsv")):
+        g = species.get(r["species_taxid"], {}).get("supergroup", "-")
+        for name, a, b in rrna.parse_regions(r["regions"]) or ():
+            lengths[(g, r["source"], name)].append(b - a)
+    for r in rows_of(os.path.join(folder, "organelle", "genes.tsv")):
+        if r.get("partial") == "f" and str(r.get("length", "")).isdigit():
+            g = species.get(r["species_taxid"], {}).get("supergroup", "-")
+            lengths[(g, r["organelle"], r["gene"])].append(int(r["length"]))
+    out = []
+    for (g, source, name), values in sorted(lengths.items()):
+        values.sort()
+        out.append(dict(supergroup=g, source=source, region=name, records=len(values),
+                        **{q: quantile(values, f) for q, f in QUANTILES}))
+    return out
+
+
+def organelle_rows(folder, species):
+    """organelle.tsv: per supergroup its species and those with each organelle gene."""
+    held = collections.defaultdict(set)
+    for r in rows_of(os.path.join(folder, "organelle", "genes.tsv")):
+        held[(r["organelle"], r["gene"])].add(r["species_taxid"])
+    per_group = collections.Counter(r["supergroup"] for r in species.values())
+    out = []
+    for g, n in sorted(per_group.items()):
+        for (organelle, gene), taxa in sorted(held.items()):
+            out.append(dict(supergroup=g, species=n, organelle=organelle, gene=gene,
+                            with_gene=sum(1 for t in taxa if species.get(t, {}).get("supergroup") == g)))
+    return out
+
+
+def read_summary(rows):
+    """reads.tsv's headline: per reference and mode the marker reads' precision and recall at species and genus (held
+    out: of the test genomes with another species of their genus in the package, the only ones a held-out read can be
+    placed right to its genus), and the background reads assigned per million, and to a phylum or deeper."""
+    out = collections.defaultdict(dict)
+    sums = collections.defaultdict(collections.Counter)
+    for r in rows:
+        if r["mode"] == "held_out" and not int(r["congeners"]):
+            continue
+        key = (r["reference"], r["mode"], r["kind"], r["reads"])
+        for c in ("n", "assigned", "species_correct", "species_wrong", "genus_correct", "genus_wrong",
+                  "phylum_wrong"):
+            sums[key][c] += int(r[c])
+    for (ref, mode, kind, reads), s in sums.items():
+        if kind == "eukaryote" and reads == "marker":
+            out[ref][mode] = {f"{r}_{m}": round(v, 4) if v is not None else None for r in ("species", "genus")
+                              for m, v in (("recall", s[f"{r}_correct"] / s["n"] if s["n"] else None),
+                                           ("precision", s[f"{r}_correct"] / (s[f"{r}_correct"] + s[f"{r}_wrong"])
+                                            if s[f"{r}_correct"] + s[f"{r}_wrong"] else None))}
+        elif kind == "background":
+            out[ref]["background_per_million"] = round(1e6 * s["assigned"] / s["n"], 1) if s["n"] else None
+            out[ref]["background_to_a_phylum_per_million"] = round(1e6 * s["phylum_wrong"] / s["n"], 1) \
+                if s["n"] else None
+    return dict(out)
+
+
+def paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside, reads, flags, gene_bases, threads,
+          summary, log, databases=None):
+    """The tables of the paper's figures beyond the benchmarks' own (each where its inputs are there). databases:
+    {name: its NCBI species} of the other references the build read (overlap.tsv, with BUSCO's dataset and the
+    compared reference)."""
+    if fates:
+        write(out, "selection.tsv", SELECTION_COLUMNS, selection_rows(fates, ncbi))
+    other = compared_species(compare[2], ncbi, inside) if compare else None
+    rows = breadth_rows(species, fates, other, ncbi)
+    write(out, "breadth.tsv", BREADTH_COLUMNS, rows)
+    summary["breadth"] = next(({k: v for k, v in r.items() if k != "supergroup"} for r in rows
+                               if r["supergroup"] == "all"), {})
+    databases = dict(databases or {})
+    if other is not None:
+        databases[compare[0]] = other
+    if odb:
+        databases[ODB_NAME] = {sp for sp in (ncbi.species_of(t) for t in odb.species())
+                               if sp and ncbi.rank.get(sp) == "species" and (inside is None or inside(sp))}
+    if databases:
+        rows = overlap_rows(species, databases, ncbi)
+        write(out, "overlap.tsv", OVERLAP_COLUMNS, rows)
+        summary["overlap"] = {r["database"]: {k: r[k] for k in ("species", "both", "eukore_only", "database_only")}
+                              for r in rows if r["supergroup"] == "all"}
+    write(out, "rrna_copies.tsv", COPY_COLUMNS, copy_rows(genomes, species))
+    held = {int(g["species_taxid"]) for g in genomes.values()}
+    distance = odb_distance(odb, ncbi, held) if odb else {}
+    rows = []
+    for acc, g in sorted(genomes.items()):
+        sp = int(g["species_taxid"])
+        near, own = distance.get(sp, ("-", "-"))
+        exon, intron = gene_bases.get(acc, (0, 0))
+        rows.append(dict(accession=acc, species_taxid=sp, supergroup=species.get(str(sp), {}).get("supergroup", "-"),
+                         odb_nearest=near, odb_self=own, exon_bases=exon, intron_bases=intron))
+    write(out, "genes.tsv", GENE_COLUMNS, rows)
+    by_group = collections.defaultdict(lambda: [0, 0])
+    for r in rows:
+        by_group[r["supergroup"]][0] += r["exon_bases"]
+        by_group[r["supergroup"]][1] += r["intron_bases"]
+    summary["intron_share"] = {g: round(i / (e + i), 4) for g, (e, i) in sorted(by_group.items()) if e + i}
+    if work:
+        rows = annotation_rows(work, genomes, species, distance)
+        if rows:
+            write(out, "annotation.tsv", ANNOTATION_COLUMNS, rows)
+            matched = [r for r in rows if r["transcript"] != "-"]
+            introns = sum(int(r["introns"]) for r in matched)
+            summary["annotation"] = {
+                "genomes": len({r["accession"] for r in rows}), "copies": len(rows),
+                "on_an_annotated_gene": round(len(matched) / len(rows), 4),
+                "introns_exact": round(sum(int(r["exact_introns"]) for r in matched) / introns, 4) if introns else None,
+                "bases_recall": round(sum(int(r["shared_bases"]) for r in matched) /
+                                      max(1, sum(int(r["ann_bases"]) for r in matched)), 4),
+                "bases_precision": round(sum(int(r["shared_bases"]) for r in matched) /
+                                         max(1, sum(int(r["bases"]) for r in matched)), 4)}
+            log(f"benchmarks: {len(rows)} copies against NCBI's annotation ({summary['annotation']})")
+        else:
+            summary["left_out"]["annotation"] = "no genome compared with NCBI's annotation (annotation.py)"
+    write(out, "flags.tsv", FLAG_COLUMNS, [dict(supergroup=g, confidence=t, flags=f, copies=n)
+                                           for (g, t, f), n in sorted(flags.items())])
+    write(out, "rrna_regions.tsv", REGION_COLUMNS, region_rows(folder, species))
+    write(out, "organelle.tsv", ORGANELLE_COLUMNS, organelle_rows(folder, species))
+    if reads and reads.get("tests") and reads.get("minimap2"):
+        from . import reads as reads_mod  # noqa: PLC0415
+        rows = reads_mod.run(folder, ncbi, reads["genomes_folder"], reads["tests"], reads["minimap2"], threads,
+                             reads["work"], compare, reads.get("background", ()), inside, log)
+        write(out, "reads.tsv", reads_mod.COLUMNS, rows)
+        summary["reads"] = read_summary(rows)
+        shutil.rmtree(reads["work"], ignore_errors=True)
+    else:
+        summary["left_out"]["reads"] = "no test genomes or no minimap2 (eukore_build.py --read_genomes)"
+
+
 def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, nearest=None, stages=None, out=None,
-        log=print):
+        log=print, fates=None, compare=None, inside=None, reads=None, databases=None):
     """The benchmarks of the package in `folder` (finished, or the build's unfinished one once its tables are written)
     into out (default folder/benchmarks) -> summary.json's figures. ncbi: the taxonomy (the build's, or the package's
     taxonomy/); odb_folder: BUSCO's dataset (orthodb.tsv); vsearch: resolution.tsv; nearest: the build's own
     {(accession, locus): (identity, depth)} of its checks (qc.check), so that the BUSCOs are not searched again;
-    work: the build's work folder (runtime.tsv); stages: [(step, seconds)] of the package stage (stages.tsv)."""
+    work: the build's work folder (runtime.tsv, annotation.tsv); stages: [(step, seconds)] of the package stage
+    (stages.tsv). The paper's (paper()): fates, genomes.fates' {taxid: fate} (selection.tsv); compare: another
+    reference (name, FASTA, record<TAB>taxid table: breadth.tsv, reads.tsv); inside: a trial's clades, which the other
+    reference is cut to; reads: dict(genomes_folder, tests, minimap2, background, work) (reads.py: reads.tsv);
+    databases: {name: NCBI species} of the other references read (overlap.tsv: reference_species, ROD's)."""
     started = time.time()
     out = out or os.path.join(folder, FOLDER)
     os.makedirs(out, exist_ok=True)
@@ -401,12 +681,15 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
 
     statuses, tiers, calls = collections.defaultdict(collections.Counter), collections.defaultdict(
         collections.Counter), {}
+    flags = collections.Counter()  # (supergroup, confidence, flags) -> copies: which checks fire, together
     for r in rows_of(os.path.join(folder, "busco", "copies.tsv")):
         acc = r["accession"]
         if acc not in genomes:
             continue
         statuses[acc][r["status"]] += 1
         tiers[acc][r.get("confidence", "-")] += 1
+        flags[(species.get(str(species_of[acc]), {}).get("supergroup", "-"), r.get("confidence", "-"),
+               r.get("flags", "-"))] += 1
         if acc in compared or search:
             calls[(acc, r["locus"])] = {k: r.get(k, "-") for k in ("status", "query", "contig", "start", "end")}
     rows = completeness(genomes, species, statuses, tiers, len(loci))
@@ -422,10 +705,13 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
 
     # the copies' coding sequences, where a benchmark needs them: exons from features.tsv, copies per locus
     exons = collections.defaultdict(list)
-    if compared or search:
-        for f in rows_of(os.path.join(folder, "busco", "features.tsv")):
-            if f["kind"] == "exon" and (f["accession"] in compared or (search and f["accession"] in genomes)):
-                exons[(f["accession"], f["locus"])].append(("exon", int(f["start"]), int(f["end"])))
+    gene_bases = collections.defaultdict(lambda: [0, 0])  # accession -> its copies' exon and intron bases
+    for f in rows_of(os.path.join(folder, "busco", "features.tsv")):
+        if f["kind"] in ("exon", "intron") and f["accession"] in genomes:
+            gene_bases[f["accession"]][f["kind"] == "intron"] += int(f["end"]) - int(f["start"])
+        wanted = f["accession"] in compared or (search and f["accession"] in genomes)
+        if f["kind"] in ("exon", "frameshift") and wanted:  # qc.spliced leaves the frameshifts' bases out
+            exons[(f["accession"], f["locus"])].append((f["kind"], int(f["start"]), int(f["end"])))
     odb_rows, busco_nearest = [], collections.defaultdict(list)
     if vsearch and nearest is not None:
         for (acc, locus), found in nearest.items():
@@ -507,6 +793,8 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
             summary["left_out"]["runtime"] = "no genome timed (genomes run before 2026-11-06)"
     else:
         summary["left_out"]["runtime"] = "no work folder (--work)"
+    paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside, reads, flags,
+          {a: tuple(v) for a, v in gene_bases.items()}, threads, summary, log, databases)
     if stages is not None:
         write(out, "stages.tsv", ("step", "seconds"),
               [dict(step=s, seconds=f"{t:.1f}") for s, t in stages] +

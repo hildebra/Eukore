@@ -13,3 +13,5 @@
 | species named in KSGP by name or synonym | 34.9% |
 | species named in PR2 by name or synonym | 30.2% |
 | genome run (BUSCOs, rRNA, tiara), median | 2.3 min on 2 threads, 93 min per Gb of genome |
+| annotation | not measured: no genome compared with NCBI's annotation (annotation.py) |
+| reads | not measured: no test genomes or no minimap2 (eukore_build.py --read_genomes) |

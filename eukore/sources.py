@@ -55,7 +55,8 @@ PARTIAL_SHARE = 0.3
 
 def read_assemblies(paths):
     """GenBank's assembly_summary.txt files -> [dict] of the latest assemblies (accession, taxid, species_taxid,
-    organism, strain, isolate, level, asm_name, size, contigs, category, ftp), without those smaller than MIN_GENOME and,
+    organism, strain, isolate, level, asm_name, size, contigs, category, ftp, genes: its annotation's protein-coding
+    genes, 0 for none, None where the table does not say), without those smaller than MIN_GENOME and,
     of a species with 3 assemblies or more, those smaller than PARTIAL_SHARE of their median size."""
     rows = []
     for path in paths:
@@ -85,6 +86,8 @@ def read_assemblies(paths):
                                  ftp=f.get("ftp_path", ""), flags=flags, refseq_category=f.get("refseq_category", ""),
                                  paired=f.get("gbrs_paired_asm", "na"), date=f.get("seq_rel_date", ""),
                                  submitter=f.get("submitter", ""),
+                                 genes=(int(f["protein_coding_gene_count"]) if f["protein_coding_gene_count"].isdigit()
+                                        else 0) if "protein_coding_gene_count" in f else None,
                                  group=re.sub(r"^(genbank|refseq|assembly_summary)_", "",
                                               os.path.basename(path)).rsplit(".", 1)[0]))
     rows = [r for r in rows if r["size"] is None or r["size"] >= MIN_GENOME]

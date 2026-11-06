@@ -28,8 +28,13 @@ RANKS = ("phylum", "class", "order", "family", "genus")
 
 
 def spliced(copy, features):
-    """A copy's coding sequence: its exons joined (features [(kind, start, end)] on the copy)."""
-    return "".join(copy[s:e] for k, s, e in sorted(features, key=lambda f: f[1]) if k == "exon")
+    """A copy's coding sequence: its exons joined (features [(kind, start, end)] on the copy), the bases of its
+    frameshifts (loci.frameshift_features, since 2026-11-06) left out."""
+    shifted = {i for k, s, e in features if k == "frameshift" for i in range(int(s), int(e))}
+    exons = sorted((int(s), int(e)) for k, s, e in features if k == "exon")
+    if not shifted:
+        return "".join(copy[s:e] for s, e in exons)
+    return "".join(copy[i] for s, e in exons for i in range(s, e) if i not in shifted)
 
 
 def lca(ncbi, taxids):

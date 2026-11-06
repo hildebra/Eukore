@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import time
 
+from . import annotation as annotation_mod
 from . import loci as loci_mod
 from . import odb as odb_mod
 from . import placement, quality, species, util
@@ -44,7 +45,8 @@ CATEGORY = {"reference genome": 0, "representative genome": 1}
 LEVEL = {"Complete Genome": 0, "Chromosome": 1, "Scaffold": 2, "Contig": 3}
 LOCI_COLUMNS = ("locus", "status", "contig", "contig_length", "start", "end", "strand", "length", "cds_length",
                 "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies", "query",
-                "protein_length", "window_class", "rescued")  # rescued: loci.py's rescue pass (since 2026-11-06)
+                "protein_length", "window_class", "rescued",  # rescued: loci.py's rescue pass (since 2026-11-06)
+                "model")  # model: miniprot's or NCBI's annotation's gene model (loci.annotated, since 2026-11-06)
 
 
 def safe(name):
@@ -137,7 +139,7 @@ def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assemb
     """The genome set -> {accession: job}: job = dict(accession (GenBank's), fetch (the accession fetched), url, size,
     species_taxid, taxid, organism, why [ncbi | model | no_assembly], lineage (ancestor taxids), itsx (ITSx's sets),
     rdna_unit, flags, others (the species' other assemblies' accessions), path (no_assembly: its records' FASTA), gencode
-    (its NCBI genetic code))."""
+    (its NCBI genetic code), annotated (the fetched assembly has NCBI gene models, annotation.py; None: not known))."""
     refseq = {r["paired"]: r for r in refseq_rows if r.get("paired", "na").startswith("GCA_")}
     from . import rrna  # noqa: PLC0415
     out = {}
@@ -147,13 +149,14 @@ def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assemb
         if url is None and path is None:
             return
         sp = int(sp)
+        genes = (refseq.get(row["accession"]) or row).get("genes")  # the fetched assembly's annotation
         out[row["accession"]] = dict(
             accession=row["accession"], fetch=fetch, url=url, size=row.get("size"), species_taxid=sp,
             taxid=int(row.get("taxid") or sp), organism=row.get("organism", ""), why=[why],
             lineage=list(ncbi.ancestors(ncbi.merged.get(sp, sp))), itsx=rrna.itsx_groups(ncbi, sp), rdna_unit=unit,
             flags=sorted(row.get("flags") or ()), others=[o["accession"] for o in others], path=path,
             level=row.get("level", ""), category=row.get("category", ""),
-            gencode=ncbi.code_of(int(row.get("taxid") or sp)))
+            gencode=ncbi.code_of(int(row.get("taxid") or sp)), annotated=None if genes is None else genes > 0)
 
     reps = representatives(assemblies, ncbi, inside)
     model_species = {}
@@ -176,6 +179,34 @@ def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assemb
         if sp in reps or sp in model_species or (inside and not inside(sp)):
             continue
         add(dict(accession=acc, taxid=sp, organism=organism), "no_assembly", sp, path=path)
+    return out
+
+
+FATES = ("chosen", "chosen, flagged", "model species", "no assembly (records)", "every assembly excluded",
+         "placeholder", "hybrid", "not a species", "no download")
+
+
+def fates(ncbi, assemblies, job_map, inside=None):
+    """What became of each NCBI taxon with a GenBank assembly (the benchmarks' selection funnel) -> {taxid: fate}:
+    chosen (its genome unflagged, or flagged: the best it has), a model species' reference, no assembly (EukProt's
+    records), every assembly excluded (EXCLUDE: NCBI's or its FCS-GX and ANI reports'), or left out as a placeholder,
+    an interspecies hybrid or a taxon above species (assemblies labelled by a genus)."""
+    out = {}
+    for job in job_map.values():
+        why = job["why"][0]
+        out[int(job["species_taxid"])] = ("model species" if why == "model" else "no assembly (records)"
+                                          if why == "no_assembly" else "chosen, flagged" if job.get("flags")
+                                          else "chosen")
+    excluded = collections.defaultdict(list)
+    for row in assemblies:
+        sp = ncbi.species_of(row["species_taxid"])
+        if sp in out or (inside and not inside(sp)):
+            continue
+        excluded[sp].append(bool(set(row.get("flags") or ()) & EXCLUDE))
+    for sp, flagged in excluded.items():
+        out[sp] = ("not a species" if ncbi.rank.get(sp) != "species" else "placeholder" if ncbi.is_placeholder(sp)
+                   else "hybrid" if HYBRID.search(ncbi.name.get(sp, "")) else "every assembly excluded"
+                   if all(flagged) else "no download")  # its genomes without an FTP path
     return out
 
 
@@ -357,16 +388,22 @@ def run(args):
     os.makedirs(tmp)
     odb = odb_of(settings)
     queries = odb.queries(job["lineage"], settings["odb_lineages"])
+    gff, report = annotation_of(job, settings)
     try:
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
                             settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), tmp,
-                            settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings))
+                            settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings),
+                            annotation=(gff, report) if gff else None)
     except (OSError, RuntimeError) as e:
         shutil.rmtree(tmp, ignore_errors=True)
         return acc, None, f"locus calling failed: {e}"
     if got["failed"]:
         shutil.rmtree(tmp, ignore_errors=True)
         return acc, None, got["failed"]
+    if gff is not False:  # miniprot's models against NCBI's (annotation.py's benchmark; no rows: no annotation)
+        annotation_mod.annotate(tmp, gff, report, {
+            locus: dict(r["miniprot"], status=r["status"], contig=r["contig"], strand=r["strand"])
+            for locus, r in got["loci"].items() if r["status"] != "Missing"})
     windows = os.path.join(tmp, "windows.fna.gz")
     with gzip.open(windows, "wt", compresslevel=6) as fh:
         fh.writelines(f">{n}\n{s}\n" for n, s in got["windows"].items())
@@ -397,7 +434,7 @@ def run(args):
                 len(r["copy"]), len(r["spliced"]), exons, f"{r['identity']:.4f}", f"{r['coverage']:.3f}",
                 f"{r['hmm_score']:.1f}", f"{r['cutoff']:.1f}", f"{r['hmm_coverage']:.3f}", r["copies"], r["query"],
                 len(r["protein"]), classes.get(window_of.get(locus, ""), "-"),
-                "t" if r.get("rescued") else "f"])) + "\n")
+                "t" if r.get("rescued") else "f", r.get("model", "miniprot")])) + "\n")
             ft.writelines(f"{locus}\t{k}\t{s}\t{e}\n" for k, s, e in r["features"])
     rrna = None
     if settings.get("rrna") and not job.get("path"):  # records of a species without an assembly: no genome's rRNA
@@ -418,7 +455,8 @@ def run(args):
                "status": dict(collections.Counter(r["status"] for r in got["loci"].values())), "rrna": rrna,
                "bytes": os.path.getsize(path), "seconds": seconds, "threads": settings.get("threads", 1),
                "rescue": rescue_of(settings)["rescue_missing"],
-               "rescued": sum(1 for r in got["loci"].values() if r.get("rescued"))}
+               "rescued": sum(1 for r in got["loci"].values() if r.get("rescued")),
+               "annotated": bool(gff), "ncbi_models": sum(1 for r in got["loci"].values() if r.get("model") == "ncbi")}
     if own:
         summary["held_out"] = {"left_out": own, "seconds": round(time.time() - started - seconds, 1)}
     with open(os.path.join(tmp, "done.json"), "w", newline="\n") as fh:
@@ -426,7 +464,29 @@ def run(args):
     if os.path.isdir(folder):
         shutil.rmtree(folder)
     os.replace(tmp, folder)
+    for used in (gff, report):  # compared and taken: annotation.tsv holds what the benchmark needs
+        if used and os.path.isfile(used):
+            os.remove(used)
     return acc, summary, None
+
+
+def annotation_of(job, settings):
+    """A genome's NCBI annotation for its run (annotation.py) -> (GFF path, assembly report path or None): its GFF
+    beside the genome (the fetch stage's), else fetched where the run may fetch; (None, None) where NCBI has none (a
+    404: annotation.tsv without rows); (False, None) where the genome has no annotation or it is not here yet (a
+    staged-only run: compared later, annotate_pass)."""
+    if not annotation_mod.gff_url(job):
+        return False, None
+    gff = annotation_mod.gff_file(settings["genomes"], job["accession"])
+    report = annotation_mod.report_file(settings["genomes"], job["accession"])
+    if not os.path.isfile(gff):
+        if settings.get("staged_only"):
+            return False, None
+        try:
+            gff = annotation_mod.fetch(job, settings["genomes"])
+        except OSError:
+            return False, None
+    return gff, report if os.path.isfile(report) else None
 
 
 def rescue_of(settings):

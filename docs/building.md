@@ -143,7 +143,10 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 
   Then it fetches each species' genome into `OUT/genomes` (its RefSeq copy where it has one). Every 10 minutes
   (`--report_minutes`) it says the genomes fetched, failed and left, the Gb left, the download rate and the time
-  left, estimated by the genomes' sizes; the process stage reports its genomes alike.
+  left, estimated by the genomes' sizes; the process stage reports its genomes alike. Beside each genome it fetches
+  NCBI's gene models (a GFF: RefSeq's or a GenBank submitter's) and the assembly report, but for the genomes whose
+  assembly summary gives no protein-coding genes (a 404 or a GFF without coding sequences: no annotation); the process stage takes a BUSCO copy's model from it where the HMM confirms it
+  ([methods.md](methods.md)), compares miniprot's models with it (`annotation.tsv`) and deletes it.
 - **process** calls each fetched genome's BUSCOs and extracts its rRNA into `WORK/done/<accession>/`, `-j` genomes at a
   time with `-t / -j` threads each. A genome not fetched yet is left for the next run. Then it takes the organelle
   genes (`WORK/organelle`).
@@ -179,6 +182,9 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--ksgp_tax FILE` | KSGP 4.0, fetched | the KSGP release `species.tsv`'s KSGP lineages come from |
 | `--miniprot`, `--hmmsearch` | on the PATH | the tools, where not on the PATH |
 | `--no_benchmarks` | | write the package without its `benchmarks/` ([benchmarks.md](benchmarks.md)) |
+| `--read_genomes N` | 3 | the read benchmark's test genomes per supergroup, kept through the prune (0: none) |
+| `--read_compare NAME=FASTA,TABLE` | | another reference for the read benchmark and `breadth.tsv` (e.g. EukDetect2's `eukdb.fasta` and `busco_taxid_genome_link.txt`) |
+| `--minimap2` | on the PATH | the read benchmark's aligner |
 
 ### Resuming and rebuilding
 

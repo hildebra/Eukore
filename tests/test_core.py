@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests of Eukore's core modules: the NCBI taxonomy and its subset (written into a package and read back the same for
-the package's taxa), NCBI's assembly tables read, the model species table.
+the package's taxa), NCBI's assembly tables read, the model species table, a genome's nuclear molecules (its
+rRNA's).
 
     python3 -m unittest discover -s tests -t tests
 """
@@ -12,7 +13,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import ncbi, sources, species, util  # noqa: E402
+from eukore import ncbi, rrna, sources, species, util  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 
@@ -46,6 +47,18 @@ class CoreTest(unittest.TestCase):
         self.assertIn("Homo sapiens", {r["species"] for r in species.eukaryotes(rows)})
         self.assertTrue(os.path.isfile(species.UNITS))
         self.assertFalse(os.path.exists(os.path.join(sources.DATA, "euk30_loci.tsv")))  # the user picks loci
+
+    def test_the_genome_rrna_reads_nuclear_molecules_only(self):
+        # Arabidopsis' assembly holds its mitochondrion and chloroplast, whose SSU barrnap calls an 18S (2026-11-06)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "g.fna")
+            with open(path, "w") as fh:
+                fh.write(">CP002684.1 Arabidopsis thaliana chromosome 1 sequence\nACGT\nAC\n"
+                         ">BK010421.1 TPA_asm: Arabidopsis thaliana ecotype Col-0 mitochondrion, complete genome\nGGGG\n"
+                         ">AP000423.1 Arabidopsis thaliana chloroplast DNA, complete genome\nTTTT\n"
+                         ">x1 Plasmodium falciparum apicoplast\nCCCC\n>CP002685.1 chromosome 2\nAAAA\n")
+            self.assertEqual(list(rrna.contigs(path, nuclear=True)), [("CP002684.1", "ACGTAC"), ("CP002685.1", "AAAA")])
+            self.assertEqual(len(list(rrna.contigs(path))), 5)
 
 
 class ProgressTest(unittest.TestCase):

@@ -84,6 +84,31 @@ class UnitTest(unittest.TestCase):
             with self.assertRaises(rrna.ItsxError):
                 rrna.run_itsx(["ACGT" * 50], broken)
 
+    def test_itsx_guessed_borders_are_not_taken(self):
+        # ITSx without the 5.8S's end still writes an ITS2, 45 bases after the 5.8S start (Arabidopsis with set T,
+        # 2026-11-06): ITS1 and the 28S start are ITSx's, the 5.8S's end barrnap's
+        line = "u0\t3755 bp.\tSSU: 1-300\tITS1: 301-590\t5.8S: No end\tITS2: 636-1206\tLSU: 1207-3755\t"
+        with tempfile.TemporaryDirectory() as tmp:
+            itsx = tool(tmp, "ITSx_noend", "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && o=$2; shift; done\n"
+                                           f"printf '{line}\\n' > $o.positions.txt\nexit 0\n")
+            found = rrna.run_itsx(["ACGT" * 50], itsx)["ACGT" * 50]
+        self.assertEqual(found["5.8S problem"], "No end")
+        self.assertEqual((found["ITS1"], found["ITS2"]), ((301, 590), (636, 1206)))
+
+        def item():  # barrnap's regions on a unit, the ITSx stretch from 1500
+            return dict(unit="A" * 5000, its_at=1500, regions=[("18S", 0, 1800), ("ITS1", 1800, 2100),
+                                                               ("5.8S", 2100, 2260), ("ITS2", 2260, 2500),
+                                                               ("28S", 2500, 5000)])
+        got = {r[0]: r[1:] for r in rrna.refine(item(), found)["regions"]}
+        self.assertEqual(got, {"18S": (0, 1800), "ITS1": (1800, 2090), "5.8S": (2090, 2260), "ITS2": (2260, 2706),
+                               "28S": (2706, 5000)})
+        whole = {k: v for k, v in found.items() if k != "5.8S problem"}  # what was taken before: a 45-base 5.8S
+        self.assertEqual({r[0]: r[1:] for r in rrna.refine(item(), whole)["regions"]}["5.8S"], (2090, 2135))
+        neither = dict(found, **{"5.8S problem": "Not found"})
+        self.assertEqual({r[0]: r[1:] for r in rrna.refine(item(), neither)["regions"]}["5.8S"], (2100, 2260))
+        start = dict(found, **{"5.8S problem": "No start"})
+        self.assertEqual({r[0]: r[1:] for r in rrna.refine(item(), start)["regions"]}["5.8S"], (2100, 2135))
+
     def test_itsx_searches_the_lineages_sets(self):
         # each record's ITSx profile sets by its NCBI lineage (fungi F, animals M), all sets for one in none of them;
         # one ITSx run per distinct set

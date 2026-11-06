@@ -114,6 +114,7 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 | `copies` | complete copies of the locus in the genome |
 | `query` | the dataset protein that placed it (`<busco>_<taxid>_<id>`, or an ancestral variant; `<busco>_self` for the rescue pass' self protein) |
 | `rescued` | `t` where the rescue pass called it (its HMM in the genome's six-frame ORFs placed it; [methods.md](methods.md)), `f`, or `-` for a genome run before 2026-11-06 |
+| `model` | where its exons come from: `ncbi` (the genome's own NCBI annotation, its translation confirmed by the HMM; [methods.md](methods.md)), `miniprot`, or `-` for a genome run before 2026-11-06 |
 | `protein_length` | of its translation |
 | `window_class` | tiara's class of the 50 kb around it (`eukarya`, `bacteria`, `archaea`, `organelle`, `unknown`), `-` where not classified |
 | `fcs` | NCBI FCS-GX's call over the copy (`ACTION:division:top taxon`, its action `EXCLUDE`, `TRIM`, `FIX` or `REVIEW`), `-` for none or where not screened |
@@ -136,7 +137,7 @@ A copy is `low` where a check calls it another organism's: `own_species` (f), `f
 | column | |
 |---|---|
 | `accession`, `locus` | the copy |
-| `kind` | `exon`, `intron`, `soft_masked`, `low_complexity`, `gap` |
+| `kind` | `exon`, `intron`, `soft_masked`, `low_complexity`, `gap`, `frameshift` (bases inside an exon that miniprot's frameshift leaves out of the coding sequence; since 2026-11-06) |
 | `start`, `end` | on the copy |
 
 A copy failing a check is kept and flagged, so that a user chooses.
@@ -217,6 +218,16 @@ why. A reader needs none of them.
 | `labels.tsv` | supergroup (and `all`) and reference: its species by how they were named (`species`, `synonym`, `genus`, `none`) |
 | `runtime.tsv` | genome timed (run since 2026-11-06): its size, bytes, BUSCOs searched, threads, seconds |
 | `stages.tsv` | step of the package stage: its seconds |
+| `selection.tsv` | supergroup and fate: NCBI's taxa with a GenBank assembly by what became of them (`chosen`, `chosen, flagged`, `model species`, `no assembly (records)`, `every assembly excluded`, `placeholder`, `hybrid`, `not a species`, `no download`) |
+| `breadth.tsv` | supergroup (and `all`): NCBI's species with an assembly, Eukore's (with a genome; with rRNA alone), another reference's (`compared`, the build's `--read_compare`), and the two's overlap |
+| `genes.tsv` | species' genome: the rank it shares with the nearest other species of BUSCO's dataset (`odb_nearest`), whether it is in the dataset itself (`odb_self`), its copies' exon and intron bases |
+| `annotation.tsv` | copy of a genome with NCBI's own annotation (its GFF, RefSeq's or a submitter's): the annotated transcript sharing most coding bases with miniprot's model of it (also where the copy took NCBI's model, `model` ncbi), both's exons and introns, those exact, the coding bases each holds and shares |
+| `flags.tsv` | supergroup, confidence and flags (as `busco/copies.tsv` writes them): copies |
+| `rrna_regions.tsv` | supergroup, source and region: records holding it, its length's quantiles; the organelle genes as source `mitochondrion` or `plastid` and region the gene (`organelle/genes.tsv`, those not partial; a COX1 with its introns) |
+| `organelle.tsv` | supergroup and organelle gene: species, and those with the gene |
+| `overlap.tsv` | supergroup (and `all`) and database (PR2, EUKARYOME's long reads and KSGP by their species names; ROD by its taxids; BUSCO's OrthoDB dataset; the `--read_compare` reference): its NCBI species, those in Eukore too (any record), Eukore's alone, the database's alone |
+| `rrna_copies.tsv` | each species' genome: its assembly level and contigs, its 18S spans, rDNA units and whole units as extracted (an assembly collapses a tandem array: the copies assembled, not the genome's) |
+| `reads.tsv` | test genome (or background genome), reference (`Eukore`, `Eukore exons`, `Eukore 18S`, the compared one), mode (`in`: its species in the reference; `held_out`: left out), reads (`marker`: from its markers' loci; `genome`: from anywhere): reads simulated, assigned, and per rank (`species` .. `phylum`) correct and wrong (a background read: wrong at every rank its assignment reaches); `congeners`: the package's other species of its genus |
 | `summary.json` | the headline figures |
 
 ## genomes/ (beside the package, optional)
