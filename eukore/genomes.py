@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
 from . import loci as loci_mod
 from . import odb as odb_mod
@@ -347,6 +348,7 @@ def run(args):
         why = util.fetch_file(job["url"], path)
         if why:
             return acc, None, f"fetch failed: {why}"
+    started = time.time()  # the run's own time, the fetch left out (benchmarks.py's runtime.tsv)
     tmp = util.part_of(folder)
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
@@ -403,7 +405,8 @@ def run(args):
     summary = {"accession": acc, "fetched": job.get("fetch", acc), "why": job["why"], "loci": taken,
                "searched": list(odb.loci),
                "status": dict(collections.Counter(r["status"] for r in got["loci"].values())), "rrna": rrna,
-               "bytes": os.path.getsize(path)}
+               "bytes": os.path.getsize(path), "seconds": round(time.time() - started, 1),
+               "threads": settings.get("threads", 1)}
     with open(os.path.join(tmp, "done.json"), "w", newline="\n") as fh:
         json.dump(summary, fh, indent=1)
     if os.path.isdir(folder):

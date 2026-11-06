@@ -1,4 +1,4 @@
-"""Eukore's organelle genes (since 2026-11-05; FORMAT.md 3): each species' mitochondrial and plastid rRNA (SSU, LSU, 5S)
+"""Eukore's organelle genes (since 2026-11-05; docs/FORMAT.md 3): each species' mitochondrial and plastid rRNA (SSU, LSU, 5S)
 and its mitochondrial COX1, where NCBI has them.
 
 - RefSeq's organelle genomes (its release's mitochondrion and plastid GenBank files, REFSEQ_RELEASE): their annotated

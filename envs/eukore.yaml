@@ -16,3 +16,4 @@ dependencies:
   - p7zip                # EUKARYOME's 7z archive
   - openpyxl             # EUKARYOME's compromised-quality ids (xlsx)
   - ncbi-fcs-gx          # optional: FCS-GX (run_gx) with --fcs_gx_db, on a node of ~512 GB
+  - matplotlib-base      # docs/benchmarks/plot_benchmarks.py: the benchmarks' figures

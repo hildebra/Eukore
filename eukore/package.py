@@ -1,4 +1,4 @@
-"""Eukore's package (FORMAT.md; format 2 since 2026-11-05: Eukore's own locus calls in NCBI's genomes; format 3 since
+"""Eukore's package (docs/FORMAT.md; format 2 since 2026-11-05: Eukore's own locus calls in NCBI's genomes; format 3 since
 2026-11-05: the organelle genes; format 4 since 2026-11-05: every BUSCO of the dataset, in busco/, with
 busco/loci.tsv; each species' PR2, EUKARYOME and KSGP lineages, the genomes' rRNA counts, the copies' and records'
 contig ends, gaps and confidence), written from the build's genome set and work folder, read and checked by its users
@@ -174,7 +174,8 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1):
                       {(r["accession"], r["locus"]): int(r["protein_length"]) for r in copy_rows})
     for r in copy_rows:
         c = checks[(r["accession"], r["locus"])]
-        r.update(own_species=c["own_species"], same_as=c["same_as"], length_check=c["length"])
+        r.update(own_species=c["own_species"], same_as=c["same_as"], length_check=c["length"],
+                 nearest_id=c["nearest_id"], nearest_depth=c["nearest_depth"])  # the last two: benchmarks', no columns
         r["confidence"], r["flags"] = copy_confidence(r)
     taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"}
     return dict(genomes=genomes, copies=copies, features=features, copy_rows=copy_rows, taxids=taxids)
@@ -214,8 +215,10 @@ def loci_rows(loci, collected, ncbi):
 
 
 def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None, organelle=None,
-          references=()):
+          references=(), before_manifest=None):
     """The package into `out` (written beside it and renamed into place; the manifest last) -> its folder.
+    before_manifest: a function of the unfinished package's folder, run once its tables are written (the build's
+    benchmarks: benchmarks.run), whose result (a dict) the manifest keeps as `benchmarks`.
     loci: the BUSCOs called ([{locus, name, cutoff, hmm_length}], in the dataset's order); rrna: (records [(name,
     sequence, row dict of records.tsv)]) or None; organelle: the organelle genes' records (organelle.collect) or
     None; references: labels.Reference of PR2, EUKARYOME and KSGP, each species' lineage in them (species.tsv)."""
@@ -280,6 +283,8 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                              set(collected["taxids"]) | {int(r["species_taxid"]) for r in genomes.values()} |
                              set(n_records) | ({int(row["taxid"]) for _n, _s, row in rrna} if rrna else set()) |
                              {int(row["taxid"]) for _n, _s, row in organelle})
+    # the package's tables are written: its benchmarks (benchmarks.run) read them, before the manifest lists them all
+    measured = before_manifest(part) if before_manifest else None
     files = {}
     for dirpath, _dirs, names in os.walk(part):
         for name in sorted(names):
@@ -306,6 +311,8 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                            "labels": {ref.lower(): dict(collections.Counter(r[f"{ref.lower()}_match"] for r in rows))
                                       for ref in REFERENCES}},
                 "files": dict(sorted(files.items()))}
+    if measured:
+        manifest["benchmarks"] = measured
     with open(os.path.join(part, MANIFEST), "w", newline="\n") as fh:
         json.dump(manifest, fh, indent=1)
     old = out + ".old"

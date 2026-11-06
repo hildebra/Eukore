@@ -9,6 +9,9 @@ Each a column of busco/copies.tsv; a copy failing one is kept and flagged, so th
   (EukDetect's collapse of copies 99% identical across species: a reader may give their reads to that taxon), else -.
 - length: a copy whose protein is in the bottom or top LENGTH_TAIL of its locus' copies: short or long (EukDetect
   dropped them), else ok.
+- nearest_id, nearest_depth: the identity of the nearest copy of another species and how deep the nearest species'
+  lineages agree with the copy's (depth: 0 none .. 5 genus), None where none is 70% identical: not a column, the
+  benchmarks' (benchmarks.py's resolution.tsv).
 """
 
 import collections
@@ -47,7 +50,7 @@ def depth(ncbi, a, b):
 def check(copies, species_of, ncbi, vsearch=None, threads=1, protein_length=None):
     """copies: {(accession, locus): coding sequence}; species_of: {accession: species taxid}; protein_length:
     {(accession, locus): length} -> {(accession, locus): dict(own_species, same_as, length)}."""
-    out = {k: dict(own_species="-", same_as="-", length="ok") for k in copies}
+    out = {k: dict(own_species="-", same_as="-", length="ok", nearest_id=None, nearest_depth=None) for k in copies}
     by_locus = collections.defaultdict(dict)
     for (acc, locus), cds in copies.items():
         if cds:
@@ -86,6 +89,7 @@ def check(copies, species_of, ncbi, vsearch=None, threads=1, protein_length=None
             near = [t for i, t in found if i >= top - NEAR]
             agree = max(depth(ncbi, species_of[acc], species_of[t]) for t in near)
             row = out[(acc, locus)]
+            row["nearest_id"], row["nearest_depth"] = top, agree  # benchmarks.py's resolution
             row["own_species"] = "t" if agree >= 4 else "f" if agree <= 1 and top >= FOREIGN_ID else "-"
             same = {species_of[t] for i, t in found if i >= SAME_ID}
             if same:

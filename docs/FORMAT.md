@@ -20,8 +20,9 @@ references species.tsv's lineages come from (`references`: PR2's, EUKARYOME's, K
 species and genera it names); `inputs.partial.species_clades` in a trial package limited to those clades, which a user
 should not take for Eukore), `counts` (species, species with rRNA alone, genomes, copies and their
 calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa, `busco_loci`, the
-copies' and records' confidence tiers, `labels`: per reference the species by how they matched), and `files`: every
-file of the package with `[bytes, md5]`. The manifest is written last: a package without one is unfinished.
+copies' and records' confidence tiers, `labels`: per reference the species by how they matched), `benchmarks` (the
+headline figures of `benchmarks/summary.json`, where the build measured them), and `files`: every file of the package
+with `[bytes, md5]`. The manifest is written last: a package without one is unfinished.
 
 ## taxonomy/
 NCBI's taxonomy, cut to every taxon on the package's lineages: `nodes.tsv` (taxid, parent, rank, gencode: NCBI's nuclear genetic code, the table a copy translates by), `names.tsv` (taxid,
@@ -200,6 +201,23 @@ name a mitochondrion, chloroplast, plastid or apicoplast).
 | `partial` | `t` where RefSeq marks the feature partial, barrnap's hit is partial, or nhmmer's hits cover under 80% of the query's exons |
 | `ambiguous` | the share of non-ACGT bases |
 
+## benchmarks/ (optional)
+How complete, right and discriminating the package is, measured by the build (`eukore/benchmarks.py`; absent with
+`--no_benchmarks`). docs/benchmarks.md describes each table and `docs/benchmarks/plot_benchmarks.py` draws them. A
+benchmark whose inputs the build lacked (BUSCO's dataset, vsearch) is left out, and `summary.json`'s `left_out` says
+why. A reader needs none of them.
+
+| file | one row per |
+|---|---|
+| `completeness.tsv` | species' genome: its BUSCOs Single, Duplicated, Fragmented, Missing, `complete` (Single and Duplicated over the BUSCOs called), its copies' confidence tiers, its assembly's level, size and contigs, its rRNA counts |
+| `orthodb.tsv` | BUSCO of a species BUSCO's dataset holds a protein of: Eukore's `status`; `recall` and `precision`, the shares of OrthoDB's protein's 5-mers in the call's translation and the reverse; `guided` (`t` where the call's query was that species' own protein); `verdict`: `concordant` (both 0.9 or more), `similar` (both 0.5 or more), `discordant`, `missed` |
+| `resolution.tsv` | marker (a BUSCO; `BUSCO (all)`; `18S`, each species' best record's) and `shared_rank` (the rank a copy shares with its nearest copy of another species: `genus` .. `phylum`, `none`; `all`; `unmatched`: none 70% identical): `copies`, those `under_97` and `under_99` identical, the identity's quantiles (`q05` .. `q95`) |
+| `rrna.tsv` | rRNA source and kind: records, median length, records holding each region, a whole 28S, an 18S intron, each confidence tier |
+| `labels.tsv` | supergroup (and `all`) and reference: its species by how they were named (`species`, `synonym`, `genus`, `none`) |
+| `runtime.tsv` | genome timed (run since 2026-11-06): its size, bytes, BUSCOs searched, threads, seconds |
+| `stages.tsv` | step of the package stage: its seconds |
+| `summary.json` | the headline figures |
+
 ## genomes/ (beside the package, optional)
 The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz`, as NCBI serves them). `genomes.tsv`'s
 `local` column names them. A user simulating eukaryotes, or a host, takes them from here instead of downloading them.
@@ -220,4 +238,5 @@ The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz
   `contig_edge`, `introns`, `gaps`, `confidence` and `flags`; the manifest's `inputs.references`. EUKARYOME's records
   are labelled by their species (its `s__` is the epithet alone: until 4 every one was labelled by its genus).
   Since 2026-11-06, still format 4: the reference renamed Eukore (was EUKDB), its folder `Eukore_<version>/` (was
-  `EUKDB_<version>/`); the manifest's `eukore`, the version of Eukore that built it.
+  `EUKDB_<version>/`); the manifest's `eukore`, the version of Eukore that built it; `benchmarks/` and the manifest's
+  `benchmarks`, the build's measures of the package (a reader of format 4 needs neither).

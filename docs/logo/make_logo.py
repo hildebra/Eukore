@@ -1,7 +1,7 @@
-"""The Eukore logos from logo/drafts/eukore_roots_text.svg (the source, its text live): the text as outlines (Lato,
+"""The Eukore logos from docs/logo/drafts/eukore_roots_text.svg (the source, its text live): the text as outlines (Lato,
 SIL OFL), and the dark-background variant.
 
-    python3 logo/make_logo.py logo /mnt/c/Windows/Fonts     # FONT_DIR holds LatoWeb-Bold.ttf, LatoWeb-Semibold.ttf
+    python3 docs/logo/make_logo.py docs/logo /mnt/c/Windows/Fonts     # FONT_DIR holds LatoWeb-Bold.ttf, LatoWeb-Semibold.ttf
 
 Needs fonttools. The PNGs are exported from the SVGs by a browser (2x, transparent).
 """

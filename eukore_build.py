@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Eukore, the standalone eukaryote reference (FORMAT.md; since 2026-11-05).
+"""Build Eukore, the standalone eukaryote reference (docs/FORMAT.md; since 2026-11-05).
 
     python3 eukore_build.py --work WORK --out OUT -t 16                 # all stages on a node with internet
     python3 eukore_build.py --work WORK --out OUT --stage fetch -t 8    # a cluster: the node with internet,
@@ -22,6 +22,7 @@ Stages:
 """
 
 import argparse
+import contextlib
 import datetime
 import functools
 import glob
@@ -30,11 +31,12 @@ import multiprocessing
 import os
 import shutil
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
-from eukore import labels, organelle as organelle_mod, quality  # noqa: E402
+from eukore import benchmarks, labels, organelle as organelle_mod, quality  # noqa: E402
 from eukore import __version__  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
@@ -244,6 +246,28 @@ def organelle_genes(opts, src_dir, job_map, ncbi):
     return chosen
 
 
+@contextlib.contextmanager
+def timed(stages, step):
+    """A step of the package stage, its seconds added to stages ([(step, seconds)]: benchmarks' stages.tsv)."""
+    started = time.time()
+    yield
+    stages.append((step, time.time() - started))
+
+
+def measure(part, opts, src_dir, ncbi, collected, vsearch, stages):
+    """The package's benchmarks (eukore/benchmarks.py) into its unfinished folder -> their figures, or None where
+    they failed: a benchmark never stops the package."""
+    nearest = {(r["accession"], r["locus"]): (r.get("nearest_id"), r.get("nearest_depth"))
+               for r in collected["copy_rows"]} if vsearch else None
+    try:
+        return benchmarks.run(part, ncbi, odb_mod.folder_of(src_dir), vsearch, opts.threads, opts.work, nearest,
+                              stages, log=say)
+    except Exception as e:  # noqa: BLE001
+        say(f"WARNING: the benchmarks failed ({type(e).__name__}: {e}): the package is written without them")
+        shutil.rmtree(os.path.join(part, benchmarks.FOLDER), ignore_errors=True)
+        return None
+
+
 def clades(spec):
     """--species: NCBI taxids, comma-separated or a file of one per line (# comments) -> a set, or None (all)."""
     if not spec:
@@ -297,6 +321,8 @@ def main(argv=None):
     p.add_argument("--no_tiara", action="store_true", help="do not classify the windows around the copies")
     p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives (protal's "
                                       f"KSGP, e.g. 4.4 or 5.2; default KSGP's served {labels.KSGP_VERSION}, fetched)")
+    p.add_argument("--no_benchmarks", action="store_true", help="write the package without its benchmarks/ "
+                                                                  "(eukore/benchmarks.py; docs/benchmarks.md)")
     p.add_argument("-t", "--threads", type=int, default=8)
     p.add_argument("-j", "--jobs", type=int, default=None, help="genomes at a time (default threads / 4)")
     opts = p.parse_args(argv)
@@ -349,16 +375,19 @@ def main(argv=None):
             say(f"{len(waiting)} genomes not fetched yet, {len(failed)} failed (e.g. {(waiting + failed)[:3]}): the "
                 "package waits for them (run again; --stage fetch first on a cluster)")
             return 0 if opts.stage == "process" else 1
+    stages = []  # the package stage's steps and their seconds (benchmarks' stages.tsv)
     if opts.stage in ("all", "package") and opts.fcs_gx_db:
         todo = [a for a in sorted(job_map) if genomes.is_done(opts.work, a)
                 and not os.path.isfile(os.path.join(genomes.done_dir(opts.work, a), "fcs.tsv"))]
         say(f"FCS-GX: {len(todo)} genomes' windows to screen ({opts.fcs_gx_db})")
         failed = 0
-        for i, acc in enumerate(todo, 1):
-            got = genomes.fcs_screen(opts.work, acc, job_map[acc]["taxid"], opts.fcs_gx_db, opts.run_gx, opts.threads)
-            failed += got is None
-            if i % max(1, len(todo) // 20) == 0 or i == len(todo):
-                say(f"  {i}/{len(todo)} screened ({failed} failed)")
+        with timed(stages, "FCS-GX"):
+            for i, acc in enumerate(todo, 1):
+                got = genomes.fcs_screen(opts.work, acc, job_map[acc]["taxid"], opts.fcs_gx_db, opts.run_gx,
+                                         opts.threads)
+                failed += got is None
+                if i % max(1, len(todo) // 20) == 0 or i == len(todo):
+                    say(f"  {i}/{len(todo)} screened ({failed} failed)")
     if opts.stage in ("all", "package"):
         vsearch = shutil.which("vsearch")
         loci = loci_of(opts, src_dir)
@@ -366,13 +395,16 @@ def main(argv=None):
         if short:
             say(f"WARNING: {len(short)} genomes were not searched for all {len(loci)} BUSCOs called (a run before "
                 f"format 4, e.g. {short[:3]}): run --stage process again for them all")
-        collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads)
-        records = genome_rrna_records(opts, job_map, ncbi) + published(opts, src_dir, ncbi)
-        records = rrna.finish(records, ncbi, vsearch, opts.threads)
-        chosen = organelle_genes(opts, src_dir, job_map, ncbi)  # before the prune: the genomes searched while there
-        held = {int(g["species_taxid"]) for g in collected["genomes"].values() if g["representative"] == "t"}
-        organelle = organelle_mod.collect(ncbi, job_map, held | {int(r["species_taxid"]) for _n, _s, r in records},
-                                          chosen, os.path.join(opts.work, "organelle"))
+        with timed(stages, "BUSCO copies and their checks"):
+            collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads)
+        with timed(stages, "rRNA records and their checks"):
+            records = genome_rrna_records(opts, job_map, ncbi) + published(opts, src_dir, ncbi)
+            records = rrna.finish(records, ncbi, vsearch, opts.threads)
+        with timed(stages, "organelle genes"):
+            chosen = organelle_genes(opts, src_dir, job_map, ncbi)  # before the prune: the genomes searched while there
+            held = {int(g["species_taxid"]) for g in collected["genomes"].values() if g["representative"] == "t"}
+            organelle = organelle_mod.collect(ncbi, job_map, held | {int(r["species_taxid"]) for _n, _s, r in records},
+                                              chosen, os.path.join(opts.work, "organelle"))
         inputs = {"odb": odb_mod.state_of(src_dir), "taxdump_md5": util.md5(os.path.join(src_dir, "taxdump.tar.gz")),
                   "sources": {n: sources.state_of(src_dir, n).get("version") for n in ("EUKARYOME", "ROD")},
                   "assembly_tables": {os.path.basename(p): util.md5(p)
@@ -389,9 +421,12 @@ def main(argv=None):
         kept = sum(s for _a, s, st in rows_kept if st != "deleted")
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB (--keep_gb {opts.keep_gb:g}), "
             f"{sum(st == 'deleted' for *_x, st in rows_kept)} deleted")
-        references = labels.references(src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say)
+        with timed(stages, "reference labels"):
+            references = labels.references(src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say)
+        hook = None if opts.no_benchmarks else functools.partial(
+            measure, opts=opts, src_dir=src_dir, ncbi=ncbi, collected=collected, vsearch=vsearch, stages=stages)
         out = package.write(os.path.join(opts.out, f"Eukore_{opts.version}"), opts.version, ncbi, collected,
-                            loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references)
+                            loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook)
         say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")
     return 0
 
