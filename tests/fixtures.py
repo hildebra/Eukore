@@ -197,29 +197,106 @@ def tool(folder, name, text):
 
 MINIPROT = '''#!/usr/bin/env python3
 """miniprot's stand-in: the GFF's alignments (##PAF, ##STA, mRNA and CDS lines) of the queries in its protein file
-(its last argument), as miniprot aligns only the proteins it is given."""
+(its last argument), as miniprot aligns only the proteins it is given. With -M0 (loci.py's rescue pass, sensitive
+seeding) it searches instead: each query whose coding sequence (fixtures.CODE's codons) lies in a target record on
+its forward strand, as one exon."""
 import sys
-names = {line[1:].split()[0] for line in open(sys.argv[-1]) if line.startswith(">")}
+args = sys.argv[1:]
+queries, name = {}, None
+for line in open(args[-1]):
+    if line.startswith(">"):
+        name = line[1:].split()[0]
+        queries[name] = ""
+    else:
+        queries[name] += line.strip()
+if "-M0" in args:
+    CODE = %r
+    target, rec = {}, None
+    for line in open(args[-2]):
+        if line.startswith(">"):
+            rec = line[1:].split()[0]
+            target[rec] = ""
+        else:
+            target[rec] += line.strip().upper()
+    print("##gff-version 3")
+    n = 0
+    for q, p in queries.items():
+        cds = "".join(CODE[a] for a in p)
+        for rec, seq in target.items():
+            i = seq.find(cds)
+            if i < 0:
+                continue
+            n += 1
+            a, b = i + 1, i + len(cds)
+            print(f"##PAF\\t{q}\\t{len(p)}")
+            print(f"##STA\\t{p}")
+            print(f"{rec}\\tminiprot\\tmRNA\\t{a}\\t{b}\\t900\\t+\\t.\\tID=R{n};Rank=1;Identity=1.0000;Target={q} 1 {len(p)}")
+            print(f"{rec}\\tminiprot\\tCDS\\t{a}\\t{b}\\t900\\t+\\t0\\tParent=R{n};Rank=1;Identity=1.0;Target={q} 1 {len(p)}")
+    sys.exit(0)
 keep = True
 for line in open(%r):
     if line.startswith("##PAF"):
-        keep = line.split("\\t")[1] in names
+        keep = line.split("\\t")[1] in queries
     if keep or line.startswith("##gff"):
         sys.stdout.write(line)
 '''
 
 
 def miniprot(folder, gff):
-    """A miniprot that prints the GFF's alignments of the queries it is given."""
+    """A miniprot that prints the GFF's alignments of the queries it is given (and searches with -M0)."""
     path = os.path.join(folder, "mp.gff")
     with open(path, "w") as fh:
         fh.write(gff)
-    return tool(folder, "miniprot", MINIPROT % path)
+    return tool(folder, "miniprot", MINIPROT % (CODE, path))
+
+
+ESL_TRANSLATE = '''#!/usr/bin/env python3
+"""esl-translate's stand-in: a FASTA's six-frame ORFs (between stops, -l residues or more; the standard code), as it
+writes them: >orfN source=<record> coords=<a>..<b> (b < a on the reverse strand) length=.. frame=.. desc=."""
+import gzip
+import sys
+args = sys.argv[1:]
+least = int(args[args.index("-l") + 1]) if "-l" in args else 20
+CODE = %r
+STOP = {"TAA", "TAG", "TGA"}
+AA = {c: a for a, c in CODE.items()}
+seqs, rec = {}, None
+for line in (gzip.open(args[-1], "rt") if args[-1].endswith(".gz") else open(args[-1])):
+    if line.startswith(">"):
+        rec = line[1:].split()[0]
+        seqs[rec] = ""
+    else:
+        seqs[rec] += line.strip().upper()
+n = 0
+for rec, seq in seqs.items():
+    rc = seq.translate(str.maketrans("ACGT", "TGCA"))[::-1]
+    for strand, s in (("+", seq), ("-", rc)):
+        for frame in range(3):
+            codons = [s[i:i + 3] for i in range(frame, len(s) - 2, 3)]
+            prot, first = "", 0  # first: the ORF's first codon
+            for k, c in enumerate(codons + ["TAA"]):  # a stop past the end ends the last ORF
+                if c not in STOP:
+                    prot += AA.get(c, "X")
+                    continue
+                if len(prot) >= least:
+                    a, b = frame + 3 * first + 1, frame + 3 * k  # its first and last base
+                    if strand == "-":
+                        a, b = len(s) - a + 1, len(s) - b + 1
+                    n += 1
+                    print(f">orf{n} source={rec} coords={a}..{b} length={len(prot)} frame=1 desc=")
+                    print(prot)
+                prot, first = "", k + 1
+'''
+
+
+def esl_translate(folder):
+    return tool(folder, "esl-translate", ESL_TRANSLATE % CODE)
 
 
 HMMSEARCH = '''#!/usr/bin/env python3
 """hmmsearch's stand-in: a protein that is a locus' (fixtures.PROTEINS), or its first 30 residues or more, scores 300
-against it, 20 against the others; its domain covers the profile in proportion to its share of the locus' protein."""
+against it (E-value 1e-50), 20 against the others (10); its domain covers the profile in proportion to its share of the
+locus' protein. A longer protein holding a locus' whole (a six-frame ORF) scores 300, its envelope on that stretch."""
 import sys
 args = sys.argv[1:]
 dom = args[args.index("--domtblout") + 1]
@@ -239,8 +316,13 @@ with open(dom, "w") as out:
         for locus, p in LOCI.items():
             score = 300.0 if len(seq) >= 30 and p.startswith(seq) else 20.0
             to = max(1, int(120 * min(len(seq), len(p)) / len(p)))
-            f = [name, "-", str(len(seq)), locus.split("at")[0], "-", "120", "1e-50", str(score), "0", "1", "1",
-                 "0", "0", str(score), "0", "1", str(to), "1", str(len(seq)), "1", str(len(seq)), "0.99", "-"]
+            a, b = 1, len(seq)
+            if score < 300 and len(seq) > len(p) and p in seq:
+                score, to, a = 300.0, 120, seq.index(p) + 1
+                b = a + len(p) - 1
+            e = "1e-50" if score == 300 else "10"
+            f = [name, "-", str(len(seq)), locus.split("at")[0], "-", "120", e, str(score), "0", "1", "1",
+                 e, e, str(score), "0", "1", str(to), str(a), str(b), str(a), str(b), "0.99", "-"]
             out.write(" ".join(f) + "\\n")
 '''
 

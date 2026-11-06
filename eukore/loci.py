@@ -11,7 +11,11 @@ own copies, in place of EukDetect1's and EukDetect2's.
    more, and its gene the confirmed alignment of the best HMM score;
 4. a confirmed region is complete where its HMM alignment covers COMPLETE of the profile, else a fragment. The locus is
    Single (one complete region), Duplicated (more: the best by score is the copy, the others counted), Fragmented
-   (fragments alone: the best), or Missing.
+   (fragments alone: the best), or Missing;
+5. the rescue pass (rescue(), since 2026-11-06) of a Missing locus: its HMM searched in the genome's six-frame ORFs
+   (esl-translate) places it, and miniprot aligns its queries and the HMM's hits joined (the "self" protein) on that
+   place again, with sensitive seeding; the HMMs confirm as in 3. Its copy is `rescued` (a medium confidence: its span
+   may be short of the gene's ends, and no own-protein run confirmed it).
 
 A copy is the genome from the gene's first codon to its last on its own strand, introns and all, uncut and in upper
 case (copies.fit, no length cap), with its features on it: exons and introns, the assembly's soft-masked runs of
@@ -21,6 +25,7 @@ user masks as it sees fit.
 
 import collections
 import os
+import shutil
 import subprocess
 import tempfile
 
@@ -42,6 +47,16 @@ SOFT_MIN = 20
 DUST_WINDOW = 64
 DUST_SCORE = 20.0
 WINDOW = 50_000      # a copy's flanks held for a contamination screen (windows.fna.gz)
+# The rescue pass (since 2026-11-06). In a genome far from every dataset species, miniprot finds no seed for many genes
+# with the distant proteins (Blastocystis hominis without its own: 27 of 98 BUSCOs lost; its genes compact, introns
+# ~30 bp), but the HMM finds them in the six-frame ORFs (26 of the 27 on the right gene). Aligned again on that place
+# with sensitive seeding, 32 missed went to 9 (all on the right gene, spans shorter: median overlap 0.62).
+ORF_MIN = 20                 # esl-translate's shortest ORF (residues)
+RESCUE_DOM_E = 1e-3          # a domain's independent E-value in the ORFs
+RESCUE_JOIN = 20_000         # the hits joined to the best one: on its contig and strand, this far from it
+RESCUE_FLANK = 5_000         # bases each side of the hits' place aligned again
+RESCUE_OPTIONS = ["-k5", "-M0", "-n1", "-l4"]  # miniprot's seeding: shorter k-mers, all of them, a chain of one
+RESCUE_MAX_BASES = 1_000_000_000  # a genome over this is not rescued (its six-frame ORFs' search too long)
 STATUS = ("Single", "Duplicated", "Fragmented", "Missing")
 
 
@@ -183,31 +198,36 @@ def on_copy(intervals, start, end, strand):
     return sorted((a, b) if strand == "+" else (length - b, length - a) for a, b in intervals)
 
 
-def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearch", threads=1, tmp=None,
-         hmm_db=None, table=1):
-    """The BUSCO genes of a genome (table: its NCBI genetic code) -> dict(loci {locus: dict(status, copy, spliced,
-    features [(kind, start, end)],
-    contig, start, end, strand, identity, coverage, score, hmm_score, hmm_coverage, cutoff, copies, query, protein)},
-    failed (why the genome could not be called, or None), windows {name: sequence} of the copies' flanks)."""
-    lengths = {q: len(p) for q, p in queries.items()}
+def genome_bases(path):
+    """A genome's bases, estimated from its file's size (placement's ratio for a gzipped one)."""
+    return os.path.getsize(path) / (placement.GZIP_BYTES_PER_BASE if path.endswith(".gz") else 1)
+
+
+def align(target, queries, miniprot, threads, table, work, options=None):
+    """miniprot's alignments of queries {name: protein} on a genome or a windows file (in pieces where large) ->
+    (alignments, why it failed or None). options: its intron and seeding options (default -I: the max intron 3.6
+    times the square root of the target's length)."""
+    faa = os.path.join(work, "q.faa")
+    with open(faa, "w") as fh:
+        fh.writelines(f">{q}\n{p}\n" for q, p in queries.items())
     alignments = []
-    with tempfile.TemporaryDirectory(dir=tmp) as work:
-        faa = os.path.join(work, "q.faa")
-        with open(faa, "w") as fh:
-            fh.writelines(f">{q}\n{p}\n" for q, p in queries.items())
-        for part in placement.chunks(genome_path, work):
-            run = subprocess.run([miniprot, "-t", str(threads), "-I", "-T", str(table or 1), "--gff", "--trans",
-                                  f"--outs={OUTS}", f"--outn={OUTN}", part, faa], capture_output=True, text=True,
-                                 check=False)
-            if run.returncode != 0:
-                return dict(loci={}, failed="miniprot failed: " + (run.stderr.strip().splitlines() or ["?"])[-1][:200],
-                            windows={})
-            alignments += parse_alignments(run.stdout)
-        found = regions(alignments, lengths)
-        candidates = {f"c{i}": (j, a) for i, (j, a) in enumerate(
-            ((locus, j), a) for locus, rs in found.items() for j, r in enumerate(rs) for a in r["top"])}
-        scores = hmmsearch({n: a["protein"] for n, (_j, a) in candidates.items()}, hmm_db or odb.hmm_db(
-            os.path.join(work, "loci.hmm")), hmmsearch_bin, threads, work)
+    for part in placement.chunks(target, work):
+        run = subprocess.run([miniprot, "-t", str(threads)] + list(options or ["-I"]) + [
+            "-T", str(table or 1), "--gff", "--trans", f"--outs={OUTS}", f"--outn={OUTN}", part, faa],
+            capture_output=True, text=True, check=False)
+        if run.returncode != 0:
+            return [], "miniprot failed: " + (run.stderr.strip().splitlines() or ["?"])[-1][:200]
+        alignments += parse_alignments(run.stdout)
+    return alignments, None
+
+
+def confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work):
+    """The alignments' regions the HMMs confirm (steps 2-3) -> {locus: [each region's confirmed alignment of the best
+    HMM score, with hmm_score and hmm_coverage]}; lengths: {query: its protein's length}."""
+    found = regions(alignments, lengths)
+    candidates = {f"c{i}": (j, a) for i, (j, a) in enumerate(
+        ((locus, j), a) for locus, rs in found.items() for j, r in enumerate(rs) for a in r["top"])}
+    scores = hmmsearch({n: a["protein"] for n, (_j, a) in candidates.items()}, hmm_db, hmmsearch_bin, threads, work)
     by_region = {}  # (locus, region) -> its confirmed alignment of the best HMM score
     for name, (key, r) in candidates.items():
         got = {odb.locus_of_hmm.get(h, h): v for h, v in scores.get(name, {}).items()}
@@ -221,7 +241,139 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
     confirmed = collections.defaultdict(list)
     for (locus, _j), r in sorted(by_region.items()):
         confirmed[locus].append(r)
-    contigs = placement.read_contigs(genome_path, {r["contig"] for rs in confirmed.values() for r in rs})
+    return confirmed
+
+
+def orf_hits(target, loci_, odb, table, hmmsearch_bin, threads, work, translate="esl-translate"):
+    """The loci's HMMs in a genome's six-frame ORFs (esl-translate, ORF_MIN residues or more) -> {locus: [dict(contig,
+    strand, start, end (the ORF's span on the contig), score, hmm_from, hmm_to, protein (the domain's envelope on the
+    ORF))]}, the domains of RESCUE_DOM_E or less."""
+    hmm, wanted = os.path.join(work, "rescue.hmm"), set(loci_)
+    with open(hmm, "w") as out:
+        for locus in loci_:
+            with open(odb.hmm[locus]) as fh:
+                out.write(fh.read())
+    hits = collections.defaultdict(list)
+    for i, part in enumerate(placement.chunks(target, work)):
+        orfs, dom = os.path.join(work, f"orfs{i}.faa"), os.path.join(work, f"orfs{i}.dom")
+        with open(orfs, "w") as fh:
+            run = subprocess.run([translate, "-l", str(ORF_MIN), "-c", str(table or 1), part], stdout=fh,
+                                 stderr=subprocess.PIPE, text=True, check=False)
+        if run.returncode != 0:
+            raise RuntimeError(f"esl-translate failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+        run = subprocess.run([hmmsearch_bin, "--cpu", str(max(1, threads)), "--noali", "-o", os.devnull, "--domE",
+                              str(RESCUE_DOM_E), "--domtblout", dom, hmm, orfs], capture_output=True, text=True,
+                             check=False)
+        if run.returncode != 0:
+            raise RuntimeError(f"hmmsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+        found = collections.defaultdict(list)  # ORF -> [(locus, score, hmm_from, hmm_to, env_from, env_to)]
+        with open(dom) as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                f = line.split()
+                locus = odb.locus_of_hmm.get(f[3], f[3])
+                if locus in wanted and float(f[12]) <= RESCUE_DOM_E:
+                    found[f[0]].append((locus, float(f[13]), int(f[15]), int(f[16]), int(f[19]), int(f[20])))
+        with open(orfs) as fh:  # the hit ORFs' places and sequences alone (a large genome's ORFs are many)
+            lines = iter(fh)
+            for line in lines:
+                if not line.startswith(">"):
+                    continue
+                name, _, desc = line[1:].partition(" ")
+                if name not in found:
+                    continue
+                seq = next(lines).strip()  # esl-translate writes an ORF on one line
+                kv = dict(x.split("=", 1) for x in desc.split() if "=" in x)
+                a, b = (int(v) for v in kv["coords"].split(".."))  # a > b on the reverse strand
+                for locus, score, hf, ht, ef, et in found[name]:
+                    hits[locus].append(dict(contig=kv["source"], strand="+" if a <= b else "-", start=min(a, b),
+                                            end=max(a, b), score=score, hmm_from=hf, hmm_to=ht,
+                                            protein=seq[ef - 1:et]))
+        os.remove(orfs)
+    return hits
+
+
+def located(hits, join=RESCUE_JOIN):
+    """Each locus' place from its ORF hits (orf_hits) -> {locus: (contig, start, end, self protein)}: its best hit and
+    the hits on that contig and strand within `join` bases of it, those of the best scores that do not overlap on the
+    HMM; the self protein their envelopes joined in the HMM's order (nearly the genome's own protein)."""
+    out = {}
+    for locus, hs in hits.items():
+        best = max(hs, key=lambda h: h["score"])
+        near = [h for h in hs if (h["contig"], h["strand"]) == (best["contig"], best["strand"])
+                and h["start"] <= best["end"] + join and h["end"] >= best["start"] - join]
+        chosen = []
+        for h in sorted(near, key=lambda h: -h["score"]):
+            if all(h["hmm_to"] < c["hmm_from"] or h["hmm_from"] > c["hmm_to"] for c in chosen):
+                chosen.append(h)
+        chosen.sort(key=lambda h: h["hmm_from"])
+        out[locus] = (best["contig"], min(h["start"] for h in chosen), max(h["end"] for h in chosen),
+                      "".join(h["protein"] for h in chosen))
+    return out
+
+
+def rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads, table, hmm_db, work,
+           translate="esl-translate"):
+    """The rescue pass (step 5) of the loci the first pass left Missing -> {locus: [confirmed alignments, rescued]}:
+    the locus' HMM in the genome's six-frame ORFs places it (located); on that place and RESCUE_FLANK bases each side,
+    miniprot with RESCUE_OPTIONS aligns the locus' queries and its self protein; the HMMs confirm as in the first pass.
+    Introns as long as the first pass allows (-G: -I's 3.6 times the square root of the genome's length)."""
+    places = located(orf_hits(genome_path, missing, odb, table, hmmsearch_bin, threads, work, translate))
+    if not places:
+        return {}
+    by_contig = collections.defaultdict(list)
+    for locus, (contig, start, end, _p) in places.items():
+        by_contig[contig].append((locus, start, end))
+    contigs = placement.read_contigs(genome_path, set(by_contig))
+    target = os.path.join(work, "rescue.fna")
+    starts = {}  # window -> (locus, contig, its first base on the contig)
+    with open(target, "w") as fh:
+        for contig, wanted in sorted(by_contig.items()):
+            seq = contigs[contig]
+            for locus, start, end in wanted:
+                lo, hi = max(1, start - RESCUE_FLANK), min(len(seq), end + RESCUE_FLANK)
+                name = f"w{len(starts)}"
+                starts[name] = (locus, contig, lo)
+                fh.write(f">{name}\n{seq[lo - 1:hi]}\n")
+    q = {n: p for n, p in queries.items() if n.split("~", 1)[0] in places}
+    q.update({f"{locus}~{locus}_self": p[3] for locus, p in places.items() if p[3]})
+    intron = int(3.6 * genome_bases(genome_path) ** 0.5)
+    alignments, failed = align(target, q, miniprot, threads, table, work, ["-G", str(intron)] + RESCUE_OPTIONS)
+    if failed:
+        raise RuntimeError(f"rescue: {failed}")
+    kept = []
+    for a in alignments:  # back on the genome; another locus' alignment in a window is not this rescue's
+        locus, contig, lo = starts[a["contig"]]
+        if a["locus"] != locus:
+            continue
+        shift = lo - 1
+        kept.append(dict(a, contig=contig, start=a["start"] + shift, end=a["end"] + shift,
+                         exons=[(x + shift, y + shift) for x, y in a["exons"]]))
+    confirmed = confirm(kept, {n: len(p) for n, p in q.items()}, odb, hmm_db, hmmsearch_bin, threads, work)
+    return {locus: [dict(r, rescued=True) for r in rs] for locus, rs in confirmed.items()
+            if locus in places and locus in missing}
+
+
+def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearch", threads=1, tmp=None,
+         hmm_db=None, table=1, rescue_missing=True, translate="esl-translate"):
+    """The BUSCO genes of a genome (table: its NCBI genetic code) -> dict(loci {locus: dict(status, copy, spliced,
+    features [(kind, start, end)],
+    contig, start, end, strand, identity, coverage, score, hmm_score, hmm_coverage, cutoff, copies, query, protein,
+    rescued)}, failed (why the genome could not be called, or None), windows {name: sequence} of the copies' flanks).
+    rescue_missing: the rescue pass (step 5) of the loci left Missing, in a genome of RESCUE_MAX_BASES or less."""
+    lengths = {q: len(p) for q, p in queries.items()}
+    with tempfile.TemporaryDirectory(dir=tmp) as work:
+        hmm_db = hmm_db or odb.hmm_db(os.path.join(work, "loci.hmm"))
+        alignments, failed = align(genome_path, queries, miniprot, threads, table, work)
+        if failed:
+            return dict(loci={}, failed=failed, windows={})
+        confirmed = confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work)
+        missing = [locus for locus in odb.loci if not confirmed.get(locus)]
+        if rescue_missing and missing and genome_bases(genome_path) <= RESCUE_MAX_BASES and shutil.which(translate):
+            confirmed.update(rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads, table,
+                                    hmm_db, work, translate))
+    contigs =placement.read_contigs(genome_path, {r["contig"] for rs in confirmed.values() for r in rs})
     loci, windows = {}, {}
     for locus in odb.loci:
         rs = confirmed.get(locus, [])
@@ -245,7 +397,7 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
             score=best["score"], hmm_score=best["hmm_score"], hmm_coverage=best["hmm_coverage"],
             cutoff=odb.cutoff[locus], copies=len(complete), others=[(r["contig"], r["start"], r["end"], r["hmm_score"])
             for r in complete if r is not best], query=best["query"].split("~", 1)[1],
-            protein=best["protein"], exons=best["exons"])
+            protein=best["protein"], exons=best["exons"], rescued=bool(best.get("rescued")))
         w1, w2 = max(1, best["start"] - WINDOW), min(len(seq), best["end"] + WINDOW)
         windows[f"{locus}|{best['contig']}|{w1}-{w2}"] = seq[w1 - 1:w2].upper()
     return dict(loci=loci, failed=None, windows=windows)

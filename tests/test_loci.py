@@ -112,11 +112,47 @@ class LociTest(unittest.TestCase):
         self.assertEqual((got["loci"]["2at2759"]["status"], round(got["loci"]["2at2759"]["hmm_coverage"], 2)),
                          ("Fragmented", 0.75))
         other = self.gff.replace(fx.PROTEINS["2at2759"], fx.PROTEINS["3at2759"])  # another locus' protein: not 2
-        got = loci.call(self.path, fx.QUERIES, self.odb, fx.miniprot(self.dir, other), fx.hmmsearch(self.dir), 1, self.dir)
+        got = loci.call(self.path, fx.QUERIES, self.odb, fx.miniprot(self.dir, other), fx.hmmsearch(self.dir), 1,
+                        self.dir, rescue_missing=False)
         self.assertEqual(got["loci"]["2at2759"]["status"], "Missing")
         failing = fx.tool(self.dir, "mp_fail", "#!/bin/sh\necho 'out of memory' >&2\nexit 1\n")
         got = loci.call(self.path, fx.QUERIES, self.odb, failing, fx.hmmsearch(self.dir), 1, self.dir)
         self.assertTrue(got["failed"].startswith("miniprot failed: out of memory"))
+
+    def test_a_missed_gene_rescued(self):
+        # locus 3's gene after the others: miniprot's first pass (the fixed GFF) does not align it, its HMM finds it in
+        # the six-frame ORFs, and the sensitive pass on that place aligns it (the stand-in searches with -M0)
+        rng = __import__("random").Random(9)
+        pad = "".join(rng.choice("ACGT") for _ in range(400))
+        gene = fx.cds_of(fx.PROTEINS["3at2759"])
+        path = os.path.join(self.dir, "g3.fna.gz")
+        with gzip.open(path, "wt") as fh:
+            fh.write(f">c1 a test contig\n{self.seq + pad + gene + pad}\n")
+        start = len(self.seq) + len(pad) + 1
+        args = (path, fx.QUERIES | {k.replace("1at", "3at"): fx.PROTEINS["3at2759"] for k in fx.QUERIES
+                                     if k.startswith("1at")}, self.odb, fx.miniprot(self.dir, self.gff),
+                fx.hmmsearch(self.dir), 1, self.dir)
+        translate = fx.esl_translate(self.dir)
+        got = loci.call(*args, translate=translate)
+        three = got["loci"]["3at2759"]
+        self.assertEqual((three["status"], three["rescued"], three["start"], three["end"], three["contig"]),
+                         ("Single", True, start, start + len(gene) - 4, "c1"))  # its codons, the stop left out
+        self.assertEqual(three["spliced"], gene[:-3])
+        self.assertEqual((got["loci"]["1at2759"]["rescued"], got["loci"]["2at2759"]["status"]), (False, "Single"))
+        self.assertEqual(loci.call(*args, translate=translate, rescue_missing=False)["loci"]["3at2759"]["status"],
+                         "Missing")
+        self.assertEqual(loci.call(*args, translate="no-such-tool")["loci"]["3at2759"]["status"], "Missing")
+
+    def test_located(self):
+        def hit(start, score, hf, ht, protein, contig="c1", strand="+"):
+            return dict(contig=contig, strand=strand, start=start, end=start + 3 * len(protein) - 1, score=score,
+                        hmm_from=hf, hmm_to=ht, protein=protein)
+        hits = {"1at2759": [hit(5000, 80.0, 40, 90, "BBBB"), hit(4000, 30.0, 1, 35, "AAAA"),
+                            hit(4500, 20.0, 30, 60, "XXXX"),                 # overlaps the best on the HMM
+                            hit(90000, 25.0, 95, 120, "FAR"),                # too far from the best
+                            hit(5200, 50.0, 95, 120, "OTHER", strand="-"),   # the other strand
+                            hit(5300, 40.0, 95, 120, "CCCC")]}
+        self.assertEqual(loci.located(hits), {"1at2759": ("c1", 4000, 5311, "AAAABBBBCCCC")})
 
     def test_masks(self):
         self.assertEqual(loci.soft_runs("ACgtacgtacgtacgtacgtacgtAC", 20), [(2, 24)])

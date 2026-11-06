@@ -58,7 +58,8 @@ COMPLETENESS_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "sou
                         "medium", "low", "rrna_18s", "rdna_units", "rdna_complete")
 ORTHODB_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "locus", "status", "odb_proteins",
                    "odb_length", "protein_length", "recall", "precision", "guided", "verdict")
-HELD_COLUMNS = ("held_out_status", "held_out_query", "held_out_recall", "held_out_precision", "held_out_verdict")
+HELD_COLUMNS = ("held_out_status", "held_out_query", "held_out_recall", "held_out_precision", "held_out_verdict",
+                "held_out_place", "held_out_span", "held_out_rescued")
 ORTHODB_COLUMNS += HELD_COLUMNS
 RESOLUTION_COLUMNS = ("marker", "shared_rank", "copies", "under_97", "under_99") + tuple(q for q, _f in QUANTILES)
 RRNA_COLUMNS = ("source", "kind", "records", "median_length") + REGIONS + ("lsu_complete", "introns") + TIERS
@@ -170,17 +171,33 @@ def compare(cds, table, references):
     return recall, precision, length, len(protein.rstrip("*")), verdict
 
 
+def place_of(call, held):
+    """Where a held-out call lies against the package's call of the locus (both dicts with contig, start, end) ->
+    (held_out_place, held_out_span): `same` (on the package call's contig, overlapping it) and the two spans'
+    intersection over union, `elsewhere` (another contig, or no overlap) and 0, or `-` where either has no place."""
+    try:
+        a, b = int(held["start"]), int(held["end"])
+        c, d = int(call["start"]), int(call["end"])
+    except (KeyError, TypeError, ValueError):
+        return "-", "-"
+    inter = min(b, d) - max(a, c) + 1
+    if held.get("contig") != call.get("contig") or inter <= 0:
+        return "elsewhere", "0.000"
+    return "same", f"{inter / (max(b, d) - min(a, c) + 1):.3f}"
+
+
 def orthodb_row(acc, species_taxid, locus, call, cds, references, ncbi, held=None):
-    """orthodb.tsv's row of one BUSCO of a genome whose species the dataset holds: call (status, query) or None
-    (Missing); cds: the call's coding sequence; references: the dataset's proteins of the species [(taxid, protein)];
-    held: the held-out call (status, query, cds; genomes.HELD_OUT) or None where the genome has none."""
+    """orthodb.tsv's row of one BUSCO of a genome whose species the dataset holds: call (dict: status, query,
+    contig, start, end) or None (Missing); cds: the call's coding sequence; references: the dataset's proteins of the
+    species [(taxid, protein)]; held: the held-out call (genomes.HELD_OUT's row: status, query, contig, start, end,
+    rescued, cds) or None where the genome has none."""
     row = dict(accession=acc, species_taxid=species_taxid, locus=locus, odb_proteins=len(references),
                odb_length=max(len(p) for _t, p in references))
     table = ncbi.code_of(species_taxid)
     if call is None:
         row.update(status="Missing", protein_length="-", recall="-", precision="-", guided="-", verdict="missed")
     else:
-        status, query = call
+        status, query = call["status"], call["query"]
         recall, precision, length, plen, verdict = compare(cds, table, references)
         q_taxid = query.split("_")[1] if query.count("_") >= 2 else ""  # <busco>_<taxid>_<id>; not an ancestral's
         guided = "t" if q_taxid.isdigit() and ncbi.species_of(int(q_taxid)) == species_taxid else "f"
@@ -188,22 +205,24 @@ def orthodb_row(acc, species_taxid, locus, call, cds, references, ncbi, held=Non
                    precision=f"{precision:.3f}", guided=guided, verdict=verdict)
     if held is None:
         row.update({c: "-" for c in HELD_COLUMNS})
-    elif held[0] == "Missing":
-        row.update(held_out_status="Missing", held_out_query="-", held_out_recall="-", held_out_precision="-",
-                   held_out_verdict="missed")
+    elif held["status"] == "Missing":
+        row.update({c: "-" for c in HELD_COLUMNS}, held_out_status="Missing", held_out_verdict="missed")
     else:
-        recall, precision, _length, _plen, verdict = compare(held[2], table, references)
-        row.update(held_out_status=held[0], held_out_query=held[1], held_out_recall=f"{recall:.3f}",
-                   held_out_precision=f"{precision:.3f}", held_out_verdict=verdict)
+        recall, precision, _length, _plen, verdict = compare(held["cds"], table, references)
+        place, span = place_of(call, held) if call else ("-", "-")
+        row.update(held_out_status=held["status"], held_out_query=held["query"], held_out_recall=f"{recall:.3f}",
+                   held_out_precision=f"{precision:.3f}", held_out_verdict=verdict, held_out_place=place,
+                   held_out_span=span, held_out_rescued=held.get("rescued", "-"))
     return row
 
 
 def held_out_calls(work, acc):
-    """A genome's held-out calls (WORK/done/<accession>/held_out.tsv) -> {locus: (status, query, cds)}, None without."""
+    """A genome's held-out calls (WORK/done/<accession>/held_out.tsv) -> {locus: its row (status, query, cds; contig,
+    start, end and rescued since a later run)}, None without."""
     path = os.path.join(genomes_mod.done_dir(work, acc), genomes_mod.HELD_OUT) if work else None
     if not path or not os.path.isfile(path):
         return None
-    return {r["locus"]: (r["status"], r["query"], r["cds"]) for r in rows_of(path)}
+    return {r["locus"]: r for r in rows_of(path)}
 
 
 def verdict_summary(rows, prefix=""):
@@ -215,6 +234,19 @@ def verdict_summary(rows, prefix=""):
             "concordant_of_called": round(verdicts["concordant"] / called, 4) if called else None,
             "verdicts": dict(verdicts),
             "median_recall": median_of([float(r[prefix + "recall"]) for r in rows if r[prefix + "recall"] != "-"])}
+
+
+def place_summary(rows):
+    """summary.json's figures of the held-out calls' places against the package's calls (orthodb.tsv's rows): of the
+    loci both called, the share on the same gene, and those spans' median overlap and share overlapping 90% or more;
+    the held-out calls the rescue pass made."""
+    placed = [r for r in rows if r.get("held_out_place", "-") != "-"]
+    spans = [float(r["held_out_span"]) for r in placed if r["held_out_place"] == "same"]
+    return {"both_called": len(placed),
+            "same_gene": round(len(spans) / len(placed), 4) if placed else None,
+            "median_span": median_of(spans),
+            "span_at_least_90": round(sum(s >= 0.9 for s in spans) / len(spans), 4) if spans else None,
+            "rescued": sum(r.get("held_out_rescued") == "t" for r in rows)}
 
 
 def resolution_rows(by_marker):
@@ -376,7 +408,7 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
         statuses[acc][r["status"]] += 1
         tiers[acc][r.get("confidence", "-")] += 1
         if acc in compared or search:
-            calls[(acc, r["locus"])] = (r["status"], r.get("query", "-"))
+            calls[(acc, r["locus"])] = {k: r.get(k, "-") for k in ("status", "query", "contig", "start", "end")}
     rows = completeness(genomes, species, statuses, tiers, len(loci))
     write(out, "completeness.tsv", COMPLETENESS_COLUMNS, rows)
     by_group = collections.defaultdict(list)
@@ -424,9 +456,9 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
             f"({summary['orthodb']['verdicts']})")
         rows = [r for r in odb_rows if r["held_out_verdict"] != "-"]
         if rows:  # the calls made without the species' own proteins: the measure that is not circular
-            summary["orthodb"]["held_out"] = verdict_summary(rows, "held_out_")
+            summary["orthodb"]["held_out"] = dict(verdict_summary(rows, "held_out_"), place=place_summary(rows))
             log(f"benchmarks: held-out calls of {summary['orthodb']['held_out']['species']} species "
-                f"({summary['orthodb']['held_out']['verdicts']})")
+                f"({summary['orthodb']['held_out']['verdicts']}; {summary['orthodb']['held_out']['place']})")
         elif compared:
             summary["left_out"]["orthodb_held_out"] = "no held-out calls (genomes run before 2026-11-06, or no --work)"
 

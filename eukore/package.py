@@ -25,7 +25,7 @@ GENOME_COLUMNS = ("accession", "fetched", "species_taxid", "taxid", "organism", 
                   "rdna_complete", "rdna_contigs", "local")
 COPY_COLUMNS = ("accession", "locus", "status", "contig", "contig_length", "start", "end", "strand", "length",
                 "cds_length", "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies",
-                "query", "protein_length", "window_class", "fcs", "own_species", "same_as", "length_check",
+                "query", "rescued", "protein_length", "window_class", "fcs", "own_species", "same_as", "length_check",
                 "contig_edge", "gaps", "confidence", "flags")
 FEATURE_COLUMNS = ("accession", "locus", "kind", "start", "end")
 SPECIES_COLUMNS = ("taxid", "name", "representative", "source", "loci", "rrna_records", "organelle_genes",
@@ -55,8 +55,8 @@ def gap_runs(seq, min_run=GAP_MIN):
 def copy_confidence(r):
     """A copy's tier and why (busco/copies.tsv's confidence and flags): low where a check calls it another organism's
     (own_species f, FCS-GX's EXCLUDE/TRIM/FIX, tiara's prokaryote window); medium where something may be wrong
-    (Fragmented, Duplicated, its protein's length in the locus' outer 5%, an assembly gap in it, at a contig's end, its
-    own-species check undecided, an organelle window, FCS-GX's REVIEW); else high."""
+    (Fragmented, Duplicated, called by the rescue pass, its protein's length in the locus' outer 5%, an assembly gap in
+    it, at a contig's end, its own-species check undecided, an organelle window, FCS-GX's REVIEW); else high."""
     low, medium = [], []
     if r.get("own_species") == "f":
         low.append("own_species")
@@ -67,6 +67,8 @@ def copy_confidence(r):
         low.append("window_prokaryote")
     if r.get("status") in ("Fragmented", "Duplicated"):
         medium.append(r["status"].lower())
+    if r.get("rescued") == "t":  # loci.py's rescue pass: its span may fall short of the gene's ends
+        medium.append("rescued")
     if r.get("length_check", "ok") != "ok":
         medium.append(f"length_{r['length_check']}")
     if int(r.get("gaps") or 0):

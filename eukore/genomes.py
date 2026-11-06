@@ -44,7 +44,7 @@ CATEGORY = {"reference genome": 0, "representative genome": 1}
 LEVEL = {"Complete Genome": 0, "Chromosome": 1, "Scaffold": 2, "Contig": 3}
 LOCI_COLUMNS = ("locus", "status", "contig", "contig_length", "start", "end", "strand", "length", "cds_length",
                 "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies", "query",
-                "protein_length", "window_class")
+                "protein_length", "window_class", "rescued")  # rescued: loci.py's rescue pass (since 2026-11-06)
 
 
 def safe(name):
@@ -214,6 +214,7 @@ def read_rows(path):
 
 RESULT_FILES = ("copies.fna", "loci.tsv", "features.tsv", "windows.fna.gz")
 HELD_OUT = "held_out.tsv"  # a dataset species' BUSCOs called without its own proteins (the OrthoDB benchmark's)
+HELD_OUT_COLUMNS = ("locus", "status", "query", "contig", "start", "end", "rescued", "cds")  # place since 2026-11-06
 
 
 def done_dir(work, accession):
@@ -359,7 +360,7 @@ def run(args):
     try:
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
                             settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), tmp,
-                            settings.get("hmm_db"), job.get("gencode", 1))
+                            settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings))
     except (OSError, RuntimeError) as e:
         shutil.rmtree(tmp, ignore_errors=True)
         return acc, None, f"locus calling failed: {e}"
@@ -395,7 +396,8 @@ def run(args):
                 locus, r["status"], r["contig"], r["contig_length"], r["start"], r["end"], r["strand"],
                 len(r["copy"]), len(r["spliced"]), exons, f"{r['identity']:.4f}", f"{r['coverage']:.3f}",
                 f"{r['hmm_score']:.1f}", f"{r['cutoff']:.1f}", f"{r['hmm_coverage']:.3f}", r["copies"], r["query"],
-                len(r["protein"]), classes.get(window_of.get(locus, ""), "-")])) + "\n")
+                len(r["protein"]), classes.get(window_of.get(locus, ""), "-"),
+                "t" if r.get("rescued") else "f"])) + "\n")
             ft.writelines(f"{locus}\t{k}\t{s}\t{e}\n" for k, s, e in r["features"])
     rrna = None
     if settings.get("rrna") and not job.get("path"):  # records of a species without an assembly: no genome's rRNA
@@ -414,7 +416,9 @@ def run(args):
     summary = {"accession": acc, "fetched": job.get("fetch", acc), "why": job["why"], "loci": taken,
                "searched": list(odb.loci),
                "status": dict(collections.Counter(r["status"] for r in got["loci"].values())), "rrna": rrna,
-               "bytes": os.path.getsize(path), "seconds": seconds, "threads": settings.get("threads", 1)}
+               "bytes": os.path.getsize(path), "seconds": seconds, "threads": settings.get("threads", 1),
+               "rescue": rescue_of(settings)["rescue_missing"],
+               "rescued": sum(1 for r in got["loci"].values() if r.get("rescued"))}
     if own:
         summary["held_out"] = {"left_out": own, "seconds": round(time.time() - started - seconds, 1)}
     with open(os.path.join(tmp, "done.json"), "w", newline="\n") as fh:
@@ -423,6 +427,13 @@ def run(args):
         shutil.rmtree(folder)
     os.replace(tmp, folder)
     return acc, summary, None
+
+
+def rescue_of(settings):
+    """loci.call's rescue options from the settings: the rescue pass unless settings["rescue"] is False (--no_rescue),
+    with settings["esl_translate"]."""
+    return dict(rescue_missing=settings.get("rescue", True),
+                translate=settings.get("esl_translate") or "esl-translate")
 
 
 def own_of(job, settings):
@@ -438,23 +449,26 @@ def held_out_missing(work, job, settings):
 
 def held_out(path, job, settings, odb, own, folder):
     """A dataset species' genome's BUSCOs called again with its own proteins (own: their dataset taxids) left out of
-    the queries, into folder/HELD_OUT (locus, status, query, cds: the call's coding sequence): the OrthoDB benchmark
-    compares these with OrthoDB's gene models, which the build's own calls were queried with
+    the queries, into folder/HELD_OUT (HELD_OUT_COLUMNS; cds: the call's coding sequence): the OrthoDB benchmark
+    compares these with OrthoDB's gene models, which the build's own calls were queried with, and their places with
+    the build's own calls
     -> why it failed, or None."""
     queries = odb.queries(job["lineage"], settings["odb_lineages"], leave_out=own)
     try:
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
                             settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), folder,
-                            settings.get("hmm_db"), job.get("gencode", 1))
+                            settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings))
     except (OSError, RuntimeError) as e:
         return f"held-out locus calling failed: {e}"
     if got["failed"]:
         return f"held-out locus calling failed: {got['failed']}"
     with open(os.path.join(folder, HELD_OUT), "w", newline="\n") as fh:
-        fh.write("locus\tstatus\tquery\tcds\n")
+        fh.write("\t".join(HELD_OUT_COLUMNS) + "\n")
         for locus in odb.loci:
             r = got["loci"].get(locus, {"status": "Missing"})
-            fh.write(f"{locus}\t{r['status']}\t{r.get('query', '-')}\t{r.get('spliced', '-')}\n")
+            fh.write("\t".join(str(x) for x in (
+                locus, r["status"], r.get("query", "-"), r.get("contig", "-"), r.get("start", "-"), r.get("end", "-"),
+                ("t" if r.get("rescued") else "f") if r["status"] != "Missing" else "-", r.get("spliced", "-"))) + "\n")
     return None
 
 

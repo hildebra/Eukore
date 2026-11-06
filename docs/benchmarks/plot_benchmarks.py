@@ -443,6 +443,11 @@ def summary_md(bench, package, out):
         if h:
             lines.append(f"| the same, called without the species' own proteins | {pct(h['called'])} called, "
                          f"{pct(h['concordant_of_called'])} of them OrthoDB's gene model ({h['species']} species) |")
+            p = h.get("place")
+            if p and p.get("both_called"):
+                lines.append(f"| of those also called with its own proteins, on the same gene | {pct(p['same_gene'])} "
+                             f"of {p['both_called']:,}, {pct(p['span_at_least_90'])} of them sharing 90% of the "
+                             f"span; {p['rescued']} called by the rescue pass |")
     for marker, r in (s.get("resolution") or {}).items():
         lines.append(f"| {'BUSCO' if marker.startswith('BUSCO') else marker} copies under 99% identical to any other "
                      f"species | {pct(r['under_99'])} of {r['copies']:,} |")

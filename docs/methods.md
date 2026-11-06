@@ -42,6 +42,19 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
      the next one's translation (miniprot writes it first), so that the HMM checked a neighbour's protein: earlier
      calls, the trial packages' among them, are not to be trusted.
    - A locus is Single, Duplicated (the best copy taken), Fragmented (under 80% of the profile) or Missing.
+   - **The rescue pass** (since 2026-11-06; `--no_rescue` leaves it out). In a genome far from every dataset species,
+     miniprot finds no seed for many genes with the distant proteins: *Blastocystis hominis* called without its own
+     proteins lost 27 of the 98 BUSCOs OrthoDB annotates in it (its genes compact, its introns ~30 bases), though its
+     HMMs find 26 of them in its six-frame ORFs, on the right gene. So for each locus still Missing, its HMM is searched
+     in the genome's ORFs (esl-translate, ORFs of 20 residues or more; domains of E-value 1e-3 or less); its best hit
+     and the hits on that contig and strand within 20 kb of it, not overlapping on the HMM, place it and, joined in the
+     HMM's order, make a "self" protein (nearly the genome's own). miniprot aligns the locus' queries and the self
+     protein on that place and 5 kb each side again, with sensitive seeding (`-k5 -M0 -n1 -l4`, introns as long as the
+     first pass allows), and the HMMs confirm as before. In the held-out *B. hominis*, the BUSCOs missed went from 32 to
+     12 (all on the right gene). A rescued copy is `rescued` and at most `medium`: its span may fall short of the gene's
+     ends (median overlap 0.65 with the call made with its own proteins), and its exon ends come from distant proteins.
+     A genome over 1 Gb is not rescued (its ORFs' search too long; such genomes are mostly animals' and plants', near
+     the dataset's species).
 3. **The copy.** The gene from first to last codon, introns and all, uncut and unmasked. Its features are its exons
    and introns, the assembly's soft-masked runs and its low-complexity runs (DUST); the user masks as it sees fit.
    - The 50 kb around each copy are kept for contamination screens.

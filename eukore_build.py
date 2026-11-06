@@ -137,6 +137,8 @@ def settings_of(opts, src_dir, ncbi, staged_only):
     return dict(work=opts.work, genomes=opts.genomes, miniprot=opts.miniprot, hmmsearch=opts.hmmsearch,
                 threads=opts.threads_per_genome, staged_only=staged_only, odb=folder, loci=odb.loci, hmm_db=hmm_db,
                 odb_lineages=odb_mod.species_lineages(odb, ncbi), odb_own=odb_mod.own_taxids(odb, ncbi), tiara=tiara,
+                rescue=not opts.no_rescue and bool(shutil.which("esl-translate")),
+                esl_translate=shutil.which("esl-translate"),
                 rrna=functools.partial(rrna_hook, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"),
                                        threads=opts.threads_per_genome) if shutil.which("barrnap") else None)
 
@@ -325,6 +327,8 @@ def main(argv=None):
                                                     "tiara on the PATH, else none; envs/tiara.yaml's, as it needs a "
                                                     "Python of 3.9 or older)")
     p.add_argument("--no_tiara", action="store_true", help="do not classify the windows around the copies")
+    p.add_argument("--no_rescue", action="store_true", help="no rescue pass of the BUSCOs miniprot missed (loci.py: "
+                                                            "their HMMs in the genome's six-frame ORFs place them)")
     p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives (protal's "
                                       f"KSGP, e.g. 4.4 or 5.2; default KSGP's served {labels.KSGP_VERSION}, fetched)")
     p.add_argument("--no_benchmarks", action="store_true", help="write the package without its benchmarks/ "
@@ -381,6 +385,8 @@ def main(argv=None):
     for tool in (opts.miniprot, opts.hmmsearch):
         if not shutil.which(tool):
             sys.exit(f"{tool}: not found (bioconda's miniprot and hmmer)")
+    if not opts.no_rescue and not shutil.which("esl-translate"):
+        say("WARNING: no esl-translate (hmmer's easel tools): no rescue pass of the BUSCOs miniprot missed")
     if opts.stage in ("all", "process"):
         settings = settings_of(opts, src_dir, ncbi, staged_only=opts.stage == "process")
         waiting, failed = run_genomes(opts, job_map, settings)

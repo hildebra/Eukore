@@ -157,6 +157,8 @@ class CopyTest(unittest.TestCase):
         self.assertEqual(package.copy_confidence(dict(base, fcs="EXCLUDE:prok:Escherichia")), ("low", "fcs"))
         self.assertEqual(package.copy_confidence(dict(base, status="Fragmented", contig_edge=10)),
                          ("medium", "fragmented,contig_edge"))
+        self.assertEqual(package.copy_confidence(dict(base, rescued="t")), ("medium", "rescued"))
+        self.assertEqual(package.copy_confidence(dict(base, rescued="f")), ("high", "-"))
         self.assertEqual(package.gap_runs("ACGT" + "N" * 10 + "AC" + "N" * 9 + "A"), [(4, 14)])
 
 

@@ -52,6 +52,14 @@ class HelpersTest(unittest.TestCase):
                      confidence="high", source="genome")]
         self.assertEqual(benchmarks.best_ssu(rows), {"b": (1, 0, 1750), "d": (3, 100, 1900)})
 
+    def test_place_of(self):
+        call = dict(contig="c1", start="101", end="200")
+        self.assertEqual(benchmarks.place_of(call, dict(contig="c1", start="101", end="200")), ("same", "1.000"))
+        self.assertEqual(benchmarks.place_of(call, dict(contig="c1", start="151", end="250")), ("same", "0.333"))
+        self.assertEqual(benchmarks.place_of(call, dict(contig="c2", start="101", end="200")), ("elsewhere", "0.000"))
+        self.assertEqual(benchmarks.place_of(call, dict(contig="c1", start="201", end="300")), ("elsewhere", "0.000"))
+        self.assertEqual(benchmarks.place_of(call, dict(contig="c1", start="-", end="-")), ("-", "-"))  # older file
+
     def test_queries_leave_out_own_species(self):
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
@@ -124,6 +132,13 @@ class PackageTest(unittest.TestCase):
                               o["3at2759"]["held_out_verdict"]), ("concordant", "6253", "missed"))
             self.assertEqual(manifest["benchmarks"]["orthodb"]["held_out"]["verdicts"],
                              {"concordant": 2, "missed": 1})
+            # on the package call's gene, with its span
+            self.assertEqual((o["1at2759"]["held_out_place"], o["1at2759"]["held_out_span"],
+                              o["1at2759"]["held_out_rescued"], o["3at2759"]["held_out_place"]),
+                             ("same", "1.000", "f", "-"))
+            self.assertEqual(manifest["benchmarks"]["orthodb"]["held_out"]["place"],
+                             {"both_called": 2, "same_gene": 1.0, "median_span": 1.0, "span_at_least_90": 1.0,
+                              "rescued": 0})
             # identical copies in two species of one genus: nothing told apart at 99%
             r = {(x["marker"], x["shared_rank"]): x for x in table("resolution.tsv")}
             self.assertEqual((r[(benchmarks.ALL_BUSCOS, "genus")]["copies"], r[(benchmarks.ALL_BUSCOS, "all")]

@@ -112,7 +112,8 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 | `identity`, `coverage` | miniprot's identity and the share of the query protein aligned |
 | `hmm_score`, `cutoff`, `hmm_coverage` | its translation's score against the locus' BUSCO HMM, BUSCO's cutoff, the share of the profile aligned |
 | `copies` | complete copies of the locus in the genome |
-| `query` | the dataset protein that placed it (`<busco>_<taxid>_<id>`, or an ancestral variant) |
+| `query` | the dataset protein that placed it (`<busco>_<taxid>_<id>`, or an ancestral variant; `<busco>_self` for the rescue pass' self protein) |
+| `rescued` | `t` where the rescue pass called it (its HMM in the genome's six-frame ORFs placed it; [methods.md](methods.md)), `f`, or `-` for a genome run before 2026-11-06 |
 | `protein_length` | of its translation |
 | `window_class` | tiara's class of the 50 kb around it (`eukarya`, `bacteria`, `archaea`, `organelle`, `unknown`), `-` where not classified |
 | `fcs` | NCBI FCS-GX's call over the copy (`ACTION:division:top taxon`, its action `EXCLUDE`, `TRIM`, `FIX` or `REVIEW`), `-` for none or where not screened |
@@ -125,7 +126,7 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 
 A copy is `low` where a check calls it another organism's: `own_species` (f), `fcs` (FCS-GX's EXCLUDE, TRIM or FIX),
 `window_prokaryote` (tiara's bacteria or archaea). It is `medium` where something may be wrong: `fragmented`,
-`duplicated`, `length_short` or `length_long`, `gap`, `contig_edge` (under 1,000 bases), `own_species_undecided`
+`duplicated`, `rescued` (the rescue pass': its span may fall short of the gene's ends), `length_short` or `length_long`, `gap`, `contig_edge` (under 1,000 bases), `own_species_undecided`
 (`own_species` -), `window_organelle`, `fcs_review`. Else `high`.
 
 - `features.tsv`: per copy its exons and introns, the assembly's soft-masked runs of 20 bases or more
@@ -210,7 +211,7 @@ why. A reader needs none of them.
 | file | one row per |
 |---|---|
 | `completeness.tsv` | species' genome: its BUSCOs Single, Duplicated, Fragmented, Missing, `complete` (Single and Duplicated over the BUSCOs called), its copies' confidence tiers, its assembly's level, size and contigs, its rRNA counts |
-| `orthodb.tsv` | BUSCO of a species BUSCO's dataset holds a protein of: Eukore's `status`; `recall` and `precision`, the shares of OrthoDB's protein's 5-mers in the call's translation and the reverse; `guided` (`t` where the call's query was that species' own protein); `verdict`: `concordant` (both 0.9 or more), `similar` (both 0.5 or more), `discordant`, `missed`; `held_out_status`, `held_out_query`, `held_out_recall`, `held_out_precision`, `held_out_verdict`: the same for the species' BUSCOs called again without its own proteins (`-` where the build made no such calls) |
+| `orthodb.tsv` | BUSCO of a species BUSCO's dataset holds a protein of: Eukore's `status`; `recall` and `precision`, the shares of OrthoDB's protein's 5-mers in the call's translation and the reverse; `guided` (`t` where the call's query was that species' own protein); `verdict`: `concordant` (both 0.9 or more), `similar` (both 0.5 or more), `discordant`, `missed`; `held_out_status`, `held_out_query`, `held_out_recall`, `held_out_precision`, `held_out_verdict`: the same for the species' BUSCOs called again without its own proteins (`-` where the build made no such calls); `held_out_place` (`same`: on the package call's contig and overlapping it, `elsewhere`, or `-` where either is not called or the held-out calls predate their places) and `held_out_span` (the two spans' intersection over union); `held_out_rescued` (`t` where the rescue pass made the held-out call) |
 | `resolution.tsv` | marker (a BUSCO; `BUSCO (all)`; `18S`, each species' best record's) and `shared_rank` (the rank a copy shares with its nearest copy of another species: `genus` .. `phylum`, `none`; `all`; `unmatched`: none 70% identical): `copies`, those `under_97` and `under_99` identical, the identity's quantiles (`q05` .. `q95`) |
 | `rrna.tsv` | rRNA source and kind: records, median length, records holding each region, a whole 28S, an 18S intron, each confidence tier |
 | `labels.tsv` | supergroup (and `all`) and reference: its species by how they were named (`species`, `synonym`, `genus`, `none`) |

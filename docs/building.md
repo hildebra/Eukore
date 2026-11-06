@@ -27,7 +27,8 @@ micromamba activate eukore
 
 `envs/eukore.yaml` holds:
 - Python 3.12 or later;
-- miniprot and HMMER (hmmsearch, nhmmer): the BUSCO calls and the organelle genes;
+- miniprot and HMMER (hmmsearch, nhmmer; its easel tools' esl-translate for the rescue pass): the BUSCO calls and the
+  organelle genes;
 - barrnap and ITSx: the rRNA genes and the ITS borders;
 - vsearch: the checks across species and the part screen;
 - p7zip: EUKARYOME's archive;
@@ -38,7 +39,7 @@ micromamba activate eukore
 Check that the tools are found:
 
 ```bash
-for t in miniprot hmmsearch nhmmer barrnap ITSx vsearch 7za; do printf '%-10s %s\n' $t "$(command -v $t || echo MISSING)"; done
+for t in miniprot hmmsearch esl-translate nhmmer barrnap ITSx vsearch 7za; do printf '%-10s %s\n' $t "$(command -v $t || echo MISSING)"; done
 python3 eukore_build.py --help
 ```
 
@@ -173,6 +174,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `-j`, `--jobs` | threads / 4 | genomes at a time |
 | `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and runs (genomes left, time left) |
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
+| `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
 | `--fcs_gx_db PREFIX`, `--run_gx` | none, `run_gx` | FCS-GX's database (e.g. `/dev/shm/gxdb/all`) and runner |
 | `--ksgp_tax FILE` | KSGP 4.0, fetched | the KSGP release `species.tsv`'s KSGP lineages come from |
 | `--miniprot`, `--hmmsearch` | on the PATH | the tools, where not on the PATH |
