@@ -402,8 +402,8 @@ def main(argv=None):
     p.add_argument("-t", "--threads", type=int, default=8)
     p.add_argument("-j", "--jobs", type=int, default=None, help="genomes at a time (default threads / 4)")
     p.add_argument("--downloads", type=int, default=8,
-                   help="the fetch stage's genomes and annotations downloaded at a time (default 8; one NCBI "
-                        "connection gives ~10 MB/s)")
+                   help="the fetch stage's genomes and annotations downloaded at a time (default 8), by curl where on "
+                        "the PATH (one NCBI connection: ~30-40 MB/s by curl, ~10 by Python's urllib)")
     p.add_argument("--scratch", help="the fetch stage's unfinished downloads (.part files) and their gzip checks, e.g. "
                                      "a node's local disk or a scratch file system without backups; each file is "
                                      "copied into OUT/genomes once whole (default: beside it)")

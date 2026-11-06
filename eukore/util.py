@@ -174,6 +174,21 @@ def open_text(path):
     return open(path)
 
 
+CURL = shutil.which("curl")  # fetch_file's transfers where there: ~3x urllib's rate (2026-11-06, NBI's HPC), else urllib
+
+
+def curl_get(url, path):
+    """url into path by curl (a stall of a minute is a failure; a transfer cut short of its announced length curl's own
+    error): raises urllib.error.HTTPError (a status of 400 or more) or OSError (curl failed)."""
+    run = subprocess.run([CURL, "-sS", "-L", "-A", USER_AGENT, "--connect-timeout", "60", "-y", "60", "-Y", "1024",
+                          "-o", path, "-w", "%{http_code}", url], capture_output=True, text=True)
+    if run.returncode:
+        raise OSError(f"curl exit {run.returncode}: {run.stderr.strip()}")
+    code = int(run.stdout.strip() or 0)
+    if code >= 400:
+        raise urllib.error.HTTPError(url, code, f"HTTP {code}", None, None)
+
+
 def gzip_whole(path):
     """Reads a gzip file to its end: raises (EOFError, OSError, zlib.error) where it is cut short or damaged."""
     with gzip.open(path, "rb") as gz:
@@ -182,8 +197,8 @@ def gzip_whole(path):
 
 
 def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=None):
-    """Downloads url to dest: "" if it arrived whole (the length it announced, and, a gzip file, gzip reads it to its end),
-    else why not. A missing file ("not found") or another refusal (HTTP 4xx but 429) is not asked for again; other
+    """Downloads url to dest (by curl where there, else urllib): "" if it arrived whole (the length it announced, and, a
+    gzip file, gzip reads it to its end), else why not. A missing file ("not found") or another refusal (HTTP 4xx but 429) is not asked for again; other
     failures are (ATTEMPTS times), after growing waits, or as long as the server asks (Retry-After, a minute at most).
     scratch: the folder of the download's .part file (eukore_build.py --scratch: dest's storage then gets the whole
     file once, written in one go), else beside dest; checker: a process pool the gzip check runs in (a core of its own),
@@ -195,10 +210,14 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
             time.sleep(max(RETRY_WAIT * 2 ** (attempt - 1), asked))
         asked = 0.0
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as fh:
-                expected = response.headers.get("Content-Length")
-                shutil.copyfileobj(response, fh, 1 << 20)
+            expected = None
+            if CURL:
+                curl_get(url, part)
+            else:
+                request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+                with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as fh:
+                    expected = response.headers.get("Content-Length")
+                    shutil.copyfileobj(response, fh, 1 << 20)
             if expected is not None and os.path.getsize(part) != int(expected):
                 why = f"{os.path.getsize(part)} of {expected} bytes arrived"
                 continue
@@ -216,7 +235,8 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
             return ""
         except urllib.error.HTTPError as e:
             if e.code == 404:
-                return "not found"
+                why = "not found"  # its .part (curl's: the error page) removed below
+                break
             why = f"HTTP {e.code}"
             if 400 <= e.code < 500 and e.code != 429:
                 break

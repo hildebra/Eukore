@@ -175,7 +175,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--keep_gb` | 1000 | the genomes kept in `OUT/genomes` once the package is written, GB |
 | `-t`, `--threads` | 8 | threads in all |
 | `-j`, `--jobs` | threads / 4 | genomes at a time |
-| `--downloads` | 8 | the fetch stage's genomes and annotations downloaded at a time (one NCBI connection gives ~10 MB/s); their gzip checks run in one process of their own, a second core |
+| `--downloads` | 8 | the fetch stage's genomes and annotations downloaded at a time, by `curl` where it is on the PATH (one NCBI connection: ~30–40 MB/s by curl, ~10 by Python's urllib); their gzip checks run in one process of their own, a second core |
 | `--scratch DIR` | beside `OUT/genomes` | the fetch stage's unfinished downloads (`.part` files) and their gzip checks, e.g. a node's local disk or a scratch file system without backups; each file is copied into `OUT/genomes` once whole |
 | `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and runs (genomes left, time left) |
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |

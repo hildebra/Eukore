@@ -77,18 +77,30 @@ class FetchTest(unittest.TestCase):
                 fh.write(whole[:len(whole) // 2])
             quiet = type("Quiet", (http.server.SimpleHTTPRequestHandler,), {"log_message": lambda *a: None})
             server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(quiet, directory=served))
-            threading.Thread(target=server.serve_forever, daemon=True).start()
+            serving = threading.Thread(target=server.serve_forever, daemon=True)
+            serving.start()
             url = f"http://127.0.0.1:{server.server_address[1]}/"
-            with concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as checker:
-                got = {name: util.fetch_file(url + name, os.path.join(out, name), attempts=1, scratch=scratch,
-                                             checker=checker) for name in ("whole.fna.gz", "cut.fna.gz")}
-            server.shutdown()
-            self.assertEqual(got["whole.fna.gz"], "")
-            self.assertTrue(got["cut.fna.gz"].startswith("EOFError"), got)
-            self.assertEqual(sorted(os.listdir(out)), ["whole.fna.gz"])
-            self.assertEqual(os.listdir(scratch), [])
-            with open(os.path.join(out, "whole.fna.gz"), "rb") as fh:
-                self.assertEqual(fh.read(), whole)
+            curl = util.CURL
+            try:
+                for util.CURL in {curl, None}:  # by curl (where there) and by urllib
+                    with concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) \
+                            as checker:
+                        got = {name: util.fetch_file(url + name, os.path.join(out, name), attempts=1, scratch=scratch,
+                                                     checker=checker)
+                               for name in ("whole.fna.gz", "cut.fna.gz", "missing.fna.gz")}
+                    self.assertEqual(got["whole.fna.gz"], "", util.CURL)
+                    self.assertTrue(got["cut.fna.gz"].startswith("EOFError"), got)
+                    self.assertEqual(got["missing.fna.gz"], "not found")
+                    self.assertEqual(sorted(os.listdir(out)), ["whole.fna.gz"])
+                    self.assertEqual(os.listdir(scratch), [])
+                    with open(os.path.join(out, "whole.fna.gz"), "rb") as fh:
+                        self.assertEqual(fh.read(), whole)
+                    os.remove(os.path.join(out, "whole.fna.gz"))
+            finally:
+                util.CURL = curl
+                server.shutdown()
+                server.server_close()
+                serving.join()
 
 
 class ProgressTest(unittest.TestCase):
