@@ -52,6 +52,19 @@ class HelpersTest(unittest.TestCase):
                      confidence="high", source="genome")]
         self.assertEqual(benchmarks.best_ssu(rows), {"b": (1, 0, 1750), "d": (3, 100, 1900)})
 
+    def test_queries_leave_out_own_species(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            odb = odb_mod.Odb(fx.odb_world(tmp), fx.LOCI)
+            own = odb_mod.own_taxids(odb, ncbi)
+            self.assertEqual(own[4932], [4932])
+            lineage = list(ncbi.ancestors(4932))
+            every = odb.queries(lineage, odb_mod.species_lineages(odb, ncbi))
+            held = odb.queries(lineage, odb_mod.species_lineages(odb, ncbi), leave_out=own[4932])
+            self.assertTrue(any("_4932_" in q for q in every))
+            self.assertFalse(any("_4932_" in q for q in held))
+            self.assertEqual(len(every) - len(held), len(fx.LOCI))  # one protein of each locus left out
+
 
 class PackageTest(unittest.TestCase):
     def test_a_package_measured(self):
@@ -70,7 +83,8 @@ class PackageTest(unittest.TestCase):
             settings = dict(work=work, genomes=genomes_dir, miniprot=fx.miniprot(tmp, gff),
                             hmmsearch=fx.hmmsearch(tmp), threads=1, staged_only=True, odb=root, loci=fx.LOCI,
                             hmm_db=odb.hmm_db(os.path.join(tmp, "loci.hmm")),
-                            odb_lineages=odb_mod.species_lineages(odb, ncbi), tiara=None, rrna=None)
+                            odb_lineages=odb_mod.species_lineages(odb, ncbi), odb_own=odb_mod.own_taxids(odb, ncbi),
+                            tiara=None, rrna=None)
             gb = sources.read_assemblies([fx.assembly_table(os.path.join(tmp, "genbank_fungi.txt"), fx.GENBANK)])
             jobs = {a: j for a, j in genomes.jobs(ncbi, gb).items() if a in (YEAST, PARADOXUS)}
             for acc in jobs:
@@ -103,6 +117,13 @@ class PackageTest(unittest.TestCase):
             self.assertEqual((o["1at2759"]["verdict"], o["1at2759"]["recall"], o["1at2759"]["guided"]),
                              ("concordant", "1.000", "t"))
             self.assertEqual((o["3at2759"]["status"], o["3at2759"]["verdict"]), ("Missing", "missed"))
+            # its held-out calls, queried without the yeast's own proteins: the next species' (6253) find the genes
+            self.assertTrue(os.path.isfile(os.path.join(genomes.done_dir(work, YEAST), genomes.HELD_OUT)))
+            self.assertFalse(os.path.isfile(os.path.join(genomes.done_dir(work, PARADOXUS), genomes.HELD_OUT)))
+            self.assertEqual((o["1at2759"]["held_out_verdict"], o["1at2759"]["held_out_query"].split("_")[1],
+                              o["3at2759"]["held_out_verdict"]), ("concordant", "6253", "missed"))
+            self.assertEqual(manifest["benchmarks"]["orthodb"]["held_out"]["verdicts"],
+                             {"concordant": 2, "missed": 1})
             # identical copies in two species of one genus: nothing told apart at 99%
             r = {(x["marker"], x["shared_rank"]): x for x in table("resolution.tsv")}
             self.assertEqual((r[(benchmarks.ALL_BUSCOS, "genus")]["copies"], r[(benchmarks.ALL_BUSCOS, "all")]

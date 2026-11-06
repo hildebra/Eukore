@@ -82,7 +82,8 @@ class LociTest(unittest.TestCase):
         self.assertEqual(loci.regions(got, {q: 1000 for q in lengths}), {})
 
     def test_a_genome_called(self):
-        got = loci.call(self.path, {}, self.odb, fx.miniprot(self.dir, self.gff), fx.hmmsearch(self.dir), 1, self.dir)
+        got = loci.call(self.path, fx.QUERIES, self.odb, fx.miniprot(self.dir, self.gff), fx.hmmsearch(self.dir), 1,
+                        self.dir)
         self.assertIsNone(got["failed"])
         one, two, three = (got["loci"][l] for l in fx.LOCI)
         self.assertEqual((one["status"], one["copies"], two["status"], three["status"]),
@@ -107,14 +108,14 @@ class LociTest(unittest.TestCase):
     def test_a_fragment_and_a_failure(self):
         short = self.gff.replace(fx.PROTEINS["2at2759"], fx.PROTEINS["2at2759"][:90])  # 3/4 of the profile
         mp = fx.miniprot(self.dir, short)
-        got = loci.call(self.path, {}, self.odb, mp, fx.hmmsearch(self.dir), 1, self.dir)
+        got = loci.call(self.path, fx.QUERIES, self.odb, mp, fx.hmmsearch(self.dir), 1, self.dir)
         self.assertEqual((got["loci"]["2at2759"]["status"], round(got["loci"]["2at2759"]["hmm_coverage"], 2)),
                          ("Fragmented", 0.75))
         other = self.gff.replace(fx.PROTEINS["2at2759"], fx.PROTEINS["3at2759"])  # another locus' protein: not 2
-        got = loci.call(self.path, {}, self.odb, fx.miniprot(self.dir, other), fx.hmmsearch(self.dir), 1, self.dir)
+        got = loci.call(self.path, fx.QUERIES, self.odb, fx.miniprot(self.dir, other), fx.hmmsearch(self.dir), 1, self.dir)
         self.assertEqual(got["loci"]["2at2759"]["status"], "Missing")
         failing = fx.tool(self.dir, "mp_fail", "#!/bin/sh\necho 'out of memory' >&2\nexit 1\n")
-        got = loci.call(self.path, {}, self.odb, failing, fx.hmmsearch(self.dir), 1, self.dir)
+        got = loci.call(self.path, fx.QUERIES, self.odb, failing, fx.hmmsearch(self.dir), 1, self.dir)
         self.assertTrue(got["failed"].startswith("miniprot failed: out of memory"))
 
     def test_masks(self):

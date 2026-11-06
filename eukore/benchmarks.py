@@ -10,9 +10,10 @@ docs/benchmarks.md describes them, docs/benchmarks/plot_benchmarks.py draws them
 - orthodb.tsv: per BUSCO of each package species that BUSCO's dataset holds a protein of (OrthoDB's gene model in
   that species), Eukore's call against it: missed, or the share of OrthoDB's protein's 5-mers in the call's
   translation (recall) and of the translation's in OrthoDB's (precision). The right gene model of the right paralog
-  gives both near 1. The calls are queried with the nearest dataset species' proteins, for these species their own
-  (`guided`): this measures the gene structure and the copy chosen, not the reach into species far from the dataset
-  (completeness per supergroup shows that);
+  gives both near 1. The build's calls are queried with the nearest dataset species' proteins, for these species
+  their own (`guided`), so that they find OrthoDB's own protein again; the `held_out_` columns compare the same
+  species' calls made without its own proteins (genomes.HELD_OUT, made by the process stage since 2026-11-06, read
+  from the work folder): the measure that is not circular, of a species whose nearest dataset relative is another;
 - resolution.tsv: per marker (each BUSCO's coding sequence; the 18S of each species' best rRNA record) and the rank a
   copy shares with its nearest copy of another species (qc.py's vsearch search), their identity's quantiles and the
   copies under 97% and 99%: how well a marker tells species apart, and the identity a read can expect per rank;
@@ -36,6 +37,7 @@ import sys
 import time
 
 from . import odb as odb_mod
+from . import genomes as genomes_mod
 from . import package, qc, rrna, util
 
 FOLDER = "benchmarks"
@@ -56,6 +58,8 @@ COMPLETENESS_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "sou
                         "medium", "low", "rrna_18s", "rdna_units", "rdna_complete")
 ORTHODB_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "locus", "status", "odb_proteins",
                    "odb_length", "protein_length", "recall", "precision", "guided", "verdict")
+HELD_COLUMNS = ("held_out_status", "held_out_query", "held_out_recall", "held_out_precision", "held_out_verdict")
+ORTHODB_COLUMNS += HELD_COLUMNS
 RESOLUTION_COLUMNS = ("marker", "shared_rank", "copies", "under_97", "under_99") + tuple(q for q, _f in QUANTILES)
 RRNA_COLUMNS = ("source", "kind", "records", "median_length") + REGIONS + ("lsu_complete", "introns") + TIERS
 LABEL_COLUMNS = ("supergroup", "reference") + tuple("none" if m == "-" else m for m in MATCHES)
@@ -155,23 +159,62 @@ def odb_species(odb, ncbi, held):
     return out
 
 
-def orthodb_row(acc, species_taxid, locus, call, cds, references, ncbi):
-    """orthodb.tsv's row of one BUSCO of a genome whose species the dataset holds: call (status, query) or None
-    (Missing); cds: the call's coding sequence; references: the dataset's proteins of the species [(taxid, protein)]."""
-    row = dict(accession=acc, species_taxid=species_taxid, locus=locus, odb_proteins=len(references),
-               odb_length=max(len(p) for _t, p in references))
-    if call is None:
-        return dict(row, status="Missing", protein_length="-", recall="-", precision="-", guided="-", verdict="missed")
-    status, query = call
-    protein = translate(cds, ncbi.code_of(species_taxid))
+def compare(cds, table, references):
+    """A call's coding sequence against the dataset's proteins of its species [(taxid, protein)] -> (recall,
+    precision, OrthoDB protein's length, call's protein length, verdict), against the protein that matches best."""
+    protein = translate(cds, table)
     mine = kmers(protein)
     recall, precision, length = max((shared(kmers(p), mine), shared(mine, kmers(p)), len(p)) for _t, p in references)
-    q_taxid = query.split("_")[1] if query.count("_") >= 2 else ""  # <busco>_<taxid>_<id>; an ancestral variant's not
-    guided = "t" if q_taxid.isdigit() and ncbi.species_of(int(q_taxid)) == species_taxid else "f"
     low = min(recall, precision)
     verdict = "concordant" if low >= CONCORDANT else "similar" if low >= SIMILAR else "discordant"
-    return dict(row, status=status, odb_length=length, protein_length=len(protein.rstrip("*")),
-                recall=f"{recall:.3f}", precision=f"{precision:.3f}", guided=guided, verdict=verdict)
+    return recall, precision, length, len(protein.rstrip("*")), verdict
+
+
+def orthodb_row(acc, species_taxid, locus, call, cds, references, ncbi, held=None):
+    """orthodb.tsv's row of one BUSCO of a genome whose species the dataset holds: call (status, query) or None
+    (Missing); cds: the call's coding sequence; references: the dataset's proteins of the species [(taxid, protein)];
+    held: the held-out call (status, query, cds; genomes.HELD_OUT) or None where the genome has none."""
+    row = dict(accession=acc, species_taxid=species_taxid, locus=locus, odb_proteins=len(references),
+               odb_length=max(len(p) for _t, p in references))
+    table = ncbi.code_of(species_taxid)
+    if call is None:
+        row.update(status="Missing", protein_length="-", recall="-", precision="-", guided="-", verdict="missed")
+    else:
+        status, query = call
+        recall, precision, length, plen, verdict = compare(cds, table, references)
+        q_taxid = query.split("_")[1] if query.count("_") >= 2 else ""  # <busco>_<taxid>_<id>; not an ancestral's
+        guided = "t" if q_taxid.isdigit() and ncbi.species_of(int(q_taxid)) == species_taxid else "f"
+        row.update(status=status, odb_length=length, protein_length=plen, recall=f"{recall:.3f}",
+                   precision=f"{precision:.3f}", guided=guided, verdict=verdict)
+    if held is None:
+        row.update({c: "-" for c in HELD_COLUMNS})
+    elif held[0] == "Missing":
+        row.update(held_out_status="Missing", held_out_query="-", held_out_recall="-", held_out_precision="-",
+                   held_out_verdict="missed")
+    else:
+        recall, precision, _length, _plen, verdict = compare(held[2], table, references)
+        row.update(held_out_status=held[0], held_out_query=held[1], held_out_recall=f"{recall:.3f}",
+                   held_out_precision=f"{precision:.3f}", held_out_verdict=verdict)
+    return row
+
+
+def held_out_calls(work, acc):
+    """A genome's held-out calls (WORK/done/<accession>/held_out.tsv) -> {locus: (status, query, cds)}, None without."""
+    path = os.path.join(genomes_mod.done_dir(work, acc), genomes_mod.HELD_OUT) if work else None
+    if not path or not os.path.isfile(path):
+        return None
+    return {r["locus"]: (r["status"], r["query"], r["cds"]) for r in rows_of(path)}
+
+
+def verdict_summary(rows, prefix=""):
+    """summary.json's figures of orthodb.tsv's rows, of the build's calls or (prefix "held_out_") the held-out ones."""
+    verdicts = collections.Counter(r[prefix + "verdict"] for r in rows)
+    called = len(rows) - verdicts["missed"]
+    return {"species": len({r["accession"] for r in rows}), "pairs": len(rows),
+            "called": round(called / len(rows), 4) if rows else None,
+            "concordant_of_called": round(verdicts["concordant"] / called, 4) if called else None,
+            "verdicts": dict(verdicts),
+            "median_recall": median_of([float(r[prefix + "recall"]) for r in rows if r[prefix + "recall"] != "-"])}
 
 
 def resolution_rows(by_marker):
@@ -357,6 +400,7 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
             if acc in genomes:
                 busco_nearest[locus].append(found)
     need = compared | (set(genomes) if search else set())
+    held = {a: held_out_calls(work, a) for a in compared}
     for locus in loci:
         cds = {}
         if need and os.path.isfile(os.path.join(folder, "busco", "copies", f"{locus}.fna.gz")):
@@ -366,7 +410,7 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
             references = models[species_of[acc]].get(locus)
             if references:
                 odb_rows.append(orthodb_row(acc, species_of[acc], locus, calls.get((acc, locus)), cds.get(acc, ""),
-                                            references, ncbi))
+                                            references, ncbi, held[acc].get(locus) if held[acc] else None))
         if search:
             got = qc.check({(a, locus): s for a, s in cds.items()}, species_of, ncbi, vsearch, threads)
             busco_nearest[locus] = [(c["nearest_id"], c["nearest_depth"]) for c in got.values()]
@@ -375,15 +419,16 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
             sp = species.get(str(r["species_taxid"]), {})
             r.update(name=sp.get("name", "-"), supergroup=sp.get("supergroup", "-"))
         write(out, "orthodb.tsv", ORTHODB_COLUMNS, odb_rows)
-        verdicts = collections.Counter(r["verdict"] for r in odb_rows)
-        called = len(odb_rows) - verdicts["missed"]
-        summary["orthodb"] = {"species": len(compared), "pairs": len(odb_rows),
-                              "called": round(called / len(odb_rows), 4) if odb_rows else None,
-                              "concordant_of_called": round(verdicts["concordant"] / called, 4) if called else None,
-                              "verdicts": dict(verdicts),
-                              "median_recall": median_of([float(r["recall"]) for r in odb_rows if r["recall"] != "-"])}
+        summary["orthodb"] = dict(verdict_summary(odb_rows), species=len(compared))
         log(f"benchmarks: {len(odb_rows)} BUSCOs of {len(compared)} species against OrthoDB's own "
-            f"({dict(verdicts)})")
+            f"({summary['orthodb']['verdicts']})")
+        rows = [r for r in odb_rows if r["held_out_verdict"] != "-"]
+        if rows:  # the calls made without the species' own proteins: the measure that is not circular
+            summary["orthodb"]["held_out"] = verdict_summary(rows, "held_out_")
+            log(f"benchmarks: held-out calls of {summary['orthodb']['held_out']['species']} species "
+                f"({summary['orthodb']['held_out']['verdicts']})")
+        elif compared:
+            summary["left_out"]["orthodb_held_out"] = "no held-out calls (genomes run before 2026-11-06, or no --work)"
 
     if vsearch:
         markers = dict(busco_nearest)

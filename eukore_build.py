@@ -136,13 +136,17 @@ def settings_of(opts, src_dir, ncbi, staged_only):
     tiara = None if opts.no_tiara else shutil.which(opts.tiara)
     return dict(work=opts.work, genomes=opts.genomes, miniprot=opts.miniprot, hmmsearch=opts.hmmsearch,
                 threads=opts.threads_per_genome, staged_only=staged_only, odb=folder, loci=odb.loci, hmm_db=hmm_db,
-                odb_lineages=odb_mod.species_lineages(odb, ncbi), tiara=tiara,
+                odb_lineages=odb_mod.species_lineages(odb, ncbi), odb_own=odb_mod.own_taxids(odb, ncbi), tiara=tiara,
                 rrna=functools.partial(rrna_hook, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"),
                                        threads=opts.threads_per_genome) if shutil.which("barrnap") else None)
 
 
 def run_genomes(opts, job_map, settings):
-    todo = [(j, settings) for a, j in sorted(job_map.items()) if not genomes.is_done(opts.work, a, settings["loci"])]
+    # a done genome of a BUSCO dataset species without its held-out calls (run before 2026-11-06) is run again where
+    # its genome is still there: never fetched again for a benchmark, its OrthoDB benchmark then left without them
+    todo = [(j, settings) for a, j in sorted(job_map.items()) if not genomes.is_done(opts.work, a, settings["loci"])
+            or (genomes.held_out_missing(opts.work, j, settings)
+                and os.path.isfile(j.get("path") or genomes.genome_file(opts.genomes, a)))]
     say(f"genomes to run: {len(todo)} of {len(job_map)}" + ("" if settings["tiara"] else " (no tiara: windows not "
                                                                                           "classified)"))
     waiting, failed = [], []

@@ -213,6 +213,7 @@ def read_rows(path):
 
 
 RESULT_FILES = ("copies.fna", "loci.tsv", "features.tsv", "windows.fna.gz")
+HELD_OUT = "held_out.tsv"  # a dataset species' BUSCOs called without its own proteins (the OrthoDB benchmark's)
 
 
 def done_dir(work, accession):
@@ -335,7 +336,8 @@ def run(args):
     """One genome (a job of jobs(), with settings): fetched into settings["genomes"] unless there (or settings
     "staged_only": not fetched, left for a later run), its BUSCO genes called (loci.call with odb's queries for its
     lineage), its rRNA extracted (settings["rrna"]: a function of (genome path, job, out folder) -> its summary),
-    the windows around its copies classified (settings["tiara"]), its results written into WORK/done/<accession>/
+    the windows around its copies classified (settings["tiara"]), a dataset species' BUSCOs called again without its
+    own proteins (settings["odb_own"], HELD_OUT), its results written into WORK/done/<accession>/
     (RESULT_FILES, then done.json) -> (accession, summary or None, why it is not done or None)."""
     job, settings = args
     acc = job["accession"]
@@ -402,17 +404,58 @@ def run(args):
         except (OSError, ValueError, EOFError, RuntimeError) as e:  # RuntimeError: barrnap's, ITSx's
             shutil.rmtree(tmp, ignore_errors=True)
             return acc, None, f"rRNA extraction failed: {e}"
+    seconds = round(time.time() - started, 1)
+    own = own_of(job, settings)
+    if own:  # its species is in BUSCO's dataset: its BUSCOs called again without its own proteins (HELD_OUT)
+        why = held_out(path, job, settings, odb, own, tmp)
+        if why:
+            shutil.rmtree(tmp, ignore_errors=True)
+            return acc, None, why
     summary = {"accession": acc, "fetched": job.get("fetch", acc), "why": job["why"], "loci": taken,
                "searched": list(odb.loci),
                "status": dict(collections.Counter(r["status"] for r in got["loci"].values())), "rrna": rrna,
-               "bytes": os.path.getsize(path), "seconds": round(time.time() - started, 1),
-               "threads": settings.get("threads", 1)}
+               "bytes": os.path.getsize(path), "seconds": seconds, "threads": settings.get("threads", 1)}
+    if own:
+        summary["held_out"] = {"left_out": own, "seconds": round(time.time() - started - seconds, 1)}
     with open(os.path.join(tmp, "done.json"), "w", newline="\n") as fh:
         json.dump(summary, fh, indent=1)
     if os.path.isdir(folder):
         shutil.rmtree(folder)
     os.replace(tmp, folder)
     return acc, summary, None
+
+
+def own_of(job, settings):
+    """The dataset taxids of a job's species (settings["odb_own"], odb.own_taxids), [] where the dataset has none."""
+    return (settings.get("odb_own") or {}).get(job["species_taxid"], [])
+
+
+def held_out_missing(work, job, settings):
+    """Whether a done genome of a dataset species lacks its held-out calls (a run before 2026-11-06)."""
+    return bool(own_of(job, settings)) and not os.path.isfile(os.path.join(done_dir(work, job["accession"]),
+                                                                           HELD_OUT))
+
+
+def held_out(path, job, settings, odb, own, folder):
+    """A dataset species' genome's BUSCOs called again with its own proteins (own: their dataset taxids) left out of
+    the queries, into folder/HELD_OUT (locus, status, query, cds: the call's coding sequence): the OrthoDB benchmark
+    compares these with OrthoDB's gene models, which the build's own calls were queried with
+    -> why it failed, or None."""
+    queries = odb.queries(job["lineage"], settings["odb_lineages"], leave_out=own)
+    try:
+        got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
+                            settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), folder,
+                            settings.get("hmm_db"), job.get("gencode", 1))
+    except (OSError, RuntimeError) as e:
+        return f"held-out locus calling failed: {e}"
+    if got["failed"]:
+        return f"held-out locus calling failed: {got['failed']}"
+    with open(os.path.join(folder, HELD_OUT), "w", newline="\n") as fh:
+        fh.write("locus\tstatus\tquery\tcds\n")
+        for locus in odb.loci:
+            r = got["loci"].get(locus, {"status": "Missing"})
+            fh.write(f"{locus}\t{r['status']}\t{r.get('query', '-')}\t{r.get('spliced', '-')}\n")
+    return None
 
 
 def prune(genomes_folder, work, keep_bytes, protected=(), first=()):

@@ -57,10 +57,19 @@ OrthoDB's. The right gene model of the right gene gives both near 1:
 - `discordant`: another gene (a paralog, or an ohnolog of a duplicated genome) or a broken model;
 - `missed`: OrthoDB annotates the gene, Eukore called nothing.
 
-The calls are queried with the proteins of the dataset species nearest to the genome, for these species their own
-(`guided`). So this measures the gene structure and the copy chosen, not the reach into species far from every
-dataset species (completeness per supergroup shows that). OrthoDB's gene may also be annotated on another assembly
-of the species.
+The package's calls are queried with the proteins of the dataset species nearest to the genome, for these species
+their own (`guided`): they find OrthoDB's own protein again, which is circular. So the process stage calls a dataset
+species' genome a second time with its own proteins (its species' and strains') left out of the queries, its nearest
+other dataset species' and the ancestral variants kept (`WORK/done/<accession>/held_out.tsv`, since 2026-11-06; the
+package keeps its first calls). The `held_out_` columns compare these calls with OrthoDB's gene model: the measure to
+quote, of a genome whose nearest dataset relative is another species. It still measures the gene structure and the
+copy chosen near the dataset species, not the reach into species far from every one (completeness per supergroup
+shows that). OrthoDB's gene may also be annotated on another assembly of the species.
+
+The held-out calls cost one more BUSCO search for each of the ~450 dataset species' genomes (their seconds in
+`done.json`'s `held_out`, not in `runtime.tsv`). A genome run before 2026-11-06 is run again by `--stage process`
+where its genome is still on disk (never fetched again for it); a package measured without them says so in
+`summary.json`'s `left_out`.
 
 ![Calls against OrthoDB's own gene models](benchmarks/figures/orthodb.png)
 
@@ -126,6 +135,11 @@ What the trial shows:
   `similar` (25 of 98) or `discordant` (16): where OrthoDB's gene model is of another assembly or isolate, such
   differences are expected, and these are the calls to look at first. BUSCO's dataset holds only 3 *S. cerevisiae*
   proteins; one (10249111at2759, 84 residues in OrthoDB, 386 in Eukore's call) shares nothing with the call.
+- **OrthoDB, own proteins left out** (the held-out calls): the yeasts hardly change (*S. mikatae* 105 concordant of
+  114, *S. paradoxus* 97 of 106: another *Saccharomyces* is in the dataset), but *Blastocystis hominis*, with no
+  close relative in BUSCO's dataset, falls from 52 concordant and 5 missed of 98 to 21 and 32. Its own proteins made
+  its calls look better than a genome far from the dataset gets: the held-out figure (80% concordant of the 88%
+  called, over all four) is the one to quote, and the divergent lineages are where the calls need work.
 - **Resolution**: 65% of the BUSCO copies are under 99% identical to every other species, against 37% of the species'
   18S: among congeners the BUSCOs tell species apart where the 18S cannot.
 
@@ -135,13 +149,14 @@ What the trial shows:
 | median complete BUSCOs per genome | 72.9% (6.1% of genomes at 90% or more) |
 | BUSCOs OrthoDB has a gene model of, called | 96.0% of 321 (4 species) |
 | of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | 84.1% |
+| the same, called without the species' own proteins | 87.5% called, 79.7% of them OrthoDB's gene model (4 species) |
 | BUSCO copies under 99% identical to any other species | 65.4% of 3,387 |
 | 18S copies under 99% identical to any other species | 36.6% of 41 |
 | rRNA records; operons with a whole 28S | 2,719; 99.6% of 2,551 |
 | species named in EUKARYOME by name or synonym | 30.2% |
 | species named in KSGP by name or synonym | 34.9% |
 | species named in PR2 by name or synonym | 30.2% |
-| genome run (BUSCOs, rRNA, tiara), median | 2.2 min on 2 threads, 86 min per Gb of genome |
+| genome run (BUSCOs, rRNA, tiara), median | 2.3 min on 2 threads, 93 min per Gb of genome |
 
 ## Earlier: against EukDetect2 (2026-11-05)
 

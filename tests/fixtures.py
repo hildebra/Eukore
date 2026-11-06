@@ -122,6 +122,8 @@ def protein(seed, n=120):
 
 
 PROTEINS = {locus: protein(i + 1) for i, locus in enumerate(LOCI)}
+# the queries genome()'s alignments are of (odb.Odb.queries' names: <locus>~<record>)
+QUERIES = {f"{locus}~{locus}_{taxid}_0:00000{taxid % 7}": p for locus, p in PROTEINS.items() for taxid in (4932, 6253)}
 
 
 def odb_world(folder):
@@ -193,12 +195,26 @@ def tool(folder, name, text):
     return path
 
 
+MINIPROT = '''#!/usr/bin/env python3
+"""miniprot's stand-in: the GFF's alignments (##PAF, ##STA, mRNA and CDS lines) of the queries in its protein file
+(its last argument), as miniprot aligns only the proteins it is given."""
+import sys
+names = {line[1:].split()[0] for line in open(sys.argv[-1]) if line.startswith(">")}
+keep = True
+for line in open(%r):
+    if line.startswith("##PAF"):
+        keep = line.split("\\t")[1] in names
+    if keep or line.startswith("##gff"):
+        sys.stdout.write(line)
+'''
+
+
 def miniprot(folder, gff):
-    """A miniprot that prints the GFF (its arguments ignored)."""
+    """A miniprot that prints the GFF's alignments of the queries it is given."""
     path = os.path.join(folder, "mp.gff")
     with open(path, "w") as fh:
         fh.write(gff)
-    return tool(folder, "miniprot", f"#!/bin/sh\ncat '{path}'\n")
+    return tool(folder, "miniprot", MINIPROT % path)
 
 
 HMMSEARCH = '''#!/usr/bin/env python3

@@ -11,7 +11,8 @@ is missing is left out (the build measures what its inputs allow). Writes:
 - completeness.png: the BUSCOs Single, Duplicated, Fragmented and Missing per supergroup, and each genome's share;
 - completeness_vs_assembly.png: a genome's completeness against its assembly's contiguity;
 - loci_call_rates.png: each BUSCO's call rate per supergroup (busco/loci.tsv), the loci a user chooses among;
-- orthodb.png: Eukore's calls against OrthoDB's own gene models of the same species;
+- orthodb.png: Eukore's calls against OrthoDB's own gene models of the same species, and its calls made without the
+  species' own proteins (orthodb.tsv's held_out_ columns) beside them;
 - resolution.png: the identity of each copy's nearest other species by the rank they share, BUSCOs and 18S; per
   marker the copies under 99%;
 - confidence.png: the confidence tiers of the BUSCO copies and of the rRNA records per source;
@@ -190,27 +191,43 @@ def orthodb(bench, out, fmt):
     if not rows:
         return None
     verdicts = ("concordant", "similar", "discordant", "missed")
-    by = collections.defaultdict(collections.Counter)
-    for r in rows:
-        by[r["name"]][r["verdict"]] += 1
-    names = sorted(by, key=lambda n: (-by[n]["concordant"] / sum(by[n].values()), n))
-    if len(names) > 25:  # many species: by supergroup instead
+    held = [r for r in rows if r.get("held_out_verdict", "-") != "-"]  # called without the species' own proteins
+    group = "name" if len({r["name"] for r in rows}) <= 25 else "supergroup"  # many species: by supergroup
+
+    def count(rs, column):
         by = collections.defaultdict(collections.Counter)
-        for r in rows:
-            by[r["supergroup"]][r["verdict"]] += 1
-        names = group_order(by)
-    fig, (a, b) = plt.subplots(1, 2, figsize=(10.5, max(3.4, 0.36 * len(names) + 1.9)),
+        for r in rs:
+            by[r[group]][r[column]] += 1
+        return by
+    by, by_held = count(rows, "verdict"), count(held, "held_out_verdict")
+    names = sorted(by, key=lambda n: (-by[n]["concordant"] / sum(by[n].values()), n)) if group == "name" \
+        else group_order(by)
+    items = []
+    for n in names:
+        items.append((f"{n} ({sum(by[n].values())})", by[n]))
+        if n in by_held:
+            items.append(("own proteins left out", by_held[n]))
+    fig, (a, b) = plt.subplots(1, 2, figsize=(10.5, max(3.4, 0.36 * len(items) + 1.9)),
                                gridspec_kw=dict(width_ratios=(1.3, 1), wspace=0.45))
-    handles, labels = stacked(a, [(f"{n} ({sum(by[n].values())})", by[n]) for n in names], verdicts,
-                              [BLUE[550], BLUE[400], BLUE[250], NONE],
+    handles, labels = stacked(a, items, verdicts, [BLUE[550], BLUE[400], BLUE[250], NONE],
                               ("concordant (both ≥ 90%)", "similar (≥ 50%)", "discordant", "missed"))
     a.set_title("Calls against OrthoDB's gene models (BUSCOs)")
     for t in a.get_yticklabels():
-        t.set_fontstyle("italic" if len(names) <= 25 and " " in t.get_text() else "normal")
+        text = t.get_text()
+        t.set_fontstyle("italic" if group == "name" and " " in text and not text.startswith("own ") else "normal")
     legend_below(a, handles, labels, ncol=2)
     called = [r for r in rows if r["recall"] != "-"]
-    b.scatter([num(r["recall"]) for r in called], [num(r["precision"]) for r in called], s=16, color=SERIES[0],
-              alpha=0.5, linewidths=0)
+    held_called = [r for r in held if r["held_out_recall"] != "-"]
+    if held_called:  # the held-out calls are the measure; the build's own, queried with OrthoDB's protein, behind
+        b.scatter([num(r["recall"]) for r in called], [num(r["precision"]) for r in called], s=12, color=NONE,
+                  linewidths=0, label="queried with its own proteins")
+        b.scatter([num(r["held_out_recall"]) for r in held_called], [num(r["held_out_precision"]) for r in held_called],
+                  s=16, color=SERIES[0], alpha=0.5, linewidths=0, label="its own proteins left out")
+        b.legend(loc="lower left", fontsize=8, frameon=False)
+        called = held_called
+    else:
+        b.scatter([num(r["recall"]) for r in called], [num(r["precision"]) for r in called], s=16, color=SERIES[0],
+                  alpha=0.5, linewidths=0)
     b.add_patch(matplotlib.patches.Rectangle((0.9, 0.9), 0.12, 0.12, fill=False, edgecolor=INK2, linewidth=0.8,
                                              linestyle=(0, (3, 2))))
     b.set_xlim(-0.02, 1.02)
@@ -422,6 +439,10 @@ def summary_md(bench, package, out):
                      f"({o['species']} species) |")
         lines.append(f"| of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | "
                      f"{pct(o['concordant_of_called'])} |")
+        h = o.get("held_out")
+        if h:
+            lines.append(f"| the same, called without the species' own proteins | {pct(h['called'])} called, "
+                         f"{pct(h['concordant_of_called'])} of them OrthoDB's gene model ({h['species']} species) |")
     for marker, r in (s.get("resolution") or {}).items():
         lines.append(f"| {'BUSCO' if marker.startswith('BUSCO') else marker} copies under 99% identical to any other "
                      f"species | {pct(r['under_99'])} of {r['copies']:,} |")

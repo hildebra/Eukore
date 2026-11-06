@@ -157,15 +157,18 @@ class Odb:
             os.replace(util.part_of(path), path)
         return path
 
-    def queries(self, lineage, lineages, nearest=NEAREST):
+    def queries(self, lineage, lineages, nearest=NEAREST, leave_out=()):
         """A genome's queries -> {query name: protein}: per locus the proteins of the `nearest` species closest to it
         (lineage: the genome's ancestor taxids; lineages: {dataset species taxid: its ancestor taxids}), then the
-        ancestral variants. Query names are <locus>~<record>, so that a hit names its locus."""
+        ancestral variants; leave_out: dataset taxids whose proteins are not taken (the genome's own species', for the
+        OrthoDB benchmark's held-out calls). Query names are <locus>~<record>, so that a hit names its locus."""
         mine = set(lineage)
         depth = {t: len(mine & set(anc)) for t, anc in lineages.items()}
+        leave_out = set(leave_out)
         out = {}
         for locus in self.loci:
-            ranked = sorted(self.proteins.get(locus, ()), key=lambda p: (-depth.get(p[0], 0), p[1]))
+            ranked = sorted((p for p in self.proteins.get(locus, ()) if p[0] not in leave_out),
+                            key=lambda p: (-depth.get(p[0], 0), p[1]))
             for _t, name, seq in ranked[:nearest]:
                 out[f"{locus}~{name}"] = seq
             for name, seq in self.ancestral.get(locus, ()):
@@ -192,3 +195,12 @@ def read_fasta(path):
 def species_lineages(odb, ncbi):
     """{dataset species taxid: its NCBI ancestor taxids} (a genome's queries' ranking; workers get it as data)."""
     return {t: list(ncbi.ancestors(ncbi.merged.get(t, t))) for t in odb.species()}
+
+
+def own_taxids(odb, ncbi):
+    """{NCBI species taxid: the dataset taxids of that species (itself, its strains)}: the proteins a genome of the
+    species leaves out of its held-out calls."""
+    out = collections.defaultdict(list)
+    for t in odb.species():
+        out[ncbi.species_of(t)].append(t)
+    return dict(out)
