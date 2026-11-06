@@ -85,9 +85,13 @@ class FetchTest(unittest.TestCase):
                 for util.CURL in {curl, None}:  # by curl (where there) and by urllib
                     with concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) \
                             as checker:
+                        times, counter = {}, util.collections.Counter
                         got = {name: util.fetch_file(url + name, os.path.join(out, name), attempts=1, scratch=scratch,
-                                                     checker=checker)
+                                                     checker=checker, times=times.setdefault(name, counter()))
                                for name in ("whole.fna.gz", "cut.fna.gz", "missing.fna.gz")}
+                    self.assertEqual(times["whole.fna.gz"]["bytes"], len(whole))  # the file placed, its steps timed
+                    self.assertTrue(all(times["whole.fna.gz"][k] > 0 for k in ("transfer", "check", "copy")))
+                    self.assertEqual(times["cut.fna.gz"]["bytes"], 0)
                     self.assertEqual(got["whole.fna.gz"], "", util.CURL)
                     self.assertTrue(got["cut.fna.gz"].startswith(("EOFError", "OSError")), got)  # Python's; a tool's
                     self.assertEqual(got["missing.fna.gz"], "not found")

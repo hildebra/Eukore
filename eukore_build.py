@@ -22,6 +22,7 @@ Stages:
 """
 
 import argparse
+import collections
 import concurrent.futures
 import contextlib
 import datetime
@@ -444,7 +445,8 @@ def main(argv=None):
         downloads = max(1, opts.downloads)
         say(f"fetching {len(todo):,} genomes ({sum(j.get('size') or 0 for j in todo) / 1e9:,.1f} Gb) into "
             f"{opts.genomes}, {downloads} at a time by {util.CURL or 'urllib'}, checked by "
-            f"{util.GZIP_TEST or 'Python (no igzip or pigz)'}; progress every {opts.report_minutes:g} minutes")
+            f"{util.GZIP_TEST or 'Python (no igzip or pigz)'}, .part files in {opts.scratch or 'there'}; "
+            f"progress every {opts.report_minutes:g} minutes")
         # every --report_minutes: genomes left and the time left, by their sizes (a plant's genome is a thousand
         # yeasts'), and the download rate, all kept by this thread (the downloads' are at_a_time's)
         progress = util.Progress("genomes fetched", [j.get("size") or 0 for j in todo], say, opts.report_minutes * 60,
@@ -458,15 +460,22 @@ def main(argv=None):
             os.makedirs(opts.scratch, exist_ok=True)
 
         def fetch_genome(j):
-            path = genomes.genome_file(opts.genomes, j["accession"])
-            why = util.fetch_file(j["url"], path, **how)
-            return j, why, 0 if why else os.path.getsize(path)
+            path, times = genomes.genome_file(opts.genomes, j["accession"]), collections.Counter()
+            why = util.fetch_file(j["url"], path, times=times, **how)
+            return j, why, 0 if why else os.path.getsize(path), times
 
+        spent = collections.Counter()  # the downloads' seconds of transfer, check and copy (fetch_file's times)
         for done in at_a_time(fetch_genome, todo, downloads):
-            j, why, size = done.result()
+            j, why, size, times = done.result()
             fetched += size
+            spent += times
             rate = fetched / max(1e-9, time.time() - progress.started) / 1e6
-            progress.step(j.get("size") or 0, failed=bool(why), note=f"; {fetched / 1e9:,.1f} GB at {rate:,.1f} MB/s")
+            busy = sum(spent[k] for k in ("transfer", "check", "copy")) or 1e-9
+            each = spent["bytes"] / max(1e-9, spent["transfer"]) / 1e6  # one transfer's rate
+            progress.step(j.get("size") or 0, failed=bool(why),
+                          note=f"; {fetched / 1e9:,.1f} GB at {rate:,.1f} MB/s (a download's time: transfer "
+                               f"{spent['transfer'] / busy:.0%} at {each:,.1f} MB/s, "
+                               f"check {spent['check'] / busy:.0%}, copy {spent['copy'] / busy:.0%})")
         # NCBI's own gene models (RefSeq's, a GenBank submitter's) beside the genomes, of all but those whose assembly
         # summary gives no protein-coding genes, for the process stage's copies' models and their comparison
         # (annotation.py)

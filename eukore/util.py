@@ -132,6 +132,7 @@ def read_text(path):
 
 # --- Eukore's own helpers (since 2026-11-05; self-contained: nothing imported from protal's scripts/) ---------------
 
+import collections  # noqa: E402
 import datetime  # noqa: E402
 import hashlib  # noqa: E402
 import os  # noqa: E402
@@ -174,7 +175,8 @@ def open_text(path):
     return open(path)
 
 
-CURL = shutil.which("curl")  # fetch_file's transfers where there: ~3x urllib's rate (2026-11-06, NBI's HPC), else urllib
+# fetch_file's transfers where there: ~3x urllib's rate (2026-11-06, NBI's HPC), else urllib
+CURL = shutil.which("curl")
 
 
 def curl_get(url, path):
@@ -189,7 +191,7 @@ def curl_get(url, path):
         raise urllib.error.HTTPError(url, code, f"HTTP {code}", None, None)
 
 
-# fetch_file's gzip check where there: ISA-L's igzip (bioconda/conda-forge isa-l, apt isal; ~3.5x Python's zlib, 2026-11-06,
+# fetch_file's gzip check where there: ISA-L's igzip (conda-forge isa-l, apt isal; ~3.5x Python's zlib, 2026-11-06,
 # WSL), else pigz (~1.1x), else Python's gzip
 GZIP_TEST = shutil.which("igzip") or shutil.which("pigz")
 
@@ -208,21 +210,24 @@ def gzip_whole(path, tool=None):
             pass
 
 
-def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=None):
+def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=None, times=None):
     """Downloads url to dest (by curl where there, else urllib): "" if it arrived whole (the length it announced, and, a
-    gzip file, gzip reads it to its end), else why not. A missing file ("not found") or another refusal (HTTP 4xx but 429) is not asked for again; other
-    failures are (ATTEMPTS times), after growing waits, or as long as the server asks (Retry-After, a minute at most).
+    gzip file, gzip reads it to its end), else why not. A missing file ("not found") or another refusal (HTTP 4xx but
+    429) is not asked for again; other failures are (ATTEMPTS times), after growing waits, or as long as the server
+    asks (Retry-After, a minute at most; urllib's alone).
     scratch: the folder of the download's .part file (eukore_build.py --scratch: dest's storage then gets the whole
     file once, written in one go), else beside dest; checker: a process pool the gzip check runs in (a core of its own),
-    else this thread."""
+    else this thread; times: a dict (a Counter) its seconds of transfer, check (with its wait for the checker) and
+    copy (from scratch) are added to, and the bytes of the file it placed."""
     why, asked = "", 0.0
+    times = collections.Counter() if times is None else times
     part = os.path.join(scratch, os.path.basename(dest) + ".part") if scratch else dest + ".part"
     for attempt in range(attempts or ATTEMPTS):
         if attempt:
             time.sleep(max(RETRY_WAIT * 2 ** (attempt - 1), asked))
         asked = 0.0
         try:
-            expected = None
+            expected, started = None, time.monotonic()
             if CURL:
                 curl_get(url, part)
             else:
@@ -230,20 +235,26 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
                 with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as fh:
                     expected = response.headers.get("Content-Length")
                     shutil.copyfileobj(response, fh, 1 << 20)
+            times["transfer"] += time.monotonic() - started
             if expected is not None and os.path.getsize(part) != int(expected):
                 why = f"{os.path.getsize(part)} of {expected} bytes arrived"
                 continue
+            started = time.monotonic()
             if gzip_check and dest.endswith(".gz"):
                 if checker:
                     checker.submit(gzip_whole, part, GZIP_TEST).result()
                 else:
                     gzip_whole(part, GZIP_TEST)
+            times["check"] += time.monotonic() - started
+            started, size = time.monotonic(), os.path.getsize(part)
             if scratch:  # another file system: copied beside dest, then renamed into place
                 shutil.copyfile(part, dest + ".part")
                 os.replace(dest + ".part", dest)
                 os.remove(part)
             else:
                 os.replace(part, dest)
+            times["copy"] += time.monotonic() - started
+            times["bytes"] += size
             return ""
         except urllib.error.HTTPError as e:
             if e.code == 404:
