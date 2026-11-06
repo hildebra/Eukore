@@ -51,6 +51,34 @@ class HelpersTest(unittest.TestCase):
                 dict(record="d", kind="rDNA", species_taxid="3", regions="18S:100-1900", length="9000",
                      confidence="high", source="genome")]
         self.assertEqual(benchmarks.best_ssu(rows), {"b": (1, 0, 1750), "d": (3, 100, 1900)})
+        # a EUKARYOME read labelled by its genus alone is no species' (its genus' taxid its species_taxid)
+        genus = dict(rows[1], record="g", species_taxid="4930", label_from="eukaryome_genus")
+        self.assertNotIn("g", benchmarks.best_ssu(rows + [genus]))
+
+    def test_reads_simulated_and_their_hits(self):
+        # genome reads from anywhere, each within its contig (bisect over the contigs' ends), in random order: the
+        # first `depth` a sample of the whole genome, not of its first contigs
+        import random  # noqa: PLC0415
+        from eukore import reads  # noqa: PLC0415
+        rng = random.Random(3)
+        with tempfile.TemporaryDirectory() as tmp:
+            genome = os.path.join(tmp, "g.fna")
+            contigs = {f"c{i}": "".join(rng.choice("ACGT") for _ in range(2000)) for i in range(5)}
+            with open(genome, "w") as fh:
+                fh.writelines(f">{n}\n{s[:1000]}\n{s[1000:]}\n" for n, s in contigs.items())
+            from unittest import mock  # noqa: PLC0415
+            with mock.patch.object(reads, "ERROR", 0):  # exact reads: each found in its contig
+                _m, anywhere = reads.simulate(genome, [], random.Random(1), 400)
+            self.assertGreater(len(anywhere), 350)
+            of = [[n for n, s in contigs.items() if r in s or reads.revcomp(r) in s] for r in anywhere]
+            self.assertTrue(all(len(n) == 1 for n in of))  # each read within one contig
+            self.assertGreaterEqual(len({n[0] for n in of[:40]}), 4)  # the first reads from across the genome
+            # a read's hits together (minimap2's --split-prefix merges an index's parts): one group a read
+            paf = os.path.join(tmp, "h.paf")
+            with open(paf, "w") as fh:
+                for read, target in (("r1", "t1"), ("r1", "t2"), ("r2", "t1")):
+                    fh.write(f"{read}\t150\t0\t150\t+\t{target}\t1000\t0\t150\t148\t150\t60\n")
+            self.assertEqual([(r, len(h)) for r, h in reads.paf_groups(paf)], [("r1", 2), ("r2", 1)])
 
     def test_place_of(self):
         call = dict(contig="c1", start="101", end="200")

@@ -13,7 +13,6 @@ from . import util
 # names.dmp classes that name the same taxon (anamorph and teleomorph: a fungus's asexual and sexual names)
 SYNONYM_CLASSES = ("synonym", "equivalent name", "basionym", "genbank synonym", "anamorph", "teleomorph",
                    "genbank anamorph", "includes")
-RANKS = ("superkingdom", "kingdom", "phylum", "class", "order", "family", "genus", "species")
 # NCBI's placeholders for organisms it cannot name (uncultured eukaryote): one taxid for many unrelated genomes
 PLACEHOLDER = re.compile(r"^(uncultured|unidentified|unclassified|environmental)\b|metagenome", re.IGNORECASE)
 
@@ -97,6 +96,13 @@ class Ncbi:
         at = {}
         for t in self.ancestors(self.merged.get(taxid, taxid)):
             at.setdefault(self.rank.get(t), self.name.get(t))
+        return at
+
+    def rank_ids(self, taxid):
+        """{rank: taxid} of the taxid's lineage (names can be homonyms: Morus the plant and the bird)."""
+        at = {}
+        for t in self.ancestors(self.merged.get(taxid, taxid)):
+            at.setdefault(self.rank.get(t), t)
         return at
 
     def is_placeholder(self, taxid):

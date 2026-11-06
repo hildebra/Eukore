@@ -29,7 +29,8 @@ manifest does not list them). The plots need matplotlib (in `envs/eukore.yaml`);
 ### Completeness (`completeness.tsv`)
 
 BUSCO's own measure, on Eukore's calls: per species' genome, its BUSCOs of eukaryota_odb12 that are Single,
-Duplicated, Fragmented or Missing, and `complete`, the Single and Duplicated over all BUSCOs called. It is read per
+Duplicated, Fragmented or Missing, and `complete`, the Single and Duplicated over all BUSCOs searched (Missing
+included; a species without an assembly, of EukDetect2's records alone, left out). It is read per
 supergroup: BUSCO's dataset is mostly animals, fungi and plants, and a caller that reaches only those would show it
 here. Each genome's copies' confidence tiers, assembly level and contigs are beside it, so that a poor genome is told
 from a poor call.
@@ -198,7 +199,7 @@ holds a trial's, with `index.md` captioning each and naming its tables):
   (the x of Figure 1b) and its copies' intron bases (what an exon-only reference leaves out).
 - **Reads** (`reads.tsv`, `eukore/reads.py`): up to `--read_genomes` genomes per supergroup (those with the most
   congeners first), kept through the prune. Reads simulated from their markers' loci (introns and all) and from
-  anywhere in them, and from 8 bacteria and an archaeon (`data/read_background.tsv`), aligned by minimap2 to Eukore,
+  anywhere in them, and from 7 bacteria and an archaeon (`data/read_background.tsv`), aligned by minimap2 to Eukore,
   Eukore's exons alone, Eukore's 18S alone and each compared reference (`--read_compare`: EukDetect2's
   database, MetaPhlAn 4's eukaryote markers and PR2's 18S, the latter two made by `tools/compare_references.py`);
   each read's hits within 1 point of its best

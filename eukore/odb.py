@@ -6,9 +6,10 @@ The dataset (busco-data.ezlab.org; OrthoDB 12.1, 129 BUSCOs of 456 species, 2026
 - ancestral_variants: 10 reconstructed ancestral proteins;
 - hmms/<busco>.hmm and scores_cutoff: the profile and the bit score a protein reaches to be the BUSCO (BUSCO's rule).
 
-A genome's queries are, per locus, the proteins of the NEAREST species to it in NCBI's taxonomy (the most shared
-ancestors; then by name) and the ancestral variants: a close relative's protein places introns and exon ends best, the
-ancestral ones reach where no relative is close.
+A genome's queries are, per locus, the NEAREST proteins to it: the dataset's proteins ranked by their species' nearness
+in NCBI's taxonomy (the most shared ancestors; then by name), the first NEAREST of them (a species with paralogues
+gives several: ~15-30 species), and the ancestral variants. A close relative's protein places introns and exon ends
+best, the ancestral ones reach where no relative is close.
 """
 
 import collections
@@ -141,8 +142,6 @@ class Odb:
                 locus = name.rsplit("_", 1)[0]
                 if locus in wanted:
                     self.ancestral[locus].append((name, seq))
-        self.median = {locus: sorted(len(s) for _t, _n, s in ps)[len(ps) // 2] if ps else 0
-                       for locus, ps in self.proteins.items()}
 
     def species(self):
         return sorted({t for ps in self.proteins.values() for t, _n, _s in ps})
@@ -158,7 +157,7 @@ class Odb:
         return path
 
     def queries(self, lineage, lineages, nearest=NEAREST, leave_out=()):
-        """A genome's queries -> {query name: protein}: per locus the proteins of the `nearest` species closest to it
+        """A genome's queries -> {query name: protein}: per locus its `nearest` proteins of the species closest to it
         (lineage: the genome's ancestor taxids; lineages: {dataset species taxid: its ancestor taxids}), then the
         ancestral variants; leave_out: dataset taxids whose proteins are not taken (the genome's own species', for the
         OrthoDB benchmark's held-out calls). Query names are <locus>~<record>, so that a hit names its locus."""

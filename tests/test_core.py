@@ -56,9 +56,24 @@ class CoreTest(unittest.TestCase):
                 fh.write(">CP002684.1 Arabidopsis thaliana chromosome 1 sequence\nACGT\nAC\n"
                          ">BK010421.1 TPA_asm: Arabidopsis thaliana ecotype Col-0 mitochondrion, complete genome\nGGGG\n"
                          ">AP000423.1 Arabidopsis thaliana chloroplast DNA, complete genome\nTTTT\n"
-                         ">x1 Plasmodium falciparum apicoplast\nCCCC\n>CP002685.1 chromosome 2\nAAAA\n")
+                         ">x1 Plasmodium falciparum apicoplast\nCCCC\n>CP002685.1 chromosome 2\nAAAA\n"
+                         ">CP000881.1 Guillardia theta nucleomorph chromosome 1\nGGCC\n")
             self.assertEqual(list(rrna.contigs(path, nuclear=True)), [("CP002684.1", "ACGTAC"), ("CP002685.1", "AAAA")])
-            self.assertEqual(len(list(rrna.contigs(path))), 5)
+            self.assertEqual(len(list(rrna.contigs(path))), 6)
+
+    def test_lineages_agree_by_taxid(self):
+        # two homonym genera of two kingdoms (Morus the plant, the bird) share a name, not a taxon
+        from eukore import qc  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            tax = ncbi.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+        tax.parent.update({7001: 4893, 7002: 7001, 7003: 6231, 7004: 7003})
+        tax.rank.update({7001: "genus", 7002: "species", 7003: "genus", 7004: "species"})
+        tax.name.update({7001: "Morus", 7002: "Morus alba", 7003: "Morus", 7004: "Morus bassanus"})
+        self.assertEqual(qc.depth(tax, 7002, 7004), 0)
+        self.assertEqual(qc.depth(tax, 4932, 28985), 4)
+        # a taxid the taxonomy lacks is left out of an LCA, not making it none
+        self.assertEqual(qc.lca(tax, {4932, 27291, 99999999}), 4930)
+        self.assertIsNone(qc.lca(tax, {99999999}))
 
 
 class FetchTest(unittest.TestCase):
@@ -106,6 +121,24 @@ class FetchTest(unittest.TestCase):
                 server.server_close()
                 serving.join()
 
+
+    def test_a_stop_ends_the_retries(self):
+        # a stop (Ctrl-C: eukore_build.at_a_time sets util.STOP) while a download fails: not tried again
+        from unittest import mock  # noqa: PLC0415
+        tries = []
+
+        def failing(url, path):
+            tries.append(url)
+            util.STOP.set()
+            raise OSError("curl exit 2: interrupted")
+        try:
+            with mock.patch.object(util, "CURL", "curl"), mock.patch.object(util, "curl_get", failing), \
+                    mock.patch.object(util, "RETRY_WAIT", 0):
+                with tempfile.TemporaryDirectory() as tmp:
+                    why = util.fetch_file("http://x/a.fna.gz", os.path.join(tmp, "a.fna.gz"))
+        finally:
+            util.STOP.clear()
+        self.assertEqual((len(tries), why), (1, "OSError: curl exit 2: interrupted"))
 
     def test_gzip_checks(self):
         # igzip's, pigz's (where there) and Python's checks: a whole file passes, one cut short or not gzip fails

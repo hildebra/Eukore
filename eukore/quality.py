@@ -48,6 +48,14 @@ def paths(src_dir):
     return [p for p in (os.path.join(folder_of(src_dir), os.path.basename(n)) for n in FILES) if os.path.isfile(p)]
 
 
+def number(f, k):
+    """A report's cell as a number, 0 where empty or not one ("na", "-": until 2026-11-06 one stopped the plan)."""
+    try:
+        return float(f.get(k) or 0)
+    except ValueError:
+        return 0.0
+
+
 def read_fcs(src_dir, wanted=None):
     """FCS-GX's summaries -> {accession: dict(fraction, bp (contaminant bases), euk_bp)}, of `wanted` accessions."""
     out = {}
@@ -62,9 +70,9 @@ def read_fcs(src_dir, wanted=None):
                 if wanted is not None and acc not in wanted:
                     continue
                 f = dict(zip(head, line.rstrip("\n").split("\t")))
-                num = lambda k: float(f.get(k) or 0)  # noqa: E731
-                out[acc] = dict(fraction=num("fraction_contaminated"), bp=int(num("total_contaminant_length")),
-                                euk_bp=int(sum(num(k) for k in EUK_COLUMNS)))
+                out[acc] = dict(fraction=number(f, "fraction_contaminated"),
+                                bp=int(number(f, "total_contaminant_length")),
+                                euk_bp=int(sum(number(f, k) for k in EUK_COLUMNS)))
     return out
 
 

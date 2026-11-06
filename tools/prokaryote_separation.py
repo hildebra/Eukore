@@ -12,17 +12,15 @@ other's gene where the best identity is far below that.
 import argparse
 import collections
 import glob
-import gzip
 import os
 import subprocess
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukore import package, placement  # noqa: E402
+from eukore import package, placement, qc, rrna  # noqa: E402
 
 MIN_ID = 0.5
-COMPLEMENT = str.maketrans("ACGTN", "TGCAN")
 
 
 def regions(panels):
@@ -40,19 +38,20 @@ def regions(panels):
 
 
 def eukaryote_cds(folder, loci):
-    """{locus: {accession: coding sequence}} of a package's copies (their exons joined)."""
-    exons = collections.defaultdict(list)
+    """{locus: {accession: coding sequence}} of a package's copies (qc.spliced: their exons joined, their frameshifts'
+    bases left out, as the package's own reader)."""
+    feats = collections.defaultdict(list)
     for r in package.read_table(folder, "busco/features.tsv"):
-        if r["kind"] == "exon" and r["locus"] in loci:
-            exons[(r["accession"], r["locus"])].append((int(r["start"]), int(r["end"])))
+        if r["kind"] in ("exon", "frameshift") and r["locus"] in loci:
+            feats[(r["accession"], r["locus"])].append((r["kind"], int(r["start"]), int(r["end"])))
     out = collections.defaultdict(dict)
     for locus in loci:
         path = os.path.join(folder, "busco", "copies", f"{locus}.fna.gz")
         if not os.path.isfile(path):
             continue
         for acc, seq in package.read_copies(folder, locus).items():
-            ex = sorted(exons.get((acc, locus), []))
-            out[locus][acc] = "".join(seq[a:b] for a, b in ex) if ex else seq
+            f = feats.get((acc, locus))
+            out[locus][acc] = qc.spliced(seq, f) if f else seq
     return out
 
 
@@ -78,7 +77,7 @@ def main(argv=None):
             for i, (contig, a, b) in enumerate(sorted(spans)):
                 seq = contigs.get(contig, "")[a - 1:b].upper()
                 prok[f"{acc}|{contig}|{a}"] = seq
-                prok[f"{acc}|{contig}|{a}|rc"] = seq.translate(COMPLEMENT)[::-1]
+                prok[f"{acc}|{contig}|{a}|rc"] = rrna.revcomp(seq)
         if not euk:
             print(f"{locus}\t{len(prok) // 2}\t-\t-\tno eukaryote copies in the package")
             continue

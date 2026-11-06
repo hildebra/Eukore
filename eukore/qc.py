@@ -38,18 +38,30 @@ def spliced(copy, features):
 
 
 def lca(ncbi, taxids):
-    """The lowest common ancestor of taxids."""
-    paths = [list(ncbi.ancestors(ncbi.merged.get(t, t))) for t in taxids]
+    """The lowest common ancestor of taxids, those not in the taxonomy left out (a reference's taxid NCBI deleted since:
+    until 2026-11-06 it made every LCA it was in None)."""
+    paths = [p for p in (list(ncbi.ancestors(ncbi.merged.get(t, t))) for t in taxids) if p]
     if not paths:
         return None
     common = set(paths[0]).intersection(*map(set, paths[1:]))
     return next((t for t in paths[0] if t in common), None)
 
 
-def depth(ncbi, a, b):
-    """How deep two species' NCBI lineages agree: 0 none, 1 phylum ... 5 genus."""
-    ra, rb = ncbi.ranks(a), ncbi.ranks(b)
-    return max([0] + [i + 1 for i, r in enumerate(RANKS) if ra.get(r) and ra.get(r) == rb.get(r)])
+def depth(ncbi, a, b, cache=None):
+    """How deep two species' NCBI lineages agree: 0 none, 1 phylum ... 5 genus; by taxid, to the first rank both name
+    and differ at (until 2026-11-06 by name and the deepest match: two homonym genera of two kingdoms agreed to the
+    genus). cache: a dict for ncbi.rank_ids of many pairs."""
+    cache = {} if cache is None else cache
+    ra, rb = (cache[t] if t in cache else cache.setdefault(t, ncbi.rank_ids(t)) for t in (a, b))
+    out = 0
+    for i, r in enumerate(RANKS):
+        x, y = ra.get(r), rb.get(r)
+        if x is None or y is None:
+            continue
+        if x != y:
+            break
+        out = i + 1
+    return out
 
 
 def check(copies, species_of, ncbi, vsearch=None, threads=1, protein_length=None):
@@ -70,6 +82,7 @@ def check(copies, species_of, ncbi, vsearch=None, threads=1, protein_length=None
                 out[(a, locus)]["length"] = "short" if n < lo else "long" if n > hi else "ok"
     if not vsearch:
         return out
+    cache = {}
     for locus, seqs in by_locus.items():
         if len({species_of[a] for a in seqs}) < 2:
             continue
@@ -92,7 +105,7 @@ def check(copies, species_of, ncbi, vsearch=None, threads=1, protein_length=None
                 continue
             top = max(i for i, _t in found)
             near = [t for i, t in found if i >= top - NEAR]
-            agree = max(depth(ncbi, species_of[acc], species_of[t]) for t in near)
+            agree = max(depth(ncbi, species_of[acc], species_of[t], cache) for t in near)
             row = out[(acc, locus)]
             row["nearest_id"], row["nearest_depth"] = top, agree  # benchmarks.py's resolution
             row["own_species"] = "t" if agree >= 4 else "f" if agree <= 1 and top >= FOREIGN_ID else "-"

@@ -57,6 +57,24 @@ class ScreenTest(unittest.TestCase):
             self.assertEqual(flags.get("mosaic"), "28S 5':family,28S 3':family")
             self.assertEqual(set(flags), {"mosaic"})
             self.assertTrue(counts)
+            # the mosaic genome holding 40 copies of its unit (a long-read assembly's rDNA array): its own copies
+            # fill vsearch's 32 first hits unless searched once (screen.representatives); every copy flagged
+            unit = records[-1][1]
+            array = [(f"mosaic{i}", unit, dict(records[-1][2])) for i in range(40)]  # an array's identical copies
+            flags, _counts = screen.screen(records[:-1] + array, ncbi, fx.vsearch(tmp))
+            self.assertEqual(set(flags), {name for name, _s, _r in array})
+            # the own-species check alike: the array's 18S (S. cerevisiae's) agree with its lineage, not undecided
+            from eukore import rrna  # noqa: PLC0415
+            rows = [(n, s, dict(r, source="genome", kind="rDNA")) for n, s, r in records[:-1] + array]
+            own = rrna.own_species(rows, ncbi, fx.vsearch(tmp))
+            self.assertEqual({own[n] for n, _s, _r in array}, {"t"})
+
+    def test_a_protist_without_a_phylum_is_tested_deeper(self):
+        # NCBI names its class but no phylum: its clade at class is (kingdom, class), not None
+        lineage = ["Eukaryota", None, "Someclass", "Someorder", None]
+        self.assertEqual(screen.clade(lineage, 2), ("Eukaryota", "Someclass"))
+        self.assertIsNone(screen.clade(lineage, 1))
+        self.assertEqual(screen.agrees_to(lineage, ["Eukaryota", None, "Someclass", "Other", None]), 2)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,6 @@ confidence, features, busco/loci.tsv's call rates, species with their PR2 lineag
     python3 -m unittest discover -s tests -t tests
 """
 
-import functools
 import gzip
 import json
 import os
@@ -19,7 +18,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import annotation, genomes, labels, ncbi as ncbi_mod, odb as odb_mod, package, qc, rrna, sources  # noqa: E402,E501
+from eukore import annotation, genomes, labels, ncbi as ncbi_mod, odb as odb_mod, package, qc, sources  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 YEAST = "GCA_000146045.2"
@@ -47,6 +46,34 @@ class SetTest(unittest.TestCase):
         self.assertEqual({r["accession"] for r in reps[27291][1]}, {"GCA_000000012.1"})
         self.assertEqual(self.gb[0]["group"], "fungi")
         self.assertNotIn("GCA_000000560.1", {r["accession"] for r in self.gb})  # a gene's record, no genome
+
+    def test_named_hybrid_species_stay(self):
+        # NCBI's "Genus x epithet" is a species (the strawberry); a cross of two named species is left out
+        for name in ("Fragaria x ananassa", "Mentha x piperita", "Pyrus × bretschneideri"):
+            self.assertIsNone(genomes.HYBRID.search(name), name)
+        for name in ("Saccharomyces cerevisiae x Saccharomyces paradoxus", "Saccharomyces cerevisiae x S. eubayanus"):
+            self.assertIsNotNone(genomes.HYBRID.search(name), name)
+
+    def test_the_best_genome_that_can_be_fetched(self):
+        # Kluyveromyces lactis' best-ranked assembly without an FTP path: its next one, not the species lost
+        rows = [dict(r, ftp="na") if r["accession"] == "GCA_000002516.1" else r for r in self.gb]
+        jobs = genomes.jobs(self.ncbi, rows, self.rs)
+        self.assertIn("GCA_000002515.1", jobs)
+        self.assertEqual(jobs["GCA_000002515.1"]["others"], ["GCA_000002516.1"])
+        # a species the taxdump does not hold (a newer assembly table): its own fate
+        fates = genomes.fates(self.ncbi, rows + [dict(rows[0], accession="GCA_9.1", species_taxid=999999)], jobs)
+        self.assertEqual(fates[999999], "not in the taxdump")
+
+    def test_a_source_that_cannot_be_fetched(self):
+        # its site moved: the source is not ready, the fetch goes on (until 2026-11-06 the stage stopped)
+        def gone(url, dest, md5=None):
+            raise OSError(f"{url}: not found")
+        state = sources.fetch(self.tmp.name, "ROD", gone, log=lambda *_a: None)
+        self.assertFalse(state["ready"])
+        self.assertIn("not found", state["problems"][0])
+        self.assertIsNone(sources.ready(self.tmp.name, "ROD"))
+        from eukore import quality  # noqa: PLC0415
+        self.assertEqual([quality.number({"x": v}, "x") for v in ("0.25", "", "na", "-")], [0.25, 0.0, 0.0, 0.0])
 
     def test_small_for_its_clade(self):
         class Tax:  # genus 10 (species 1-4, ~1 Gb), genus 20 in family 100 with genus 10 (species 5: one 4 Mb genome)

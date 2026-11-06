@@ -181,9 +181,13 @@ def genome(seed=5):
             lines.append(f"##STA\t{PROTEINS[locus]}")  # miniprot's order: PAF, STA, then the alignment
             lines.append(f"c1\tminiprot\tmRNA\t{a}\t{b}\t{score}\t{strand}\t.\tID=MP{n};Rank=1;Identity=0.9500;"
                          f"Positive=0.97;Target={q} 1 120")
+            # miniprot's stop codon (GENCODE's rule): in the mRNA, a stop_codon line, not in the CDS
+            stop = (b - 2, b) if strand == "+" else (a, a + 2)
             for x, y in exons:
+                x, y = (x, y - 3) if strand == "+" and y == b else (x + 3, y) if strand == "-" and x == a else (x, y)
                 lines.append(f"c1\tminiprot\tCDS\t{x}\t{y}\t{score}\t{strand}\t0\tParent=MP{n};Rank=1;"
                              f"Identity=0.95;Target={q} 1 120")
+            lines.append(f"c1\tminiprot\tstop_codon\t{stop[0]}\t{stop[1]}\t{score}\t{strand}\t0\tParent=MP{n};Rank=1")
     return seq, "\n".join(lines) + "\n", {"1at2759": g1, "2at2759": g2, "1at2759b": g3}
 
 
@@ -228,10 +232,14 @@ if "-M0" in args:
                 continue
             n += 1
             a, b = i + 1, i + len(cds)
+            stop = seq[b:b + 3] in ("TAA", "TAG", "TGA")  # in the mRNA, its own line (GENCODE's rule)
             print(f"##PAF\\t{q}\\t{len(p)}")
             print(f"##STA\\t{p}")
-            print(f"{rec}\\tminiprot\\tmRNA\\t{a}\\t{b}\\t900\\t+\\t.\\tID=R{n};Rank=1;Identity=1.0000;Target={q} 1 {len(p)}")
+            print(f"{rec}\\tminiprot\\tmRNA\\t{a}\\t{b + 3 * stop}\\t900\\t+\\t.\\tID=R{n};Rank=1;Identity=1.0000;"
+                  f"Target={q} 1 {len(p)}")
             print(f"{rec}\\tminiprot\\tCDS\\t{a}\\t{b}\\t900\\t+\\t0\\tParent=R{n};Rank=1;Identity=1.0;Target={q} 1 {len(p)}")
+            if stop:
+                print(f"{rec}\\tminiprot\\tstop_codon\\t{b + 1}\\t{b + 3}\\t900\\t+\\t0\\tParent=R{n};Rank=1")
     sys.exit(0)
 keep = True
 for line in open(%r):
@@ -335,10 +343,12 @@ def hmmsearch(folder):
 
 VSEARCH = '''#!/usr/bin/env python3
 """vsearch --usearch_global's stand-in: the identity of two sequences is their share of equal positions (100 - 2 per
-difference for those of one length), written to --userout (query, target, id), self hits left out."""
+difference for those of one length), written to --userout (query, target, id), self hits left out; a query's first
+--maxaccepts hits alone, the most identical first (as vsearch's k-mer order puts a genome's identical copies)."""
 import sys
 args = sys.argv[1:]
 q, db, out = (args[args.index(o) + 1] for o in ("--usearch_global", "--db", "--userout"))
+accepts = int(args[args.index("--maxaccepts") + 1]) if "--maxaccepts" in args else 1 << 30
 
 
 def read(path):
@@ -355,6 +365,7 @@ def read(path):
 seqs, targets = read(q), read(db)
 with open(out, "w") as fh:
     for a, s in seqs.items():
+        found = []
         for b, t in targets.items():
             if a == b:
                 continue
@@ -362,7 +373,9 @@ with open(out, "w") as fh:
             same = sum(x == y for x, y in zip(s, t))
             ident = 100.0 * same / n
             if ident >= 70:
-                fh.write(f"{a}\\t{b}\\t{ident:.1f}\\n")
+                found.append((-ident, b))
+        for ident, b in sorted(found)[:accepts]:
+            fh.write(f"{a}\\t{b}\\t{-ident:.1f}\\n")
 '''
 
 

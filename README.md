@@ -30,7 +30,7 @@ Eukore is two things:
 
 It is made for tools that detect and profile eukaryotes in metagenomes (protal reads it as its eukaryote reference),
 and for anyone needing clean eukaryote marker genes: phylogenetics, primer design, contamination screens. Eukore's
-version is 0.1; it was named EUKDB until 2026-11-06.
+version is 0.12; it was named EUKDB until 2026-11-06.
 
 ## What is in Eukore
 
@@ -99,7 +99,7 @@ Eukore runs on Linux (or WSL) with a conda-style package manager; its tools are 
 ```bash
 git clone https://github.com/hildebra/Eukore.git && cd Eukore
 micromamba create -f envs/eukore.yaml && micromamba activate eukore
-python3 -m unittest discover -s tests -t tests            # ~40 tests with stand-in tools, seconds
+python3 -m unittest discover -s tests -t tests            # ~80 tests with stand-in tools, seconds
 ```
 
 A **trial** builds a few clades on one machine (here *Saccharomyces*, taxid 4930); its manifest marks it partial:
@@ -125,7 +125,7 @@ outputs are in [docs/building.md](docs/building.md).
 
 1. **Genome set.** Per NCBI species, its best assembly: NCBI's contamination, misassembly and ANI flags excluded,
    FCS-GX's contaminated assemblies demoted, then RefSeq reference, representative, assembly level, contiguity.
-2. **BUSCO calls.** miniprot aligns the proteins of the 30 nearest species of BUSCO's dataset (and its ancestral
+2. **BUSCO calls.** miniprot aligns the 30 proteins of BUSCO's dataset nearest to the genome (and its ancestral
    variants) with the genome's genetic code; hmmsearch confirms each region against all BUSCO HMMs at BUSCO's
    cutoffs; the best copy is kept whole, its exons and introns annotated.
 3. **rRNA.** barrnap finds each genome's rRNA genes and ITSx the ITS borders (with the lineage's profiles); whole
@@ -197,7 +197,7 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 
 ## Status and limitations
 
-- Version 0.1. The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades.
+- Version 0.12. The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
 - The organelle genes have been built in tests only; they have no checks across species and no confidence yet.
 - rDNA copy numbers are those of the assembly, a lower bound (arrays collapse). The intergenic spacer, 5S arrays away

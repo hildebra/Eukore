@@ -148,6 +148,37 @@ class ParseTest(unittest.TestCase):
                              ["SSU|NC_000001.1", "LSU|NC_000001.1", "COX1|NC_000001.1"])  # the nearest with each gene
 
 
+class JoinTest(unittest.TestCase):
+    def test_hits_joined_in_the_querys_order_alone(self):
+        # a 16 kb mitochondrion opened inside COX1: its first half at the molecule's end, its second at its start;
+        # neither is joined to the other (until 2026-11-06 the gene was the molecule, 1-16,000)
+        a = dict(start=15200, end=16000, q1=1, q2=800, strand="+")
+        b = dict(start=1, end=800, q1=801, q2=1600, strand="+")
+        self.assertEqual(organelle.collinear(a, [a, b]), [a])
+        # a gene's exons in order on either strand, a concatemer's next copy (the query again) left out
+        c = dict(start=17000, end=17800, q1=801, q2=1600, strand="+")
+        again = dict(start=18000, end=18800, q1=1, q2=800, strand="+")
+        self.assertEqual(organelle.collinear(a, [a, c, again]), [a, c])
+        m1, m2 = dict(start=5000, end=5800, q1=1, q2=800, strand="-"), dict(start=3000, end=3800, q1=801, q2=1600,
+                                                                          strand="-")
+        self.assertEqual(organelle.collinear(m2, [m1, m2]), [m2, m1])
+
+    def test_a_mitogenome_of_several_records(self):
+        # lice's minicircles: rrnS on one record, rrnL and COX1 on another; the species takes them all
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+        rows = [dict(seqid="NC_1.1", organelle="mitochondrion", taxid="6253", record_length="3000", gene="SSU"),
+                dict(seqid="NC_2.1", organelle="mitochondrion", taxid="6253", record_length="4000", gene="LSU"),
+                dict(seqid="NC_2.1", organelle="mitochondrion", taxid="6253", record_length="4000", gene="COX1"),
+                dict(seqid="NC_3.1", organelle="mitochondrion", taxid="6253", record_length="5000", gene="COX1")]
+        got = organelle.choose(rows, ncbi)[(6253, "mitochondrion")]
+        self.assertEqual(sorted((r["gene"], r["seqid"]) for r in got),
+                         [("COX1", "NC_2.1"), ("LSU", "NC_2.1"), ("SSU", "NC_1.1")])
+        # an animal or a fungus holds no plastid: not searched for one
+        self.assertEqual(organelle.organelles_of(ncbi, 6253), ("mitochondrion",))
+        self.assertEqual(organelle.organelles_of(ncbi, 952), organelle.KINDS)
+
+
 class AssemblyTest(unittest.TestCase):
     def test_an_assembly_into_the_package(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -28,7 +28,7 @@ What the 2026-11-05 checks showed:
 EukDetect2 dropped the BUSCOs it found in 971 gut bacteria, and the 30 loci are among those it kept. On 2026-11-05 that
 check was redone on Eukore's own caller. The panel was 176 prokaryote genomes, one per GTDB genus of protal's local
 inputs: 158 bacteria of 22 phyla and 18 archaea of 6. Each was searched with all ~23,000 dataset proteins of the 30
-loci, which is stricter than a build (the 30 nearest species' proteins). The results:
+loci, which is stricter than a build (the 30 proteins of the nearest species). The results:
 
 | locus | OrthoDB name | called at the cutoff (compleasm's gates, the caller's until 2026-11-06) | without the identity/coverage gates |
 |---|---|---|---|

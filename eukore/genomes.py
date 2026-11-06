@@ -39,8 +39,10 @@ EXCLUDE = {"contaminated", "unverified source organism", "misassembled", "chimer
     | quality.EXCLUDE
 # NCBI's interspecies hybrids ("Saccharomyces cerevisiae x Saccharomyces eubayanus") have species rank: their genomes
 # hold both parents' copies of nearly every locus (the 2026-11-05 trial: 24-30 of 30 Duplicated), and their reads are
-# their parents'. A named hybrid species (Saccharomyces pastorianus) stays, its duplicated loci flagged.
-HYBRID = re.compile(r"\s[x×]\s")
+# their parents'. A named hybrid species (Saccharomyces pastorianus; NCBI's "Genus x epithet": Fragaria x ananassa,
+# Mentha x piperita) stays, its duplicated loci flagged: a cross names two species before its x (until 2026-11-06 any
+# " x " did, and the strawberry was left out).
+HYBRID = re.compile(r"^\S+\s+\S+.*\s[x×]\s")
 CATEGORY = {"reference genome": 0, "representative genome": 1}
 LEVEL = {"Complete Genome": 0, "Chromosome": 1, "Scaffold": 2, "Contig": 3}
 LOCI_COLUMNS = ("locus", "status", "contig", "contig_length", "start", "end", "strand", "length", "cds_length",
@@ -168,7 +170,11 @@ def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assemb
     for sp, (best, others) in sorted(reps.items()):
         if sp in model_species:
             continue
-        add(best, "ncbi", sp, others)
+        # the best that can be fetched (until 2026-11-06 a best row without an FTP path lost the species)
+        ranked = [best, *others]
+        chosen = next((r for r in ranked if download_of(r, refseq)[1]), None)
+        if chosen is not None:
+            add(chosen, "ncbi", sp, [r for r in ranked if r is not chosen])
     for sp, m in sorted(model_species.items()):
         row = species.assembly_row(m)
         others = reps.get(sp, (None, []))
@@ -183,14 +189,15 @@ def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assemb
 
 
 FATES = ("chosen", "chosen, flagged", "model species", "no assembly (records)", "every assembly excluded",
-         "placeholder", "hybrid", "not a species", "no download")
+         "placeholder", "hybrid", "not a species", "not in the taxdump", "no download")
 
 
 def fates(ncbi, assemblies, job_map, inside=None):
     """What became of each NCBI taxon with a GenBank assembly (the benchmarks' selection funnel) -> {taxid: fate}:
     chosen (its genome unflagged, or flagged: the best it has), a model species' reference, no assembly (EukProt's
     records), every assembly excluded (EXCLUDE: NCBI's or its FCS-GX and ANI reports'), or left out as a placeholder,
-    an interspecies hybrid or a taxon above species (assemblies labelled by a genus)."""
+    an interspecies hybrid, a taxon above species (assemblies labelled by a genus) or one the taxdump does not hold (a
+    taxdump older than the assembly tables: until 2026-11-06 called "not a species")."""
     out = {}
     for job in job_map.values():
         why = job["why"][0]
@@ -204,7 +211,8 @@ def fates(ncbi, assemblies, job_map, inside=None):
             continue
         excluded[sp].append(bool(set(row.get("flags") or ()) & EXCLUDE))
     for sp, flagged in excluded.items():
-        out[sp] = ("not a species" if ncbi.rank.get(sp) != "species" else "placeholder" if ncbi.is_placeholder(sp)
+        out[sp] = ("not in the taxdump" if sp not in ncbi.parent else "not a species" if ncbi.rank.get(sp) != "species"
+                   else "placeholder" if ncbi.is_placeholder(sp)
                    else "hybrid" if HYBRID.search(ncbi.name.get(sp, "")) else "every assembly excluded"
                    if all(flagged) else "no download")  # its genomes without an FTP path
     return out
@@ -243,7 +251,6 @@ def read_rows(path):
         return [line.rstrip("\n").split("\t") for line in fh if line.strip()]
 
 
-RESULT_FILES = ("copies.fna", "loci.tsv", "features.tsv", "windows.fna.gz")
 HELD_OUT = "held_out.tsv"  # a dataset species' BUSCOs called without its own proteins (the OrthoDB benchmark's)
 HELD_OUT_COLUMNS = ("locus", "status", "query", "contig", "start", "end", "rescued", "cds")  # place since 2026-11-06
 
@@ -370,7 +377,8 @@ def run(args):
     lineage), its rRNA extracted (settings["rrna"]: a function of (genome path, job, out folder) -> its summary),
     the windows around its copies classified (settings["tiara"]), a dataset species' BUSCOs called again without its
     own proteins (settings["odb_own"], HELD_OUT), its results written into WORK/done/<accession>/
-    (RESULT_FILES, then done.json) -> (accession, summary or None, why it is not done or None)."""
+    (copies.fna, loci.tsv, features.tsv, windows.fna.gz, then done.json) -> (accession, summary or None, why it is
+    not done or None)."""
     job, settings = args
     acc = job["accession"]
     folder = done_dir(settings["work"], acc)

@@ -31,18 +31,6 @@ def download(url, dest, md5=None):
         raise OSError(f"{dest}: MD5 {util.md5(dest)}, {md5} expected")
 
 
-LOCI = 30
-
-
-MAX_LOCUS = 16000
-
-
-def read_loci_table(path):
-    """A loci table (a header line starting "locus", then a locus a line, its first column) -> its loci, in order."""
-    with open(path) as fh:
-        return [line.split("\t")[0] for line in fh if line.strip() and not line.startswith(("#", "locus\t"))]
-
-
 # No eukaryote's nuclear genome is smaller (microsporidia's, the smallest, are ~2.2 Mb): GenBank has records of 500-600
 # bases as "complete genomes" of Aspergillus flavus, niger, fumigatus and others (a gene's sequence), which a build
 # simulated as cells of 600 bases, and which were their species' best-ranked match. Nor is a species' genome a third of
@@ -107,15 +95,6 @@ def folder_of(inputs, name):
     return os.path.join(inputs, SOURCES[name]["dir"])
 
 
-def md5_of(path):
-    import hashlib  # noqa: PLC0415
-    digest = hashlib.md5()
-    with open(path, "rb") as fh:
-        for block in iter(lambda: fh.read(1 << 22), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def state_of(inputs, name):
     """A source's source.json ({} where there is none)."""
     path = os.path.join(folder_of(inputs, name), STATE)
@@ -144,7 +123,8 @@ def count_records(path):
 
 def unpack(name, folder, seven_zip="7za"):
     """A source's files as rdna_freeze.py reads them: ROD's tables out of its zip, EUKARYOME's long reads out of its zip
-    and 7z (gzipped) and its compromised-quality ids as a table (openpyxl, where installed; else none)."""
+    and 7z (gzipped) and its compromised-quality ids as a table (openpyxl, where installed; else none, said: until
+    2026-11-06 a missing openpyxl left all of EUKARYOME not ready)."""
     if name == "ROD":
         with zipfile.ZipFile(os.path.join(folder, SOURCES[name]["files"][0][0])) as z:
             for member in z.namelist():
@@ -172,20 +152,17 @@ def unpack(name, folder, seven_zip="7za"):
         os.replace(dest + ".part", dest)
         shutil.rmtree(work)
         compromised = os.path.join(folder, "EUK2_1_compromised_quality.tsv")
-        ids = read_xlsx_column(os.path.join(folder, "EUK2_1_compromised_quality.xlsx"), "accession")
+        from .labels import read_xlsx_rows  # noqa: PLC0415
+        try:
+            rows = read_xlsx_rows(os.path.join(folder, "EUK2_1_compromised_quality.xlsx"))
+            at = rows[0].index("accession")
+            ids = [r[at] for r in rows[1:] if len(r) > at and r[at]]
+        except ImportError:
+            print("WARNING: no openpyxl: EUKARYOME's compromised-quality ids not read (none left out)", flush=True)
+            ids = []
         with open(compromised + ".part", "w", newline="\n") as fh:
             fh.write("accession\n" + "".join(f"{i}\n" for i in ids))
         os.replace(compromised + ".part", compromised)
-
-
-def read_xlsx_column(path, column):
-    """A column of an xlsx file's first sheet (openpyxl)."""
-    import openpyxl  # noqa: PLC0415  (conda-forge's openpyxl, beside pandas)
-    sheet = openpyxl.load_workbook(path, read_only=True).worksheets[0]
-    rows = sheet.iter_rows(values_only=True)
-    head = list(next(rows))
-    at = head.index(column)
-    return [str(r[at]) for r in rows if r and r[at]]
 
 
 def rod_operons(folder):
@@ -262,10 +239,14 @@ def fetch(inputs, name, download, seven_zip="7za", log=print):
     files, problems = {}, []
     for file, url, md5, size in spec["files"]:
         dest = os.path.join(folder, file)
-        if not (os.path.isfile(dest) and os.path.getsize(dest) == size and (md5 is None or md5_of(dest) == md5)):
+        if not (os.path.isfile(dest) and os.path.getsize(dest) == size and (md5 is None or util.md5(dest) == md5)):
             log(f"{name} {spec['version']}: fetching {file} ({size / 1e6:.0f} MB)")
-            download(url, dest, md5)
-        got = md5_of(dest)
+            try:
+                download(url, dest)  # its MD5 checked below, a problem of the source's, not a stop
+            except OSError as e:  # the site moved or down: this source not ready (until 2026-11-06 the stage stopped)
+                problems.append(f"{file}: {e}")
+                continue
+        got = util.md5(dest)
         files[file] = {"bytes": os.path.getsize(dest), "md5": got}
         if os.path.getsize(dest) != size:
             problems.append(f"{file}: {os.path.getsize(dest)} bytes, {size} published")

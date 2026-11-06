@@ -21,7 +21,6 @@ import collections
 import gzip
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 
@@ -39,7 +38,7 @@ SAME_TYPE = 0.99
 NEAR = 0.5
 FOREIGN_ID = 97.0
 PREFIX = 1000       # a published read's first bases: its 18S, for the own-species pool
-COMPLEMENT = str.maketrans("ACGTN", "TGCAN")
+COMPLEMENT = str.maketrans("ACGTNRYKMBVDHSW", "TGCANYRMKVBHDSW")  # IUPAC's too: a published read's
 ITSX_FIELD = re.compile(r"(SSU|ITS1|5\.8S|ITS2|LSU): (\d+)-(\d+)")
 # ITSx 1.1.3 without both of the 5.8S's ends still writes ITS1 and ITS2, their inner borders guessed (an ITS2 45
 # bases after the 5.8S start where it found no end: Arabidopsis with set T, Blastocystis, 2026-11-06)
@@ -88,10 +87,14 @@ def barrnap_gff(barrnap, fasta, threads=1, kingdom="euk"):
 
 # an organelle molecule's FASTA title (organelle.py's too)
 ORGANELLE_TITLE = re.compile(r"\b(mitochondrion|chloroplast|plastid|apicoplast)\b", re.IGNORECASE)
+# not the nucleus either: a cryptophyte's or chlorarachniophyte's nucleomorph (Guillardia theta, Bigelowiella natans),
+# the endosymbiont's red or green algal nucleus with rDNA operons of its own (until 2026-11-06 labelled the host's)
+NOT_NUCLEAR = re.compile(r"\b(mitochondrion|chloroplast|plastid|apicoplast|nucleomorph)\b", re.IGNORECASE)
 
 
 def contigs(path, nuclear=False):
-    """A FASTA's (name, sequence); nuclear: without the organelle molecules (ORGANELLE_TITLE in their titles)."""
+    """A FASTA's (name, sequence); nuclear: without the organelle molecules and nucleomorphs (NOT_NUCLEAR in their
+    titles)."""
     name, parts, keep = None, [], True
     with util.open_text(path) as fh:
         for line in fh:
@@ -99,7 +102,7 @@ def contigs(path, nuclear=False):
                 if name is not None and keep:
                     yield name, "".join(parts)
                 name, parts = (line[1:].split() or [""])[0], []
-                keep = not (nuclear and ORGANELLE_TITLE.search(line))
+                keep = not (nuclear and NOT_NUCLEAR.search(line))
             elif keep:
                 parts.append(line.strip())
     if name is not None and keep:
@@ -124,39 +127,57 @@ def windows(seq):
     return spans
 
 
+ALIGNED = re.compile(r"aligned only (\d+) percent")
+WHOLE = 0.8         # barrnap's own: a hit of this share of its model or more is not partial
+
+
 def parse_gff(gff):
-    """barrnap's GFF -> {window: {feature name: [(start, end, strand, partial)]}} (1-based inclusive)."""
+    """barrnap's GFF -> {window: {feature name: [(start, end, strand, partial, share of the model aligned)]}} (1-based
+    inclusive)."""
     out = collections.defaultdict(lambda: collections.defaultdict(list))
     for line in gff.splitlines():
         f = line.split("\t")
         if line.startswith("#") or len(f) < 9:
             continue
         name = f[8].split("Name=", 1)[1].split(";", 1)[0] if "Name=" in f[8] else ""
-        out[f[0]][name].append((int(f[3]), int(f[4]), f[6], "aligned only" in f[8] or "partial" in f[8]))
+        partial = "aligned only" in f[8] or "partial" in f[8]
+        share = ALIGNED.search(f[8])
+        out[f[0]][name].append((int(f[3]), int(f[4]), f[6], partial,
+                                int(share.group(1)) / 100 if share else 0.5 if partial else 1.0))
     return out
 
 
 def joined(features, gap=MAX_INTRON):
+    """Features (parse_gff's) on a strand this close one span -> [[start, end, strand, share of the model]]: an rRNA cut
+    by introns (barrnap's pieces each partial; their shares summed)."""
     out = []
     for strand in "+-":
-        for start, end, _s, _p in sorted(f for f in features if f[2] == strand):
+        for f in sorted(f for f in features if f[2] == strand):
+            start, end = f[0], f[1]
+            share = f[4] if len(f) > 4 else 0.5 if f[3] else 1.0  # a feature of (start, end, strand, partial)
             if out and out[-1][2] == strand and start - out[-1][1] <= gap:
                 out[-1][1] = max(out[-1][1], end)
+                out[-1][3] += share
             else:
-                out.append([start, end, strand])
+                out.append([start, end, strand, share])
     return out
 
 
 def units_of(seq, feats):
     """A window's (or a read's) 18S spans and their units -> [dict(span (start, end, strand), sequence (the span,
     its strand), exons (the 18S pieces joined), unit (sequence or None), regions [(name, start, end)] on the unit,
-    lsu_complete, its stretch for ITSx and where that starts)]. Coordinates 1-based in `seq`."""
-    out = []
+    lsu_complete, its stretch for ITSx and where that starts, unit_span (a, b) in `seq`)]. Coordinates 1-based in
+    `seq`. A 28S cut by introns (barrnap's pieces, each partial) is one, whole where its pieces' shares make WHOLE
+    (until 2026-11-06 the unit ended at its first piece). A 5S is one unit's at most (until 2026-11-06 a tandem
+    array's spacer 5S was both its neighbours'): the unit whose 28S it follows within GAP_5S, else whose 18S it
+    precedes; a unit keeps the nearest of its own."""
+    out, cores = [], []
     s18 = feats.get("18S_rRNA", [])
-    for start, end, strand in joined(s18):
+    lsu_spans = joined(feats.get("28S_rRNA", []))
+    for start, end, strand, _share in joined(s18):
         pieces = [f for f in s18 if f[2] == strand and start <= f[0] and f[1] <= end]
         span = seq[start - 1:end]
-        exons = "".join(seq[a - 1:b] for a, b, _s, _p in sorted(pieces))
+        exons = "".join(seq[f[0] - 1:f[1]] for f in sorted(pieces))
         if strand == "-":
             span, exons = revcomp(span), revcomp(exons)
         # the 18S's introns: the gaps between its pieces, on the span ([start, end) on its strand)
@@ -165,41 +186,51 @@ def units_of(seq, feats):
         on_span = sorted((a - start, b - start + 1) if strand == "+" else (end - b, end - a + 1) for a, b in cuts)
         item = dict(span=(start, end, strand), sequence=span, exons=exons, unit=None, regions=None,
                     lsu_complete=False, introns=[("18S",) + x for x in on_span])
+        out.append(item)
         fwd = strand == "+"
         s58 = [f for f in feats.get("5_8S_rRNA", []) if f[2] == strand and
                (0 < f[0] - end <= MAX_ITS if fwd else 0 < start - f[1] <= MAX_ITS)]
-        if s58:
-            f58 = min(s58, key=lambda f: f[0]) if fwd else max(s58, key=lambda f: f[1])
-            lsu = [f for f in feats.get("28S_rRNA", []) if f[2] == strand and
-                   ((f[1] > f58[1] + 100 and f[0] <= f58[1] + MAX_ITS) if fwd else
-                    (f[0] < f58[0] - 100 and f[1] >= f58[0] - MAX_ITS))]
-            if lsu:
-                f28 = min(lsu, key=lambda f: f[0]) if fwd else max(lsu, key=lambda f: f[1])
-                a, b = (start, f28[1]) if fwd else (f28[0], end)
-                five = [f for f in feats.get("5S_rRNA", [])  # inline: in the same block, either strand
-                        if (fwd and (0 <= f[0] - b <= GAP_5S or 0 <= a - f[1] <= GAP_5S)) or
-                        (not fwd and (0 <= a - f[1] <= GAP_5S or 0 <= f[0] - b <= GAP_5S))]
-                a = min([a] + [f[0] for f in five])
-                b = max([b] + [f[1] for f in five])
-                unit = seq[a - 1:b]
-                if not fwd:
-                    unit = revcomp(unit)
+        if not s58:
+            continue
+        f58 = min(s58, key=lambda f: f[0]) if fwd else max(s58, key=lambda f: f[1])
+        lsu = [f for f in lsu_spans if f[2] == strand and
+               ((f[1] > f58[1] + 100 and f[0] <= f58[1] + MAX_ITS) if fwd else
+                (f[0] < f58[0] - 100 and f[1] >= f58[0] - MAX_ITS))]
+        if lsu:
+            f28 = min(lsu, key=lambda f: f[0]) if fwd else max(lsu, key=lambda f: f[1])
+            cores.append((item, start, end, fwd, f58, f28, cuts) + ((start, f28[1]) if fwd else (f28[0], end)))
+    five_of = {}  # unit -> ((rank, gap), its 5S)
+    for f in feats.get("5S_rRNA", []):  # inline: in the same block, either strand
+        best = None
+        for i, (_item, _s, _e, fwd, _f58, _f28, _cuts, a, b) in enumerate(cores):
+            after, before = (f[0] - b, a - f[1]) if fwd else (a - f[1], f[0] - b)  # past the 28S, before the 18S
+            for rank, gap in ((0, after), (1, before)):
+                if 0 <= gap <= GAP_5S and (best is None or (rank, gap) < best[0]):
+                    best = ((rank, gap), i)
+        if best and (best[1] not in five_of or best[0][1] < five_of[best[1]][0][1]):
+            five_of[best[1]] = (best[0], f)
+    for i, (item, start, end, fwd, f58, f28, cuts, a, b) in enumerate(cores):
+        five = [five_of[i][1]] if i in five_of else []
+        a = min([a] + [f[0] for f in five])
+        b = max([b] + [f[1] for f in five])
+        unit = seq[a - 1:b]
+        if not fwd:
+            unit = revcomp(unit)
 
-                def at(x1, x2):  # a feature's [start, end) on the unit
-                    return (x1 - a, x2 - a + 1) if fwd else (b - x2, b - x1 + 1)
+        def at(x1, x2, a=a, b=b, fwd=fwd):  # a feature's [start, end) on the unit
+            return (x1 - a, x2 - a + 1) if fwd else (b - x2, b - x1 + 1)
 
-                r18, r58 = ("18S",) + at(start, end), ("5.8S",) + at(f58[0], f58[1])
-                r28 = ("28S",) + at(f28[0], f28[1])
-                # barrnap's 28S model can reach back over the 5.8S (Drosophila's units): the 28S starts after it
-                r28 = ("28S", max(r28[1], r58[2]), r28[2])
-                regions = [r18, ("ITS1", r18[2], r58[1]), r58, r28] + [("5S",) + at(f[0], f[1]) for f in five]
-                if r28[1] > r58[2]:
-                    regions.insert(3, ("ITS2", r58[2], r28[1]))
-                item.update(unit=unit, regions=sorted(regions, key=lambda r: r[1]), lsu_complete=not f28[3],
-                            unit_span=(a, b), unit_introns=sorted(("18S",) + at(x1, x2) for x1, x2 in cuts),
-                            its=unit[max(0, r18[2] - 300):min(len(unit), r58[2] + 3300)],
-                            its_at=max(0, r18[2] - 300))
-        out.append(item)
+        r18, r58 = ("18S",) + at(start, end), ("5.8S",) + at(f58[0], f58[1])
+        r28 = ("28S",) + at(f28[0], f28[1])
+        # barrnap's 28S model can reach back over the 5.8S (Drosophila's units): the 28S starts after it
+        r28 = ("28S", max(r28[1], r58[2]), r28[2])
+        regions = [r18, ("ITS1", r18[2], r58[1]), r58, r28] + [("5S",) + at(f[0], f[1]) for f in five]
+        if r28[1] > r58[2]:
+            regions.insert(3, ("ITS2", r58[2], r28[1]))
+        item.update(unit=unit, regions=sorted(regions, key=lambda r: r[1]), lsu_complete=f28[3] >= WHOLE,
+                    unit_span=(a, b), unit_introns=sorted(("18S",) + at(x1, x2) for x1, x2 in cuts),
+                    its=unit[max(0, r18[2] - 300):min(len(unit), r58[2] + 3300)],
+                    its_at=max(0, r18[2] - 300))
     return out
 
 
@@ -336,8 +367,9 @@ def extract_genome(path, barrnap, itsx=None, threads=1, itsx_sets="all"):
 
 
 def published_regions(reads, barrnap, itsx=None, threads=1, sets=None):
-    """Published long reads [(name, sequence)] -> {name: (regions, lsu_complete, 18S exons)}: each read as a window.
-    sets: {name: ITSx's -t for its taxon (itsx_groups)}, else all sets."""
+    """Published long reads [(name, sequence)] -> {name: (regions, lsu_complete, 18S exons, strand)}: each read as a
+    window, its regions on the record (the read itself on +, its reverse complement on -: on_record). sets: {name:
+    ITSx's -t for its taxon (itsx_groups)}, else all sets."""
     if not reads:
         return {}
     with tempfile.TemporaryDirectory() as tmp:
@@ -355,7 +387,17 @@ def published_regions(reads, barrnap, itsx=None, threads=1, sets=None):
     sets = sets or {}
     found = run_itsx([u["its"] for u in items.values()], itsx, threads,
                      {u["its"]: sets.get(n, "all") for n, u in items.items()})
-    return {n: (refine(u, found.get(u["its"], {}))["regions"], u["lsu_complete"], u["exons"]) for n, u in items.items()}
+    return {n: (on_record(refine(u, found.get(u["its"], {})), len(seqs[n])), u["lsu_complete"], u["exons"],
+                u["span"][2]) for n, u in items.items()}
+
+
+def on_record(unit, length):
+    """A read's unit's regions (on the unit: units_of) on its record, the read on the unit's strand (its reverse
+    complement on -) of `length` bases (until 2026-11-06 the regions were the unit's, the record the read: a read whose
+    18S began at base 150 had them 149 bases early, one on - mirrored)."""
+    a, b = unit["unit_span"]
+    shift = a - 1 if unit["span"][2] == "+" else length - b
+    return [(name, s + shift, e + shift) for name, s, e in unit["regions"]]
 
 
 # --- labels by NCBI taxid ----------------------------------------------------------------------------------------
@@ -453,9 +495,6 @@ def types_of(exons):
     return out
 
 
-RANKS = ("phylum", "class", "order", "family", "genus")
-
-
 def ssu_part(seq, row):
     """A record's 18S: an 18S record whole, an operon's 18S region, else (a read without one found) its first PREFIX."""
     if row["kind"] == "18S":
@@ -468,45 +507,32 @@ def own_species(records, ncbi, vsearch, threads=1):
     every other genome and source (vsearch --usearch_global at 80%, the first 32 hits), their nearest (within NEAR
     points of the best) agreeing with the genome's NCBI lineage to the family or deeper: t; sharing no more than the
     phylum at FOREIGN_ID or more: f; else -. records: [(name, sequence, row)] (row: accession, source, species_taxid,
-    regions); a published record is not checked (its label is its source's)."""
+    regions); a published record is not checked (its label is its source's). A genome's (or a source's) 18S are
+    searched as one per 99% type (screen.representatives), so that its own copies do not fill the first hits."""
+    from . import qc, screen  # noqa: PLC0415
     if not vsearch or not records:
         return {}
     ssu = {name: ssu_part(seq, row)[:2500] for name, seq, row in records}
     owner = {name: row["accession"] for name, _s, row in records}
-    queries = {name: ssu[name] for name, _s, row in records if row["source"] == "genome"}
-    out = {}
+    group = {name: (row["source"], screen.genome_of(name, row)) for name, _s, row in records}
+    reps = screen.representatives({n: s for n, s in ssu.items() if s}, group)
+    genome_reps = {k for k in reps if group[k][0] == "genome"}
+    if not genome_reps:
+        return {}
     with tempfile.TemporaryDirectory() as tmp:
-        db, q, hits = (os.path.join(tmp, f) for f in ("db.fna", "q.fna", "hits.tsv"))
-        with open(db, "w") as fh:
-            fh.writelines(f">{n}\n{s}\n" for n, s in ssu.items() if s)
-        with open(q, "w") as fh:
-            fh.writelines(f">{n}\n{s}\n" for n, s in queries.items() if s)
-        if not queries:
-            return {}
-        subprocess.run([vsearch, "--usearch_global", q, "--db", db, "--id", "0.8", "--iddef", "2", "--maxaccepts",
-                        "32", "--maxrejects", "256", "--userout", hits, "--userfields", "query+target+id",
-                        "--threads", str(max(1, threads)), "--quiet"], check=True)
-        found = collections.defaultdict(list)
-        with open(hits) as fh:
-            for line in fh:
-                qn, tn, ident = line.rstrip("\n").split("\t")
-                if owner.get(tn) != owner.get(qn):
-                    found[qn].append((float(ident), tn))
+        found = screen.search({k: ssu[k] for k in sorted(genome_reps)}, {k: ssu[k] for k in sorted(reps)}, vsearch,
+                              threads, tmp, ident=0.8, accepts=32, rejects=256)
     taxid_of = {name: int(row["species_taxid"]) for name, _s, row in records}
-    for name in queries:
-        hits = found.get(name, [])
-        if not hits:
-            out[name] = "-"
-            continue
-        top = max(i for i, _t in hits)
-        mine = ncbi.ranks(taxid_of[name])
-        depth = 0
-        for ident, target in hits:
-            if ident < top - NEAR:
-                continue
-            theirs = ncbi.ranks(taxid_of[target])
-            depth = max([depth] + [i + 1 for i, r in enumerate(RANKS) if mine.get(r) and mine.get(r) == theirs.get(r)])
-        out[name] = "t" if depth >= 4 else "f" if depth <= 1 and top >= FOREIGN_ID else "-"
+    cache, out = {}, {}
+    for rep in genome_reps:
+        hits = [(i, t) for i, t in found.get(rep, []) if owner[t] != owner[rep]]
+        verdict = "-"
+        if hits:
+            top = max(i for i, _t in hits)
+            depth = max(qc.depth(ncbi, taxid_of[rep], taxid_of[t], cache) for i, t in hits if i >= top - NEAR)
+            verdict = "t" if depth >= 4 else "f" if depth <= 1 and top >= FOREIGN_ID else "-"
+        for member in reps[rep]:
+            out[member] = verdict
     return out
 
 
@@ -524,12 +550,15 @@ def write_records(folder, records):
     os.replace(util.part_of(table), table)
 
 
-def finish(records, ncbi, vsearch=None, threads=1):
+def finish(records, ncbi, vsearch=None, threads=1, log=None):
     """The checks over all records [(name, sequence, row)] (row: kind, accession, source, species_taxid, taxid,
-    regions_list, lsu_complete, label_from) -> the same with their RECORD_COLUMNS filled, sorted by species and name."""
+    regions_list, lsu_complete, label_from) -> the same with their RECORD_COLUMNS filled, sorted by species and name.
+    The 99% types are within a species: records labelled by a genus alone (EUKARYOME's) get none (until 2026-11-06 a
+    genus of thousands of environmental reads was typed in pure Python for an hour). log: the screen's counts."""
     by_species = collections.defaultdict(list)
     for name, seq, row in records:
-        by_species[row["species_taxid"]].append((name, ssu_part(seq, row)))
+        if ncbi is None or ncbi.rank.get(int(row["species_taxid"])) == "species":
+            by_species[row["species_taxid"]].append((name, ssu_part(seq, row)))
     type_of = {}
     for sp, items in by_species.items():
         types = types_of([p for _n, p in items])
@@ -537,7 +566,9 @@ def finish(records, ncbi, vsearch=None, threads=1):
             type_of[name] = types[part]
     own = own_species(records, ncbi, vsearch, threads)
     from . import screen as screen_mod  # noqa: PLC0415
-    screened, _counts = screen_mod.screen(records, ncbi, vsearch, threads)
+    screened, counts_ = screen_mod.screen(records, ncbi, vsearch, threads)
+    if log and counts_:
+        log("rRNA part screen: " + ", ".join(f"{k} {v}" for k, v in sorted(counts_.items())))
     out = []
     for name, seq, row in records:
         row = dict(row, record=name, length=len(seq), regions=regions_text(row.get("regions_list")),
@@ -658,7 +689,3 @@ def confidence(row):
         medium.append("genus_label")
     tier = "low" if low else "medium" if medium else "high"
     return tier, ",".join(low + medium) or "-"
-
-
-def has_tools(barrnap="barrnap"):
-    return bool(shutil.which(barrnap))

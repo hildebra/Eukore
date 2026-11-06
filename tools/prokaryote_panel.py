@@ -2,7 +2,7 @@
 """Are BUSCO genes called in prokaryote genomes by Eukore's caller? (since 2026-11-05; EukDetect2 dropped the BUSCOs it
 found in 971 gut bacteria, which hold almost no archaea or alphaproteobacteria.) A panel of prokaryote genomes (one per
 GTDB genus of a genome table, isolates first, then the most complete) is searched with ALL dataset proteins of the
-loci and their ancestral variants (stricter than a build, which takes the 30 nearest species'), miniprot then
+loci and their ancestral variants (stricter than a build, which takes the 30 proteins of the nearest species), miniprot then
 hmmsearch as loci.call. Every region scoring MIN_RATIO of its locus' cutoff or more is written, gated by the caller's
 identity and coverage gates ("gated") and not ("relaxed"); confirmed = its best HMM is its locus at the cutoff.
 
@@ -24,7 +24,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukore import loci, odb as odb_mod, sources  # noqa: E402
+from eukore import loci, odb as odb_mod  # noqa: E402
 
 MIN_RATIO = 0.3
 COLUMNS = ("accession", "mode", "locus", "score", "cutoff", "ratio", "best_hmm", "hmm_coverage", "identity",
@@ -61,7 +61,10 @@ def search(item, odb_folder, wanted, out, threads=2, miniprot="miniprot", hmmsea
             fh.writelines(f">{q}\n{p}\n" for q, p in queries.items())
         run = subprocess.run([miniprot, "-t", str(threads), "-I", "--gff", "--trans", f"--outs={loci.OUTS}",
                               f"--outn={loci.OUTN}", path, faa], capture_output=True, text=True)
-        al = loci.parse_alignments(run.stdout) if run.returncode == 0 else []
+        if run.returncode:  # not done: a rerun tries again (until 2026-11-06 it was done, with no homologue)
+            print(f"{acc}: miniprot failed (exit {run.returncode}): {run.stderr.strip()[-200:]}", file=sys.stderr)
+            return acc
+        al = loci.parse_alignments(run.stdout)
         lengths = {q: len(p) for q, p in queries.items()}
         cands = {}
         for mode, reg in (("gated", loci.regions(al, lengths)),

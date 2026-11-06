@@ -25,6 +25,7 @@ relatives). Per rank (species .. phylum) an assignment is correct (its taxon the
 it (an assignment of a higher rank, which is right but says less).
 """
 
+import bisect
 import collections
 import os
 import random
@@ -32,7 +33,9 @@ import subprocess
 
 from . import labels, package, qc, rrna, util
 from . import odb as odb_mod
+from .benchmarks import rows_of as benchmarks_rows  # a package table's rows, streamed
 from .genomes import genome_file
+from .rrna import revcomp
 
 READ_LEN = 150
 ERROR = 0.005          # substitutions per base
@@ -60,7 +63,10 @@ DETECT_RANK = {"in": "species", "held_out": "genus"}
 DETECT_COLUMNS = ("test", "species_taxid", "supergroup", "congeners", "reference", "mode", "rank", "depth",
                   "in_reference", "true_reads", "detected", "false_taxa")
 BASES = "ACGT"
-COMPLEMENT = str.maketrans("ACGTN", "TGCAN")
+# minimap2's secondary alignments kept a read; a species' rRNA records are in the references one per 99% type (its
+# copies of an rDNA array, its 18S records and its units' 18S alike), so that a held-out species' own records do not
+# take them all (until 2026-11-06 a species of 51 records or more left its held-out reads no other hit)
+MAX_SECONDARY = 50
 
 
 def genus_of(ncbi, taxid):
@@ -124,10 +130,15 @@ def references(folder, out, ncbi, compare=None, inside=None):
                     taxa["Eukore exons"][name] = species_of[acc]
         rows = {r["record"]: r for r in benchmarks_rows(os.path.join(folder, "rrna", "records.tsv"))}
         path = os.path.join(folder, "rrna", "records.fna.gz")
+        typed = set()  # (species, 99% type): one record of each (MAX_SECONDARY)
         for name, seq in (odb_mod.read_fasta(path) if os.path.isfile(path) else ()):
             r = rows.get(name)
             if not r:
                 continue
+            if r.get("type", "-") != "-":
+                if (r["species_taxid"], r["type"]) in typed:
+                    continue
+                typed.add((r["species_taxid"], r["type"]))
             taxid = int(r["taxid"])
             for ref, fh in (("Eukore", whole), ("Eukore exons", cds)):
                 fh.write(f">{name}\n{seq}\n")
@@ -154,17 +165,7 @@ def references(folder, out, ncbi, compare=None, inside=None):
     return out_refs
 
 
-def benchmarks_rows(path):
-    """A package table's rows, streamed (benchmarks.rows_of)."""
-    from .benchmarks import rows_of  # noqa: PLC0415
-    return rows_of(path)
-
-
 # --- reads -------------------------------------------------------------------------------------------------------
-
-def revcomp(seq):
-    return seq.translate(COMPLEMENT)[::-1]
-
 
 def read_of(contig, pos, rng):
     """READ_LEN bases of contig from pos (0-based), ERROR substitutions, on a random strand; None at an end or in Ns."""
@@ -175,15 +176,16 @@ def read_of(contig, pos, rng):
     return revcomp(seq) if rng.random() < 0.5 else seq
 
 
-def marker_spans(folder, accession):
-    """A genome's BUSCO copies' and rRNA records' spans in its assembly -> [(contig, start, end)] (1-based)."""
-    spans = []
+def marker_spans(folder, accessions):
+    """Genomes' BUSCO copies' and rRNA records' spans in their assemblies -> {accession: [(contig, start, end)]}
+    (1-based), the tables read once for them all (until 2026-11-06 once a test genome: 3.7 million rows each)."""
+    wanted, spans = set(accessions), collections.defaultdict(list)
     for r in benchmarks_rows(os.path.join(folder, "busco", "copies.tsv")):
-        if r["accession"] == accession and r["start"].isdigit():
-            spans.append((r["contig"], int(r["start"]), int(r["end"])))
+        if r["accession"] in wanted and r["start"].isdigit():
+            spans[r["accession"]].append((r["contig"], int(r["start"]), int(r["end"])))
     for r in benchmarks_rows(os.path.join(folder, "rrna", "records.tsv")):
-        if r.get("accession") == accession and r.get("start", "-").isdigit():
-            spans.append((r["contig"], int(r["start"]), int(r["end"])))
+        if r.get("accession") in wanted and r.get("start", "-").isdigit():
+            spans[r["accession"]].append((r["contig"], int(r["start"]), int(r["end"])))
     return spans
 
 
@@ -203,17 +205,18 @@ def contig_lengths(path):
 
 
 def simulate(genome, spans, rng, n_genome=GENOME_READS):
-    """A genome's reads -> (marker reads [sequence], genome reads [sequence])."""
+    """A genome's reads -> (marker reads [sequence], genome reads [sequence], in random order: detection's samples are
+    their first reads, until 2026-11-06 those of the first contigs in the file)."""
     lengths = contig_lengths(genome)
-    total = sum(n for _c, n in lengths)
+    ends, total = [], 0  # each contig's end in the genome joined (a pick by bisect: a genome of a million contigs)
+    for _c, n in lengths:
+        total += n
+        ends.append(total)
     picks = collections.defaultdict(list)
     for _ in range(n_genome if total > READ_LEN else 0):
         x = rng.randrange(total)
-        for name, n in lengths:
-            if x < n:
-                picks[name].append(x)
-                break
-            x -= n
+        k = bisect.bisect_right(ends, x)
+        picks[lengths[k][0]].append(x - (ends[k] - lengths[k][1]))
     by_contig = collections.defaultdict(list)
     for contig, start, end in spans:
         by_contig[contig].append((start, end))
@@ -241,6 +244,7 @@ def simulate(genome, spans, rng, n_genome=GENOME_READS):
                 parts.append(line.strip())
         if name in by_contig or name in picks:
             take(name, "".join(parts))
+    rng.shuffle(anywhere)
     return marker, anywhere
 
 
@@ -390,10 +394,11 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
     reads_fa = os.path.join(work, "reads.fa")
     meta = {}  # test -> (kind, species taxid)
     counts = collections.Counter()  # (test, reads) -> reads simulated
+    spans = marker_spans(folder, tests)
     with open(reads_fa, "w") as fh:
         for acc in tests:
             sp = int(genomes[acc]["species_taxid"])
-            marker, anywhere = simulate(genome_file(genomes_folder, acc), marker_spans(folder, acc), rng, n_genome)
+            marker, anywhere = simulate(genome_file(genomes_folder, acc), spans.get(acc, []), rng, n_genome)
             meta[acc] = ("eukaryote", sp)
             for kind, reads in (("marker", marker), ("genome", anywhere)):
                 counts[(acc, kind)] = len(reads)
@@ -409,10 +414,18 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
     for ref, (fasta, taxa) in refs.items():
         if not taxa:
             continue
-        paf = os.path.join(work, "hits.paf")
-        with open(paf, "w") as out:
-            subprocess.run([minimap2, "-x", "sr", "-c", "--secondary=yes", "-N", "50", "-p", "0.5", "-t",
-                            str(max(1, threads)), fasta, reads_fa], stdout=out, stderr=subprocess.DEVNULL, check=True)
+        paf, err = os.path.join(work, "hits.paf"), os.path.join(work, "minimap2.err")
+        # --split-prefix: a reference over minimap2's index part (-I, 8 Gb: the full package's) is indexed in parts,
+        # and a read's hits of all parts merged, consecutive (paf_groups; until 2026-11-06 a read was counted once a
+        # part, its assignment the last part's)
+        with open(paf, "w") as out, open(err, "w") as eh:
+            run = subprocess.run([minimap2, "-x", "sr", "-c", "--secondary=yes", "-N", str(MAX_SECONDARY), "-p", "0.5",
+                                  "--split-prefix", os.path.join(work, "mm2split"), "-t", str(max(1, threads)), fasta,
+                                  reads_fa], stdout=out, stderr=eh)
+        if run.returncode:
+            with open(err) as eh:
+                raise RuntimeError(f"minimap2 failed (exit {run.returncode}) on {ref}: {eh.read().strip()[-300:]}")
+        os.remove(err)
         tally = collections.defaultdict(collections.Counter)
         placed = {mode: collections.defaultdict(dict) for mode in MODES}  # genome reads: {source: {index: taxon}}
         for read, hits in paf_groups(paf):

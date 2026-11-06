@@ -12,7 +12,7 @@ limits, masking, record cuts. Paths below are relative to the package folder, `E
 excluded, on the sequence as the package holds it, unless they are a contig's (1-based, inclusive).
 
 ## manifest.json
-`format` (4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, `0.1`), `built` (ISO time),
+`format` (4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, `0.12`), `built` (ISO time),
 `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
@@ -43,7 +43,7 @@ One row per NCBI species the package holds:
 | `loci` | BUSCO genes called in its genome |
 | `rrna_records` | its records in `rrna/records.tsv` |
 | `organelle_genes` | its records in `organelle/genes.tsv` |
-| `supergroup` | `Metazoa`, `Fungi`, `Viridiplantae`, `Rhodophyta`, `SAR`, `Discoba`, `Metamonada`, `Amoebozoa`, `Haptista`, `Cryptophyceae` (the first NCBI clade of these that holds it), else `other` |
+| `supergroup` | `Vertebrata`, `Metazoa` (the other animals), `Fungi`, `Viridiplantae`, `Rhodophyta`, `SAR`, `Discoba`, `Metamonada`, `Amoebozoa`, `Haptista`, `Cryptophyceae` (the first NCBI clade of these that holds it: `eukore/groups.py`), else `other eukaryotes` |
 | `ncbi_lineage` | NCBI's names at domain;kingdom;phylum;class;order;family;genus;species (a rank NCBI does not name empty) |
 | `pr2`, `pr2_match` | its lineage in PR2 (domain;supergroup;division;subdivision;class;order;family;genus;species, as PR2 writes it: `Saccharomyces_cerevisiae`), and how it was found (below) |
 | `eukaryome`, `eukaryome_match` | its lineage in EUKARYOME (superkingdom;kingdom;subkingdom;phylum;subphylum;class;order;family;genus;species: its classification table to the genus, its long reads' species) |
@@ -153,12 +153,12 @@ A copy failing a check is kept and flagged, so that a user chooses.
 | `taxid`, `species_taxid` | NCBI's |
 | `accession` | its genome (`-` for a published read without one) |
 | `source` | `genome`, `curated_unit`, `EUKARYOME`, `ROD` |
-| `regions` | `name:start-end,...` in order on the record: `18S`, `ITS1`, `5.8S`, `ITS2`, `28S`, and `5S` where a 5S lies in the same block (the unit as one stretch, on either strand: some protists' and fungi's repeats hold it); a region not found is absent |
+| `regions` | `name:start-end,...` in order on the record: `18S`, `ITS1`, `5.8S`, `ITS2`, `28S`, and `5S` where a 5S lies in the same block (the unit as one stretch, on either strand: some protists' and fungi's repeats hold it; a tandem array's spacer 5S is one unit's, the one whose 28S it follows); a region not found is absent. A published read's record is the read on its unit's strand (reverse-complemented where its unit lies on -), its regions on it |
 | `length` | of the record |
 | `lsu_complete` | `t` where barrnap's 28S hit covers its whole model |
 | `ambiguous`, `homopolymer` | the share of non-ACGT bases; the longest one-base run |
 | `type` | its 99% 18S type within the species (`1`, `2`, ...) |
-| `own_species` | `t`, `f`, or `-`: whether its nearest records of other sources agree with its NCBI lineage to the family or deeper (a genome's contaminant rDNA fails) |
+| `own_species` | `t`, `f`, or `-`: whether its nearest records of other sources agree with its NCBI lineage to the family or deeper (a genome's contaminant rDNA fails; a genome's copies searched as one per 99% type, so that its own do not fill the hits) |
 | `screen` | the part screen's flags: `-`, or `part:rank,...`, each a part (`18S`, `junction`, `28S 5'`, `28S 3'`) whose nearest records of other genomes are another clade's at that rank (`kingdom` .. `family`) |
 | `label_from` | how its taxid was found: `assembly`, `rod_taxid`, `eukaryome_name`, `eukaryome_genus` |
 | `contig`, `start`, `end`, `strand` | a genome's record: where it lies in the assembly (1-based, inclusive; the 18S span's, or the unit's from its first region to its last); `-` for a published read |
@@ -211,7 +211,7 @@ why. A reader needs none of them.
 
 | file | one row per |
 |---|---|
-| `completeness.tsv` | species' genome: its BUSCOs Single, Duplicated, Fragmented, Missing, `complete` (Single and Duplicated over the BUSCOs called), its copies' confidence tiers, its assembly's level, size and contigs, its rRNA counts |
+| `completeness.tsv` | species' genome: its BUSCOs Single, Duplicated, Fragmented, Missing, `complete` (Single and Duplicated over the BUSCOs searched, Missing included; species without an assembly left out), its copies' confidence tiers, its assembly's level, size and contigs, its rRNA counts |
 | `orthodb.tsv` | BUSCO of a species BUSCO's dataset holds a protein of: Eukore's `status`; `recall` and `precision`, the shares of OrthoDB's protein's 5-mers in the call's translation and the reverse; `guided` (`t` where the call's query was that species' own protein); `verdict`: `concordant` (both 0.9 or more), `similar` (both 0.5 or more), `discordant`, `missed`; `held_out_status`, `held_out_query`, `held_out_recall`, `held_out_precision`, `held_out_verdict`: the same for the species' BUSCOs called again without its own proteins (`-` where the build made no such calls); `held_out_place` (`same`: on the package call's contig and overlapping it, `elsewhere`, or `-` where either is not called or the held-out calls predate their places) and `held_out_span` (the two spans' intersection over union); `held_out_rescued` (`t` where the rescue pass made the held-out call) |
 | `resolution.tsv` | marker (a BUSCO; `BUSCO (all)`; `18S`, each species' best record's) and `shared_rank` (the rank a copy shares with its nearest copy of another species: `genus` .. `phylum`, `none`; `all`; `unmatched`: none 70% identical): `copies`, those `under_97` and `under_99` identical, the identity's quantiles (`q05` .. `q95`) |
 | `rrna.tsv` | rRNA source and kind: records, median length, records holding each region, a whole 28S, an 18S intron, each confidence tier |

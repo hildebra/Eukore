@@ -22,7 +22,6 @@ The references:
 """
 
 import collections
-import gzip
 import json
 import os
 import re
@@ -73,6 +72,19 @@ def is_genus_name(name):
         and name[:1].isupper() and " " not in name.strip()
 
 
+# the kingdoms a genus name can be a homonym across, by the names the references and NCBI give them
+KINGDOMS = {"metazoa": "animals", "fungi": "fungi", "viridiplantae": "plants", "streptophyta": "plants",
+            "chlorophyta": "plants"}
+
+
+def other_kingdom(lineage, ncbi_names):
+    """Whether a reference's lineage is of another kingdom than the NCBI lineage's names (a genus homonym: an animal
+    genus the reference holds as a plant's alone; until 2026-11-06 matched as its genus)."""
+    theirs = {KINGDOMS[k] for k in (key(x) for x in lineage) if k in KINGDOMS}
+    mine = {KINGDOMS[k] for k in ncbi_names if k in KINGDOMS}
+    return bool(theirs and mine and not theirs & mine)
+
+
 class Reference:
     """A reference's lineages by species name and by genus name: {key: Counter(lineage tuple)}."""
 
@@ -107,7 +119,9 @@ class Reference:
         genus = ncbi.ranks(taxid).get("genus") or (sci.split() or [""])[0]
         found = self.genus.get(key(genus))
         if found:
-            return self.best(found, names), "genus"
+            lineage = self.best(found, names)
+            if not other_kingdom(lineage, names):
+                return lineage, "genus"
         return None, "-"
 
     def text(self, lineage):
@@ -189,22 +203,31 @@ def read_xlsx_rows(path):
 def read_eukaryome(classification_rows, long_reads=(), version="2.1", path=None):
     """EUKARYOME's classification table (rows: its header, then superkingdom .. genus[, the kingdom-specific genus]) and
     its long reads' labels [(id, "k__..;s__Genus_species")] -> Reference. A long read's species takes its genus's
-    lineage of the classification, else its own k__ to g__ (superkingdom, subkingdom and subphylum empty)."""
+    lineage of the classification (by its kingdom-specific name, Drosophila(Metazoa), where the table gives one; by the
+    plain name where only one lineage holds it: until 2026-11-06 a homonym's first row's), else its own k__ to g__
+    (superkingdom, subkingdom and subphylum empty)."""
     ref = Reference("EUKARYOME", version, EUKARYOME_RANKS, path, util.md5(path) if path else None)
     rows = list(classification_rows)
-    genus_lineage = {}
+    exact, by_key = {}, collections.defaultdict(list)
     for r in rows[1:]:
         names = list(r[:9]) + [""] * (9 - len(r[:9]))
         if names[8]:
             ref.add(names + [""])
-            genus_lineage.setdefault(key(names[8]), names)
+            if names not in by_key[key(names[8])]:
+                by_key[key(names[8])].append(names)
+            for raw in (names[8], r[9] if len(r) > 9 else ""):
+                if "(" in raw:  # a kingdom-specific name; a plain one only by by_key where it is not a homonym
+                    exact.setdefault(raw.strip().lower(), names)
     from .rrna import species_name  # noqa: PLC0415
     for _id, label in long_reads:
         parts = {p.split("__", 1)[0]: p.split("__", 1)[1] for p in label.split(";") if "__" in p}
         species = species_name(parts.get("g", ""), parts.get("s", "")).replace(" ", "_")  # s__ is the epithet
         if not is_species_name(species):
             continue
-        names = genus_lineage.get(key(parts.get("g", "")))
+        genus = parts.get("g", "")
+        names = exact.get(genus.strip().lower())
+        if names is None and len(by_key.get(key(genus), ())) == 1:
+            names = by_key[key(genus)][0]
         if names is None:
             names = ["", parts.get("k", ""), "", parts.get("p", ""), "", parts.get("c", ""), parts.get("o", ""),
                      parts.get("f", ""), parts.get("g", "")]

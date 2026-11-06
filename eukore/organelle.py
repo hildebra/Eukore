@@ -3,9 +3,9 @@ and its mitochondrial COX1, where NCBI has them.
 
 - RefSeq's organelle genomes (its release's mitochondrion and plastid GenBank files, REFSEQ_RELEASE): their annotated
   rRNA and COX1 features (rrna_gene, is_cox1), parsed once into WORK/organelle (refseq_genes). A species takes, of
-  each organelle, one record (choose): the one with the most of GENES, then its own taxid's (not a strain's or
-  subspecies'), then the longest. A gene annotated twice (a plastid's inverted repeat) is taken once, its first,
-  `copies` counting them.
+  each organelle, its records' genes (choose): those of the one with the most of GENES, then its own taxid's (not a
+  strain's or subspecies'), then the longest, and a gene it lacks from the next (a mitogenome in several
+  chromosomes). A gene annotated twice (a plastid's inverted repeat) is taken once, its first, `copies` counting them.
 - Else the species' own assembly (assembly_pass): the molecules NCBI's FASTA titles name an organelle (TITLE:
   mitochondrion, chloroplast, plastid, apicoplast). nhmmer finds each gene, queried with that gene of the NEAREST
   RefSeq species in NCBI's lineage (its exons joined); barrnap the rRNA nhmmer does not (--kingdom mito in animals'
@@ -30,6 +30,7 @@ RELEASE_FILE = re.compile(r"\b((mitochondrion|plastid)\.\d+\.genomic\.gbff\.gz)\
 KINDS = ("mitochondrion", "plastid")
 GENES = ("SSU", "LSU", "5S", "COX1")
 METAZOA = 33208
+NO_PLASTID = {METAZOA, 4751}  # animals, fungi
 TITLE = rrna.ORGANELLE_TITLE
 MAX_MOLECULE = 15_000_000  # an organelle molecule this long at most (Silene's mitochondrial chromosomes: ~11 Mb)
 NEAREST = 3                # RefSeq species whose gene is queried in an assembly's organelle
@@ -86,15 +87,15 @@ def release_files(src_dir):
 
 
 def gbff_records(path):
-    """A GenBank flat file -> dict(seqid (its VERSION), taxid, organelle (its source's /organelle), length, circular,
-    sequence, features [(key, [location's lines], [(qualifier, value)])]) for each record."""
+    """A GenBank flat file -> dict(seqid (its VERSION), taxid, length, circular, sequence, features [(key, [location's
+    lines], [(qualifier, value)])]) for each record (its organelle: the release file's, refseq_genes)."""
     rec = feat = qual = None
     section = None
     with util.open_text(path) as fh:
         for line in fh:
             if line.startswith("LOCUS"):
                 f = line.split()
-                rec = dict(seqid=f[1], taxid=None, organelle="", length=int(f[2]) if f[2].isdigit() else 0,
+                rec = dict(seqid=f[1], taxid=None, length=int(f[2]) if f[2].isdigit() else 0,
                            circular=" circular " in line, features=[], seq=[])
                 section = feat = qual = None
             elif rec is None:
@@ -107,8 +108,6 @@ def gbff_records(path):
                         for name, value in quals:
                             if name == "db_xref" and value.startswith("taxon:") and value[6:].isdigit():
                                 rec["taxid"] = int(value[6:])
-                            elif name == "organelle":
-                                rec["organelle"] = value
                         break
                 yield rec
                 rec = None
@@ -280,17 +279,24 @@ def refseq_genes(src_dir, work_folder, ncbi, log=print):
 
 
 def choose(rows, ncbi):
-    """RefSeq's gene rows -> {(species taxid, organelle): [the rows of its record]}: of each species' records of an
-    organelle, the one with the most genes, then its own taxid's, then the longest, then the first by accession."""
+    """RefSeq's gene rows -> {(species taxid, organelle): [its rows]}: of each species' records of an organelle, the one
+    with the most genes, then its own taxid's, then the longest, then the first by accession; a gene it lacks from the
+    next records in that order that hold it (a mitogenome in several chromosomes: lice's minicircles, Silene's; until
+    2026-11-06 one record's genes alone)."""
     records = collections.defaultdict(lambda: collections.defaultdict(list))
     for r in rows:
         sp = ncbi.species_of(int(r["taxid"]))
         records[(sp, r["organelle"])][r["seqid"]].append(r)
     out = {}
     for (sp, organelle), by_seqid in records.items():
-        best = min(by_seqid.items(), key=lambda kv: (-len(kv[1]), int(kv[1][0]["taxid"]) != sp,
-                                                     -int(kv[1][0]["record_length"]), kv[0]))
-        out[(sp, organelle)] = best[1]
+        ranked = sorted(by_seqid.items(), key=lambda kv: (-len(kv[1]), int(kv[1][0]["taxid"]) != sp,
+                                                          -int(kv[1][0]["record_length"]), kv[0]))
+        taken, held = [], set()
+        for _seqid, genes in ranked:
+            new = [r for r in genes if r["gene"] not in held]
+            taken += new
+            held |= {r["gene"] for r in new}
+        out[(sp, organelle)] = taken
     return out
 
 
@@ -359,12 +365,31 @@ def barrnap_genes(molecules, barrnap, kingdom, threads=1):
         organelle, seq = seqs[name]
         for model, found in by_model.items():
             gene = BARRNAP[kingdom].get(model)
-            for start, end, strand, partial in found if gene else ():
+            for start, end, strand, partial, _share in found if gene else ():
                 hits[(organelle, gene)].append(dict(gene=gene, organelle=organelle, seqid=name, start=start, end=end,
                                                     strand=strand, exons=1, partial=partial,
                                                     sequence=subsequence(seq, start, end, strand)))
     return {k: (min(v, key=lambda h: (h["partial"], h["start"] - h["end"], h["seqid"], h["start"])), len(v))
             for k, v in hits.items()}
+
+
+def collinear(best, hits, gap=MAX_GENE):
+    """The best hit's chain among hits of its molecule, query and strand: further along the query is further along the
+    gene's strand, each within gap of the last. A hit out of that order is left out (until 2026-11-06 every hit within
+    MAX_GENE was joined: a mitochondrion opened inside COX1 shipped whole as its "COX1"; a concatemer's next copy)."""
+    sign = 1 if best["strand"] == "+" else -1
+    chain = [best]
+    for step in (1, -1):  # toward the query's end, then toward its start
+        cur = best
+        for h in sorted(hits, key=lambda h: step * sign * h["start"]):
+            if any(h is c for c in chain):
+                continue
+            along = step * sign * (h["start"] - cur["start"]) > 0 and step * sign * (h["end"] - cur["end"]) > 0
+            later = step * (h["q1"] - cur["q1"]) > 0 and step * (h["q2"] - cur["q2"]) > 0
+            if along and later and h["start"] <= cur["end"] + gap and h["end"] >= cur["start"] - gap:
+                chain.append(h)
+                cur = h
+    return chain
 
 
 def nhmmer_genes(molecules, queries, nhmmer, threads=1):
@@ -399,9 +424,8 @@ def nhmmer_genes(molecules, queries, nhmmer, threads=1):
     out = {}
     for gene, gene_hits in by_gene.items():
         best = max(gene_hits, key=lambda h: (h["score"], h["target"], -h["start"]))
-        same = [h for h in gene_hits if (h["target"], h["query"], h["strand"]) ==
-                (best["target"], best["query"], best["strand"])
-                and h["start"] <= best["end"] + MAX_GENE and h["end"] >= best["start"] - MAX_GENE]
+        same = collinear(best, [h for h in gene_hits if (h["target"], h["query"], h["strand"]) ==
+                                (best["target"], best["query"], best["strand"])])
         q_len = q_lens[best["query"]]
         covered = set()
         for h in same:
@@ -433,6 +457,8 @@ def run_assembly(args):
         molecules = organelle_molecules(path)
         rows = []
         for organelle, kingdom in (("mitochondrion", "mito" if animal else "bac"), ("plastid", "bac")):
+            if organelle not in queries:  # RefSeq's record taken, or none to hold
+                continue
             group = [m for m in molecules if m[1] == organelle]
             found = nhmmer_genes(group, queries.get(organelle, []), nhmmer, threads)
             for (_k, gene), (row, copies) in barrnap_genes(group, barrnap, kingdom, threads).items():
@@ -450,18 +476,27 @@ def run_assembly(args):
     return acc, len(rows), None
 
 
+def organelles_of(ncbi, taxid):
+    """The organelles a species can hold: no plastid in an animal or a fungus."""
+    lineage = set(ncbi.ancestors(ncbi.merged.get(taxid, taxid)))
+    return ("mitochondrion",) if lineage & NO_PLASTID else KINDS
+
+
 def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer, workers=1, threads=1, log=print):
-    """The organelle genes of each species' assembly where RefSeq has neither of its organelles' records (chosen), its
-    genome on disk (genome_of(accession) -> path) and not done yet -> how many were run, failed."""
+    """The organelle genes of each species' assembly where RefSeq has not every organelle's record it can hold
+    (chosen; organelles_of: until 2026-11-06 every animal and fungus was searched for a plastid, ~10,000 genomes), its
+    genome on disk (genome_of(accession) -> path) and not done yet -> how many were run, failed. Only the organelles
+    RefSeq lacks are searched."""
     nearest = Nearest(chosen, ncbi)
     todo = []
     for acc, job in sorted(job_map.items()):
         sp = int(job["species_taxid"])
         out = assembly_file(work_folder, acc)
         path = genome_of(acc)
-        if job.get("path") or all((sp, k) in chosen for k in KINDS) or os.path.isfile(out) or not os.path.isfile(path):
+        need = [k for k in organelles_of(ncbi, sp) if (sp, k) not in chosen]
+        if job.get("path") or not need or os.path.isfile(out) or not os.path.isfile(path):
             continue
-        todo.append((acc, path, out, is_animal(ncbi, sp), {k: nearest.queries(sp, k) for k in KINDS}, barrnap,
+        todo.append((acc, path, out, is_animal(ncbi, sp), {k: nearest.queries(sp, k) for k in need}, barrnap,
                      nhmmer, threads))
     if not todo:
         return 0, 0

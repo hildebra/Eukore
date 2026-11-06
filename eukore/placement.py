@@ -36,13 +36,17 @@ CHUNK_BASES = 4_000_000_000  # a genome over this many bases (gzipped: its file 
 GZIP_BYTES_PER_BASE = 0.3
 
 
+def genome_bases(path):
+    """A genome's bases, estimated from its file's size (GZIP_BYTES_PER_BASE for a gzipped one)."""
+    return os.path.getsize(path) / (GZIP_BYTES_PER_BASE if path.endswith(".gz") else 1)
+
+
 def chunks(genome_path, folder, max_bases=None):
     """A genome as miniprot takes it: itself, or where it is over max_bases (CHUNK_BASES: a 3 Gb genome's index takes
     ~22 GB, a lungfish's 40 Gb ~300) its contigs in pieces of max_bases at most, plain FASTA in folder (a contig longer
     than that alone in its own) -> [paths]."""
     max_bases = max_bases or CHUNK_BASES
-    size = os.path.getsize(genome_path) / (GZIP_BYTES_PER_BASE if genome_path.endswith(".gz") else 1)
-    if size <= max_bases:
+    if genome_bases(genome_path) <= max_bases:
         return [genome_path]
     paths, out, held = [], None, 0
     with (gzip.open(genome_path, "rt") if genome_path.endswith(".gz") else open(genome_path)) as fh:

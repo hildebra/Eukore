@@ -31,7 +31,8 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
    (`data/model_species.tsv`) takes its reference assembly. NCBI's placeholder species and interspecies hybrids
    ("A x B") are left out.
 2. **The calls** (`eukore/odb.py`, `eukore/loci.py`).
-   - miniprot aligns, per locus, the proteins of the 30 dataset species nearest to the genome in NCBI's taxonomy and
+   - miniprot aligns, per locus, the 30 dataset proteins of the species nearest to the genome in NCBI's taxonomy (a
+     species with paralogues gives several, so ~15-30 species) and
      BUSCO's ancestral variants, with the genome's genetic code (NCBI's: ciliates and diplomonads read TAA and TAG as
      glutamine).
    - An alignment needs identity 0.2 and coverage 0.4 of its protein. The overlapping ones form one region.

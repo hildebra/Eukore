@@ -95,12 +95,8 @@ def _tsv(path, columns, rows):
 def done_table(work, accession, name):
     """A done genome's table (WORK/done/<accession>/<name>, header first) -> [row dicts]."""
     from .genomes import done_dir  # noqa: PLC0415
-    path = os.path.join(done_dir(work, accession), name)
-    if not os.path.isfile(path):
-        return []
-    with open(path) as fh:
-        head = fh.readline().rstrip("\n").split("\t")
-        return [dict(zip(head, line.rstrip("\n").split("\t"))) for line in fh if line.strip()]
+    folder = done_dir(work, accession)
+    return read_table(folder, name) if os.path.isfile(os.path.join(folder, name)) else []
 
 
 def done_copies(work, accession):
@@ -121,9 +117,12 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1):
     checks across species (qc.check)."""
     by_accession = {r["accession"]: r for r in assemblies}
     genomes, copies, features, copy_rows = {}, {}, [], []
+    from .genomes import is_done  # noqa: PLC0415
     for acc, job in sorted(job_map.items()):
         got = done_copies(work, acc)
-        if not got:
+        # a done genome without a BUSCO called (a divergent protist) is still the species' genome: its rRNA and
+        # organelle records name it (until 2026-11-06 it was left out of genomes.tsv, their accession dangling)
+        if not got and not is_done(work, acc):
             continue
         row = by_accession.get(acc, {})
         genomes[acc] = dict(accession=acc, fetched=job.get("fetch", acc), species_taxid=job["species_taxid"],
@@ -317,7 +316,14 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
         manifest["benchmarks"] = measured
     with open(os.path.join(part, MANIFEST), "w", newline="\n") as fh:
         json.dump(manifest, fh, indent=1)
+    return put_in_place(part, out)
+
+
+def put_in_place(part, out):
+    """A finished package folder (part) renamed to out, an earlier package there moved aside first and deleted after
+    -> out. A killed run's <out>.old is deleted first (until 2026-11-06 the rename onto it failed, after hours)."""
     old = out + ".old"
+    shutil.rmtree(old, ignore_errors=True)
     if os.path.isdir(out):
         os.replace(out, old)
     os.replace(part, out)

@@ -56,33 +56,37 @@ def lineage_of(ncbi, taxid):
 
 
 def clade(lineage, rank):
-    """A lineage's clade at rank (0 the kingdom .. 4 the family), or None where it names none there."""
-    if any(not lineage[i] for i in range(rank + 1)):
+    """A lineage's clade at rank (0 the kingdom .. 4 the family): the names it holds down to there, or None where it
+    names none at that rank (until 2026-11-06 also where a rank above was empty: a protist without an NCBI phylum was
+    tested at its kingdom alone)."""
+    if not lineage[rank]:
         return None
-    return tuple(lineage[:rank + 1])
+    return tuple(x for x in lineage[:rank + 1] if x)
 
 
 def agrees_to(a, b):
-    """The deepest rank at which two lineages name the same clade; -1 where none."""
+    """The deepest rank at which two lineages name the same clade; -1 where none (ranks a names none at skipped)."""
     depth = -1
     for rank in range(len(RANKS)):
         k = clade(a, rank)
-        if k is None or k != clade(b, rank):
+        if k is None:
+            continue
+        if k != clade(b, rank):
             break
         depth = rank
     return depth
 
 
-def search(queries, db_seqs, vsearch, threads, tmp):
-    """vsearch --usearch_global -> {query: [(identity, target)]}."""
+def search(queries, db_seqs, vsearch, threads, tmp, ident=SCREEN_ID, accepts=SCREEN_ACCEPTS, rejects=SCREEN_REJECTS):
+    """vsearch --usearch_global -> {query: [(identity, target)]}, self hits left out."""
     if not queries or not db_seqs:
         return {}
     q, db, out = (os.path.join(tmp, f) for f in ("screen_q.fna", "screen_db.fna", "screen_hits.tsv"))
     for path, seqs in ((q, queries), (db, db_seqs)):
         with open(path, "w") as fh:
-            fh.writelines(f">{n}\n{s}\n" for n, s in seqs.items())
-    subprocess.run([vsearch, "--usearch_global", q, "--db", db, "--id", str(SCREEN_ID), "--iddef", "2",
-                    "--maxaccepts", str(SCREEN_ACCEPTS), "--maxrejects", str(SCREEN_REJECTS), "--userout", out,
+            fh.writelines(f">{n}\n{s}\n" for n, s in seqs.items() if s)
+    subprocess.run([vsearch, "--usearch_global", q, "--db", db, "--id", str(ident), "--iddef", "2",
+                    "--maxaccepts", str(accepts), "--maxrejects", str(rejects), "--userout", out,
                     "--userfields", "query+target+id", "--threads", str(max(1, threads)), "--quiet"], check=True)
     hits = collections.defaultdict(list)
     with open(out) as fh:
@@ -112,9 +116,28 @@ def genome_of(name, row):
     return acc if acc != "-" else name
 
 
+def representatives(seqs, owner):
+    """Each owner's sequences ({name: sequence}; owner: {name: its genome}) in 99% types (rrna.types_of) -> {the type's
+    first name: [the names of its type]}. A genome's near-identical copies (an rDNA array: ~400 in a T2T human, its 18S
+    once as an 18S record and once in its rDNA record) are searched once: until 2026-11-06 they filled vsearch's
+    first hits, which were then dropped as the genome's own, and the screen and the own-species check found nothing."""
+    from .rrna import types_of  # noqa: PLC0415 (rrna imports this module's users)
+    by_owner = collections.defaultdict(list)
+    for name in sorted(seqs):
+        by_owner[owner[name]].append(name)
+    out = {}
+    for names in by_owner.values():
+        types = types_of([seqs[k] for k in names]) if len(names) > 1 else {seqs[names[0]]: 1}
+        first = {}
+        for k in names:
+            rep = first.setdefault(types[seqs[k]], k)
+            out.setdefault(rep, []).append(k)
+    return out
+
+
 def screen(records, ncbi, vsearch, threads=1):
     """records [(name, sequence, row)] (row: regions_list, accession, taxid or species_taxid) -> ({name: screen text},
-    counts)."""
+    counts). A genome's copies of a part are screened as one per 99% type (representatives), its verdict theirs."""
     if not vsearch or not records:
         return {}, collections.Counter()
     lineage = {n: lineage_of(ncbi, r.get("taxid") or r["species_taxid"]) for n, _s, r in records}
@@ -124,7 +147,9 @@ def screen(records, ncbi, vsearch, threads=1):
     n = collections.Counter()
     with tempfile.TemporaryDirectory() as tmp:
         for part in PARTS:
-            seqs = {k: p[part] for k, p in parts.items() if part in p}
+            every = {k: p[part] for k, p in parts.items() if part in p}
+            reps = representatives(every, genome)
+            seqs = {k: every[k] for k in reps}
             if len(seqs) < 2:
                 continue
             members = [collections.defaultdict(set) for _ in RANKS]
@@ -178,7 +203,8 @@ def screen(records, ncbi, vsearch, threads=1):
                 theirs = own_best(matched, rank, mkey, hits.get(matched, []) + more[(rank, matched)],
                                   (genome[k],)) if mkey is not None else 0.0
                 verdict = verdict_of(depth, top, own, theirs)
-                n[f"{part}: {verdict.split(':')[0]}"] += 1
+                n[f"{part}: {verdict.split(':')[0]}"] += len(reps[k])
                 if verdict == "flagged":
-                    flags[k].append(f"{part}:{RANKS[rank]}")
+                    for member in reps[k]:
+                        flags[member].append(f"{part}:{RANKS[rank]}")
     return {k: ",".join(v) for k, v in flags.items()}, n

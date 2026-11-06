@@ -22,7 +22,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukore import ncbi as ncbi_mod, sources  # noqa: E402
+from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, sources  # noqa: E402
 
 LOCUS_RE = re.compile(r"-(\d+at\d+)-S\d+$")
 
@@ -35,8 +35,10 @@ def main(argv=None):
     p.add_argument("--out", default=os.path.join(sources.DATA, "no_assembly.fna.gz"))
     opts = p.parse_args(argv)
     ncbi = ncbi_mod.Ncbi(opts.taxdump)
-    have = {ncbi.species_of(r["species_taxid"])
-            for r in sources.read_assemblies(sorted(glob.glob(os.path.join(opts.assemblies, "*.txt"))))}
+    # the species the build takes an assembly of (genomes.representatives: an excluded one is none; until 2026-11-06
+    # any assembly counted, and a species whose only one is flagged got neither a genome nor these records)
+    have = set(genomes.representatives(
+        sources.read_assemblies(sorted(glob.glob(os.path.join(opts.assemblies, "genbank_*.txt")))), ncbi))
     owner = {}
     with open(os.path.join(opts.eukdetect2, "busco_taxid_genome_link.txt")) as fh:
         for line in fh:
@@ -45,20 +47,16 @@ def main(argv=None):
                 owner[f[0]] = ncbi.species_of(int(f[1]))
     wanted = {r: sp for r, sp in owner.items() if sp not in have and ncbi.rank.get(sp) == "species"}
     n, species = 0, collections.Counter()
-    with open(os.path.join(opts.eukdetect2, "eukdb.fasta")) as fh, \
-            gzip.open(opts.out + ".part", "wt", compresslevel=9) as out:
-        keep = None
-        for line in fh:
-            if line.startswith(">"):
-                keep = line[1:].split()[0]
-                keep = keep if keep in wanted else None
-            elif keep:
-                sp = wanted[keep]
-                organism = re.sub(r"\s+", "_", ncbi.name.get(sp, str(sp)))
-                out.write(f">{sp}|{organism}|{keep}\n{line.strip().upper()}\n")
-                n += 1
-                species[sp] += 1
-                keep = None
+    with gzip.open(opts.out + ".part", "wt", compresslevel=9) as out:
+        # every line of a record (until 2026-11-06 its first alone: a wrapped FASTA's records cut)
+        for name, seq in odb_mod.read_fasta(os.path.join(opts.eukdetect2, "eukdb.fasta")):
+            if name not in wanted:
+                continue
+            sp = wanted[name]
+            organism = re.sub(r"\s+", "_", ncbi.name.get(sp, str(sp)))
+            out.write(f">{sp}|{organism}|{name}\n{seq.upper()}\n")
+            n += 1
+            species[sp] += 1
     os.replace(opts.out + ".part", opts.out)
     print(f"{opts.out}: {n} records of {len(species)} species: "
           f"{', '.join(sorted(ncbi.name.get(s, str(s)) for s in species))}")

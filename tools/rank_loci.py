@@ -7,7 +7,7 @@ columns come from it.
     python3 tools/rank_loci.py --odb WORK/sources/eukaryota_odb12 --taxdump WORK/sources/taxdump.tar.gz \\
         [--eukdetect2 DIR] [--panel DIR ...] --out ranking.tsv
 
-- presence: of the dataset's 456 species (OrthoDB 12.1), the share in each supergroup (SUPERGROUPS, by NCBI taxid)
+- presence: of the dataset's 456 species (OrthoDB 12.1), the share in each supergroup (groups.GROUPS, by NCBI taxid)
   with a protein of the BUSCO (refseq_db.faa.gz); `min_presence` the weakest supergroup's (those of 5 species or
   more), `presence` all species'.
 - conservation: each dataset protein's hmmsearch score against the BUSCO's own HMM, in bits per residue; the median
@@ -44,12 +44,8 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukore import ncbi as ncbi_mod, odb as odb_mod  # noqa: E402
+from eukore import groups, ncbi as ncbi_mod, odb as odb_mod  # noqa: E402
 
-SUPERGROUPS = [  # (name, NCBI taxid), the first that holds a species
-    ("Metazoa", 33208), ("Fungi", 4751), ("Viridiplantae", 33090), ("Rhodophyta", 2763), ("SAR", 2698737),
-    ("Discoba", 2611352), ("Metamonada", 2611341), ("Amoebozoa", 554915), ("Haptista", 2608109),
-    ("Cryptophyceae", 3027)]
 MIN_GROUP = 5
 MIN_PANEL = 3      # a supergroup of the eukaryote panel counts with this many genomes
 BROKEN_SHARE = 1 / 3  # a panel genome with fewer complete calls than this share of its supergroup's median: a
@@ -60,8 +56,9 @@ LOCUS_RE = re.compile(r"-(\d+at\d+)-S\d+$")
 
 
 def supergroup(ncbi, taxid):
-    anc = set(ncbi.ancestors(ncbi.merged.get(taxid, taxid)))
-    return next((name for name, t in SUPERGROUPS if t in anc), "other")
+    """groups.group_of: the package's supergroups (until 2026-11-06 rank_loci's own, without Vertebrata: its
+    presence_ columns did not meet the panel's call_ ones)."""
+    return groups.group_of(ncbi, taxid)
 
 
 def conservation(folder, loci, hmmsearch="hmmsearch", threads=4):
@@ -98,15 +95,10 @@ def eukdetect2_shares(folder, max_len=8000):
                 record_of[f[0]] = (f[2], m.group(1))
                 group_of[f[2]] = "Fungi" if f[0].startswith("Fungi") else "Protist"
     longest = collections.defaultdict(dict)
-    with open(os.path.join(folder, "eukdb.fasta")) as fh:
-        keep = None
-        for line in fh:
-            if line.startswith(">"):
-                keep = record_of.get(line[1:].split()[0])
-            elif keep:
-                g, locus = keep
-                longest[g][locus] = max(len(line.strip()), longest[g].get(locus, -1))
-                keep = None
+    for name, seq in odb_mod.read_fasta(os.path.join(folder, "eukdb.fasta")):  # a wrapped FASTA's records whole
+        if name in record_of:
+            g, locus = record_of[name]
+            longest[g][locus] = max(len(seq), longest[g].get(locus, -1))
     n = collections.Counter(group_of[g] for g in longest)
     out = {}
     for locus in {l for d in longest.values() for l in d}:

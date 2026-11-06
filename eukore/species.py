@@ -48,21 +48,6 @@ def assembly_row(row):
                 rdna_unit=row.get("rdna_unit", "-"))
 
 
-def window(exons, max_span):
-    """Of a gene's exons [(start, end)] in genome order, the run with the most coding bases whose span (the first's start
-    to the last's end) is max_span bases or fewer -> that run (all of them where the gene fits)."""
-    best, best_bases = exons[:1], 0
-    for i in range(len(exons)):
-        bases = 0
-        for j in range(i, len(exons)):
-            if exons[j][1] - exons[i][0] + 1 > max_span:
-                break
-            bases += exons[j][1] - exons[j][0] + 1
-            if bases > best_bases:
-                best, best_bases = exons[i:j + 1], bases
-    return best
-
-
 def unit_fasta(accession, out, units=UNITS):
     """A curated rDNA unit of model_rdna_units.fna.gz written as FASTA into `out` -> out, or None where it has none."""
     name = None

@@ -39,15 +39,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
 from eukore import annotation, benchmarks, labels, organelle as organelle_mod, quality  # noqa: E402
-from eukore import reads as reads_mod  # noqa: E402
+from eukore import placement, reads as reads_mod  # noqa: E402
 from eukore import __version__  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
 NO_ASSEMBLY = os.path.join(sources.DATA, "no_assembly.fna.gz")
 PUBLISHED_BATCH = 250  # published reads a barrnap + ITSx run
 # the published reads' regions, kept in WORK/published: a new name where their borders change (2: ITSx's guessed 5.8S
-# borders no longer taken, 2026-11-06), so that a rerun annotates them again
-PUBLISHED_REGIONS = "regions.2.tsv"
+# borders no longer taken, 2026-11-06; 3: regions on the record, not the unit, and the read's strand, 2026-11-06), so
+# that a rerun annotates them again
+PUBLISHED_REGIONS = "regions.3.tsv"
 READ_BACKGROUND = os.path.join(sources.DATA, "read_background.tsv")  # the read benchmark's bacteria and archaea
 
 
@@ -73,11 +74,19 @@ def fetch_sources(src_dir, groups, ksgp_tax=None):
     odb_mod.fetch(src_dir, sources.download, say)
     for name in ("EUKARYOME", "ROD"):
         sources.fetch(src_dir, name, sources.download, shutil.which("7za") or shutil.which("7z") or "7za", say)
-    organelle_mod.fetch(src_dir, sources.download, say)
-    quality.fetch(src_dir, sources.download, say)
-    labels.fetch(src_dir, sources.download, say, ksgp_tax)
-    if os.path.isfile(READ_BACKGROUND):
-        reads_mod.fetch_background(READ_BACKGROUND, os.path.join(src_dir, "read_background"), say)
+    # the optional sources each on its own: one that fails (a site moved, down) is said, the others still fetched
+    # (until 2026-11-06 one failure stopped the stage, NCBI's quality reports then missing from the genome ranking)
+    for what, fetch in (("RefSeq's organelle release", lambda: organelle_mod.fetch(src_dir, sources.download, say)),
+                        ("NCBI's FCS-GX and ANI reports", lambda: quality.fetch(src_dir, sources.download, say)),
+                        ("PR2's and KSGP's taxonomies", lambda: labels.fetch(src_dir, sources.download, say, ksgp_tax)),
+                        ("the read benchmark's background", lambda: reads_mod.fetch_background(
+                            READ_BACKGROUND, os.path.join(src_dir, "read_background"), say)
+                         if os.path.isfile(READ_BACKGROUND) else None)):
+        try:
+            fetch()
+        except OSError as e:
+            say(f"WARNING: {what} not fetched ({e}): the build goes on without it; a rerun of --stage fetch tries "
+                "again")
 
 
 def tables(src_dir, kind, groups):
@@ -107,6 +116,11 @@ def plan(opts, src_dir, ncbi):
     """The genome set -> (jobs, GenBank rows)."""
     assemblies = sources.read_assemblies(tables(src_dir, "genbank", opts.groups))
     refseq_rows = sources.read_assemblies(tables(src_dir, "refseq", opts.groups))
+    unknown = {r["species_taxid"] for r in assemblies} - set(ncbi.parent) - set(ncbi.merged)
+    if unknown:
+        say(f"WARNING: {len(unknown)} species of the assembly tables are not in the taxdump "
+            f"(e.g. {sorted(unknown)[:3]}; "
+            "a taxdump older than the tables?): left out (selection.tsv: not in the taxdump)")
     if quality.paths(src_dir):
         say(f"NCBI's FCS-GX and ANI reports: {quality.annotate(assemblies, refseq_rows, src_dir)} assemblies flagged")
     else:
@@ -121,12 +135,19 @@ def plan(opts, src_dir, ncbi):
 
 def loci_of(opts, src_dir):
     """The BUSCOs called: every one of the dataset (since 2026-11-05: the user picks among them, protal its euk30),
-    or --loci's."""
+    or --loci's: a build stops where none of them is the dataset's, and says which are not (until 2026-11-06 a file of
+    another dataset's ids gave a package of no BUSCOs)."""
     every = odb_mod.all_loci(odb_mod.folder_of(src_dir))
     if not opts.loci:
         return every
     with open(opts.loci) as fh:
         wanted = {line.split("\t")[0].strip() for line in fh if line.strip() and not line.startswith(("#", "locus"))}
+    unknown = sorted(wanted - set(every))
+    if len(unknown) == len(wanted):
+        sys.exit(f"--loci {opts.loci}: none of its {len(wanted)} BUSCOs is in {odb_mod.LINEAGE} (e.g. {unknown[:3]})")
+    if unknown and not getattr(opts, "loci_said", False):
+        say(f"WARNING: --loci: {len(unknown)} of its BUSCOs are not in {odb_mod.LINEAGE}, left out: {unknown[:5]}")
+        opts.loci_said = True
     return [locus for locus in every if locus in wanted]
 
 
@@ -152,6 +173,15 @@ def settings_of(opts, src_dir, ncbi, staged_only):
                                        threads=opts.threads_per_genome) if shutil.which("barrnap") else None)
 
 
+def run_one(item):
+    """genomes.run in a worker, any error the genome's failure (until 2026-11-06 an error genomes.run did not expect,
+    such as a FASTA header not UTF-8, stopped the pool and every other genome, on every rerun)."""
+    try:
+        return genomes.run(item)
+    except Exception as e:  # noqa: BLE001
+        return item[0]["accession"], None, f"{type(e).__name__}: {e}"
+
+
 def run_genomes(opts, job_map, settings):
     # a done genome of a BUSCO dataset species without its held-out calls (run before 2026-11-06) is run again where
     # its genome is still there: never fetched again for a benchmark, its OrthoDB benchmark then left without them
@@ -161,10 +191,12 @@ def run_genomes(opts, job_map, settings):
     say(f"genomes to run: {len(todo)} of {len(job_map)}" + ("" if settings["tiara"] else " (no tiara: windows not "
                                                                                           "classified)"))
     waiting, failed = [], []
+    for leftover in glob.glob(os.path.join(opts.work, "done", ".*.partial")):  # killed runs' (one build at a time)
+        shutil.rmtree(leftover, ignore_errors=True)
     # every --report_minutes: genomes left and the time left, by their sizes (a genome not fetched yet is no work)
     progress = util.Progress("genomes run", [j.get("size") or 0 for j, _s in todo], say, opts.report_minutes * 60)
     with multiprocessing.Pool(max(1, opts.jobs)) as pool:
-        for acc, _summary, why in pool.imap_unordered(genomes.run, todo):
+        for acc, _summary, why in pool.imap_unordered(run_one, todo):
             if why:
                 (waiting if why == "not fetched yet" else failed).append((acc, why))
             progress.step(job_map[acc].get("size") or 0, failed=bool(why) and why != "not fetched yet",
@@ -197,12 +229,7 @@ def published(opts, src_dir, ncbi):
     cache_dir = os.path.join(opts.work, "published")
     os.makedirs(cache_dir, exist_ok=True)
     cache = os.path.join(cache_dir, PUBLISHED_REGIONS)
-    known = {}
-    if os.path.isfile(cache):
-        with open(cache) as fh:
-            for line in fh:
-                name, regions, complete = line.rstrip("\n").split("\t")
-                known[name] = (regions, complete)
+    known = read_regions(cache)
     # by ITSx's profile sets, so that a batch's reads share theirs (an ITSx run per distinct set)
     todo = sorted(((n, s, rrna.itsx_groups(ncbi, t)) for n, s, t, *_ in reads if n not in known),
                   key=lambda r: (r[2], r[0]))
@@ -212,15 +239,17 @@ def published(opts, src_dir, ncbi):
         batches = [todo[i:i + PUBLISHED_BATCH] for i in range(0, len(todo), PUBLISHED_BATCH)]
         work = functools.partial(_annotate_batch, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"))
         with multiprocessing.Pool(max(1, opts.threads)) as pool, open(cache, "a", newline="\n") as fh:
+            if fh.tell() and not ends_in_newline(cache):  # a killed run's last line cut: the next starts anew
+                fh.write("\n")
             for got in pool.imap_unordered(work, batches):
-                for name, (regions, complete) in got.items():
-                    known[name] = (regions, complete)
-                    fh.write(f"{name}\t{regions}\t{complete}\n")
+                fh.writelines(f"{name}\t{regions}\t{complete}\t{strand}\n"
+                              for name, (regions, complete, strand) in got.items())
                 fh.flush()
+                known.update(got)
     for name, seq, taxid, source, how, accession in reads:
-        regions, complete = known.get(name, ("-", "f"))
-        regions_list = None if regions == "-" else [(p.rpartition(":")[0], int(p.rpartition(":")[2].split("-")[0]),
-                                                     int(p.rpartition(":")[2].split("-")[1])) for p in regions.split(",")]
+        regions, complete, strand = known.get(name, ("-", "f", "+"))
+        regions_list = rrna.parse_regions(regions)
+        seq = rrna.revcomp(seq) if strand == "-" else seq  # the record on its unit's strand, as its regions
         out.append((name, seq, dict(kind="rDNA" if regions_list else "18S", accession=accession, source=source,
                                     taxid=taxid, species_taxid=ncbi.species_of(taxid), regions_list=regions_list,
                                     lsu_complete=complete == "t", label_from=how)))
@@ -228,10 +257,30 @@ def published(opts, src_dir, ncbi):
 
 
 def _annotate_batch(batch, barrnap=None, itsx=None):
-    """[(name, sequence, ITSx's sets)] -> {name: (regions text, lsu_complete t/f)}."""
+    """[(name, sequence, ITSx's sets)] -> {name: (regions text, lsu_complete t/f, strand)}."""
     found = rrna.published_regions([(n, s) for n, s, _t in batch], barrnap, itsx, sets={n: t for n, _s, t in batch})
-    return {name: (rrna.regions_text(found[name][0]) if name in found else "-",
-                   "t" if name in found and found[name][1] else "f") for name, _s, _t in batch}
+    return {name: (rrna.regions_text(found[name][0]), "t" if found[name][1] else "f", found[name][3])
+            if name in found else ("-", "f", "+") for name, _s, _t in batch}
+
+
+def ends_in_newline(path):
+    with open(path, "rb") as fh:
+        fh.seek(-1, os.SEEK_END)
+        return fh.read(1) == b"\n"
+
+
+def read_regions(path):
+    """The published reads' regions cache -> {name: (regions text, lsu_complete t/f, strand)}; a line a killed run cut
+    (not 4 fields, or no line end) left out, so that its read is annotated again (until 2026-11-06 it stopped every
+    later run)."""
+    known = {}
+    if os.path.isfile(path):
+        with open(path) as fh:
+            for line in fh:
+                f = line.rstrip("\n").split("\t")
+                if line.endswith("\n") and len(f) == 4 and f[3] in ("+", "-"):
+                    known[f[0]] = (f[1], f[2], f[3])
+    return known
 
 
 def genome_rrna_records(opts, job_map, ncbi):
@@ -351,8 +400,12 @@ def at_a_time(work, items, n):
     """work(item) of each item, n at a time in threads (downloads: urllib and zlib let go of the GIL) -> their futures as
     they finish. A stop (Ctrl-C) drops those not started instead of waiting for them all."""
     pool = concurrent.futures.ThreadPoolExecutor(max(1, n))
+    util.STOP.clear()
     try:
         yield from concurrent.futures.as_completed([pool.submit(work, item) for item in items])
+    except BaseException:
+        util.STOP.set()  # the running downloads end at their next try, not begun again
+        raise
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
 
@@ -369,8 +422,9 @@ def main(argv=None):
                    help=f"NCBI's assembly groups whose species the package holds (default all: "
                         f"{','.join(sources.ASSEMBLY_GROUPS)}; e.g. fungi,protozoa first)")
     p.add_argument("--keep_gb", type=float, default=1000.0,
-                   help="the genomes kept in OUT/genomes once the package is written, GB (default 1000; the build may "
-                        "hold more while it works)")
+                   help="the genomes kept in OUT/genomes by the package stage, GB, cut back to it before the package "
+                        "is written (so that genomes.tsv says which are kept; default 1000; the build may hold more "
+                        "while it works)")
     p.add_argument("--loci", help="call only these BUSCOs (a file, one per line or a loci table's first column; "
                                   "default: every BUSCO of the dataset)")
     p.add_argument("--species", help="a partial build (a trial run): only the species inside these NCBI taxids' clades, "
@@ -437,7 +491,9 @@ def main(argv=None):
     wanted = opts.wanted = clades(opts.species)
     opts.inside = inside_of(ncbi, wanted)
     job_map, assemblies = plan(opts, src_dir, ncbi)
-    if opts.stage == "fetch":
+    # the genomes and their annotations fetched (--downloads at a time, through --scratch), by `all` too (until
+    # 2026-11-06 `all` left them to the process stage's workers, --scratch and --downloads unused)
+    if opts.stage in ("all", "fetch"):
         loci = loci_of(opts, src_dir)
         todo = [j for a, j in sorted(job_map.items()) if j["url"] and not j.get("path")
                 and not os.path.isfile(genomes.genome_file(opts.genomes, a))
@@ -458,6 +514,9 @@ def main(argv=None):
         how = {"scratch": opts.scratch, "checker": checker}
         if opts.scratch:
             os.makedirs(opts.scratch, exist_ok=True)
+        for leftover in glob.glob(os.path.join(opts.genomes, "*.part")) + (  # killed runs' downloads
+                glob.glob(os.path.join(opts.scratch, "*.part")) if opts.scratch else []):
+            os.remove(leftover)
 
         def fetch_genome(j):
             path, times = genomes.genome_file(opts.genomes, j["accession"]), collections.Counter()
@@ -491,7 +550,8 @@ def main(argv=None):
             except OSError as e:
                 progress.step(1, failed=True, note=f" ({e})")
         checker.shutdown()
-        return 0
+        if opts.stage == "fetch":
+            return 0
     if shutil.which("barrnap") and shutil.which("ITSx"):
         why = rrna.check_itsx(shutil.which("ITSx"))
         if why:  # a damaged ITSx_db gives silently wrong borders: stop before any work
@@ -511,9 +571,16 @@ def main(argv=None):
         waiting, failed = run_genomes(opts, job_map, settings)
         organelle_genes(opts, src_dir, job_map, ncbi)
         annotate_pass(opts, job_map, may_fetch=opts.stage == "all")
-        if waiting or failed:
-            say(f"{len(waiting)} genomes not fetched yet, {len(failed)} failed (e.g. {(waiting + failed)[:3]}): the "
-                "package waits for them (run again; --stage fetch first on a cluster)")
+        # a rerun mends a genome not fetched yet or a download that may come; not one NCBI no longer serves, nor a
+        # call that failed (it fails again): `all` packages without those (until 2026-11-06 it waited for them forever)
+        retry = waiting + [(a, w) for a, w in failed if w.startswith("fetch failed: ") and not placement.given_up(
+            {"status": "failed: " + w[len("fetch failed: "):]})]
+        if failed:
+            say(f"{len(failed)} genomes failed (e.g. {failed[:3]})")
+        if retry:
+            say(f"{len(waiting)} genomes not fetched yet, {len(retry) - len(waiting)} downloads to try again (e.g. "
+                f"{retry[:3]}): run again (--stage fetch first on a cluster), or --stage package to write the "
+                "package without them")
             return 0 if opts.stage == "process" else 1
     stages = []  # the package stage's steps and their seconds (benchmarks' stages.tsv)
     if opts.stage in ("all", "package") and opts.fcs_gx_db:
@@ -530,16 +597,25 @@ def main(argv=None):
                     say(f"  {i}/{len(todo)} screened ({failed} failed)")
     if opts.stage in ("all", "package"):
         vsearch = shutil.which("vsearch")
+        if not vsearch:
+            say("WARNING: no vsearch: no checks across species (own_species, same_as, the rRNA part screen), every "
+                "record's own_species undecided")
+        for leftover in glob.glob(os.path.join(opts.out, f".*.Eukore_{opts.version}.partial")):  # killed runs'
+            shutil.rmtree(leftover, ignore_errors=True)
         loci = loci_of(opts, src_dir)
         short = [a for a in job_map if genomes.is_done(opts.work, a) and not genomes.is_done(opts.work, a, loci)]
         if short:
             say(f"WARNING: {len(short)} genomes were not searched for all {len(loci)} BUSCOs called (a run before "
                 f"format 4, e.g. {short[:3]}): run --stage process again for them all")
+        undone = sorted(a for a in job_map if not genomes.is_done(opts.work, a))
+        if undone:
+            say(f"WARNING: {len(undone)} genomes of the plan are not done (e.g. {undone[:3]}): the package is written "
+                "without them (manifest: inputs.genomes_not_done)")
         with timed(stages, "BUSCO copies and their checks"):
             collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads)
         with timed(stages, "rRNA records and their checks"):
             records = genome_rrna_records(opts, job_map, ncbi) + published(opts, src_dir, ncbi)
-            records = rrna.finish(records, ncbi, vsearch, opts.threads)
+            records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say)
         with timed(stages, "organelle genes"):
             chosen = organelle_genes(opts, src_dir, job_map, ncbi)  # before the prune: the genomes searched while there
             held = {int(g["species_taxid"]) for g in collected["genomes"].values() if g["representative"] == "t"}
@@ -547,8 +623,9 @@ def main(argv=None):
                                               chosen, os.path.join(opts.work, "organelle"))
         inputs = {"odb": odb_mod.state_of(src_dir), "taxdump_md5": util.md5(os.path.join(src_dir, "taxdump.tar.gz")),
                   "sources": {n: sources.state_of(src_dir, n).get("version") for n in ("EUKARYOME", "ROD")},
-                  "assembly_tables": {os.path.basename(p): util.md5(p)
-                                      for p in sorted(glob.glob(os.path.join(src_dir, "ncbi_assemblies", "*.txt")))},
+                  "assembly_tables": {os.path.basename(p): util.md5(p) for p in sorted(
+                      tables(src_dir, "genbank", opts.groups) + tables(src_dir, "refseq", opts.groups))},
+                  "genomes_not_done": len(undone),
                   "groups": opts.groups, "no_assembly": util.md5(NO_ASSEMBLY) if os.path.isfile(NO_ASSEMBLY) else None,
                   "ncbi_quality": {os.path.basename(p): util.md5(p) for p in quality.paths(src_dir)},
                   "refseq_organelle": {os.path.basename(p): util.md5(p)

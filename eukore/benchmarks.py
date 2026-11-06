@@ -280,9 +280,12 @@ def resolution_rows(by_marker):
 
 def best_ssu(records):
     """Each species' best rRNA record for its 18S (records: records.tsv's rows) -> {record: (species, 18S start, end)}:
-    the most confident, then a genome's, then the longest 18S of SSU_MIN bases or more."""
+    the most confident, then a genome's, then the longest 18S of SSU_MIN bases or more. A record labelled by its genus
+    alone (EUKARYOME's) is no species' (until 2026-11-06 the genus was a "species", the nearest of its own)."""
     best = {}
     for r in records:
+        if r.get("label_from") == "eukaryome_genus":
+            continue
         if r["kind"] == "18S":
             span = (0, int(r["length"]))
         else:
@@ -641,12 +644,17 @@ def paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside
     if reads and reads.get("tests") and reads.get("minimap2"):
         from . import reads as reads_mod  # noqa: PLC0415
         detections = []
-        rows = reads_mod.run(folder, ncbi, reads["genomes_folder"], reads["tests"], reads["minimap2"], threads,
-                             reads["work"], compare, reads.get("background", ()), inside, log, detections=detections)
-        write(out, "reads.tsv", reads_mod.COLUMNS, rows)
-        write(out, "detection.tsv", reads_mod.DETECT_COLUMNS, detections)
-        summary["reads"] = read_summary(rows)
-        summary["detection"] = reads_mod.detection_summary(detections)
+        try:  # the last and largest benchmark: its failure (minimap2 out of memory) costs the others nothing
+            rows = reads_mod.run(folder, ncbi, reads["genomes_folder"], reads["tests"], reads["minimap2"], threads,
+                                 reads["work"], compare, reads.get("background", ()), inside, log,
+                                 detections=detections)
+            write(out, "reads.tsv", reads_mod.COLUMNS, rows)
+            write(out, "detection.tsv", reads_mod.DETECT_COLUMNS, detections)
+            summary["reads"] = read_summary(rows)
+            summary["detection"] = reads_mod.detection_summary(detections)
+        except Exception as e:  # noqa: BLE001 (until 2026-11-06 it took every benchmark with it)
+            log(f"WARNING: the read benchmark failed ({type(e).__name__}: {e}): the other benchmarks kept")
+            summary["left_out"]["reads"] = f"failed: {type(e).__name__}: {e}"
         shutil.rmtree(reads["work"], ignore_errors=True)
     else:
         summary["left_out"]["reads"] = "no test genomes or no minimap2 (eukore_build.py --read_genomes)"
@@ -698,7 +706,10 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
                r.get("flags", "-"))] += 1
         if acc in compared or search:
             calls[(acc, r["locus"])] = {k: r.get(k, "-") for k in ("status", "query", "contig", "start", "end")}
-    rows = completeness(genomes, species, statuses, tiers, len(loci))
+    # of genomes: a species without an assembly holds EukDetect2's records alone (until 2026-11-06 counted, its
+    # "missing" BUSCOs lowering small supergroups' medians)
+    rows = completeness({a: g for a, g in genomes.items() if g.get("source") != "no_assembly"}, species, statuses,
+                        tiers, len(loci))
     write(out, "completeness.tsv", COMPLETENESS_COLUMNS, rows)
     by_group = collections.defaultdict(list)
     for r in rows:

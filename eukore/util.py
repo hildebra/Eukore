@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""Eukore's small helpers (since 2026-11-05; copied here so that Eukore imports nothing from protal's scripts/):
-compressed files (zstd or gzip, as protal's scripts/compressed.py), a writer's temporary name, MD5s, downloads.
-
-open_write(path) writes zstd if the name ends in .zst, gzip if in .gz (a trailing .partial does not count), plain
-otherwise; open_read(path) reads a file by its first bytes (zstd, gzip or plain), as protal reads read files. zstd is
-Python 3.14's compression.zstd where there is one, else the zstd command through a pipe (in the protal-db-build
-environment and on Ubuntu: apt install zstd).
-
-usage: import compressed; with compressed.open_write("reads.fq.zst") as fh: fh.write(b"...")
+"""Eukore's small helpers (since 2026-11-05; copied here so that Eukore imports nothing from protal's scripts/): text
+files plain, gzipped or zstd-compressed (open_text; zstd by Python 3.14's compression.zstd where there is one, else the
+zstd command through a pipe), a writer's temporary name, MD5s, downloads, a long loop's progress.
 """
 
 import gzip
@@ -15,14 +9,6 @@ import shutil
 import subprocess
 
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
-SUFFIXES = {"zstd": ".zst", "gzip": ".gz"}
-LEVELS = {"zstd": 3, "gzip": 1}  # fast: the files are read once, by protal
-
-
-def compression_of(path):
-    """zstd, gzip or None by a file name (without a trailing .partial)."""
-    name = path[:-len(".partial")] if path.endswith(".partial") else path
-    return "zstd" if name.endswith(".zst") else "gzip" if name.endswith(".gz") else None
 
 
 def is_zstd(head):
@@ -45,89 +31,17 @@ def _zstd_command():
     return command
 
 
-class _Pipe:
-    """A binary file object over a zstd process: written to (compressing into a file) or read from (decompressing
-    one). close() waits for the process and raises OSError if it failed."""
-
-    def __init__(self, command, writing):
-        self.writing = writing
-        self.process = subprocess.Popen(command, stdin=subprocess.PIPE if writing else subprocess.DEVNULL,
-                                        stdout=None if writing else subprocess.PIPE, stderr=subprocess.PIPE)
-        self.stream = self.process.stdin if writing else self.process.stdout
-        self.command = command
-
-    def write(self, data):
-        return self.stream.write(data)
-
-    def read(self, size=-1):
-        return self.stream.read(size)
-
-    def readline(self, size=-1):
-        return self.stream.readline(size)
-
-    def __iter__(self):
-        return iter(self.stream)
-
-    def close(self):
-        if self.process is None:
-            return
-        process, self.process = self.process, None
-        if self.writing:
-            process.stdin.close()
-        else:
-            process.stdout.read()  # to the end, so that the process does not wait on a full pipe
-            process.stdout.close()
-        error = process.stderr.read().decode(errors="replace").strip()
-        process.stderr.close()
-        if process.wait() != 0:
-            raise OSError(f"{' '.join(self.command)} failed ({process.returncode}): {error[-300:]}")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, kind, value, traceback):
-        if kind is None:
-            self.close()
-        else:  # an exception already: the process ends without hiding it
-            try:
-                self.close()
-            except OSError:
-                pass
-
-
-def open_write(path, level=None):
-    """A binary file object writing `path`: zstd (.zst), gzip (.gz) or plain, by its name; level: the codec's
-    (default LEVELS)."""
-    kind = compression_of(path)
-    if kind is None:
-        return open(path, "wb")
-    level = LEVELS[kind] if level is None else level
-    if kind == "gzip":
-        return gzip.open(path, "wb", compresslevel=level)
+def read_zstd(path):
+    """A zstd file's decompressed content, as text (compression.zstd, else the zstd command: raises OSError where it
+    failed)."""
     zstd = _stdlib_zstd()
     if zstd is not None:
-        return zstd.open(path, "wb", level=level)
-    return _Pipe([_zstd_command(), "-q", "-f", f"-{level}", "-o", path], writing=True)
-
-
-def open_read(path):
-    """A binary file object reading `path` decompressed: zstd, gzip or plain, by its first bytes."""
-    with open(path, "rb") as fh:
-        head = fh.read(4)
-    if head[:2] == b"\x1f\x8b":
-        return gzip.open(path, "rb")
-    if is_zstd(head):
-        zstd = _stdlib_zstd()
-        if zstd is not None:
-            return zstd.open(path, "rb")
-        return _Pipe([_zstd_command(), "-dcq", path], writing=False)
-    return open(path, "rb")
-
-
-def read_text(path):
-    """The decompressed content of a file, as text."""
-    with open_read(path) as fh:
-        return fh.read().decode()
+        with zstd.open(path, "rb") as fh:
+            return fh.read().decode()
+    run = subprocess.run([_zstd_command(), "-dcq", path], capture_output=True)
+    if run.returncode:
+        raise OSError(f"zstd -dcq {path} failed ({run.returncode}): {run.stderr.decode(errors='replace')[-300:]}")
+    return run.stdout.decode()
 
 
 # --- Eukore's own helpers (since 2026-11-05; self-contained: nothing imported from protal's scripts/) ---------------
@@ -143,14 +57,19 @@ import urllib.request  # noqa: E402
 import http.client  # noqa: E402
 import zlib  # noqa: E402
 
+import threading  # noqa: E402
+
 USER_AGENT = "Eukore-build (https://protal.earlham.ac.uk)"
 ATTEMPTS = 5       # tries of a download before it is given up on
 RETRY_WAIT = 2.0   # seconds before the second try, doubled for each further one (or the server's Retry-After)
+# set on a stop (Ctrl-C: eukore_build.at_a_time): a download not tried again (until 2026-11-06 curl's SIGINT was a
+# transient failure, and a 15 GB genome began again while the stop waited for it)
+STOP = threading.Event()
 
 
 def part_of(path):
     """A writer's own temporary name for `path` (renamed into place once written): .<host>-<pid>.<name>.partial beside
-    it, whose compression open_write still tells by the name."""
+    it."""
     folder, name = os.path.split(path)
     return os.path.join(folder, f".{socket.gethostname()}-{os.getpid()}.{name}.partial")
 
@@ -171,7 +90,7 @@ def open_text(path):
     if head[:2] == b"\x1f\x8b":
         return gzip.open(path, "rt")
     if is_zstd(head):
-        return io.StringIO(read_text(path))
+        return io.StringIO(read_zstd(path))
     return open(path)
 
 
@@ -225,6 +144,9 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
     for attempt in range(attempts or ATTEMPTS):
         if attempt:
             time.sleep(max(RETRY_WAIT * 2 ** (attempt - 1), asked))
+        if STOP.is_set():
+            why = why or "stopped"
+            break
         asked = 0.0
         try:
             expected, started = None, time.monotonic()
@@ -298,7 +220,7 @@ class Progress:
 
     def __init__(self, what, weights, say, every=REPORT_EVERY, unit="Gb", scale=1e9, clock=time.time, early=()):
         known = sorted(w for w in weights if w)
-        typical = known[len(known) // 2] if known else 1
+        self.typical = typical = known[len(known) // 2] if known else 1
         self.weights = [w or typical for w in weights]
         self.what, self.say, self.every, self.unit, self.scale, self.clock = what, say, every, unit, scale, clock
         self.total = sum(self.weights)
@@ -309,7 +231,7 @@ class Progress:
     def step(self, weight, failed=False, skipped=False, note=""):
         """One item finished (weight: its own; skipped: no work done, e.g. a genome not fetched yet, its work out of
         the estimate); said when `every` seconds have passed since the last report, or at the end."""
-        weight = weight or (self.total / self.n if self.n else 0)
+        weight = weight or self.typical  # as the item weighed in the total (until 2026-11-06 the mean: drifting)
         self.done += 1
         self.failed += bool(failed)
         if skipped:

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """How often Eukore's caller finds each BUSCO across eukaryotes (since 2026-11-05): a panel of NCBI genomes, one per order
-in each supergroup (GROUPS) up to --per_group (orders spread over the supergroup's classes), each the order's
+in each supergroup (groups.GROUPS) up to --per_group (orders spread over the supergroup's classes), each the order's
 smallest representative genome (genomes.representatives) of --max_mb or fewer that carries no flag (NCBI's, a partial
 genome, small for its clade) and has MAX_CONTIGS_PER_MB or fewer contigs per Mb, in which every BUSCO of the dataset is called as a build calls
-it (loci.call with the 30 nearest species' proteins and the ancestral variants). BUSCO's own dataset holds few protists
+it (loci.call with the 30 proteins of the nearest species and the ancestral variants). BUSCO's own dataset holds few protists
 (22 SAR, 6 Discoba, 6 Amoebozoa species of 837), so its species list overstates how universal a BUSCO is outside
 animals, fungi and plants; this panel measures it in real genomes. tools/rank_loci.py --eukaryote_panel OUT reads it.
 
@@ -24,19 +24,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from eukore import genomes, loci, ncbi as ncbi_mod, odb as odb_mod, placement, sources, util  # noqa: E402
-
-GROUPS = [  # (name, NCBI taxid), the first that holds a species
-    ("Vertebrata", 7742), ("Metazoa", 33208), ("Fungi", 4751), ("Viridiplantae", 33090), ("Rhodophyta", 2763),
-    ("SAR", 2698737), ("Discoba", 2611352), ("Metamonada", 2611341), ("Amoebozoa", 554915), ("Haptista", 2608109),
-    ("Cryptophyceae", 3027)]
-
+from eukore.groups import group_of  # noqa: E402 (the supergroups, groups.GROUPS: the package's)
 
 MAX_CONTIGS_PER_MB = 100  # more: contigs of ~10 kb, whose genes are cut at their ends
-
-
-def group_of(ncbi, taxid):
-    anc = set(ncbi.ancestors(ncbi.merged.get(taxid, taxid)))
-    return next((name for name, t in GROUPS if t in anc), "other eukaryotes")
 
 
 def choose(ncbi, assemblies, per_group, max_mb):

@@ -120,15 +120,22 @@ class LociTest(unittest.TestCase):
         self.assertTrue(got["failed"].startswith("miniprot failed: out of memory"))
 
     def test_frameshifts_left_out_of_the_coding_sequence(self):
-        # miniprot's CIGAR: amino acids (M, D: 3 bases each), a protein insertion (I: none), introns (N, U, V: not
-        # coding), frameshifts (F, G: their bases, out of frame)
-        self.assertEqual(loci.frameshifts("3M1F2M35V4M2G1I1M"), [(9, 1), (28, 2)])
+        # miniprot's CIGAR: amino acids (M, D: 3 bases each), a protein insertion (I: none), a phase-0 intron (N: not
+        # coding), a phase-1 or 2 one (U, V: its split codon's 3 bases), frameshifts (F, G: their bases, out of frame)
+        self.assertEqual(loci.frameshifts("3M1F2M35V4M2G1I1M"), [(9, 1), (31, 2)])
+        self.assertEqual(loci.frameshifts("100M500U50M1F49M"), [(453, 1)])
+        self.assertEqual(loci.frameshifts("100M500N50M1F49M"), [(450, 1)])
         self.assertEqual(loci.in_frame("AAACCCGGGtTTTAAA", [(9, 1)]), "AAACCCGGGTTTAAA")
         self.assertEqual(loci.in_frame("ACGT", []), "ACGT")
         text = ("##PAF\t1at2759~q\t120\t0\t120\t+\tc1\t9000\t99\t500\t1\t1\t0\tAS:i:1\tcg:Z:3M1F37M\tcs:Z::1\n"
                 "##STA\tMAK\nc1\tminiprot\tmRNA\t100\t500\t9\t+\t.\tID=MP1;Identity=0.9;Target=1at2759~q 1 120\n"
                 "c1\tminiprot\tCDS\t100\t500\t9\t+\t0\tParent=MP1;Target=1at2759~q 1 120\n")
         self.assertEqual(loci.parse_alignments(text)[0]["shifts"], [(9, 1)])
+        # the stop codon miniprot writes apart from the CDS is the last exon's end, on either strand
+        self.assertEqual(loci.parse_alignments(text + "c1\tminiprot\tstop_codon\t501\t503\t9\t+\t0\tParent=MP1\n")[0]
+                         ["exons"], [(100, 503)])
+        rev = text.replace("\t+\t", "\t-\t") + "c1\tminiprot\tstop_codon\t97\t99\t9\t-\t0\tParent=MP1\n"
+        self.assertEqual(loci.parse_alignments(rev)[0]["exons"], [(97, 500)])
         # on the copy: a frameshift's two bases across an intron (exons 0-10 and 20-40), the copy's coding sequence
         # (qc.spliced, the package's) the same as the call's
         copy = "".join("ACGT"[i % 4] for i in range(40))
@@ -137,6 +144,28 @@ class LociTest(unittest.TestCase):
         self.assertEqual(feats, [("frameshift", 9, 10), ("frameshift", 20, 21)])
         joined = copy[0:10] + copy[20:40]
         self.assertEqual(qc.spliced(copy, [("exon", s, e) for s, e in exons] + feats), loci.in_frame(joined, [(9, 2)]))
+
+    def test_an_annotated_transcript_read_whole(self):
+        # miniprot's span 1000-5000 misses NCBI's first exon (500-600): the transcript keeps it; one off the spans not
+        from eukore import annotation  # noqa: PLC0415
+        gff = os.path.join(self.dir, "t.gff")
+        with open(gff, "w") as fh:
+            fh.write("c1\tRefSeq\tCDS\t500\t600\t.\t+\t0\tParent=rna-1;gene=ONE\n"
+                     "c1\tRefSeq\tCDS\t1200\t1500\t.\t+\t0\tParent=rna-1;gene=ONE\n"
+                     "c1\tRefSeq\tCDS\t4800\t6000\t.\t+\t0\tParent=rna-1;gene=ONE\n"
+                     "c1\tRefSeq\tCDS\t9000\t9100\t.\t+\t0\tParent=rna-2;gene=TWO\n")
+        got = annotation.read_cds(gff, {"c1": [(1000, 5000)]})
+        self.assertEqual(list(got), ["rna-1"])
+        self.assertEqual(got["rna-1"]["cds"], [(500, 600), (1200, 1500), (4800, 6000)])
+
+    def test_a_genome_in_pieces_filtered_over_them_all(self):
+        # piece 1's alignment of q scores 900, piece 2's 450 (a weak paralogue, its piece's best): --outs over both
+        hits = [dict(query="q", score=900.0), dict(query="q", score=450.0), dict(query="r", score=10.0)]
+        hits += [dict(query="p", score=1000.0 - i) for i in range(loci.OUTN + 3)]
+        got = loci.best_of_each(hits)
+        self.assertEqual([a["score"] for a in got if a["query"] == "q"], [900.0])
+        self.assertEqual([a["score"] for a in got if a["query"] == "r"], [10.0])
+        self.assertEqual(len([a for a in got if a["query"] == "p"]), loci.OUTN)
 
     def test_annotated_models_taken_where_their_hmm_holds(self):
         a, b = self.spans["1at2759"]
@@ -175,8 +204,8 @@ class LociTest(unittest.TestCase):
         got = loci.call(*args, translate=translate)
         three = got["loci"]["3at2759"]
         self.assertEqual((three["status"], three["rescued"], three["start"], three["end"], three["contig"]),
-                         ("Single", True, start, start + len(gene) - 4, "c1"))  # its codons, the stop left out
-        self.assertEqual(three["spliced"], gene[:-3])
+                         ("Single", True, start, start + len(gene) - 1, "c1"))  # its codons, its stop
+        self.assertEqual(three["spliced"], gene)
         self.assertEqual((got["loci"]["1at2759"]["rescued"], got["loci"]["2at2759"]["status"]), (False, "Single"))
         self.assertEqual(loci.call(*args, translate=translate, rescue_missing=False)["loci"]["3at2759"]["status"],
                          "Missing")
@@ -199,7 +228,7 @@ class LociTest(unittest.TestCase):
         self.assertIsNone(got["failed"])
         three = got["loci"]["3at2759"]
         self.assertEqual((three["status"], three["rescued"], three["start"], three["end"]),
-                         ("Single", True, start, start + len(gene) - 4))
+                         ("Single", True, start, start + len(gene) - 1))  # its stop codon in the copy
         self.assertEqual(got["loci"]["1at2759"]["status"], "Duplicated")
 
     def test_orfs_split_at_gaps(self):

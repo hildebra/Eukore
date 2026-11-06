@@ -8,7 +8,7 @@ sharing the most coding bases with miniprot's model (best_transcript) where the 
 copies.tsv's `model` ncbi). And each copy's miniprot model is laid on the GFF's coding sequences (CDS) on its contig
 (WORK/done/<accession>/annotation.tsv, ANNOTATION_COLUMNS): its exons and introns, the transcript's, those exact on
 both, and the coding bases each holds and shares. The introns' exact boundaries (splice sites) are the measure least
-touched by start and stop codons (miniprot's CDS and NCBI's end differently at a stop).
+touched by start and stop codons (both models hold the stop since 2026-11-06: loci.parse_alignments).
 
 The GFF is fetched by the fetch stage beside the genome (OUT/genomes/<accession>.gff.gz), or by the process stage
 where it may fetch, and deleted once the genome is done. A genome without an annotation (NCBI's 404) gets an
@@ -102,10 +102,11 @@ def aliases(report):
 
 
 def read_cds(gff, spans, alias=None):
-    """The GFF's CDS features overlapping spans ({contig: [(start, end)]}) -> {transcript: dict(contig, strand, gene,
-    cds [(start, end)] sorted, phase {(start, end): its phase})}; a transcript is the CDS's Parent. alias: {GFF
-    sequence name: the calls'} where the two name the sequences differently."""
-    out = {}
+    """The GFF's transcripts with a CDS overlapping spans ({contig: [(start, end)]}), each whole -> {transcript:
+    dict(contig, strand, gene, cds [(start, end)] sorted, phase {(start, end): its phase})}; a transcript is the CDS's
+    Parent. alias: {GFF sequence name: the calls'} where the two name the sequences differently. Until 2026-11-06 a
+    transcript kept only its CDS overlapping the spans: an exon miniprot missed was cut from NCBI's model too."""
+    out, hit = {}, set()
     alias = alias or {}
     with util.open_text(gff) as fh:
         for line in fh:
@@ -117,14 +118,15 @@ def read_cds(gff, spans, alias=None):
             if len(f) < 9 or f[2] != "CDS" or f[0] not in spans:
                 continue
             a, b = int(f[3]), int(f[4])
-            if not any(a <= e and b >= s for s, e in spans[f[0]]):
-                continue
             attrs = dict(kv.split("=", 1) for kv in f[8].split(";") if "=" in kv)
             parent = attrs.get("Parent") or attrs.get("ID") or f"{f[0]}:{a}"
             t = out.setdefault(parent, dict(contig=f[0], strand=f[6], gene=urllib.parse.unquote(
                 attrs.get("gene") or attrs.get("locus_tag") or "-"), cds=[]))
             t["cds"].append((a, b))
             t.setdefault("phase", {})[(a, b)] = int(f[7]) if f[7].isdigit() else 0
+            if any(a <= e and b >= s for s, e in spans[f[0]]):
+                hit.add(parent)
+    out = {name: t for name, t in out.items() if name in hit}
     for t in out.values():
         t["cds"] = sorted(set(t["cds"]))
     return out

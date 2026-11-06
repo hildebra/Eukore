@@ -24,7 +24,7 @@ A copy's coding sequence (`spliced`) leaves out the bases of miniprot's frameshi
 GFF keeps inside the CDS; they are `frameshift` features of the copy.
 
 A copy is the genome from the gene's first codon to its last on its own strand, introns and all, uncut and in upper
-case (copies.fit, no length cap), with its features on it: exons and introns, the assembly's soft-masked runs of
+case (copies.whole, no length cap), with its features on it: exons and introns, the assembly's soft-masked runs of
 SOFT_MIN bases or more, and low-complexity runs (DUST's triplet score over DUST_SCORE in DUST_WINDOW bases), which the
 user masks as it sees fit.
 """
@@ -78,12 +78,16 @@ STATUS = ("Single", "Duplicated", "Fragmented", "Missing")
 
 def frameshifts(cigar):
     """miniprot's CIGAR (cg:Z) -> [(index, n)]: n bases at an index of the coding sequence (the exons joined, on the
-    gene's strand) that a frameshift (F, G) leaves out of the reading frame; M and D read 3 bases an amino acid, I none,
-    introns (N, U, V) are not in the coding sequence."""
+    gene's strand) that a frameshift (F, G) leaves out of the reading frame; M and D read 3 bases an amino acid, I none;
+    a phase-0 intron (N) is not in the coding sequence, a phase-1 or phase-2 one (U, V: "n nucleotides and 1 amino
+    acid", miniprot's manual) holds the 3 bases of the codon it splits (until 2026-11-06 left out: each such intron
+    put the frameshifts after it 3 bases early)."""
     out, at = [], 0
     for n, op in re.findall(r"(\d+)([MIDFGNUV])", cigar):
         if op in "MD":
             at += 3 * int(n)
+        elif op in "UV":
+            at += 3
         elif op in "FG":
             out.append((at, int(n)))
             at += int(n)
@@ -109,7 +113,8 @@ def parse_alignments(text):
     exons [(start, end)] in genome order, protein, shifts (frameshifts())] (positions 1-based inclusive). miniprot
     writes an alignment's ##PAF (its CIGAR) and ##STA (its translation) before its mRNA line; until 2026-11-06 the
     translation was taken for the alignment before, so that the HMM scored a neighbour's protein (a copy at one place
-    confirmed by another's: false duplicates)."""
+    confirmed by another's: false duplicates). Its stop_codon (GENCODE's rule: in the mRNA, not the CDS) is coding, its
+    last exon's (until 2026-11-06 left out: every copy ending in a stop held a 3-base "intron" at its end)."""
     out, cur, pending, cigar = [], None, "", ""
     for line in text.splitlines():
         if line.startswith("##PAF"):
@@ -132,10 +137,30 @@ def parse_alignments(text):
                        exons=[], protein=pending, shifts=frameshifts(cigar))
             out.append(cur)
             pending, cigar = "", ""
-        elif f[2] == "CDS" and cur is not None:
+        elif f[2] in ("CDS", "stop_codon") and cur is not None:
             cur["exons"].append((int(f[3]), int(f[4])))
     for a in out:
-        a["exons"].sort()
+        merged = []
+        for x, y in sorted(a["exons"]):  # a stop codon touching its exon is that exon's end
+            if merged and x <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], y))
+            else:
+                merged.append((x, y))
+        a["exons"] = merged
+    return out
+
+
+def best_of_each(alignments):
+    """miniprot's --outs and --outn over alignments of several runs (a genome in pieces: placement.chunks) -> each
+    query's of OUTS of its best score or more, its OUTN best (until 2026-11-06 applied in each piece alone: a weak
+    paralogue, its protein's best in its piece, was kept)."""
+    by_query = collections.defaultdict(list)
+    for a in alignments:
+        by_query[a["query"]].append(a)
+    out = []
+    for hits in by_query.values():
+        top = max(a["score"] for a in hits)
+        out += sorted((a for a in hits if a["score"] >= OUTS * top), key=lambda a: -a["score"])[:OUTN]
     return out
 
 
@@ -246,11 +271,6 @@ def on_copy(intervals, start, end, strand):
     return sorted((a, b) if strand == "+" else (length - b, length - a) for a, b in intervals)
 
 
-def genome_bases(path):
-    """A genome's bases, estimated from its file's size (placement's ratio for a gzipped one)."""
-    return os.path.getsize(path) / (placement.GZIP_BYTES_PER_BASE if path.endswith(".gz") else 1)
-
-
 def align(target, queries, miniprot, threads, table, work, options=None):
     """miniprot's alignments of queries {name: protein} on a genome or a windows file (in pieces where large) ->
     (alignments, why it failed or None). options: its intron and seeding options (default -I: the max intron 3.6
@@ -258,15 +278,15 @@ def align(target, queries, miniprot, threads, table, work, options=None):
     faa = os.path.join(work, "q.faa")
     with open(faa, "w") as fh:
         fh.writelines(f">{q}\n{p}\n" for q, p in queries.items())
-    alignments = []
-    for part in placement.chunks(target, work):
+    alignments, parts = [], placement.chunks(target, work)
+    for part in parts:
         run = subprocess.run([miniprot, "-t", str(threads)] + list(options or ["-I"]) + [
             "-T", str(table or 1), "--gff", "--trans", f"--outs={OUTS}", f"--outn={OUTN}", part, faa],
             capture_output=True, text=True, check=False)
         if run.returncode != 0:
             return [], "miniprot failed: " + (run.stderr.strip().splitlines() or ["?"])[-1][:200]
         alignments += parse_alignments(run.stdout)
-    return alignments, None
+    return (best_of_each(alignments) if len(parts) > 1 else alignments), None
 
 
 def confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work):
@@ -423,7 +443,7 @@ def rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads,
                 fh.write(f">{name}\n{seq[lo - 1:hi]}\n")
     q = {n: p for n, p in queries.items() if n.split("~", 1)[0] in places}
     q.update({f"{locus}~{locus}_self": p[3] for locus, p in places.items() if p[3]})
-    intron = int(3.6 * genome_bases(genome_path) ** 0.5)
+    intron = int(3.6 * placement.genome_bases(genome_path) ** 0.5)
     alignments, failed = align(target, q, miniprot, threads, table, work, ["-G", str(intron)] + RESCUE_OPTIONS)
     if failed:
         raise RuntimeError(f"rescue: {failed}")
@@ -486,7 +506,7 @@ def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hm
         exons = [tuple(x) for x in exons if x[0] <= x[1]]
         seq = contigs[a["contig"]]
         cds = "".join(seq[x - 1:y] for x, y in exons).upper()
-        cds = cds.translate(str.maketrans("ACGTacgt", "TGCAtgca"))[::-1] if t["strand"] == "-" else cds
+        cds = copies_mod.revcomp(cds) if t["strand"] == "-" else cds
         models[locus] = dict(exons=exons, start=exons[0][0], end=exons[-1][1], transcript=name)
         proteins[locus] = translate(cds, table).rstrip("*")
     scores = hmmsearch(proteins, hmm_db, hmmsearch_bin, threads, work)
@@ -521,7 +541,8 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
             return dict(loci={}, failed=failed, windows={})
         confirmed = confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work)
         missing = [locus for locus in odb.loci if not confirmed.get(locus)]
-        if rescue_missing and missing and genome_bases(genome_path) <= RESCUE_MAX_BASES and shutil.which(translate):
+        if (rescue_missing and missing and placement.genome_bases(genome_path) <= RESCUE_MAX_BASES
+                and shutil.which(translate)):
             confirmed.update(rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads, table,
                                     hmm_db, work, translate))
         contigs = placement.read_contigs(genome_path, {r["contig"] for rs in confirmed.values() for r in rs})
@@ -543,10 +564,9 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
         best = chosen[locus]
         status, complete = statuses[locus]
         seq = contigs[best["contig"]]
-        fitted = copies_mod.fit(seq, best["start"], best["end"], best["strand"], best["exons"], 10 ** 12,
-                                mask_min=10 ** 12)
+        fitted = copies_mod.whole(seq, best["start"], best["end"], best["strand"], best["exons"])
         raw = seq[best["start"] - 1:best["end"]]
-        feats = [(k, s, e) for k, s, e, _r, _g1, _g2 in fitted["features"] if k in ("exon", "intron")]
+        feats = list(fitted["features"])
         feats += frameshift_features([(s, e) for k, s, e in feats if k == "exon"], best.get("shifts"))
         feats += [("soft_masked", a, b) for a, b in on_copy(soft_runs(raw), best["start"], best["end"], best["strand"])]
         feats += [("low_complexity", a, b) for a, b in dust(fitted["copy"])]
@@ -555,8 +575,7 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
             feats, key=lambda f: (f[1], f[0])), contig=best["contig"], contig_length=len(seq), start=best["start"],
             end=best["end"], strand=best["strand"], identity=best["identity"], coverage=best["coverage"],
             score=best["score"], hmm_score=best["hmm_score"], hmm_coverage=best["hmm_coverage"],
-            cutoff=odb.cutoff[locus], copies=len(complete), others=[(r["contig"], r["start"], r["end"], r["hmm_score"])
-            for r in complete if r is not best], query=best["query"].split("~", 1)[1],
+            cutoff=odb.cutoff[locus], copies=len(complete), query=best["query"].split("~", 1)[1],
             protein=best["protein"], exons=best["exons"], rescued=bool(best.get("rescued")),
             model=best.get("model", "miniprot"), transcript=best.get("transcript", "-"),
             miniprot=best.get("miniprot") or dict(start=best["start"], end=best["end"], exons=best["exons"]))
