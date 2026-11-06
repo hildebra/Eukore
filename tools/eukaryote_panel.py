@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """How often EUKDB's caller finds each BUSCO across eukaryotes (since 2026-11-05): a panel of NCBI genomes, one per order
 in each supergroup (GROUPS) up to --per_group (orders spread over the supergroup's classes), each the order's
-best-ranked genome (genomes.rank) of --max_mb or fewer, in which every BUSCO of the dataset is called as a build calls
+smallest representative genome (genomes.representatives) of --max_mb or fewer that carries no flag (NCBI's, a partial
+genome, small for its clade) and has MAX_CONTIGS_PER_MB or fewer contigs per Mb, in which every BUSCO of the dataset is called as a build calls
 it (loci.call with the 30 nearest species' proteins and the ancestral variants). BUSCO's own dataset holds few protists
 (22 SAR, 6 Discoba, 6 Amoebozoa species of 837), so its species list overstates how universal a BUSCO is outside
 animals, fungi and plants; this panel measures it in real genomes. tools/rank_loci.py --eukaryote_panel OUT reads it.
 
     python3 tools/eukaryote_panel.py --assemblies WORK/sources/ncbi_assemblies --taxdump WORK/sources/taxdump.tar.gz \\
-        --odb WORK/sources/eukaryota_odb12 --out PANEL [--per_group 20 --max_mb 250 -j 2 -t 3]
+        --odb WORK/sources/eukaryota_odb12 --out PANEL [--per_group 20 --max_mb 1500 -j 2 -t 3]
 
 PANEL/panel.tsv lists the genomes chosen; PANEL/done/<accession>.tsv each one's calls (locus, status, length,
 hmm_score); a genome is deleted once called (--keep: not). A rerun calls only those not done.
@@ -30,6 +31,9 @@ GROUPS = [  # (name, NCBI taxid), the first that holds a species
     ("Cryptophyceae", 3027)]
 
 
+MAX_CONTIGS_PER_MB = 100  # more: contigs of ~10 kb, whose genes are cut at their ends
+
+
 def group_of(ncbi, taxid):
     anc = set(ncbi.ancestors(ncbi.merged.get(taxid, taxid)))
     return next((name for name, t in GROUPS if t in anc), "other eukaryotes")
@@ -37,13 +41,16 @@ def group_of(ncbi, taxid):
 
 def choose(ncbi, assemblies, per_group, max_mb):
     """The panel -> [(group, class, order, species taxid, assembly row)]."""
-    reps = genomes.representatives([r for r in assemblies if r.get("size") and r["size"] <= max_mb * 1e6], ncbi)
+    reps = genomes.representatives(assemblies, ncbi)
     by_order = collections.defaultdict(list)
     for sp, (row, _others) in reps.items():
         at = ncbi.ranks(sp)
-        if not at.get("order"):
+        # a flagged genome (NCBI's flags, partial, small for its clade) or a fragmented one would count its gaps as
+        # missing BUSCOs; of the rest, the smallest under max_mb (the run's cost)
+        if not at.get("order") or row.get("flags") or not row.get("size") or row["size"] > max_mb * 1e6 \
+                or (row.get("contigs") or 1 << 20) / (row["size"] / 1e6) > MAX_CONTIGS_PER_MB:
             continue
-        by_order[(group_of(ncbi, sp), at.get("class") or "-", at["order"])].append((genomes.rank(row), sp, row))
+        by_order[(group_of(ncbi, sp), at.get("class") or "-", at["order"])].append((row["size"], sp, row))
     by_group = collections.defaultdict(list)
     for (grp, cls, order), rows in sorted(by_order.items()):
         _rank, sp, row = min(rows, key=lambda x: x[0])
@@ -78,7 +85,7 @@ def call_one(item, settings):
             return acc, f"fetch failed: {why}"
     odb = odb_mod.Odb(settings["odb"], settings["loci"])
     got = loci.call(path, odb.queries(settings["lineage"][sp], settings["odb_lineages"]), odb,
-                    threads=settings["threads"], tmp=os.path.dirname(done))
+                    threads=settings["threads"], tmp=os.path.dirname(done), table=settings["gencode"][sp])
     if got["failed"]:
         return acc, got["failed"]
     with open(done + ".part", "w", newline="\n") as fh:
@@ -115,7 +122,7 @@ def main(argv=None):
     p.add_argument("--odb", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--per_group", type=int, default=20)
-    p.add_argument("--max_mb", type=float, default=250)
+    p.add_argument("--max_mb", type=float, default=1500)
     p.add_argument("--keep", action="store_true", help="keep the genomes once called")
     p.add_argument("-j", "--jobs", type=int, default=2)
     p.add_argument("-t", "--threads", type=int, default=3)
@@ -133,7 +140,8 @@ def main(argv=None):
     odb = odb_mod.Odb(opts.odb, all_loci)
     settings = dict(out=opts.out, odb=opts.odb, loci=all_loci, threads=opts.threads, keep=opts.keep,
                     odb_lineages=odb_mod.species_lineages(odb, ncbi),
-                    lineage={sp: list(ncbi.ancestors(sp)) for _g, _c, _o, sp, _r in items})
+                    lineage={sp: list(ncbi.ancestors(sp)) for _g, _c, _o, sp, _r in items},
+                    gencode={sp: ncbi.code_of(int(r.get("taxid") or sp)) for _g, _c, _o, sp, r in items})
     counts = collections.Counter(g for g, *_ in items)
     print(f"panel: {len(items)} genomes, {sum(r['size'] for *_x, r in items) / 1e9:.1f} Gb: {dict(counts)}; "
           f"{len(all_loci)} BUSCOs", flush=True)

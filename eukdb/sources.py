@@ -71,7 +71,10 @@ def read_assemblies(paths):
                 if f.get("version_status", "latest") != "latest":
                     continue
                 excluded = f.get("excluded_from_refseq", "")
-                flags = sorted({x.strip() for x in excluded.split(";") if x.strip() and x.strip() != "na"})
+                flags = {x.strip() for x in excluded.split(";") if x.strip() and x.strip() != "na"}
+                if f.get("genome_rep", "Full") == "Partial":  # NCBI's own: a part of the genome was assembled
+                    flags.add("partial genome")
+                flags = sorted(flags)
                 rows.append(dict(accession=f["assembly_accession"], taxid=int(f["taxid"]),
                                  species_taxid=int(f["species_taxid"]), organism=f.get("organism_name", ""),
                                  strain=re.sub(r"^\w+=", "", f.get("infraspecific_name", "")), isolate=f.get("isolate", ""),

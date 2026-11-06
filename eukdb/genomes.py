@@ -6,8 +6,9 @@ The species are NCBI's species with a GenBank or RefSeq assembly in the groups a
 fungi, protozoa, plant, invertebrate, vertebrate_mammalian, vertebrate_other), but NCBI's placeholders (uncultured
 ...) and interspecies hybrids (HYBRID). A species' genome is, by rank():
 - not one NCBI flags as contaminated, of an unverified source organism, misassembled, chimeric or of low quality
-  (EXCLUDE: never taken); one with another flag (DEMOTE: too large or small for its species, partial, a metagenome's,
-  a single cell's, ...) only where the species has nothing better;
+  (EXCLUDE: never taken); one with another flag (NCBI's: too large or small for its species, a metagenome's, a
+  single cell's, ...; "partial genome": NCBI's genome_rep; SMALL: under a quarter of its clade's typical genome) only
+  where the species has nothing better;
 - then a RefSeq reference, then a representative genome; then the better assembly level; then the fewer contigs per
   megabase; then the newer.
 A model species (data/model_species.tsv) takes its reference assembly whatever the ranking (why "model"). Where a
@@ -74,10 +75,50 @@ def representatives(assemblies, ncbi, inside=None):
                 or (inside and not inside(sp)):
             continue
         by_species[sp].append(row)
+    by_species = flag_small(by_species, ncbi)
     out = {}
     for sp, rows in by_species.items():
         rows = sorted(rows, key=rank)
         out[sp] = (rows[0], rows[1:])
+    return out
+
+
+# A species' assembly under SMALL_SHARE of its clade's typical genome (the median of the other species' median sizes in
+# its genus, else family, else order, of CLADE_MIN species or more) is a part of its genome, whatever NCBI calls it: the
+# 2026-11-05 panel's "Full" vertebrate assemblies of 2-50 Mb (an 11 Mb Macaca silenus, a 241 Mb snake) held 0-25 of
+# the 129 BUSCOs. Flagged SMALL (demoted by rank(): taken only where the species has nothing better).
+SMALL = "small for its clade"
+SMALL_SHARE = 0.25
+CLADE_MIN = 3
+
+
+def flag_small(by_species, ncbi):
+    """{species: rows} -> the same, rows under SMALL_SHARE of their clade's median genome size flagged SMALL."""
+    def median(xs):
+        xs = sorted(xs)
+        return xs[len(xs) // 2]
+    own = {sp: median([r["size"] for r in rows if r.get("size")]) for sp, rows in by_species.items()
+           if any(r.get("size") for r in rows)}
+    clade_of = {}
+    members = collections.defaultdict(list)
+    for sp in own:
+        at = {ncbi.rank.get(t): t for t in ncbi.ancestors(sp)}
+        clade_of[sp] = [at.get(r) for r in ("genus", "family", "order")]
+        for t in clade_of[sp]:
+            if t:
+                members[t].append(sp)
+    out = {}
+    for sp, rows in by_species.items():
+        typical = None
+        for t in clade_of.get(sp, ()):
+            others = [own[o] for o in members.get(t, ()) if o != sp]
+            if t and len(others) >= CLADE_MIN:
+                typical = median(others)
+                break
+        if typical:
+            rows = [dict(r, flags=sorted(set(r.get("flags") or ()) | {SMALL}))
+                    if r.get("size") and r["size"] < SMALL_SHARE * typical else r for r in rows]
+        out[sp] = rows
     return out
 
 
@@ -92,7 +133,8 @@ def download_of(row, refseq):
 def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assembly=None):
     """The genome set -> {accession: job}: job = dict(accession (GenBank's), fetch (the accession fetched), url, size,
     species_taxid, taxid, organism, why [ncbi | model | no_assembly], lineage (ancestor taxids), itsx (ITSx's sets),
-    rdna_unit, flags, others (the species' other assemblies' accessions), path (no_assembly: its records' FASTA))."""
+    rdna_unit, flags, others (the species' other assemblies' accessions), path (no_assembly: its records' FASTA), gencode
+    (its NCBI genetic code))."""
     refseq = {r["paired"]: r for r in refseq_rows if r.get("paired", "na").startswith("GCA_")}
     from . import rrna  # noqa: PLC0415
     out = {}
@@ -107,7 +149,8 @@ def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assemb
             taxid=int(row.get("taxid") or sp), organism=row.get("organism", ""), why=[why],
             lineage=list(ncbi.ancestors(ncbi.merged.get(sp, sp))), itsx=rrna.itsx_groups(ncbi, sp), rdna_unit=unit,
             flags=sorted(row.get("flags") or ()), others=[o["accession"] for o in others], path=path,
-            level=row.get("level", ""), category=row.get("category", ""))
+            level=row.get("level", ""), category=row.get("category", ""),
+            gencode=ncbi.code_of(int(row.get("taxid") or sp)))
 
     reps = representatives(assemblies, ncbi, inside)
     model_species = {}
@@ -292,7 +335,7 @@ def run(args):
     try:
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
                             settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), tmp,
-                            settings.get("hmm_db"))
+                            settings.get("hmm_db"), job.get("gencode", 1))
     except (OSError, RuntimeError) as e:
         shutil.rmtree(tmp, ignore_errors=True)
         return acc, None, f"locus calling failed: {e}"

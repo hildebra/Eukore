@@ -49,6 +49,33 @@ class SetTest(unittest.TestCase):
         self.assertEqual(self.gb[0]["group"], "fungi")
         self.assertNotIn("GCA_000000560.1", {r["accession"] for r in self.gb})  # a gene's record, no genome
 
+    def test_small_for_its_clade(self):
+        class Tax:  # genus 10 (species 1-4, ~1 Gb), genus 20 in family 100 with genus 10 (species 5: one 4 Mb genome)
+            parent = {1: 10, 2: 10, 3: 10, 4: 10, 5: 20, 10: 100, 20: 100, 100: 1000}
+            rank = {**{t: "species" for t in (1, 2, 3, 4, 5)}, 10: "genus", 20: "genus", 100: "family", 1000: "order"}
+
+            def ancestors(self, t):
+                while True:
+                    yield t
+                    if t not in self.parent:
+                        return
+                    t = self.parent[t]
+        rows = {sp: [dict(accession=f"A{sp}", size=size)] for sp, size in ((1, 900e6), (2, 1.1e9), (3, 1e9))}
+        rows[4] = [dict(accession="A4a", size=40e6), dict(accession="A4b", size=950e6)]
+        rows[5] = [dict(accession="A5", size=4e6, flags=["partial genome"])]
+        out = genomes.flag_small(rows, Tax())
+        self.assertEqual(out[4][0]["flags"], [genomes.SMALL])  # a 40 Mb part of a 1 Gb genus
+        self.assertNotIn("flags", out[4][1])
+        self.assertEqual(out[5][0]["flags"], ["partial genome", genomes.SMALL])  # its genus alone: by its family
+        self.assertNotIn("flags", out[1][0])
+
+    def test_partial_genome_flag(self):
+        table = os.path.join(self.tmp.name, "genbank_vertebrate_other.txt")
+        with open(table, "w") as fh:
+            fh.write("# assembly_accession\ttaxid\tspecies_taxid\torganism_name\tgenome_rep\tgenome_size\n"
+                     "GCA_1.1\t4932\t4932\tSaccharomyces cerevisiae\tPartial\t5000000\n")
+        self.assertEqual(sources.read_assemblies([table])[0]["flags"], ["partial genome"])
+
     def test_jobs(self):
         model = [dict(species="Saccharomyces cerevisiae", ncbi_taxid="4932", domain="Eukaryota", genbank=YEAST,
                       refseq="GCF_000146045.2", assembly_name="R64", level="Complete Genome", genome_bases="12100000",

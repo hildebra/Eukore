@@ -16,7 +16,7 @@ EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built
 file of the package with `[bytes, md5]`. The manifest is written last: a package without one is unfinished.
 
 ## taxonomy/
-NCBI's taxonomy, cut to every taxon on the package's lineages: `nodes.tsv` (taxid, parent, rank), `names.tsv` (taxid,
+NCBI's taxonomy, cut to every taxon on the package's lineages: `nodes.tsv` (taxid, parent, rank, gencode: NCBI's nuclear genetic code, the table a copy translates by), `names.tsv` (taxid,
 name, class: scientific name or synonym), `merged.tsv` (old, new). `eukdb.ncbi.Ncbi(folder)` reads it.
 
 ## species.tsv

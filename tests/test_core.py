@@ -28,6 +28,8 @@ class CoreTest(unittest.TestCase):
                 self.assertEqual((sub.species_of(taxid), sub.ranks(taxid)), (full.species_of(taxid), full.ranks(taxid)))
             self.assertEqual(sub.synonyms[28985], ["Candida sphaerica"])
             self.assertNotIn(40410, sub.name)  # not on the lineages asked for
+            # the genetic code, NCBI's nodes.dmp column 7, kept in the subset
+            self.assertEqual((full.code_of(28985), sub.code_of(28985), sub.code_of(4932)), (6, 6, 1))
 
     def test_assembly_tables(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -49,9 +49,14 @@ NODES = [
 SYNONYMS = [(28985, "Candida sphaerica", "anamorph")]
 
 
+CODES = {28985: 6}  # a stand-in: Kluyveromyces lactis given the ciliates' code, to test that it is read
+
+
 def taxdump(path):
     with tarfile.open(path, "w:gz") as tar:
-        for name, lines in (("nodes.dmp", [f"{t}\t|\t{p}\t|\t{r}\t|\t\t|\n" for t, p, r, _ in NODES]),
+        # nodes.dmp: taxid, parent, rank, EMBL code, division, inherited, genetic code (a ciliate's 6, else 1), ...
+        for name, lines in (("nodes.dmp", [f"{t}\t|\t{p}\t|\t{r}\t|\t\t|\t0\t|\t1\t|\t{CODES.get(t, 1)}\t|\t1\t|\n"
+                                           for t, p, r, _ in NODES]),
                             ("names.dmp", [f"{t}\t|\t{n}\t|\t\t|\tscientific name\t|\n" for t, _, _, n in NODES]
                              + [f"{t}\t|\t{n}\t|\t\t|\t{c}\t|\n" for t, n, c in SYNONYMS])):
             data = "".join(lines).encode()
@@ -171,12 +176,12 @@ def genome(seed=5):
             q = f"{locus}~{locus}_{taxid}_0:00000{taxid % 7}"
             score = 900 if taxid == 4932 else 700
             lines.append(f"##PAF\t{q}\t120")
+            lines.append(f"##STA\t{PROTEINS[locus]}")  # miniprot's order: PAF, STA, then the alignment
             lines.append(f"c1\tminiprot\tmRNA\t{a}\t{b}\t{score}\t{strand}\t.\tID=MP{n};Rank=1;Identity=0.9500;"
                          f"Positive=0.97;Target={q} 1 120")
             for x, y in exons:
                 lines.append(f"c1\tminiprot\tCDS\t{x}\t{y}\t{score}\t{strand}\t0\tParent=MP{n};Rank=1;"
                              f"Identity=0.95;Target={q} 1 120")
-            lines.append(f"##STA\t{PROTEINS[locus]}")
     return seq, "\n".join(lines) + "\n", {"1at2759": g1, "2at2759": g2, "1at2759b": g3}
 
 

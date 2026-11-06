@@ -22,7 +22,7 @@ class Ncbi:
     """NCBI's taxonomy from a taxdump.tar.gz (path) or a package's taxonomy folder (nodes.tsv, names.tsv, merged.tsv)."""
 
     def __init__(self, source):
-        self.parent, self.rank, self.name, self.merged = {}, {}, {}, {}
+        self.parent, self.rank, self.name, self.merged, self.gencode = {}, {}, {}, {}, {}
         self.synonyms = collections.defaultdict(list)
         if os.path.isdir(source):
             self._read_subset(source)
@@ -42,6 +42,8 @@ class Ncbi:
                         self.merged[taxid] = int(fields[1])
                     elif base == "nodes.dmp":
                         self.parent[taxid], self.rank[taxid] = int(fields[1]), fields[2]
+                        if len(fields) > 6 and fields[6].strip().isdigit():
+                            self.gencode[taxid] = int(fields[6])
                     elif fields[3] == "scientific name":
                         self.name[taxid] = fields[1]
                     elif fields[3] in SYNONYM_CLASSES:
@@ -58,6 +60,8 @@ class Ncbi:
 
     def _node(self, f):
         self.parent[int(f[0])], self.rank[int(f[0])] = int(f[1]), f[2]
+        if len(f) > 3 and f[3].isdigit():
+            self.gencode[int(f[0])] = int(f[3])
 
     def _name(self, f):
         if f[2] == "scientific name":
@@ -84,6 +88,10 @@ class Ncbi:
                 return t
         return taxid
 
+    def code_of(self, taxid):
+        """A taxon's nuclear genetic code (NCBI's translation table; 1 where the taxonomy gives none)."""
+        return self.gencode.get(self.merged.get(taxid, taxid), 1)
+
     def ranks(self, taxid):
         """{rank: name} of the taxid's lineage."""
         at = {}
@@ -101,8 +109,9 @@ class Ncbi:
         for taxid in taxids:
             keep.update(self.ancestors(self.merged.get(taxid, taxid)))
         os.makedirs(folder, exist_ok=True)
-        rows = {"nodes.tsv": ("taxid\tparent\trank\n", [f"{t}\t{self.parent[t]}\t{self.rank.get(t, '')}\n"
-                                                         for t in sorted(keep)]),
+        rows = {"nodes.tsv": ("taxid\tparent\trank\tgencode\n",
+                              [f"{t}\t{self.parent[t]}\t{self.rank.get(t, '')}\t{self.gencode.get(t, 1)}\n"
+                               for t in sorted(keep)]),
                 "names.tsv": ("taxid\tname\tclass\n",
                               [f"{t}\t{self.name[t]}\tscientific name\n" for t in sorted(keep) if t in self.name] +
                               [f"{t}\t{s}\tsynonym\n" for t in sorted(keep) for s in self.synonyms.get(t, ())]),

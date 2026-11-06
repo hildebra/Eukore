@@ -28,7 +28,9 @@ compleasm does. EukDetect1 and EukDetect2 were its sources of copies (30 loci) u
    (`eukdb/genomes.py`):
    - never one NCBI flags as contaminated, of an unverified source organism, misassembled, chimeric or of low
      quality;
-   - another flagged one, or a metagenome's, only without better;
+   - another flagged one, or a metagenome's, only without better. EUKDB adds two flags: `partial genome` (NCBI's
+     `genome_rep`) and `small for its clade`, an assembly under a quarter of the typical genome of its genus (else
+     family, else order): a part of the genome, whatever NCBI calls it;
    - then a RefSeq reference, then a representative genome; then the better assembly level, fewer contigs per
      megabase, newer.
 
@@ -36,11 +38,16 @@ compleasm does. EukDetect1 and EukDetect2 were its sources of copies (30 loci) u
    (`data/model_species.tsv`) takes its reference assembly. NCBI's placeholder species and interspecies hybrids
    ("A x B") are left out.
 2. **The calls** (`eukdb/odb.py`, `eukdb/loci.py`).
-   - miniprot aligns, per locus, the proteins of the 30 dataset species nearest to the genome in NCBI's taxonomy, and
-     BUSCO's ancestral variants.
-   - An alignment needs identity 0.4 and coverage 0.6 of its protein. The overlapping ones form one region, whose best
-     alignment is its gene.
-   - hmmsearch confirms a region when the locus' own HMM scores it best and at BUSCO's cutoff.
+   - miniprot aligns, per locus, the proteins of the 30 dataset species nearest to the genome in NCBI's taxonomy and
+     BUSCO's ancestral variants, with the genome's genetic code (NCBI's: ciliates and diplomonads read TAA and TAG as
+     glutamine).
+   - An alignment needs identity 0.2 and coverage 0.4 of its protein. The overlapping ones form one region.
+   - hmmsearch scores the region's 5 best alignments; it is the locus when the locus' own HMM scores one best and at
+     BUSCO's cutoff, and that alignment of the best HMM score is its gene.
+   - compleasm's gates (0.4 and 0.6) lost up to half the BUSCOs of divergent genomes (of 129: *Cyanidioschyzon* 33,
+     now 62; *Bodo saltans* 62, now 77; *Galdieria* 105, now 112). Until 2026-11-06 each alignment was also given
+     the next one's translation (miniprot writes it first), so that the HMM checked a neighbour's protein: earlier
+     calls, the trial packages' among them, are not to be trusted.
    - A locus is Single, Duplicated (the best copy taken), Fragmented (under 80% of the profile) or Missing.
 3. **The copy.** The gene from first to last codon, introns and all, uncut and unmasked. Its features are its exons
    and introns, the assembly's soft-masked runs and its low-complexity runs (DUST); the user masks as it sees fit.
@@ -176,7 +183,7 @@ check was redone on EUKDB's own caller. The panel was 176 prokaryote genomes, on
 inputs: 158 bacteria of 22 phyla and 18 archaea of 6. Each was searched with all ~23,000 dataset proteins of the 30
 loci, which is stricter than a build (the 30 nearest species' proteins). The results:
 
-| locus | OrthoDB name | called at the cutoff (the caller's gates) | without the identity/coverage gates |
+| locus | OrthoDB name | called at the cutoff (compleasm's gates, the caller's until 2026-11-06) | without the identity/coverage gates |
 |---|---|---|---|
 | 10262062at2759 | ribosome biogenesis protein | 10 of 18 archaea (methanogens, haloarchaea, Thermoplasmata), 1.9-2.3x the cutoff, full length | 17 archaea |
 | 1704689at2759 | cytochrome c oxidase assembly protein | 1 Pseudomonadota | 7 Pseudomonadota |

@@ -68,13 +68,16 @@ class LociTest(unittest.TestCase):
         self.assertEqual(len(got), 6)
         self.assertEqual((got[0]["locus"], got[0]["strand"], len(got[0]["exons"]), got[0]["protein"]),
                          ("1at2759", "+", 2, fx.PROTEINS["1at2759"]))
+        # each alignment its own translation (miniprot writes it before the alignment)
+        self.assertTrue(all(a["protein"] == fx.PROTEINS[a["locus"]] for a in got))
         lengths = {a["query"]: 120 for a in got}
         reg = loci.regions(got, lengths)
         self.assertEqual(len(reg["1at2759"]), 2)  # two places: two regions
         self.assertEqual(len(reg["2at2759"]), 1)
         self.assertTrue(all(r["support"] == 2 and r["score"] == 900 for rs in reg.values() for r in rs))
-        # under compleasm's identity or coverage: left out
-        low = [dict(a, identity=0.3) for a in got]
+        self.assertTrue(all(len(r["top"]) == 2 for rs in reg.values() for r in rs))  # each HMM-checked
+        # under the identity or coverage gate: left out
+        low = [dict(a, identity=0.1) for a in got]
         self.assertEqual(loci.regions(low, lengths), {})
         self.assertEqual(loci.regions(got, {q: 1000 for q in lengths}), {})
 
