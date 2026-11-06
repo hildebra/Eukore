@@ -89,7 +89,7 @@ class FetchTest(unittest.TestCase):
                                                      checker=checker)
                                for name in ("whole.fna.gz", "cut.fna.gz", "missing.fna.gz")}
                     self.assertEqual(got["whole.fna.gz"], "", util.CURL)
-                    self.assertTrue(got["cut.fna.gz"].startswith("EOFError"), got)
+                    self.assertTrue(got["cut.fna.gz"].startswith(("EOFError", "OSError")), got)  # Python's; a tool's
                     self.assertEqual(got["missing.fna.gz"], "not found")
                     self.assertEqual(sorted(os.listdir(out)), ["whole.fna.gz"])
                     self.assertEqual(os.listdir(scratch), [])
@@ -101,6 +101,24 @@ class FetchTest(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 serving.join()
+
+
+    def test_gzip_checks(self):
+        # igzip's, pigz's (where there) and Python's checks: a whole file passes, one cut short or not gzip fails
+        import gzip, shutil  # noqa: E401, PLC0415
+        tools = [t for t in (shutil.which("igzip"), shutil.which("pigz")) if t] + [None]
+        with tempfile.TemporaryDirectory() as tmp:
+            whole = gzip.compress(os.urandom(1 << 16))
+            files = {}
+            for name, data in (("whole", whole), ("cut", whole[:len(whole) // 2]), ("bad", b"not gzip")):
+                files[name] = os.path.join(tmp, name + ".part")
+                with open(files[name], "wb") as fh:
+                    fh.write(data)
+            for tool in tools:
+                util.gzip_whole(files["whole"], tool)
+                for name in ("cut", "bad"):
+                    with self.assertRaises((OSError, EOFError), msg=f"{tool} {name}"):
+                        util.gzip_whole(files[name], tool)
 
 
 class ProgressTest(unittest.TestCase):

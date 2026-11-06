@@ -189,8 +189,20 @@ def curl_get(url, path):
         raise urllib.error.HTTPError(url, code, f"HTTP {code}", None, None)
 
 
-def gzip_whole(path):
-    """Reads a gzip file to its end: raises (EOFError, OSError, zlib.error) where it is cut short or damaged."""
+# fetch_file's gzip check where there: ISA-L's igzip (bioconda/conda-forge isa-l, apt isal; ~3.5x Python's zlib, 2026-11-06,
+# WSL), else pigz (~1.1x), else Python's gzip
+GZIP_TEST = shutil.which("igzip") or shutil.which("pigz")
+
+
+def gzip_whole(path, tool=None):
+    """Reads a gzip file to its end, by tool's -t (GZIP_TEST; from stdin: no suffix to check) or Python's gzip: raises
+    (EOFError, OSError, zlib.error) where it is cut short or damaged."""
+    if tool:
+        with open(path, "rb") as fh:
+            run = subprocess.run([tool, "-t"], stdin=fh, capture_output=True, text=True)
+        if run.returncode:
+            raise OSError(f"{os.path.basename(tool)} -t: {run.stderr.strip() or f'exit {run.returncode}'}")
+        return
     with gzip.open(path, "rb") as gz:
         while gz.read(1 << 22):
             pass
@@ -223,9 +235,9 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
                 continue
             if gzip_check and dest.endswith(".gz"):
                 if checker:
-                    checker.submit(gzip_whole, part).result()
+                    checker.submit(gzip_whole, part, GZIP_TEST).result()
                 else:
-                    gzip_whole(part)
+                    gzip_whole(part, GZIP_TEST)
             if scratch:  # another file system: copied beside dest, then renamed into place
                 shutil.copyfile(part, dest + ".part")
                 os.replace(dest + ".part", dest)

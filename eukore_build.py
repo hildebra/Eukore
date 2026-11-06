@@ -443,7 +443,8 @@ def main(argv=None):
                 and not genomes.is_done(opts.work, a, loci)]
         downloads = max(1, opts.downloads)
         say(f"fetching {len(todo):,} genomes ({sum(j.get('size') or 0 for j in todo) / 1e9:,.1f} Gb) into "
-            f"{opts.genomes}, {downloads} at a time; progress every {opts.report_minutes:g} minutes")
+            f"{opts.genomes}, {downloads} at a time by {util.CURL or 'urllib'}, checked by "
+            f"{util.GZIP_TEST or 'Python (no igzip or pigz)'}; progress every {opts.report_minutes:g} minutes")
         # every --report_minutes: genomes left and the time left, by their sizes (a plant's genome is a thousand
         # yeasts'), and the download rate, all kept by this thread (the downloads' are at_a_time's)
         progress = util.Progress("genomes fetched", [j.get("size") or 0 for j in todo], say, opts.report_minutes * 60,
