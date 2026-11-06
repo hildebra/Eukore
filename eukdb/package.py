@@ -1,7 +1,8 @@
 """EUKDB's package (FORMAT.md; format 2 since 2026-11-05: EUKDB's own locus calls in NCBI's genomes; format 3 since
 2026-11-05: the organelle genes; format 4 since 2026-11-05: every BUSCO of the dataset, in busco/, with
-busco/loci.tsv), written from the build's genome set and work folder, read and checked by its users (protal's
-converter).
+busco/loci.tsv; each species' PR2, EUKARYOME and KSGP lineages, the genomes' rRNA counts, the copies' and records'
+contig ends, gaps and confidence), written from the build's genome set and work folder, read and checked by its users
+(protal's converter).
 """
 
 import collections
@@ -19,12 +20,65 @@ MANIFEST = "manifest.json"
 LOCI_COLUMNS = ("locus", "name", "cutoff", "hmm_length", "species", "called", "duplicated", "fragmented", "call_rate",
                 "median_length", "median_cds_length", "median_protein_length")
 GENOME_COLUMNS = ("accession", "fetched", "species_taxid", "taxid", "organism", "strain", "level", "genome_size",
-                  "contigs", "category", "flags", "ftp", "source", "representative", "loci", "local")
+                  "contigs", "category", "flags", "ftp", "source", "representative", "loci", "rrna_18s", "rdna_units",
+                  "rdna_complete", "rdna_contigs", "local")
 COPY_COLUMNS = ("accession", "locus", "status", "contig", "contig_length", "start", "end", "strand", "length",
                 "cds_length", "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies",
-                "query", "protein_length", "window_class", "fcs", "own_species", "same_as", "length_check")
+                "query", "protein_length", "window_class", "fcs", "own_species", "same_as", "length_check",
+                "contig_edge", "gaps", "confidence", "flags")
 FEATURE_COLUMNS = ("accession", "locus", "kind", "start", "end")
-SPECIES_COLUMNS = ("taxid", "name", "representative", "source", "loci", "rrna_records", "organelle_genes")
+SPECIES_COLUMNS = ("taxid", "name", "representative", "source", "loci", "rrna_records", "organelle_genes",
+                   "supergroup", "ncbi_lineage", "pr2", "pr2_match", "eukaryome", "eukaryome_match", "ksgp",
+                   "ksgp_match")
+REFERENCES = ("PR2", "EUKARYOME", "KSGP")
+GAP_MIN = 10        # a run of Ns this long in a copy: an assembly gap (features.tsv's gap)
+EDGE = 1000         # a copy this close to its contig's end: maybe cut, or joined to another sequence
+FCS_FOREIGN = {"EXCLUDE", "TRIM", "FIX"}
+FOREIGN_WINDOW = {"bacteria", "archaea", "prokarya"}
+
+
+def gap_runs(seq, min_run=GAP_MIN):
+    """[(start, end)] of the runs of min_run Ns or more in a copy (0-based, end excluded)."""
+    out, i, seq = [], 0, seq.upper()
+    while True:
+        i = seq.find("N" * min_run, i)
+        if i < 0:
+            return out
+        j = i
+        while j < len(seq) and seq[j] == "N":
+            j += 1
+        out.append((i, j))
+        i = j
+
+
+def copy_confidence(r):
+    """A copy's tier and why (busco/copies.tsv's confidence and flags): low where a check calls it another organism's
+    (own_species f, FCS-GX's EXCLUDE/TRIM/FIX, tiara's prokaryote window); medium where something may be wrong
+    (Fragmented, Duplicated, its protein's length in the locus' outer 5%, an assembly gap in it, at a contig's end, its
+    own-species check undecided, an organelle window, FCS-GX's REVIEW); else high."""
+    low, medium = [], []
+    if r.get("own_species") == "f":
+        low.append("own_species")
+    fcs = str(r.get("fcs", "-")).split(":")[0]
+    if fcs in FCS_FOREIGN:
+        low.append("fcs")
+    if r.get("window_class", "-") in FOREIGN_WINDOW:
+        low.append("window_prokaryote")
+    if r.get("status") in ("Fragmented", "Duplicated"):
+        medium.append(r["status"].lower())
+    if r.get("length_check", "ok") != "ok":
+        medium.append(f"length_{r['length_check']}")
+    if int(r.get("gaps") or 0):
+        medium.append("gap")
+    if r.get("contig_edge") not in (None, "-") and int(r["contig_edge"]) < EDGE:
+        medium.append("contig_edge")
+    if r.get("own_species") in ("-", None):
+        medium.append("own_species_undecided")
+    if r.get("window_class") == "organelle":
+        medium.append("window_organelle")
+    if fcs == "REVIEW":
+        medium.append("fcs_review")
+    return ("low" if low else "medium" if medium else "high"), ",".join(low + medium) or "-"
 
 
 def _tsv(path, columns, rows):
@@ -77,17 +131,30 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1):
                             contigs=row.get("contigs"), category=row.get("category") or job.get("category", ""),
                             flags=",".join(job.get("flags") or ()) or "-", ftp=row.get("ftp"), source=job["why"][0],
                             representative="t", loci=len(got))
+        from . import rrna as rrna_mod  # noqa: PLC0415
+        from .genomes import done_dir, fcs_of_copy  # noqa: PLC0415
+        if os.path.isfile(os.path.join(done_dir(work, acc), "rrna.tsv")):
+            n = rrna_mod.counts(rrna_mod.load(done_dir(work, acc)))
+            genomes[acc].update(rrna_18s=n["18S"], rdna_units=n["rDNA"], rdna_complete=n["rDNA_complete"],
+                                rdna_contigs=n["rDNA_contigs"])
         copies[acc] = got
         for f in done_table(work, acc, "features.tsv"):
             features.append(dict(accession=acc, locus=f["locus"], kind=f["kind"], start=int(f["start"]),
                                  end=int(f["end"])))
-        from .genomes import done_dir, fcs_of_copy  # noqa: PLC0415
+        gap_of = {}
+        for locus, seq in got.items():
+            runs = gap_runs(seq)
+            gap_of[locus] = len(runs)
+            features.extend(dict(accession=acc, locus=locus, kind="gap", start=a, end=b) for a, b in runs)
         fcs = [dict(f, start=int(f["start"]), end=int(f["end"])) for f in done_table(work, acc, "fcs.tsv")]
         screened = os.path.isfile(os.path.join(done_dir(work, acc), "fcs.tsv"))
         for r in done_table(work, acc, "loci.tsv"):
             if r["status"] != "Missing":
+                edge = min(int(r["start"]) - 1, int(r["contig_length"]) - int(r["end"])) \
+                    if str(r.get("contig_length", "")).isdigit() and str(r.get("start", "")).isdigit() else "-"
                 copy_rows.append(dict(r, accession=acc, fcs=fcs_of_copy(fcs, r["locus"], r["contig"], r["start"],
-                                                                         r["end"]) if screened else "-"))
+                                                                         r["end"]) if screened else "-",
+                                      contig_edge=edge, gaps=gap_of.get(r["locus"], 0)))
         for other in job.get("others", ()):
             o = by_accession.get(other)
             if o and other not in genomes:
@@ -107,6 +174,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1):
     for r in copy_rows:
         c = checks[(r["accession"], r["locus"])]
         r.update(own_species=c["own_species"], same_as=c["same_as"], length_check=c["length"])
+        r["confidence"], r["flags"] = copy_confidence(r)
     taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"}
     return dict(genomes=genomes, copies=copies, features=features, copy_rows=copy_rows, taxids=taxids)
 
@@ -144,11 +212,12 @@ def loci_rows(loci, collected, ncbi):
     return out, [f"call_{name}" for name in sorted(sizes)]
 
 
-def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None, organelle=None):
+def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None, organelle=None,
+          references=()):
     """The package into `out` (written beside it and renamed into place; the manifest last) -> its folder.
     loci: the BUSCOs called ([{locus, name, cutoff, hmm_length}], in the dataset's order); rrna: (records [(name,
     sequence, row dict of records.tsv)]) or None; organelle: the organelle genes' records (organelle.collect) or
-    None."""
+    None; references: labels.Reference of PR2, EUKARYOME and KSGP, each species' lineage in them (species.tsv)."""
     part = util.part_of(out)
     shutil.rmtree(part, ignore_errors=True)
     for sub in ("taxonomy", "busco/copies", "rrna", "organelle"):
@@ -197,6 +266,14 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
     rows += [dict(taxid=sp, name=ncbi.name.get(sp, str(sp)), representative="-", source="rrna", loci=0,
                   rrna_records=n, organelle_genes=n_organelle.get(sp, 0))
              for sp, n in sorted(n_records.items()) if sp not in held]
+    from . import labels as labels_mod  # noqa: PLC0415
+    named = labels_mod.label_species(ncbi, [int(r["taxid"]) for r in rows], references)
+    for r in rows:
+        sp = int(r["taxid"])
+        r.update(supergroup=labels_mod.supergroup(ncbi, sp), ncbi_lineage=labels_mod.ncbi_lineage(ncbi, sp))
+        for ref in REFERENCES:
+            lineage, how = named[sp].get(ref, ("-", "-"))
+            r[ref.lower()], r[f"{ref.lower()}_match"] = lineage, how
     _tsv(os.path.join(part, "species.tsv"), SPECIES_COLUMNS, rows)
     taxa = ncbi.write_subset(os.path.join(part, "taxonomy"),
                              set(collected["taxids"]) | {int(r["species_taxid"]) for r in genomes.values()} |
@@ -208,8 +285,9 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
             path = os.path.join(dirpath, name)
             files[os.path.relpath(path, part).replace(os.sep, "/")] = [os.path.getsize(path), util.md5(path)]
     statuses = collections.Counter(r["status"] for r in collected["copy_rows"])
+    inputs = dict(inputs or {}, references={ref.name: ref.stamp() for ref in references})
     manifest = {"format": FORMAT, "version": version, "built": datetime.datetime.now().isoformat(timespec="seconds"),
-                "inputs": inputs or {},
+                "inputs": inputs,
                 "counts": {"species": sum(1 for r in rows if r["representative"] != "-"),
                            "species_rrna_only": sum(1 for r in rows if r["representative"] == "-"),
                            "genomes": len(genomes), "copies": sum(len(c) for c in copies.values()),
@@ -217,7 +295,14 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                            "organelle_genes": {k: dict(collections.Counter(row["gene"] for _n, _s, row in organelle
                                                                            if row["organelle"] == k))
                                                for k in organelle_mod.KINDS},
-                           "species_organelle_genes": len(n_organelle), "taxa": taxa},
+                           "species_organelle_genes": len(n_organelle), "taxa": taxa,
+                           "busco_loci": len(loci),
+                           "copy_confidence": dict(collections.Counter(r["confidence"] for r in collected["copy_rows"]
+                                                                       if r.get("confidence"))),
+                           "rrna_confidence": dict(collections.Counter(row.get("confidence", "-")
+                                                                       for _n, _s, row in rrna or ())),
+                           "labels": {ref.lower(): dict(collections.Counter(r[f"{ref.lower()}_match"] for r in rows))
+                                      for ref in REFERENCES}},
                 "files": dict(sorted(files.items()))}
     with open(os.path.join(part, MANIFEST), "w", newline="\n") as fh:
         json.dump(manifest, fh, indent=1)

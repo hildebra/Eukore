@@ -3,24 +3,31 @@
 EUKDB is a standalone eukaryote reference. It holds every BUSCO gene of eukaryota_odb12 and the rDNA operons of every
 eukaryote species with an NCBI genome, complete (genes with all their introns, operons uncut) and checked, and the
 species' mitochondrial and plastid rRNA and mitochondrial COX1 where NCBI has them. Its taxonomy is NCBI's, tied to no
-GTDB release and no KSGP version. A user of the package (protal's build) takes what it needs (protal: the 30 BUSCOs of
-its euk30, chosen by `busco/loci.tsv`'s figures) and converts it: naming, length limits, masking, record cuts. Paths
-below are relative to the package folder, `EUKDB_<YYYY.MM>/`. A
+GTDB release; each species also carries its lineage in PR2, EUKARYOME and KSGP (`species.tsv`), the versions named in
+the manifest. Each copy and record carries its checks, a confidence tier and the reasons for it, and the hints a user
+needs to spot a chimera (contig ends, assembly gaps, the screens). A user of the package (protal's build) takes what
+it needs (protal: the 30 BUSCOs of its euk30, chosen by `busco/loci.tsv`'s figures) and converts it: naming, length
+limits, masking, record cuts. Paths below are relative to the package folder, `EUKDB_<YYYY.MM>/`. A
 `.tsv` has a header line, tab-separated columns and no quoting. `-` means "none". Coordinates are 0-based, end
 excluded, on the sequence as the package holds it, unless they are a contig's (1-based, inclusive).
 
 ## manifest.json
 `format` (4), `version` (`YYYY.MM`), `built` (ISO time), `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
-organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`);
-`inputs.partial.species_clades` in a trial package limited to those clades, which a user should not take for EUKDB),
-`counts` (species, species with rRNA alone, genomes, copies and their
-calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa), and `files`: every
+organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
+references species.tsv's lineages come from (`references`: PR2's, EUKARYOME's, KSGP's version, file, MD5 and the
+species and genera it names); `inputs.partial.species_clades` in a trial package limited to those clades, which a user
+should not take for EUKDB), `counts` (species, species with rRNA alone, genomes, copies and their
+calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa, `busco_loci`, the
+copies' and records' confidence tiers, `labels`: per reference the species by how they matched), and `files`: every
 file of the package with `[bytes, md5]`. The manifest is written last: a package without one is unfinished.
 
 ## taxonomy/
 NCBI's taxonomy, cut to every taxon on the package's lineages: `nodes.tsv` (taxid, parent, rank, gencode: NCBI's nuclear genetic code, the table a copy translates by), `names.tsv` (taxid,
 name, class: scientific name or synonym), `merged.tsv` (old, new). `eukdb.ncbi.Ncbi(folder)` reads it.
+
+A taxid is NCBI's of the taxdump the manifest names (`inputs.taxdump_md5`). A taxid NCBI has merged into another since
+is in `merged.tsv`: a user mapping older labels (or a later taxdump's) to the package goes through it.
 
 ## species.tsv
 One row per NCBI species the package holds:
@@ -34,6 +41,20 @@ One row per NCBI species the package holds:
 | `loci` | BUSCO genes called in its genome |
 | `rrna_records` | its records in `rrna/records.tsv` |
 | `organelle_genes` | its records in `organelle/genes.tsv` |
+| `supergroup` | `Metazoa`, `Fungi`, `Viridiplantae`, `Rhodophyta`, `SAR`, `Discoba`, `Metamonada`, `Amoebozoa`, `Haptista`, `Cryptophyceae` (the first NCBI clade of these that holds it), else `other` |
+| `ncbi_lineage` | NCBI's names at domain;kingdom;phylum;class;order;family;genus;species (a rank NCBI does not name empty) |
+| `pr2`, `pr2_match` | its lineage in PR2 (domain;supergroup;division;subdivision;class;order;family;genus;species, as PR2 writes it: `Saccharomyces_cerevisiae`), and how it was found (below) |
+| `eukaryome`, `eukaryome_match` | its lineage in EUKARYOME (superkingdom;kingdom;subkingdom;phylum;subphylum;class;order;family;genus;species: its classification table to the genus, its long reads' species) |
+| `ksgp`, `ksgp_match` | its lineage in KSGP (`k__` .. `s__`, as KSGP writes it; its eukaryote nuclear records) |
+
+A species is found in a reference by name: `species` (NCBI's scientific name), `synonym` (one of NCBI's synonyms, an
+anamorph), `genus` (neither, but the reference names its genus: the lineage down to the genus, no species), `-` (none:
+the lineage `-`). Names are compared without case, `_` as a space and a `(Fungi)` after a genus. A reference's records
+of an organelle (PR2's `:plas`, `:mito`; KSGP's chloroplast, `plas` and `mito` names) and its names that name no species
+(`sp.`, `Genus_X`, accessions, `?`) are not taken. A name a reference files under several lineages (a homonym of
+another kingdom) takes the lineage that shares the most names with NCBI's lineage of the species, then the one of the
+most records. The labels are a name match, not a placement: a user that names species by its own rules (protal's KSGP
+rules) can compare its name with these. A row's taxid may be above species (a published read labelled by its genus).
 
 ## genomes.tsv
 The species' genomes and their other assemblies:
@@ -50,6 +71,7 @@ The species' genomes and their other assemblies:
 | `source` | as `species.tsv`'s; `assembly` for a further assembly of the species (no copies) |
 | `representative` | `t` for the species' genome |
 | `loci` | BUSCO genes called in it |
+| `rrna_18s`, `rdna_units`, `rdna_complete`, `rdna_contigs` | its 18S spans, rDNA units (from the 18S to the 28S), units with a whole 28S, and the contigs holding units, as `rrna/` found them in the assembly: copies in the assembly, a lower bound of the copies in the genome (an rDNA array is usually collapsed in an assembly); `-` where its rRNA was not searched |
 | `local` | the genome's file in the build's kept genomes (`genomes/<accession>.fna.gz` beside the package), `-` where it is not kept |
 
 A species' genome is NCBI's best by EUKDB's ranking: never one NCBI flags as contaminated, of an unverified source
@@ -95,14 +117,23 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 | `own_species` | `t`, `f` or `-`: its coding sequence's nearest copies of other species agree with its NCBI lineage to the family or deeper; or share no more than the phylum at 90% or more (another clade's gene: a contaminant, a misidentified genome) |
 | `same_as` | the NCBI taxid of the lowest common ancestor of the species with a copy 99% identical to it, `-` for none |
 | `length_check` | `short`, `long` (its protein in its locus' bottom or top 5%), `ok` |
+| `contig_edge` | bases from the copy to its contig's nearer end: a copy at an end may be cut, or joined to another sequence |
+| `gaps` | runs of 10 Ns or more in the copy (assembly gaps: a misjoin's mark) |
+| `confidence`, `flags` | `high`, `medium` or `low`, and why (comma-separated, `-` for none; below) |
+
+A copy is `low` where a check calls it another organism's: `own_species` (f), `fcs` (FCS-GX's EXCLUDE, TRIM or FIX),
+`window_prokaryote` (tiara's bacteria or archaea). It is `medium` where something may be wrong: `fragmented`,
+`duplicated`, `length_short` or `length_long`, `gap`, `contig_edge` (under 1,000 bases), `own_species_undecided`
+(`own_species` -), `window_organelle`, `fcs_review`. Else `high`.
 
 - `features.tsv`: per copy its exons and introns, the assembly's soft-masked runs of 20 bases or more
-  (`soft_masked`), and its low-complexity runs (`low_complexity`: DUST's score over 20 in 64-base windows).
+  (`soft_masked`), its low-complexity runs (`low_complexity`: DUST's score over 20 in 64-base windows) and its
+  assembly gaps (`gap`: runs of 10 Ns or more).
 
 | column | |
 |---|---|
 | `accession`, `locus` | the copy |
-| `kind` | `exon`, `intron`, `soft_masked`, `low_complexity` |
+| `kind` | `exon`, `intron`, `soft_masked`, `low_complexity`, `gap` |
 | `start`, `end` | on the copy |
 
 A copy failing a check is kept and flagged, so that a user chooses.
@@ -126,6 +157,20 @@ A copy failing a check is kept and flagged, so that a user chooses.
 | `own_species` | `t`, `f`, or `-`: whether its nearest records of other sources agree with its NCBI lineage to the family or deeper (a genome's contaminant rDNA fails) |
 | `screen` | the part screen's flags: `-`, or `part:rank,...`, each a part (`18S`, `junction`, `28S 5'`, `28S 3'`) whose nearest records of other genomes are another clade's at that rank (`kingdom` .. `family`) |
 | `label_from` | how its taxid was found: `assembly`, `rod_taxid`, `eukaryome_name`, `eukaryome_genus` |
+| `contig`, `start`, `end`, `strand` | a genome's record: where it lies in the assembly (1-based, inclusive; the 18S span's, or the unit's from its first region to its last); `-` for a published read |
+| `contig_edge` | a genome's record: bases to its contig's nearer end |
+| `introns` | the 18S's introns on the record (`18S:start-end,...`: the gaps between barrnap's 18S pieces), `-` for none; the 18S region spans them |
+| `gaps` | runs of 10 Ns or more in the record |
+| `confidence`, `flags` | `high`, `medium` or `low`, and why (below) |
+
+A record is `low` where a check calls it another organism's or of bad sequence: `own_species` (f), `screen`,
+`ambiguous` (over 0.5%), `homopolymer` (36 or longer). It is `medium` where something may be wrong: `gap`, `contig_edge`
+(under 1,000 bases), `own_species_undecided`, `lsu_partial` (an operon without a whole 28S), `genus_label` (a
+published read labelled by its genus alone). Else `high`.
+
+An operon's spacers are its ITS1 and ITS2 (`regions`); the intergenic spacer between units is not taken (a unit runs
+from its 18S to its 28S, and its 5S where that lies in the same block). A 5S elsewhere in the genome (most animals' and
+plants' 5S arrays) is not searched.
 
 A record that fails a check is kept and flagged, so that a user chooses.
 
@@ -168,4 +213,8 @@ The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz
   `organelle_genes`; the manifest's `inputs.refseq_organelle` and organelle counts.
 - 4 (2026-11-05): every BUSCO gene of the dataset, not the 30 of euk30 (the user picks its loci); `euk30/` renamed
   `busco/`; `busco/loci.tsv` of each BUSCO's calls over the package's species, in place of the euk30 loci table;
-  `taxonomy/nodes.tsv`'s `gencode`.
+  `taxonomy/nodes.tsv`'s `gencode`; `species.tsv`'s `supergroup`, `ncbi_lineage` and
+  PR2, EUKARYOME and KSGP lineages; `genomes.tsv`'s rRNA counts; `busco/copies.tsv`'s `contig_edge`, `gaps`,
+  `confidence` and `flags`; `features.tsv`'s `gap`; `rrna/records.tsv`'s `contig`, `start`, `end`, `strand`,
+  `contig_edge`, `introns`, `gaps`, `confidence` and `flags`; the manifest's `inputs.references`. EUKARYOME's records
+  are labelled by their species (its `s__` is the epithet alone: until 4 every one was labelled by its genus).

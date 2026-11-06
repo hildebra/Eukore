@@ -111,6 +111,12 @@ class UnitTest(unittest.TestCase):
         self.assertEqual(rrna.eukaryome_taxid("k__Fungi;g__Nogenus;s__Nogenus_x", index, ncbi), (None, None))
         self.assertEqual(rrna.eukaryome_taxid("k__Fungi;g__Kluyveromyces;s__Candida_sphaerica", index, ncbi),
                          (28985, "eukaryome_name"))  # an NCBI synonym
+        # EUKARYOME 2.1 writes the epithet alone in s__ (g__Geotrupes;s__spiniger): the genus and it are the name
+        self.assertEqual(rrna.eukaryome_taxid("k__Fungi;g__Saccharomyces;s__cerevisiae", index, ncbi),
+                         (4932, "eukaryome_name"))
+        self.assertEqual(rrna.eukaryome_taxid("k__Fungi;g__Saccharomyces;s__unclassified", index, ncbi),
+                         (4930, "eukaryome_genus"))
+        self.assertEqual(rrna.species_name("Drosophila(Metazoa)", "melanogaster"), "Drosophila melanogaster")
         self.assertEqual((rrna.homopolymer("ACGGGGTA"), round(rrna.ambiguous("ACGN"), 2)), (4, 0.25))
         a = "".join(random.Random(2).choice("ACGT") for _ in range(1000))
         b = a[:500] + ("A" if a[500] != "A" else "C") + a[501:]  # 99.9% identical: one type

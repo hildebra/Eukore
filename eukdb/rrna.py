@@ -42,7 +42,12 @@ PREFIX = 1000       # a published read's first bases: its 18S, for the own-speci
 COMPLEMENT = str.maketrans("ACGTN", "TGCAN")
 ITSX_FIELD = re.compile(r"(SSU|ITS1|5\.8S|ITS2|LSU): (\d+)-(\d+)")
 RECORD_COLUMNS = ("record", "kind", "taxid", "species_taxid", "accession", "source", "regions", "length",
-                  "lsu_complete", "ambiguous", "homopolymer", "type", "own_species", "screen", "label_from")
+                  "lsu_complete", "ambiguous", "homopolymer", "type", "own_species", "screen", "label_from",
+                  "contig", "start", "end", "strand", "contig_edge", "introns", "gaps", "confidence", "flags")
+GAP_MIN = 10        # a run of Ns this long: an assembly gap (or a read's)
+EDGE = 1000         # a genome's record this close to its contig's end: maybe cut, or joined to another sequence
+MAX_AMBIGUOUS = 0.005
+HOMOPOLYMER = 36
 
 
 def revcomp(seq):
@@ -145,8 +150,12 @@ def units_of(seq, feats):
         exons = "".join(seq[a - 1:b] for a, b, _s, _p in sorted(pieces))
         if strand == "-":
             span, exons = revcomp(span), revcomp(exons)
+        # the 18S's introns: the gaps between its pieces, on the span ([start, end) on its strand)
+        ordered = sorted(pieces)
+        cuts = [(x[1] + 1, y[0] - 1) for x, y in zip(ordered, ordered[1:]) if y[0] > x[1] + 1]
+        on_span = sorted((a - start, b - start + 1) if strand == "+" else (end - b, end - a + 1) for a, b in cuts)
         item = dict(span=(start, end, strand), sequence=span, exons=exons, unit=None, regions=None,
-                    lsu_complete=False)
+                    lsu_complete=False, introns=[("18S",) + x for x in on_span])
         fwd = strand == "+"
         s58 = [f for f in feats.get("5_8S_rRNA", []) if f[2] == strand and
                (0 < f[0] - end <= MAX_ITS if fwd else 0 < start - f[1] <= MAX_ITS)]
@@ -178,6 +187,7 @@ def units_of(seq, feats):
                 if r28[1] > r58[2]:
                     regions.insert(3, ("ITS2", r58[2], r28[1]))
                 item.update(unit=unit, regions=sorted(regions, key=lambda r: r[1]), lsu_complete=not f28[3],
+                            unit_span=(a, b), unit_introns=sorted(("18S",) + at(x1, x2) for x1, x2 in cuts),
                             its=unit[max(0, r18[2] - 300):min(len(unit), r58[2] + 3300)],
                             its_at=max(0, r18[2] - 300))
         out.append(item)
@@ -269,12 +279,13 @@ def extract_genome(path, barrnap, itsx=None, threads=1, itsx_sets="all"):
     """A genome's rRNA -> [dict(kind 18S or rDNA, contig, start, end, strand, sequence, exons, regions, lsu_complete)]:
     each 18S span (MIN_LEN at least), and each unit with its 5.8S and 28S as an rDNA record, uncut. itsx_sets: ITSx's
     -t for the genome's taxon (itsx_groups)."""
-    seqs, origin = {}, {}
+    seqs, origin, lengths = {}, {}, {}
     with tempfile.TemporaryDirectory() as tmp:
         win = os.path.join(tmp, "windows.fna")
         with open(win, "w") as fh:
             for name, seq in contigs(path):
                 seq = seq.upper()
+                lengths[name] = len(seq)
                 for a, b in windows(seq):
                     wid = f"w{len(seqs)}"
                     seqs[wid], origin[wid] = seq[a:b], (name, a)
@@ -286,7 +297,9 @@ def extract_genome(path, barrnap, itsx=None, threads=1, itsx_sets="all"):
         for item in units_of(seqs[wid], f):
             contig, offset = origin[wid]
             item.update(contig=contig, start=offset + item["span"][0], end=offset + item["span"][1],
-                        strand=item["span"][2])
+                        strand=item["span"][2], contig_length=lengths.get(contig))
+            if item.get("unit_span"):
+                item["unit_at"] = (offset + item["unit_span"][0], offset + item["unit_span"][1])
             items.append(item)
     stretches = [i["its"] for i in items if i.get("unit")]
     found = run_itsx(stretches, itsx, threads, dict.fromkeys(stretches, itsx_sets))
@@ -295,12 +308,13 @@ def extract_genome(path, barrnap, itsx=None, threads=1, itsx_sets="all"):
         if len(item["sequence"]) >= MIN_LEN:
             rows.append(dict(kind="18S", contig=item["contig"], start=item["start"], end=item["end"],
                              strand=item["strand"], sequence=item["sequence"], exons=item["exons"], regions=None,
-                             lsu_complete=False))
+                             lsu_complete=False, contig_length=item["contig_length"], introns=item["introns"]))
         if item.get("unit"):
             refine(item, found.get(item["its"], {}))
-            rows.append(dict(kind="rDNA", contig=item["contig"], start=item["start"], end=item["end"],
+            rows.append(dict(kind="rDNA", contig=item["contig"], start=item["unit_at"][0], end=item["unit_at"][1],
                              strand=item["strand"], sequence=item["unit"], exons=item["exons"],
-                             regions=item["regions"], lsu_complete=item["lsu_complete"]))
+                             regions=item["regions"], lsu_complete=item["lsu_complete"],
+                             contig_length=item["contig_length"], introns=item["unit_introns"]))
     return rows
 
 
@@ -343,14 +357,27 @@ def name_index(ncbi):
     return index
 
 
+def species_name(genus, species):
+    """A EUKARYOME species' whole name: its genus and its s__ epithet ("" for unclassified); an s__ that already starts
+    with its genus as it is."""
+    species = species.replace("_", " ").strip()
+    genus = re.sub(r"\(.*?\)", "", genus).strip()  # EUKARYOME's homonyms: Drosophila(Metazoa)
+    if not species or species.lower() in ("unclassified", "unidentified") or species.endswith(" sp."):
+        return ""
+    if genus and not species.lower().startswith(genus.lower() + " ") and " " not in species:
+        return f"{genus} {species}"
+    return species
+
+
 def eukaryome_taxid(label, index, ncbi):
-    """A EUKARYOME label (k__...;g__Genus;s__Genus_species) -> (taxid, how) by its species name, else its genus's;
-    (None, None) where neither is NCBI's."""
+    """A EUKARYOME label (k__...;g__Genus;s__epithet) -> (taxid, how) by its species name, else its genus's;
+    (None, None) where neither is NCBI's. EUKARYOME 2.1's s__ is the epithet alone (g__Geotrupes;s__spiniger), or
+    unclassified: until format 4 it was read as the whole name, and every record was labelled by its genus."""
     parts = {p[:1]: p[3:].replace("_", " ") for p in label.split(";") if "__" in p}
-    sp = parts.get("s", "")
+    genus = parts.get("g", "")
+    sp = species_name(genus, parts.get("s", ""))
     if sp and (t := index.get(sp.lower())) and ncbi.rank.get(ncbi.species_of(t)) == "species":
         return ncbi.species_of(t), "eukaryome_name"
-    genus = parts.get("g", "")
     if genus and (t := index.get(genus.lower())) and ncbi.rank.get(t) == "genus":
         return t, "eukaryome_genus"
     return None, None
@@ -499,7 +526,10 @@ def finish(records, ncbi, vsearch=None, threads=1):
         row = dict(row, record=name, length=len(seq), regions=regions_text(row.get("regions_list")),
                    lsu_complete="t" if row.get("lsu_complete") else "f", ambiguous=f"{ambiguous(seq):.4f}",
                    homopolymer=homopolymer(seq), type=type_of.get(name, "-"), own_species=own.get(name, "-"),
-                   screen=screened.get(name, "-"))
+                   screen=screened.get(name, "-"), introns=regions_text(row.get("introns_list")), gaps=gaps(seq))
+        edge = contig_edge(row)
+        row["contig_edge"] = "-" if edge is None else edge
+        row["confidence"], row["flags"] = confidence(row)
         out.append((name, seq, row))
     return sorted(out, key=lambda r: (int(r[2]["species_taxid"]), r[0]))
 
@@ -512,36 +542,105 @@ def genome_records(accession, rows, taxid, species_taxid, source="genome"):
         name = f"{accession}_{r['kind']}_{n[r['kind']]}"
         out.append((name, r["sequence"], dict(kind=r["kind"], accession=accession, source=source, taxid=taxid,
                                               species_taxid=species_taxid, regions_list=r["regions"],
-                                              lsu_complete=r["lsu_complete"], label_from="assembly")))
+                                              lsu_complete=r["lsu_complete"], label_from="assembly",
+                                              contig=r["contig"], start=r["start"], end=r["end"], strand=r["strand"],
+                                              contig_length=r.get("contig_length"),
+                                              introns_list=r.get("introns"))))
     return out
 
 
+SAVED = ("kind", "contig", "start", "end", "strand", "regions", "lsu_complete", "contig_length", "introns", "sequence")
+
+
+def parse_regions(text):
+    """regions_text's "name:start-end,..." -> [(name, start, end)], None for "-"."""
+    if text in ("-", "", None):
+        return None
+    return [(p.rpartition(":")[0], int(p.rpartition(":")[2].split("-")[0]), int(p.rpartition(":")[2].split("-")[1]))
+            for p in text.split(",")]
+
+
 def save(folder, rows):
-    """A genome's extraction into its done folder (rrna.tsv: kind, contig, start, end, strand, regions,
-    lsu_complete, sequence)."""
+    """A genome's extraction into its done folder (rrna.tsv: SAVED's columns; contig_length and introns since format
+    4) -> its counts."""
     with open(os.path.join(folder, "rrna.tsv"), "w", newline="\n") as fh:
-        fh.write("kind\tcontig\tstart\tend\tstrand\tregions\tlsu_complete\tsequence\n")
+        fh.write("\t".join(SAVED) + "\n")
         for r in rows:
             fh.write(f"{r['kind']}\t{r['contig']}\t{r['start']}\t{r['end']}\t{r['strand']}\t{regions_text(r['regions'])}"
-                     f"\t{'t' if r['lsu_complete'] else 'f'}\t{r['sequence']}\n")
-    return {"18S": sum(r["kind"] == "18S" for r in rows), "rDNA": sum(r["kind"] == "rDNA" for r in rows)}
+                     f"\t{'t' if r['lsu_complete'] else 'f'}\t{r.get('contig_length') or '-'}"
+                     f"\t{regions_text(r.get('introns'))}\t{r['sequence']}\n")
+    return counts(rows)
+
+
+def counts(rows):
+    """A genome's rRNA as genomes.tsv counts it: 18S spans, rDNA units (those with a whole 28S), the contigs holding
+    units."""
+    units = [r for r in rows if r["kind"] == "rDNA"]
+    return {"18S": sum(r["kind"] == "18S" for r in rows), "rDNA": len(units),
+            "rDNA_complete": sum(1 for r in units if r["lsu_complete"]),
+            "rDNA_contigs": len({r["contig"] for r in units})}
 
 
 def load(folder):
-    """A genome's saved extraction -> extract_genome's rows ([] where there is none)."""
+    """A genome's saved extraction -> extract_genome's rows ([] where there is none; contig_length and introns None
+    in one saved before format 4)."""
     path = os.path.join(folder, "rrna.tsv")
     if not os.path.isfile(path):
         return []
     rows = []
     with open(path) as fh:
-        next(fh)
+        head = fh.readline().rstrip("\n").split("\t")
         for line in fh:
-            f = line.rstrip("\n").split("\t")
-            regions = None if f[5] == "-" else [(p.rpartition(":")[0], int(p.rpartition(":")[2].split("-")[0]),
-                                                 int(p.rpartition(":")[2].split("-")[1])) for p in f[5].split(",")]
-            rows.append(dict(kind=f[0], contig=f[1], start=int(f[2]), end=int(f[3]), strand=f[4], regions=regions,
-                             lsu_complete=f[6] == "t", sequence=f[7]))
+            f = dict(zip(head, line.rstrip("\n").split("\t")))
+            length = f.get("contig_length", "-")
+            rows.append(dict(kind=f["kind"], contig=f["contig"], start=int(f["start"]), end=int(f["end"]),
+                             strand=f["strand"], regions=parse_regions(f["regions"]),
+                             lsu_complete=f["lsu_complete"] == "t", sequence=f["sequence"],
+                             contig_length=int(length) if length.isdigit() else None,
+                             introns=parse_regions(f.get("introns", "-")) if "introns" in f else None))
     return rows
+
+
+def gaps(seq, min_run=GAP_MIN):
+    """The runs of min_run Ns or more in a sequence (assembly gaps)."""
+    return len(re.findall(f"N{{{min_run},}}", seq.upper()))
+
+
+def contig_edge(row):
+    """A genome's record's bases to its contig's nearer end (None where not known)."""
+    length = row.get("contig_length")
+    if not length or row.get("start") in (None, "-"):
+        return None
+    return min(int(row["start"]) - 1, int(length) - int(row["end"]))
+
+
+def confidence(row):
+    """A record's tier and why (rrna/records.tsv's confidence and flags): low where a check calls it another organism's
+    or of bad sequence (own_species f, the part screen, ambiguous bases over MAX_AMBIGUOUS, a homopolymer of
+    HOMOPOLYMER); medium where something may be wrong (an assembly gap in it, at a contig's end, its own-species check
+    undecided, an operon without a whole 28S, labelled by its genus alone); else high."""
+    low, medium = [], []
+    if row.get("own_species") == "f":
+        low.append("own_species")
+    if row.get("screen", "-") not in ("-", ""):
+        low.append("screen")
+    if float(row.get("ambiguous") or 0) > MAX_AMBIGUOUS:
+        low.append("ambiguous")
+    if int(row.get("homopolymer") or 0) >= HOMOPOLYMER:
+        low.append("homopolymer")
+    if int(row.get("gaps") or 0):
+        medium.append("gap")
+    edge = row.get("contig_edge")
+    if edge not in (None, "-") and int(edge) < EDGE:
+        medium.append("contig_edge")
+    if row.get("own_species") in ("-", None):
+        medium.append("own_species_undecided")
+    if row.get("kind") == "rDNA" and row.get("lsu_complete") != "t":
+        medium.append("lsu_partial")
+    if row.get("label_from") == "eukaryome_genus":
+        medium.append("genus_label")
+    tier = "low" if low else "medium" if medium else "high"
+    return tier, ",".join(low + medium) or "-"
 
 
 def has_tools(barrnap="barrnap"):

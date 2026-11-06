@@ -7,7 +7,8 @@ EUKDB is a standalone eukaryote reference, and this repository builds it. It hol
 
 of every eukaryote species with an NCBI genome. The first two are called in NCBI's own assemblies and checked; the
 organelle genes come from NCBI's RefSeq organelle genomes, else the assemblies. All are labelled by NCBI's taxonomy, tied
-to no GTDB release or KSGP version. The package format is in `FORMAT.md` (version 4).
+to no GTDB release. Each species also carries its lineage in PR2, EUKARYOME and KSGP, and each copy and record a
+confidence tier, its checks and the hints of a chimera. The package format is in `FORMAT.md` (version 4).
 
 A user converts a package to its own needs. protal's database build (`download_ref_data.py --eukdb`) does it with its
 own reader of the format: the 30 BUSCOs of its euk30 (its choice, by `busco/loci.tsv` and "Choosing loci" below),
@@ -25,7 +26,9 @@ micromamba create -f envs/tiara.yaml      # optional: tiara apart, as it needs a
 ## How the BUSCO copies are made
 
 EUKDB calls every BUSCO of eukaryota_odb12 itself (OrthoDB 12.1, 129 BUSCOs; `--loci` restricts a trial), as
-compleasm does. EukDetect1 and EukDetect2 were its sources of copies (30 loci) until 2026-11-05.
+compleasm does. A user picks its loci among them: `busco/loci.tsv` gives each one's call rate over the package's
+species and per supergroup (protal picks its euk30). A genome searched for fewer BUSCOs than the build calls (a run
+before format 4) is run again. EukDetect1 and EukDetect2 were its sources of copies (30 loci) until 2026-11-05.
 1. **The genome set.** For each NCBI species with a GenBank assembly in the `--groups`, the assembly that ranks best
    (`eukdb/genomes.py`):
    - never one NCBI flags as contaminated, of an unverified source organism, misassembled, chimeric or of low
@@ -111,6 +114,22 @@ and 21S within 90 bases. barrnap alone found no rRNA in yeast's mitochondrion, a
 but not its 5S. A species with neither source has no organelle genes. The organelle genes have no checks across species
 yet.
 
+## What else a package tells its user (format 4)
+
+So that a user (protal's build) has what it needs without computing it again:
+- **Names.** `species.tsv` gives each species' NCBI lineage and supergroup, and its lineage in PR2 (5.1.1), EUKARYOME
+  (2.1) and KSGP (`--ksgp_tax`, else the 4.0 KSGP's site serves), with how it matched: its name, a synonym, its genus,
+  or none (`eukdb/labels.py`). NCBI's taxids merged since are in `taxonomy/merged.tsv`.
+- **Gene structure.** The BUSCO copies' exons and introns (`busco/features.tsv`), the 18S's introns on each rRNA record
+  and its regions (18S, ITS1, 5.8S, ITS2, 28S, an inline 5S), the organelle genes' exon counts.
+- **Copies in the genome.** Per BUSCO copy its complete copies in the genome (`copies`); per genome its 18S spans and
+  rDNA units in the assembly, those with a whole 28S and the contigs holding them (`genomes.tsv`), a lower bound where
+  the array is collapsed; per organelle gene its copies on the organelle genome.
+- **Chimeras.** Each copy's and each genome record's distance to its contig's end and its assembly gaps, beside
+  `own_species`, `same_as`, tiara's window, FCS-GX and the rRNA part screen.
+- **Confidence.** `high`, `medium` or `low` per copy and per record, with the flags that set it (FORMAT.md): a user
+  drops the `low` ones and weighs the `medium` ones as it sees fit.
+
 ## Layout
 
 | path | contents |
@@ -122,7 +141,8 @@ yet.
 | `eukdb/rrna.py`, `eukdb/screen.py` | the rRNA records and their checks; the part screen |
 | `eukdb/organelle.py` | the mitochondrial and plastid rRNA and COX1 |
 | `eukdb/quality.py` | NCBI's FCS-GX and ANI reports, as the genomes' flags |
-| `eukdb/package.py` | collect, write, read and check a package |
+| `eukdb/package.py` | collect, write, read and check a package; the copies' confidence |
+| `eukdb/labels.py` | each species' PR2, EUKARYOME and KSGP lineage; NCBI's lineage and supergroup |
 | `eukdb/ncbi.py`, `eukdb/sources.py`, `eukdb/species.py` | NCBI's taxonomy; the sources; the model species |
 | `eukdb/placement.py`, `eukdb/copies.py`, `eukdb/util.py` | genome files; a copy's exons and introns; I/O |
 | `data/` | the loci table, the model species table, curated rDNA units, the no-assembly records |
@@ -148,7 +168,9 @@ python3 eukdb_build.py --work WORK --out OUT --stage package --groups fungi,prot
   - NCBI's FCS-GX summaries of its GenBank and RefSeq assemblies, and its Saccharomycotina ANI report (~70 MB);
   - BUSCO's eukaryota_odb12;
   - EUKARYOME 2.1 and ROD v1.2;
-  - RefSeq's organelle genomes (mitochondrion and plastid).
+  - RefSeq's organelle genomes (mitochondrion and plastid);
+  - PR2 5.1.1's taxonomy (5 MB) and KSGP 4.0's (243 MB; with `--ksgp_tax FILE` that KSGP release's tax file instead,
+    protal's 4.4 or 5.2), for `species.tsv`'s lineages.
 - **process** calls every genome it was given, then takes the organelle genes.
 - **package**, in turn:
   - runs FCS-GX where asked;
@@ -236,4 +258,9 @@ panel holds neither.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
 - Whether to replace the four loci with prokaryote homologues ("The loci in prokaryotes") by other odb12 BUSCOs.
 - The organelle genes (format 3, 2026-11-05) have been built in tests only, not on NCBI's release; they have no checks
-  across species (own_species, contaminants). protal's reader takes format 2 until it is told of 3.
+  across species (own_species, contaminants), no confidence and no exon positions (their count alone).
+- Format 4 (2026-11-05) has been built in tests only. PR2's and KSGP's lineages have not been checked on their real
+  files yet; EUKARYOME's were (13 of the 2026-11-05 trial's 43 species by name, the rest by genus).
+- rDNA copy numbers are the assembly's (a lower bound): a genome's own copy number needs its reads (read depth over
+  the unit against single-copy BUSCOs). The intergenic spacer, 5S arrays away from the unit and the 28S's introns are
+  not taken.

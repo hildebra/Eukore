@@ -218,8 +218,26 @@ def done_dir(work, accession):
     return os.path.join(work, "done", safe(accession))
 
 
-def is_done(work, accession):
-    return os.path.isfile(os.path.join(done_dir(work, accession), "done.json"))
+def searched(work, accession):
+    """The BUSCOs a done genome was searched for (done.json's `searched`; in a run before format 4, which searched
+    euk30's 30, its loci.tsv's loci, Missing ones too), or None where it is not done."""
+    try:
+        with open(os.path.join(done_dir(work, accession), "done.json")) as fh:
+            summary = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if "searched" in summary:
+        return set(summary["searched"])
+    return {r[0] for r in read_rows(os.path.join(done_dir(work, accession), "loci.tsv"))}
+
+
+def is_done(work, accession, loci=None):
+    """Whether a genome's run is done; with loci, done for all of them (format 4 searches every BUSCO: a genome
+    searched for euk30's 30 alone is run again)."""
+    if loci is None:
+        return os.path.isfile(os.path.join(done_dir(work, accession), "done.json"))
+    got = searched(work, accession)
+    return got is not None and set(loci) <= got
 
 
 _ODB = {}
@@ -383,6 +401,7 @@ def run(args):
             shutil.rmtree(tmp, ignore_errors=True)
             return acc, None, f"rRNA extraction failed: {e}"
     summary = {"accession": acc, "fetched": job.get("fetch", acc), "why": job["why"], "loci": taken,
+               "searched": list(odb.loci),
                "status": dict(collections.Counter(r["status"] for r in got["loci"].values())), "rrna": rrna,
                "bytes": os.path.getsize(path)}
     with open(os.path.join(tmp, "done.json"), "w", newline="\n") as fh:

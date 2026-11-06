@@ -3,9 +3,8 @@
 NCBI's flags (contaminated never, a metagenome's only without better), RefSeq's category, level, contigs and date; its
 RefSeq copy fetched where it has one; NCBI's placeholder species left out; a model species' reference whatever the
 ranking; a species without an assembly from its records; --species. One genome's run with stand-in tools into its done
-folder, then the package (format 4): genomes, copies whole, busco/loci.tsv (each BUSCO's calls over the species),
-copies.tsv with the checks across species, features,
-species, manifest; the prune.
+folder, then the package (format 4): genomes, copies whole, copies.tsv with the checks across species and the
+confidence, features, busco/loci.tsv's call rates, species with their PR2 lineage, manifest; the prune.
 
     python3 -m unittest discover -s tests -t tests
 """
@@ -20,7 +19,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukdb import genomes, ncbi as ncbi_mod, odb as odb_mod, package, qc, rrna, sources  # noqa: E402
+from eukdb import genomes, labels, ncbi as ncbi_mod, odb as odb_mod, package, qc, rrna, sources  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 YEAST = "GCA_000146045.2"
@@ -125,6 +124,8 @@ class RunTest(unittest.TestCase):
             self.assertEqual((acc, why, summary["loci"], summary["status"]),
                              (YEAST, None, 2, {"Duplicated": 1, "Single": 1, "Missing": 1}))
             self.assertTrue(genomes.is_done(work, YEAST))
+            self.assertTrue(genomes.is_done(work, YEAST, fx.LOCI))
+            self.assertFalse(genomes.is_done(work, YEAST, fx.LOCI + ["4at2759"]))  # a BUSCO it was not searched for
             self.assertEqual(genomes.run((jobs["GCA_000000013.1"], settings))[2], "not fetched yet")
             # the same copy in a second species (S. paradoxus' genome = the yeast's): the checks find them alike
             other = "GCA_000000013.1"
@@ -138,8 +139,12 @@ class RunTest(unittest.TestCase):
             self.assertEqual(rows[(YEAST, "1at2759")]["own_species"], "t")  # nearest agree to the genus
             loci = [dict(locus=l, name=odb.names.get(l, "-"), cutoff=odb.cutoff[l], hmm_length=odb.length[l])
                     for l in odb.loci]
+            pr2 = os.path.join(tmp, "pr2.tax")
+            with open(pr2, "w") as fh:
+                fh.write("A1\tEukaryota;Obazoa;Opisthokonta;Fungi;Saccharomycetes;Saccharomycetales;"
+                         "Saccharomycetaceae;Saccharomyces;Saccharomyces_cerevisiae;\n")
             out = package.write(os.path.join(tmp, "out", "EUKDB_2026.11"), "2026.11", ncbi, collected,
-                                loci, None, genomes_dir, {"test": True})
+                                loci, None, genomes_dir, {"test": True}, None, [labels.read_pr2(pr2)])
             self.assertIsNone(package.check(out, deep=True))
             g = {r["accession"]: r for r in package.read_table(out, "genomes.tsv")}
             self.assertEqual((g[YEAST]["source"], g[YEAST]["representative"], g[YEAST]["loci"], g[YEAST]["local"]),
@@ -154,10 +159,14 @@ class RunTest(unittest.TestCase):
             copies = package.read_table(out, "busco/copies.tsv")
             self.assertEqual({c["locus"] for c in copies if c["accession"] == YEAST}, {"1at2759", "2at2759"})
             self.assertEqual(set(copies[0]), set(package.COPY_COLUMNS))
+            one = next(c for c in copies if c["accession"] == YEAST and c["locus"] == "1at2759")
+            self.assertEqual((one["contig_edge"], one["gaps"]), (str(spans["1at2759"][0] - 1), "0"))
+            self.assertEqual((one["confidence"], one["flags"]), ("medium", "duplicated"))  # the yeast's two copies
             with open(os.path.join(out, "manifest.json")) as fh:
                 manifest = json.load(fh)
-            self.assertEqual((manifest["format"], manifest["counts"]["species"], manifest["counts"]["copies"]),
-                             (4, 2, 4))
+            self.assertEqual((manifest["format"], manifest["counts"]["species"], manifest["counts"]["copies"],
+                              manifest["counts"]["busco_loci"]), (4, 2, 4, 3))
+            self.assertEqual(manifest["inputs"]["references"]["PR2"]["species"], 1)
             # each BUSCO's calls over the package's species: two fungi, 1at2759 and 2at2759 called in both
             got = {r["locus"]: r for r in package.read_table(out, "busco/loci.tsv")}
             self.assertEqual([got[l]["called"] for l in fx.LOCI], ["2", "2", "0"])
@@ -166,6 +175,13 @@ class RunTest(unittest.TestCase):
                              ("2", "1.000", "1.000", "0.000", "50.0", "120"))
             sp = {r["taxid"]: r for r in package.read_table(out, "species.tsv")}
             self.assertEqual((sp["4932"]["representative"], sp["4932"]["source"]), (YEAST, "ncbi"))
+            self.assertEqual((sp["4932"]["supergroup"], sp["4932"]["pr2_match"], sp["4932"]["ksgp"]),
+                             ("Fungi", "species", "-"))
+            self.assertTrue(sp["4932"]["pr2"].endswith(";Saccharomyces;Saccharomyces_cerevisiae"))
+            self.assertEqual(sp["27291"]["pr2_match"], "genus")  # S. paradoxus: PR2 names its genus alone
+            self.assertEqual(sp["4932"]["ncbi_lineage"], "Eukaryota;Fungi;Ascomycota;Saccharomycetes;"
+                                                         "Saccharomycetales;Saccharomycetaceae;Saccharomyces;"
+                                                         "Saccharomyces cerevisiae")
             # the prune: the model species' genome kept first
             size = os.path.getsize(genomes.genome_file(genomes_dir, YEAST))
             kept = genomes.prune(genomes_dir, work, size, set(), {YEAST})
