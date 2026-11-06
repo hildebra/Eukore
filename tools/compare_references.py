@@ -81,10 +81,13 @@ def marker_fasta(archive):
 
 
 def pr2_taxid(title, index, ncbi):
-    """A PR2 title (record|domain|...|genus|species) -> (record, NCBI taxid of its species, else its genus) or None."""
+    """A PR2 title (record|gene|organelle|...|domain|...|genus|species: its 9 ranks last, as taxo_long writes it) ->
+    (record, NCBI taxid of its species, else its genus) or None (an organelle's record, or neither named)."""
     fields = title.split()[0].split("|")
-    record, ranks = fields[0], fields[1:]
-    if len(ranks) != len(labels.PR2_RANKS) or ranks[0] != "Eukaryota" or labels.ORGANELLE.search("|".join(ranks)):
+    record, ranks = fields[0], fields[-len(labels.PR2_RANKS):]
+    where = fields[2] if len(fields) > len(labels.PR2_RANKS) + 2 else "nucleus"
+    if len(fields) <= len(labels.PR2_RANKS) or ranks[0] != "Eukaryota" or where != "nucleus" or \
+            labels.ORGANELLE.search("|".join(ranks)):
         return None
     genus, species = ranks[-2], ranks[-1]
     if labels.is_species_name(species):

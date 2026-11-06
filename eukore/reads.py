@@ -48,6 +48,17 @@ MODES = ("in", "held_out")
 REFERENCES = ("Eukore", "Eukore exons", "Eukore 18S")
 COLUMNS = ("test", "kind", "species_taxid", "supergroup", "congeners", "reference", "mode", "reads", "n",
            "assigned") + tuple(f"{r}_{x}" for r in RANKS for x in ("correct", "wrong"))
+# detection (detection.tsv): each test genome a sample, its reads from anywhere in it (the first `depth`) and as many
+# background reads (depth / their genomes of each); a taxon is detected with MIN_READS reads placed to it at the rank
+# scored (the species with it in the reference, `in`; its genus with it held out) and MIN_SHARE of the sample's reads
+# placed at that rank, as profilers cut by relative abundance: a fixed count alone detects more congeners the deeper
+# the sample (the 2026-11-06 trial: Eukore's false species 4, 7, 20 in 24 samples of 1,000, 5,000, 20,000 reads)
+MIN_READS = 3
+MIN_SHARE = 0.01
+DEPTHS = (1_000, 5_000, 20_000)
+DETECT_RANK = {"in": "species", "held_out": "genus"}
+DETECT_COLUMNS = ("test", "species_taxid", "supergroup", "congeners", "reference", "mode", "rank", "depth",
+                  "in_reference", "true_reads", "detected", "false_taxa")
 BASES = "ACGT"
 COMPLEMENT = str.maketrans("ACGTN", "TGCAN")
 
@@ -296,12 +307,80 @@ def score(truth, taxon, ncbi, cache):
     return out
 
 
+# --- detection -----------------------------------------------------------------------------------------------------
+
+def holdings(taxa, ncbi, cache):
+    """A reference's taxa {record: taxid} -> (its species, {genus: its species})."""
+    species = {ncbi.species_of(t) for t in set(taxa.values())} - {None}
+    genera = collections.defaultdict(set)
+    for sp in species:
+        g = ranks_of(ncbi, sp, cache).get("genus")
+        if g:
+            genera[g].add(sp)
+    return species, genera
+
+
+def in_reference(sp, mode, held, ncbi, cache):
+    """Whether a reference (holdings) can place a test species right: holds it (in), or another species of its
+    genus (held out)."""
+    species, genera = held
+    if mode == "in":
+        return sp in species
+    g = ranks_of(ncbi, sp, cache).get("genus")
+    return bool(g and genera.get(g, set()) - {sp})
+
+
+def detect(placed, test, sp, rank, depth, background, ncbi, cache):
+    """A sample: the test's first `depth` reads placed ({source: {read index: taxon}}) and depth / len(background) of
+    each background genome's -> (reads placed to its right taxon at rank, whether it is detected, other taxa
+    detected): detected with MIN_READS reads and MIN_SHARE of the reads placed at rank."""
+    counts = collections.Counter()
+    per = depth // max(1, len(background))
+    for source, upto in [(test, depth)] + [(b, per) for b in background]:
+        for i, taxon in placed.get(source, {}).items():
+            if i < upto:
+                t = ranks_of(ncbi, taxon, cache).get(rank)
+                if t:
+                    counts[t] += 1
+    floor = max(MIN_READS, MIN_SHARE * sum(counts.values()))
+    truth = ranks_of(ncbi, sp, cache).get(rank)
+    right = counts.pop(truth, 0) if truth else 0
+    return right, right >= floor, sum(1 for n in counts.values() if n >= floor)
+
+
+def detection_summary(rows):
+    """detection.tsv's headline: per reference, mode and depth over its samples (held out: those with congeners)
+    the right taxa detected (tp), missed with it not in the reference (fn_absent) or in it (fn_missed), wrong taxa
+    detected (fp), precision, recall and F1."""
+    sums = collections.defaultdict(collections.Counter)
+    for r in rows:
+        if r["mode"] == "held_out" and not int(r["congeners"]):
+            continue
+        s = sums[(r["reference"], r["mode"], int(r["depth"]))]
+        s["samples"] += 1
+        if r["detected"] == "t":
+            s["tp"] += 1
+        else:
+            s["fn_missed" if r["in_reference"] == "t" else "fn_absent"] += 1
+        s["fp"] += int(r["false_taxa"])
+    out = collections.defaultdict(dict)
+    for (ref, mode, depth), s in sorted(sums.items()):
+        tp, fn, fp = s["tp"], s["fn_missed"] + s["fn_absent"], s["fp"]
+        p = tp / (tp + fp) if tp + fp else None
+        rc = tp / (tp + fn) if tp + fn else None
+        out[ref][f"{mode}_{depth}"] = dict(s, precision=round(p, 4) if p is not None else None,
+                                           recall=round(rc, 4) if rc is not None else None,
+                                           f1=round(2 * tp / (2 * tp + fp + fn), 4) if tp + fp + fn else None)
+    return dict(out)
+
+
 # --- all of it -----------------------------------------------------------------------------------------------------
 
 def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=None, background=(), inside=None,
-        log=print, seed=1, n_genome=GENOME_READS, n_background=BACKGROUND_READS):
+        log=print, seed=1, n_genome=GENOME_READS, n_background=BACKGROUND_READS, detections=None):
     """The read benchmark of the package in folder (tests: accessions of genomes in genomes_folder; background:
-    [(name, FASTA)]) in work (deleted after) -> reads.tsv's rows."""
+    [(name, FASTA)]) in work (deleted after) -> reads.tsv's rows; detections: a list given takes detection.tsv's rows
+    (each test genome a sample at DEPTHS, detect)."""
     os.makedirs(work, exist_ok=True)
     rng = random.Random(seed)
     genomes = {r["accession"]: r for r in package.read_table(folder, "genomes.tsv") if r["representative"] == "t"}
@@ -335,13 +414,16 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
             subprocess.run([minimap2, "-x", "sr", "-c", "--secondary=yes", "-N", "50", "-p", "0.5", "-t",
                             str(max(1, threads)), fasta, reads_fa], stdout=out, stderr=subprocess.DEVNULL, check=True)
         tally = collections.defaultdict(collections.Counter)
+        placed = {mode: collections.defaultdict(dict) for mode in MODES}  # genome reads: {source: {index: taxon}}
         for read, hits in paf_groups(paf):
-            test, kind, _i = read.rsplit("|", 2)
+            test, kind, i = read.rsplit("|", 2)
             what, sp = meta[test]
             for mode in MODES:
                 taxon = assign(hits, taxa, ncbi, sp if mode == "held_out" and what == "eukaryote" else None)
                 if taxon is None:
                     continue
+                if kind == "genome":
+                    placed[mode][test][int(i)] = taxon
                 t = tally[(test, kind, mode)]
                 t["assigned"] += 1
                 if what == "eukaryote":
@@ -364,6 +446,23 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
                                  supergroup=species.get(sp, {}).get("supergroup", "-") if sp else "-",
                                  congeners=genus_size[g] - 1 if g else 0, reference=ref, mode=mode, reads=kind, n=n,
                                  assigned=t["assigned"], **{c: t[c] for c in COLUMNS[10:]}))
+        if detections is not None:
+            held = holdings(taxa, ncbi, cache)
+            names = [name for name, _p in background]
+            depths = [d for d in DEPTHS if d <= n_genome] or [n_genome]
+            for test in tests:
+                sp = meta[test][1]
+                g = genus_of(ncbi, sp)
+                for mode in MODES:
+                    for depth in depths:
+                        right, found, wrong = detect(placed[mode], test, sp, DETECT_RANK[mode], depth, names, ncbi,
+                                                     cache)
+                        detections.append(dict(
+                            test=test, species_taxid=sp, supergroup=species.get(sp, {}).get("supergroup", "-"),
+                            congeners=genus_size[g] - 1 if g else 0, reference=ref, mode=mode,
+                            rank=DETECT_RANK[mode], depth=depth,
+                            in_reference="t" if in_reference(sp, mode, held, ncbi, cache) else "f",
+                            true_reads=right, detected="t" if found else "f", false_taxa=wrong))
         log(f"  reads aligned to {ref} ({len(taxa):,} records)")
     for path in [p for p, _t in refs.values()] + [reads_fa]:
         if os.path.isfile(path):

@@ -203,7 +203,11 @@ holds a trial's, with `index.md` captioning each and naming its tables):
   database, MetaPhlAn 4's eukaryote markers and PR2's 18S, the latter two made by `tools/compare_references.py`);
   each read's hits within 1 point of its best
   (90% identical at least, 80% of the read) name their lowest common ancestor, with its own species in the reference
-  and held out. No profiler is involved: the benchmark measures the reference.
+  and held out. No profiler is involved: the benchmark measures the reference. Detection (`detection.tsv`): each
+  test genome is a sample of its reads from anywhere in it (1,000, 5,000 and 20,000) with as many bacterial reads;
+  a taxon with 3 reads or more, and 1% or more of the reads placed at its rank, is detected. Per reference: F1 of detecting the right species (it in the reference)
+  and genus (held out), and the samples missed, split into taxa the reference does not hold and those it holds but
+  placed too few reads to.
 - **The checks** (`flags.tsv`), **rRNA regions' and mitochondrial genes' lengths** (`rrna_regions.tsv`),
   **organelle coverage** (`organelle.tsv`), **rRNA copies per genome as assembled** (`rrna_copies.tsv`).
 - **Other databases** (`overlap.tsv`): the species of PR2, EUKARYOME's long reads, KSGP, ROD, BUSCO's OrthoDB

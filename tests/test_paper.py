@@ -222,14 +222,46 @@ class CompareReferencesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
             index = cr.rrna.name_index(ncbi)
+            # PR2 5.1.1's taxo_long titles: record|gene|organelle||its 9 ranks
             lineage = "Eukaryota|Obazoa|Opisthokonta|Fungi|Saccharomycetes|Saccharomycetales|Saccharomycetaceae|"
-            got = [cr.pr2_taxid(f"R{i}|{lineage}{x}", index, ncbi) for i, x in enumerate((
-                "Saccharomyces|Saccharomyces_cerevisiae",      # its species
-                "Saccharomyces|Saccharomyces_novus",           # NCBI has no such species: its genus
-                "Saccharomyces|Saccharomyces_sp.",             # no species named: its genus
-                "Novus|Novus_ignotus",                          # neither
-                "Saccharomyces:plas|Saccharomyces_cerevisiae:plas"))]  # an organelle's
+            got = [cr.pr2_taxid(f"R{i}|18S_rRNA|{where}||{lineage}{x}", index, ncbi) for i, (where, x) in enumerate((
+                ("nucleus", "Saccharomyces|Saccharomyces_cerevisiae"),        # its species
+                ("nucleus", "Saccharomyces|Saccharomyces_novus"),             # NCBI has no such species: its genus
+                ("nucleus", "Saccharomyces|Saccharomyces_sp."),               # no species named: its genus
+                ("nucleus", "Novus|Novus_ignotus"),                           # neither
+                ("plastid", "Saccharomyces|Saccharomyces_cerevisiae")))]      # an organelle's
         self.assertEqual(got, [("R0", 4932), ("R1", 4930), ("R2", 4930), None, None])
+
+    def test_detection_f1_and_misses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+        cache = {}
+        # a reference of S. cerevisiae (a strain's record) and K. lactis
+        held = reads.holdings({"r1": 559292, "r2": 28985}, ncbi, cache)
+        self.assertTrue(reads.in_reference(4932, "in", held, ncbi, cache))
+        self.assertFalse(reads.in_reference(27291, "in", held, ncbi, cache))      # S. paradoxus: not in it
+        self.assertTrue(reads.in_reference(27291, "held_out", held, ncbi, cache))  # its genus is
+        self.assertFalse(reads.in_reference(4932, "held_out", held, ncbi, cache))  # no other Saccharomyces
+        # a sample of S. cerevisiae: 4 reads to it, 3 to K. lactis (a wrong species, detected), 2 of a bacterium's to
+        # S. paradoxus (under MIN_READS); depth 10: the test's reads 0..9, 5 of the one background genome's
+        placed = {"T": {0: 4932, 1: 559292, 2: 4932, 3: 4932, 4: 28985, 5: 28985, 6: 28985, 12: 4932},
+                  "B": {0: 27291, 1: 27291, 7: 28985}}
+        self.assertEqual(reads.detect(placed, "T", 4932, "species", 10, ["B"], ncbi, cache), (4, True, 1))
+        self.assertEqual(reads.detect(placed, "T", 4932, "species", 3, ["B"], ncbi, cache), (3, True, 0))
+        # a deep sample: 1% of the reads placed is the floor (3 reads of 1,000 placed are under it)
+        deep = {"T": {i: 4932 for i in range(997)} | {997: 28985, 998: 28985, 999: 28985}}
+        self.assertEqual(reads.detect(deep, "T", 4932, "species", 1000, [], ncbi, cache), (997, True, 0))
+        deep["T"].update({i: 28985 for i in range(1000, 1012)})  # 15 K. lactis reads of 1,012: detected
+        self.assertEqual(reads.detect(deep, "T", 4932, "species", 2000, [], ncbi, cache), (997, True, 1))
+        rows = [dict(reference="R", mode="in", depth=10, congeners=1, detected="t", in_reference="t", false_taxa=1),
+                dict(reference="R", mode="in", depth=10, congeners=0, detected="f", in_reference="t", false_taxa=0),
+                dict(reference="R", mode="in", depth=10, congeners=1, detected="f", in_reference="f", false_taxa=0),
+                dict(reference="R", mode="held_out", depth=10, congeners=0, detected="f", in_reference="f",
+                     false_taxa=0)]  # no congeners: left out
+        got = reads.detection_summary(rows)["R"]
+        self.assertEqual({k: got["in_10"][k] for k in ("tp", "fn_missed", "fn_absent", "fp", "f1")},
+                         dict(tp=1, fn_missed=1, fn_absent=1, fp=1, f1=0.4))
+        self.assertNotIn("held_out_10", got)
 
     def test_several_compared_references(self):
         self.assertEqual(reads.compared(None), [])

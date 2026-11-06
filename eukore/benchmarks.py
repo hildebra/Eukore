@@ -640,10 +640,13 @@ def paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside
     write(out, "organelle.tsv", ORGANELLE_COLUMNS, organelle_rows(folder, species))
     if reads and reads.get("tests") and reads.get("minimap2"):
         from . import reads as reads_mod  # noqa: PLC0415
+        detections = []
         rows = reads_mod.run(folder, ncbi, reads["genomes_folder"], reads["tests"], reads["minimap2"], threads,
-                             reads["work"], compare, reads.get("background", ()), inside, log)
+                             reads["work"], compare, reads.get("background", ()), inside, log, detections=detections)
         write(out, "reads.tsv", reads_mod.COLUMNS, rows)
+        write(out, "detection.tsv", reads_mod.DETECT_COLUMNS, detections)
         summary["reads"] = read_summary(rows)
+        summary["detection"] = reads_mod.detection_summary(detections)
         shutil.rmtree(reads["work"], ignore_errors=True)
     else:
         summary["left_out"]["reads"] = "no test genomes or no minimap2 (eukore_build.py --read_genomes)"
