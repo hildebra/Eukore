@@ -31,6 +31,7 @@ micromamba activate eukore
   organelle genes;
 - barrnap and ITSx: the rRNA genes and the ITS borders;
 - vsearch: the checks across species and the part screen;
+- ISA-L's igzip: the downloads' gzip checks (else pigz, else Python's, ~3.5x slower);
 - p7zip: EUKARYOME's archive;
 - openpyxl: EUKARYOME's tables;
 - ncbi-fcs-gx: optional, the FCS-GX screen;
@@ -39,7 +40,7 @@ micromamba activate eukore
 Check that the tools are found:
 
 ```bash
-for t in miniprot hmmsearch esl-translate nhmmer barrnap ITSx vsearch 7za; do printf '%-10s %s\n' $t "$(command -v $t || echo MISSING)"; done
+for t in miniprot hmmsearch esl-translate nhmmer barrnap ITSx vsearch 7za curl igzip; do printf '%-10s %s\n' $t "$(command -v $t || echo MISSING)"; done
 python3 eukore_build.py --help
 ```
 
