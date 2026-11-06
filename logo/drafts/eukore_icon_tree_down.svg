@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="t">
+  <title id="t">Eukore</title>
+  <rect width="256" height="256" rx="48" fill="#16324F"/>
+
+  <!-- the database -->
+  <path d="M88,50 V98 A40,11 0 0 0 168,98 V50 Z" fill="#1E8C8E"/>
+  <path d="M88,66 A40,11 0 0 0 168,66" fill="none" stroke="#9FE0DC" stroke-width="2.5"/>
+  <path d="M88,82 A40,11 0 0 0 168,82" fill="none" stroke="#9FE0DC" stroke-width="2.5"/>
+  <ellipse cx="128" cy="50" rx="40" ry="11" fill="#7FD3CF"/>
+
+  <!-- the phylogeny: (plants, (Amoebozoa, (Fungi, (mouse, human)))) -->
+  <g fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M128,109 V128"/>
+    <path d="M48,210 V128 H148 V150"/>
+    <path d="M88,210 V150 H168 V172"/>
+    <path d="M128,210 V172 H188 V194"/>
+    <path d="M168,210 V194 H208 V210"/>
+  </g>
+
+  <!-- the tips, coloured by clade -->
+  <circle cx="48" cy="214" r="11" fill="#4CC07A"/>
+  <circle cx="88" cy="214" r="11" fill="#A97BD1"/>
+  <circle cx="128" cy="214" r="11" fill="#F0A23B"/>
+  <circle cx="168" cy="214" r="11" fill="#6FA3E0"/>
+  <circle cx="208" cy="214" r="11" fill="#6FA3E0"/>
+</svg>

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 440" width="600" height="440" role="img" aria-labelledby="t">
+  <title id="t">Eukore</title>
+  <!-- the database as stacked disks, one per eukaryote supergroup, in the order of the tree (bottom to top):
+       Archaeplastida, SAR, Amoebozoa, Fungi, Metazoa -->
+  <g><!-- Archaeplastida -->
+    <path d="M190,240 V268 A110,30 0 0 0 410,268 V240 Z" fill="#2E8B57"/>
+    <ellipse cx="300" cy="240" rx="110" ry="30" fill="#5CC48A"/>
+    <ellipse cx="300" cy="240" rx="86" ry="20" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.35"/>
+  </g>
+  <g><!-- SAR -->
+    <path d="M190,200 V228 A110,30 0 0 0 410,228 V200 Z" fill="#B8475C"/>
+    <ellipse cx="300" cy="200" rx="110" ry="30" fill="#E88A9B"/>
+    <ellipse cx="300" cy="200" rx="86" ry="20" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.35"/>
+  </g>
+  <g><!-- Amoebozoa -->
+    <path d="M190,160 V188 A110,30 0 0 0 410,188 V160 Z" fill="#7B4FA0"/>
+    <ellipse cx="300" cy="160" rx="110" ry="30" fill="#B08AD6"/>
+    <ellipse cx="300" cy="160" rx="86" ry="20" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.35"/>
+  </g>
+  <g><!-- Fungi -->
+    <path d="M190,120 V148 A110,30 0 0 0 410,148 V120 Z" fill="#C07A1E"/>
+    <ellipse cx="300" cy="120" rx="110" ry="30" fill="#F2B45A"/>
+    <ellipse cx="300" cy="120" rx="86" ry="20" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.35"/>
+  </g>
+  <g><!-- Metazoa -->
+    <path d="M190,80 V108 A110,30 0 0 0 410,108 V80 Z" fill="#3D6FA8"/>
+    <ellipse cx="300" cy="80" rx="110" ry="30" fill="#7FAEE6"/>
+    <ellipse cx="300" cy="80" rx="86" ry="20" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.35"/>
+  </g>
+
+  <!-- the name -->
+  <text x="300" y="378" text-anchor="middle" font-family="Montserrat, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+        font-size="76" font-weight="700" letter-spacing="2" fill="#1F2A44">Euk<tspan fill="#1E8C8E">ore</tspan></text>
+  <text x="300" y="416" text-anchor="middle" font-family="Montserrat, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+        font-size="15" font-weight="600" letter-spacing="4.5" fill="#5B6478">EUKARYOTE MARKER GENES</text>
+</svg>

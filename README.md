@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo/eukore_logo_dark.png">
+    <img src="logo/eukore_logo.png" alt="Eukore" width="360">
+  </picture>
+</p>
+
 # Eukore
 
 Version 0.1 (`eukore_build.py -V`). Named EUKDB until 2026-11-06.
