@@ -105,9 +105,7 @@ class FetchTest(unittest.TestCase):
                                                      checker=checker, times=times.setdefault(name, counter()))
                                for name in ("whole.fna.gz", "cut.fna.gz", "missing.fna.gz")}
                     self.assertEqual(times["whole.fna.gz"]["bytes"], len(whole))  # the file placed, its steps timed
-                    # checked as it arrived (curl and a gzip tool: no check of its own) or after
-                    self.assertTrue(all(times["whole.fna.gz"][k] > 0 for k in ("transfer", "copy")))
-                    self.assertIn("check", times["whole.fna.gz"])
+                    self.assertTrue(all(times["whole.fna.gz"][k] > 0 for k in ("transfer", "check", "copy")))
                     self.assertEqual(times["cut.fna.gz"]["bytes"], 0)
                     self.assertEqual(got["whole.fna.gz"], "", util.CURL)
                     self.assertTrue(got["cut.fna.gz"].startswith(("EOFError", "OSError")), got)  # Python's; a tool's
@@ -129,7 +127,7 @@ class FetchTest(unittest.TestCase):
         from unittest import mock  # noqa: PLC0415
         tries = []
 
-        def failing(url, path, check=None):
+        def failing(url, path):
             tries.append(url)
             util.STOP.set()
             raise OSError("curl exit 2: interrupted")

@@ -526,8 +526,6 @@ def main(argv=None):
         spent = collections.Counter()  # the downloads' seconds of transfer, check and copy (fetch_file's times)
         for done in at_a_time(fetch_genome, todo, downloads):
             j, why, size, times = done.result()
-            if why:
-                say(f"  {j['accession']}: not fetched ({why})")
             fetched += size
             spent += times
             rate = fetched / max(1e-9, time.time() - progress.started) / 1e6
