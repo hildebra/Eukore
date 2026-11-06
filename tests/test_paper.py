@@ -212,5 +212,31 @@ class TablesTest(unittest.TestCase):
         self.assertEqual(rows[("mitochondrion", "COX1")]["median"], 12880)
 
 
+class CompareReferencesTest(unittest.TestCase):
+    def test_metaphlan_and_pr2_labelled_by_ncbi(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
+        import compare_references as cr  # noqa: PLC0415
+        info = ["27987__gene-1\t{'clade': 't__EUK27987', 'ext': [], 'len': 259, 'taxon': 'k__Eukaryota|t__EUK27987'}",
+                "UniRef90_X|1__2|SGB1\t{'clade': 't__SGB1', 'ext': [], 'len': 900, 'taxon': 'k__Bacteria|t__SGB1'}"]
+        self.assertEqual(cr.euk_markers(info), {"27987__gene-1": 27987})
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            index = cr.rrna.name_index(ncbi)
+            lineage = "Eukaryota|Obazoa|Opisthokonta|Fungi|Saccharomycetes|Saccharomycetales|Saccharomycetaceae|"
+            got = [cr.pr2_taxid(f"R{i}|{lineage}{x}", index, ncbi) for i, x in enumerate((
+                "Saccharomyces|Saccharomyces_cerevisiae",      # its species
+                "Saccharomyces|Saccharomyces_novus",           # NCBI has no such species: its genus
+                "Saccharomyces|Saccharomyces_sp.",             # no species named: its genus
+                "Novus|Novus_ignotus",                          # neither
+                "Saccharomyces:plas|Saccharomyces_cerevisiae:plas"))]  # an organelle's
+        self.assertEqual(got, [("R0", 4932), ("R1", 4930), ("R2", 4930), None, None])
+
+    def test_several_compared_references(self):
+        self.assertEqual(reads.compared(None), [])
+        self.assertEqual(reads.compared(("A", "a.fa", "a.tsv")), [("A", "a.fa", "a.tsv")])
+        self.assertEqual(reads.compared([("A", "a.fa", "a.tsv"), ("B", "b.fa", "b.tsv")]),
+                         [("A", "a.fa", "a.tsv"), ("B", "b.fa", "b.tsv")])
+
+
 if __name__ == "__main__":
     unittest.main()

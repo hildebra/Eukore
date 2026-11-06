@@ -175,6 +175,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--keep_gb` | 1000 | the genomes kept in `OUT/genomes` once the package is written, GB |
 | `-t`, `--threads` | 8 | threads in all |
 | `-j`, `--jobs` | threads / 4 | genomes at a time |
+| `--downloads` | 8 | the fetch stage's genomes and annotations downloaded at a time (one NCBI connection gives ~10 MB/s) |
 | `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and runs (genomes left, time left) |
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
@@ -183,7 +184,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--miniprot`, `--hmmsearch` | on the PATH | the tools, where not on the PATH |
 | `--no_benchmarks` | | write the package without its `benchmarks/` ([benchmarks.md](benchmarks.md)) |
 | `--read_genomes N` | 3 | the read benchmark's test genomes per supergroup, kept through the prune (0: none) |
-| `--read_compare NAME=FASTA,TABLE` | | another reference for the read benchmark and `breadth.tsv` (e.g. EukDetect2's `eukdb.fasta` and `busco_taxid_genome_link.txt`) |
+| `--read_compare NAME=FASTA,TABLE` | | another reference for the read benchmark and `overlap.tsv` (TABLE: record, tab, NCBI taxid), given again for each further one; the first is also `breadth.tsv`'s. E.g. EukDetect2's `eukdb.fasta` and `busco_taxid_genome_link.txt`; `tools/compare_references.py` makes MetaPhlAn 4's eukaryote markers and PR2's 18S into such pairs |
 | `--minimap2` | on the PATH | the read benchmark's aligner |
 
 ### Resuming and rebuilding

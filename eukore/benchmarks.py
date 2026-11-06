@@ -582,14 +582,17 @@ def paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside
     compared reference)."""
     if fates:
         write(out, "selection.tsv", SELECTION_COLUMNS, selection_rows(fates, ncbi))
-    other = compared_species(compare[2], ncbi, inside) if compare else None
-    rows = breadth_rows(species, fates, other, ncbi)
+    from .reads import compared as compared_refs  # noqa: PLC0415
+    others = {name: compared_species(table, ncbi, inside) for name, _fasta, table in compared_refs(compare)}
+    first = next(iter(others), None)  # breadth.tsv's: the first --read_compare
+    rows = breadth_rows(species, fates, others[first] if first else None, ncbi)
     write(out, "breadth.tsv", BREADTH_COLUMNS, rows)
     summary["breadth"] = next(({k: v for k, v in r.items() if k != "supergroup"} for r in rows
                                if r["supergroup"] == "all"), {})
+    if first:
+        summary["breadth"]["compared_name"] = first
     databases = dict(databases or {})
-    if other is not None:
-        databases[compare[0]] = other
+    databases.update(others)
     if odb:
         databases[ODB_NAME] = {sp for sp in (ncbi.species_of(t) for t in odb.species())
                                if sp and ncbi.rank.get(sp) == "species" and (inside is None or inside(sp))}

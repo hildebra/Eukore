@@ -14,8 +14,9 @@ The references, each aligned to by minimap2 (-x sr, secondary alignments kept):
 - Eukore: the BUSCO copies whole and the rRNA records;
 - Eukore exons: the copies' coding sequences alone (an exon-level reference, EukDetect's kind) and the rRNA records;
 - Eukore 18S: the rRNA records' 18S alone (an 18S reference, PR2's kind);
-- another reference (compare: EukDetect2's database), its records labelled by its own taxid table, cut to the
-  package's clades in a trial package.
+- other references (compare: EukDetect2's database, MetaPhlAn 4's eukaryote markers, PR2's 18S; tools/
+  compare_references.py makes the latter two), each's records labelled by its own taxid table, cut to the package's
+  clades in a trial package.
 
 A read's hits covering MIN_COVER of it, MIN_ID identical or more and within NEAR of its best hit name the lowest
 common ancestor of their taxa: its assignment. Each read is assigned twice: with its own species in the reference
@@ -73,9 +74,17 @@ def choose(ncbi, reps, per_group=PER_GROUP, exists=os.path.isfile):
 
 # --- references --------------------------------------------------------------------------------------------------
 
+def compared(compare):
+    """--read_compare's references as a list [(name, FASTA, table)]: one (a tuple), several (a list) or none."""
+    if not compare:
+        return []
+    return [tuple(compare)] if isinstance(compare[0], str) else [tuple(c) for c in compare]
+
+
 def references(folder, out, ncbi, compare=None, inside=None):
-    """The references' FASTAs written into out -> {name: (path, {record: taxid})}. compare: (name, FASTA, table of
-    record<TAB>taxid) or None; inside: a test of a taxid (a trial package's clades) the compared reference is cut to."""
+    """The references' FASTAs written into out -> {name: (path, {record: taxid})}. compare: other references, each
+    (name, FASTA, table of record<TAB>taxid) (compared); inside: a test of a taxid (a trial package's clades) the
+    compared references are cut to."""
     os.makedirs(out, exist_ok=True)
     species_of = {r["accession"]: int(r["species_taxid"])
                   for r in package.read_table(folder, "genomes.tsv") if r["representative"] == "t"}
@@ -118,8 +127,7 @@ def references(folder, out, ncbi, compare=None, inside=None):
                 ssu.write(f">{name}\n{part}\n")
                 taxa["Eukore 18S"][name] = taxid
     out_refs = {name: (paths[name], taxa[name]) for name in REFERENCES}
-    if compare:
-        name, fasta, table = compare
+    for name, fasta, table in compared(compare):
         wanted = {}
         with util.open_text(table) as fh:
             for line in fh:

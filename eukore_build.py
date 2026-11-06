@@ -22,6 +22,7 @@ Stages:
 """
 
 import argparse
+import concurrent.futures
 import contextlib
 import datetime
 import functools
@@ -345,6 +346,16 @@ def inside_of(ncbi, wanted):
     return inside
 
 
+def at_a_time(work, items, n):
+    """work(item) of each item, n at a time in threads (downloads: urllib and zlib let go of the GIL) -> their futures as
+    they finish. A stop (Ctrl-C) drops those not started instead of waiting for them all."""
+    pool = concurrent.futures.ThreadPoolExecutor(max(1, n))
+    try:
+        yield from concurrent.futures.as_completed([pool.submit(work, item) for item in items])
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=f"Eukore {__version__}. " + __doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -368,9 +379,11 @@ def main(argv=None):
     p.add_argument("--read_genomes", type=int, default=reads_mod.PER_GROUP,
                    help=f"the read benchmark's test genomes per supergroup, kept through the prune (default "
                         f"{reads_mod.PER_GROUP}; 0: no read benchmark)")
-    p.add_argument("--read_compare", metavar="NAME=FASTA,TABLE",
-                   help="another reference for the read benchmark and breadth.tsv, e.g. "
-                        "EukDetect2=eukdb.fasta,busco_taxid_genome_link.txt (TABLE: record<TAB>NCBI taxid)")
+    p.add_argument("--read_compare", metavar="NAME=FASTA,TABLE", action="append",
+                   help="another reference for the read benchmark and overlap.tsv (TABLE: record<TAB>NCBI taxid), "
+                        "e.g. EukDetect2=eukdb.fasta,busco_taxid_genome_link.txt; again for each further one "
+                        "(tools/compare_references.py: MetaPhlAn 4's eukaryote markers, PR2's 18S); the first is "
+                        "breadth.tsv's")
     p.add_argument("--hmmsearch", default="hmmsearch")
     p.add_argument("--fcs_gx_db", help="NCBI FCS-GX's database (the gxdb folder's prefix, ~470 GB, best copied to "
                                        "/dev/shm; a node of ~512 GB): the package stage screens each genome's windows "
@@ -388,17 +401,23 @@ def main(argv=None):
                                                                   "(eukore/benchmarks.py; docs/benchmarks.md)")
     p.add_argument("-t", "--threads", type=int, default=8)
     p.add_argument("-j", "--jobs", type=int, default=None, help="genomes at a time (default threads / 4)")
+    p.add_argument("--downloads", type=int, default=8,
+                   help="the fetch stage's genomes and annotations downloaded at a time (default 8; one NCBI "
+                        "connection gives ~10 MB/s)")
     p.add_argument("--report_minutes", type=float, default=util.REPORT_EVERY / 60,
                    help="minutes between progress reports of the genomes' downloads and runs: genomes left, time left "
                         "(default 10)")
     opts = p.parse_args(argv)
     opts.groups = [g for g in opts.groups.split(",") if g]
-    if opts.read_compare:
-        name, _eq, files = opts.read_compare.partition("=")
+    compare = []
+    for spec in opts.read_compare or ():
+        name, _eq, files = spec.partition("=")
         fasta, _comma, table = files.partition(",")
-        if not (name and os.path.isfile(fasta) and os.path.isfile(table)):
-            p.error(f"--read_compare {opts.read_compare}: NAME=FASTA,TABLE, both files there")
-        opts.read_compare = (name, fasta, table)
+        if not (name and os.path.isfile(fasta) and os.path.isfile(table)) or name in reads_mod.REFERENCES or \
+                name in {c[0] for c in compare}:
+            p.error(f"--read_compare {spec}: NAME=FASTA,TABLE, both files there, a name of its own")
+        compare.append((name, fasta, table))
+    opts.read_compare = compare
     unknown = set(opts.groups) - set(sources.ASSEMBLY_GROUPS)
     if unknown:
         p.error(f"--groups: {sorted(unknown)} (known: {', '.join(sources.ASSEMBLY_GROUPS)})")
@@ -419,16 +438,22 @@ def main(argv=None):
         todo = [j for a, j in sorted(job_map.items()) if j["url"] and not j.get("path")
                 and not os.path.isfile(genomes.genome_file(opts.genomes, a))
                 and not genomes.is_done(opts.work, a, loci)]
+        downloads = max(1, opts.downloads)
         say(f"fetching {len(todo):,} genomes ({sum(j.get('size') or 0 for j in todo) / 1e9:,.1f} Gb) into "
-            f"{opts.genomes}; progress every {opts.report_minutes:g} minutes")
+            f"{opts.genomes}, {downloads} at a time; progress every {opts.report_minutes:g} minutes")
         # every --report_minutes: genomes left and the time left, by their sizes (a plant's genome is a thousand
-        # yeasts'), and the download rate
+        # yeasts'), and the download rate, all kept by this thread (the downloads' are at_a_time's)
         progress = util.Progress("genomes fetched", [j.get("size") or 0 for j in todo], say, opts.report_minutes * 60)
         fetched = 0
-        for j in todo:
+
+        def fetch_genome(j):
             path = genomes.genome_file(opts.genomes, j["accession"])
             why = util.fetch_file(j["url"], path)
-            fetched += 0 if why else os.path.getsize(path)
+            return j, why, 0 if why else os.path.getsize(path)
+
+        for done in at_a_time(fetch_genome, todo, downloads):
+            j, why, size = done.result()
+            fetched += size
             rate = fetched / max(1e-9, time.time() - progress.started) / 1e6
             progress.step(j.get("size") or 0, failed=bool(why), note=f"; {fetched / 1e9:,.1f} GB at {rate:,.1f} MB/s")
         # NCBI's own gene models (RefSeq's, a GenBank submitter's) beside the genomes, of all but those whose assembly
@@ -439,9 +464,9 @@ def main(argv=None):
                 and not os.path.isfile(os.path.join(genomes.done_dir(opts.work, a), annotation.TABLE))]
         say(f"fetching {len(todo):,} genomes' NCBI annotations into {opts.genomes}")
         progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1)
-        for j in todo:
+        for done in at_a_time(functools.partial(annotation.fetch, genomes_folder=opts.genomes), todo, downloads):
             try:
-                annotation.fetch(j, opts.genomes)
+                done.result()
                 progress.step(1)
             except OSError as e:
                 progress.step(1, failed=True, note=f" ({e})")

@@ -199,13 +199,15 @@ holds a trial's, with `index.md` captioning each and naming its tables):
 - **Reads** (`reads.tsv`, `eukore/reads.py`): up to `--read_genomes` genomes per supergroup (those with the most
   congeners first), kept through the prune. Reads simulated from their markers' loci (introns and all) and from
   anywhere in them, and from 8 bacteria and an archaeon (`data/read_background.tsv`), aligned by minimap2 to Eukore,
-  Eukore's exons alone, Eukore's 18S alone and the compared reference; each read's hits within 1 point of its best
+  Eukore's exons alone, Eukore's 18S alone and each compared reference (`--read_compare`: EukDetect2's
+  database, MetaPhlAn 4's eukaryote markers and PR2's 18S, the latter two made by `tools/compare_references.py`);
+  each read's hits within 1 point of its best
   (90% identical at least, 80% of the read) name their lowest common ancestor, with its own species in the reference
   and held out. No profiler is involved: the benchmark measures the reference.
 - **The checks** (`flags.tsv`), **rRNA regions' and mitochondrial genes' lengths** (`rrna_regions.tsv`),
   **organelle coverage** (`organelle.tsv`), **rRNA copies per genome as assembled** (`rrna_copies.tsv`).
 - **Other databases** (`overlap.tsv`): the species of PR2, EUKARYOME's long reads, KSGP, ROD, BUSCO's OrthoDB
-  dataset and the `--read_compare` reference, against Eukore's, per supergroup.
+  dataset and the `--read_compare` references, against Eukore's, per supergroup.
 
 ```bash
 python3 docs/paper/plot_paper.py OUT/Eukore_2026.11          # Figure 1 and the supplementary figures
