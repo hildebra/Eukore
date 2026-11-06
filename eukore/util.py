@@ -132,6 +132,7 @@ def read_text(path):
 
 # --- Eukore's own helpers (since 2026-11-05; self-contained: nothing imported from protal's scripts/) ---------------
 
+import datetime  # noqa: E402
 import hashlib  # noqa: E402
 import os  # noqa: E402
 import socket  # noqa: E402
@@ -210,3 +211,62 @@ def fetch_file(url, dest, attempts=None, gzip_check=True):
     if os.path.exists(part):
         os.remove(part)
     return why
+
+
+# --- progress of a long loop (since 2026-11-06: the genomes' downloads and runs) ----------------------------------
+
+REPORT_EVERY = 600  # seconds between progress reports (eukore_build.py --report_minutes)
+
+
+def duration(seconds):
+    """Seconds as a person reads them: 45s, 12m 05s, 3h 07m, 2d 04h."""
+    s = max(0, int(seconds))
+    d, s = divmod(s, 86400)
+    h, s = divmod(s, 3600)
+    m, s = divmod(s, 60)
+    return f"{d}d {h:02d}h" if d else f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s" if m else f"{s}s"
+
+
+class Progress:
+    """A long loop's progress, said every `every` seconds (after the item that passes it) and at its end: items done,
+    failed and left, the work left, the time so far, the time left and when it should end. weights: each item's share
+    of the work (a genome's size), so that the time left follows the work left, not the count of items; an item
+    without one weighs the median. clock: time.time (a test's own)."""
+
+    def __init__(self, what, weights, say, every=REPORT_EVERY, unit="Gb", scale=1e9, clock=time.time):
+        known = sorted(w for w in weights if w)
+        typical = known[len(known) // 2] if known else 1
+        self.weights = [w or typical for w in weights]
+        self.what, self.say, self.every, self.unit, self.scale, self.clock = what, say, every, unit, scale, clock
+        self.total = sum(self.weights)
+        self.n, self.done, self.failed, self.skipped, self.worked = len(self.weights), 0, 0, 0, 0.0
+        self.started = self.last = clock()
+
+    def step(self, weight, failed=False, skipped=False, note=""):
+        """One item finished (weight: its own; skipped: no work done, e.g. a genome not fetched yet, its work out of
+        the estimate); said when `every` seconds have passed since the last report, or at the end."""
+        weight = weight or (self.total / self.n if self.n else 0)
+        self.done += 1
+        self.failed += bool(failed)
+        if skipped:
+            self.skipped += 1
+            self.total -= weight
+        else:
+            self.worked += weight
+        now = self.clock()
+        if now - self.last >= self.every or self.done == self.n:
+            self.last = now
+            self.say(self.line(now) + note)
+
+    def line(self, now=None):
+        now = self.clock() if now is None else now
+        elapsed, left_n = now - self.started, self.n - self.done
+        text = f"  {self.done:,}/{self.n:,} {self.what} ({self.failed:,} failed), {left_n:,} left"
+        if not left_n:
+            return text + f"; took {duration(elapsed)}"
+        text += f" ({max(0.0, self.total - self.worked) / self.scale:,.1f} {self.unit})"
+        if self.worked and elapsed > 0:
+            left = max(0.0, self.total - self.worked) / (self.worked / elapsed)
+            end = datetime.datetime.fromtimestamp(now + left)
+            text += f"; {duration(elapsed)} so far, ~{duration(left)} left (until ~{end:%Y-%m-%d %H:%M})"
+        return text

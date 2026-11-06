@@ -140,7 +140,9 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   - RefSeq's organelle genomes (mitochondrion and plastid);
   - PR2 5.1.1's taxonomy (5 MB) and KSGP 4.0's (243 MB; not with `--ksgp_tax`).
 
-  Then it fetches each species' genome into `OUT/genomes` (its RefSeq copy where it has one).
+  Then it fetches each species' genome into `OUT/genomes` (its RefSeq copy where it has one). Every 10 minutes
+  (`--report_minutes`) it says the genomes fetched, failed and left, the Gb left, the download rate and the time
+  left, estimated by the genomes' sizes; the process stage reports its genomes alike.
 - **process** calls each fetched genome's BUSCOs and extracts its rRNA into `WORK/done/<accession>/`, `-j` genomes at a
   time with `-t / -j` threads each. A genome not fetched yet is left for the next run. Then it takes the organelle
   genes (`WORK/organelle`).
@@ -169,6 +171,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--keep_gb` | 1000 | the genomes kept in `OUT/genomes` once the package is written, GB |
 | `-t`, `--threads` | 8 | threads in all |
 | `-j`, `--jobs` | threads / 4 | genomes at a time |
+| `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and runs (genomes left, time left) |
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
 | `--fcs_gx_db PREFIX`, `--run_gx` | none, `run_gx` | FCS-GX's database (e.g. `/dev/shm/gxdb/all`) and runner |
 | `--ksgp_tax FILE` | KSGP 4.0, fetched | the KSGP release `species.tsv`'s KSGP lineages come from |

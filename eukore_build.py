@@ -150,12 +150,14 @@ def run_genomes(opts, job_map, settings):
     say(f"genomes to run: {len(todo)} of {len(job_map)}" + ("" if settings["tiara"] else " (no tiara: windows not "
                                                                                           "classified)"))
     waiting, failed = [], []
+    # every --report_minutes: genomes left and the time left, by their sizes (a genome not fetched yet is no work)
+    progress = util.Progress("genomes run", [j.get("size") or 0 for j, _s in todo], say, opts.report_minutes * 60)
     with multiprocessing.Pool(max(1, opts.jobs)) as pool:
-        for i, (acc, _summary, why) in enumerate(pool.imap_unordered(genomes.run, todo), 1):
+        for acc, _summary, why in pool.imap_unordered(genomes.run, todo):
             if why:
                 (waiting if why == "not fetched yet" else failed).append((acc, why))
-            if i % max(1, len(todo) // 20) == 0 or i == len(todo):
-                say(f"  {i}/{len(todo)} genomes run ({len(failed)} failed, {len(waiting)} not fetched yet)")
+            progress.step(job_map[acc].get("size") or 0, failed=bool(why) and why != "not fetched yet",
+                          skipped=why == "not fetched yet", note=f", {len(waiting):,} not fetched yet" if waiting else "")
     return waiting, failed
 
 
@@ -329,6 +331,9 @@ def main(argv=None):
                                                                   "(eukore/benchmarks.py; docs/benchmarks.md)")
     p.add_argument("-t", "--threads", type=int, default=8)
     p.add_argument("-j", "--jobs", type=int, default=None, help="genomes at a time (default threads / 4)")
+    p.add_argument("--report_minutes", type=float, default=util.REPORT_EVERY / 60,
+                   help="minutes between progress reports of the genomes' downloads and runs: genomes left, time left "
+                        "(default 10)")
     opts = p.parse_args(argv)
     opts.groups = [g for g in opts.groups.split(",") if g]
     unknown = set(opts.groups) - set(sources.ASSEMBLY_GROUPS)
@@ -351,13 +356,18 @@ def main(argv=None):
         todo = [j for a, j in sorted(job_map.items()) if j["url"] and not j.get("path")
                 and not os.path.isfile(genomes.genome_file(opts.genomes, a))
                 and not genomes.is_done(opts.work, a, loci)]
-        say(f"fetching {len(todo)} genomes into {opts.genomes}")
-        failed = 0
-        for i, j in enumerate(todo, 1):
-            why = util.fetch_file(j["url"], genomes.genome_file(opts.genomes, j["accession"]))
-            failed += bool(why)
-            if i % max(1, len(todo) // 20) == 0 or i == len(todo):
-                say(f"  {i}/{len(todo)} fetched ({failed} failed)")
+        say(f"fetching {len(todo):,} genomes ({sum(j.get('size') or 0 for j in todo) / 1e9:,.1f} Gb) into "
+            f"{opts.genomes}; progress every {opts.report_minutes:g} minutes")
+        # every --report_minutes: genomes left and the time left, by their sizes (a plant's genome is a thousand
+        # yeasts'), and the download rate
+        progress = util.Progress("genomes fetched", [j.get("size") or 0 for j in todo], say, opts.report_minutes * 60)
+        fetched = 0
+        for j in todo:
+            path = genomes.genome_file(opts.genomes, j["accession"])
+            why = util.fetch_file(j["url"], path)
+            fetched += 0 if why else os.path.getsize(path)
+            rate = fetched / max(1e-9, time.time() - progress.started) / 1e6
+            progress.step(j.get("size") or 0, failed=bool(why), note=f"; {fetched / 1e9:,.1f} GB at {rate:,.1f} MB/s")
         return 0
     if shutil.which("barrnap") and shutil.which("ITSx"):
         why = rrna.check_itsx(shutil.which("ITSx"))
