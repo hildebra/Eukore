@@ -13,6 +13,7 @@ dependencies:
   - barrnap              # the genomes' and published reads' rRNA genes
   - itsx                 # ITS1/5.8S/ITS2/28S borders (the build refuses an incomplete ITSx_db)
   - vsearch              # the checks across species and the part screen
+  - minimap2             # tools/rdna_depth.py: reads on the rDNA units and single-copy BUSCOs
   - p7zip                # EUKARYOME's 7z archive
   - openpyxl             # EUKARYOME's compromised-quality ids (xlsx)
   - ncbi-fcs-gx          # optional: FCS-GX (run_gx) with --fcs_gx_db, on a node of ~512 GB

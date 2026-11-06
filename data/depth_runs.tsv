@@ -1,0 +1,6 @@
+accession	runs	note
+GCA_000146045.2	SRR1972546	Saccharomyces cerevisiae S288C (reference); ENA strain S288C, MiSeq WGS
+GCA_000001735.2	ERR13994817	Arabidopsis thaliana Columbia (TAIR10 reference); ENA ecotype Col-0, NovaSeq X WGS
+GCA_000002985.3	SRR19445835	Caenorhabditis elegans Bristol N2 (reference); ENA strain N2, NovaSeq WGS
+GCA_000001215.4	SRR13070227	Drosophila melanogaster iso-1 (reference, y; cn bw sp); ENA strain ISO1, whole flies, NextSeq WGS
+GCA_000182965.3	SRR34991648	Candida albicans SC5314 (reference); ENA strain SC5314, NovaSeq X WGS
