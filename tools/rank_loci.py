@@ -27,7 +27,10 @@ columns come from it.
   represents eukaryotes.
 
 --select N writes the N best-scoring BUSCOs whose median copy length is --max_median_length or less (a long copy is
-fitted into protal's 16 kb by cutting introns) as a loci table (data/euk30_loci.tsv's format), in score order.
+fitted into protal's 16 kb by cutting introns) as a loci table (data/euk30_loci.tsv's format), in score order. With
+--eukaryote_panel, a BUSCO is selected only where its call rate is --min_group_call or more in every panel supergroup
+but those of FLOOR_EXEMPT: the score's mean lets a BUSCO missing from half a protist supergroup through on its strength
+elsewhere (2026-11-06: SNF8 at rank 29 was called in 1 of 3 Haptista and 53% of SAR).
 """
 
 import argparse
@@ -49,6 +52,9 @@ SUPERGROUPS = [  # (name, NCBI taxid), the first that holds a species
     ("Cryptophyceae", 3027)]
 MIN_GROUP = 5
 MIN_PANEL = 3      # a supergroup of the eukaryote panel counts with this many genomes
+BROKEN_SHARE = 1 / 3  # a panel genome with fewer complete calls than this share of its supergroup's median: a
+#                     broken assembly (a 4.8 Mb fern "reference genome", 3 of 129), left out
+FLOOR_EXEMPT = ("Metamonada",)  # reduced, fast-evolving genomes (Giardia, Trichomonas): few BUSCOs reach half of them
 CALLED = {"Single": 1.0, "Duplicated": 1.0, "Fragmented": 0.5}  # a call's weight in a call rate
 LOCUS_RE = re.compile(r"-(\d+at\d+)-S\d+$")
 
@@ -158,6 +164,8 @@ def main(argv=None):
     p.add_argument("--select", type=int, help="write the N best BUSCOs as a loci table (--select_out)")
     p.add_argument("--select_out", default="euk30_loci.tsv")
     p.add_argument("--max_median_length", type=int, default=5000)
+    p.add_argument("--min_group_call", type=float, default=0.5,
+                   help="--select: the least call rate in each eukaryote panel supergroup (FLOOR_EXEMPT aside)")
     p.add_argument("--cache", help="a folder for the slow parts (conservation, EukDetect2's shares), reused by a rerun")
     opts = p.parse_args(argv)
     ncbi = ncbi_mod.Ncbi(opts.taxdump)
@@ -187,6 +195,15 @@ def main(argv=None):
         members = collections.defaultdict(list)
         for _acc, (grp, _order, calls) in eukaryote_panel.read(opts.eukaryote_panel).items():
             members[grp].append(calls)
+        complete = {g: [sum(1 for s in c.values() if s in ("Single", "Duplicated")) for c in m]
+                    for g, m in members.items()}
+        broken = 0
+        for g, m in members.items():
+            floor = BROKEN_SHARE * statistics.median(complete[g])
+            kept = [c for c, n in zip(m, complete[g]) if n >= floor]
+            broken += len(m) - len(kept)
+            members[g] = kept
+        print(f"eukaryote panel: {broken} genomes under {BROKEN_SHARE:.2f} of their supergroup's median left out")
         called = {g: m for g, m in members.items() if len(m) >= MIN_PANEL}
         print(f"eukaryote panel: {sum(len(m) for m in members.values())} genomes; supergroups of {MIN_PANEL}+: "
               f"{', '.join(f'{g} {len(m)}' for g, m in sorted(called.items()))}", flush=True)
@@ -236,6 +253,7 @@ def main(argv=None):
     print(f"-> {opts.out}: {len(rows)} BUSCOs; supergroups of {MIN_GROUP}+ species: {', '.join(groups)}")
     if opts.select:
         chosen = [r for r in rows if not r.get("median_length") or r["median_length"] <= opts.max_median_length]
+        chosen = [r for r in chosen if all(r[f"call_{g}"] >= opts.min_group_call for g in called if g not in FLOOR_EXEMPT)]
         chosen = chosen[:opts.select]
         table = ("locus", "fungi_share", "protist_share", "median_length", "call_rate", "min_call_rate",
                  "weakest_call", "presence", "balanced_presence", "min_presence", "weakest", "conservation",
