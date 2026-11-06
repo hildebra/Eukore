@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of EUKDB's own locus calls (odb.py, loci.py; since 2026-11-05): the dataset read (cutoffs, the HMMs' own
+"""Tests of Eukore's own locus calls (odb.py, loci.py; since 2026-11-05): the dataset read (cutoffs, the HMMs' own
 names, proteins by species, the nearest species' queries first); miniprot's GFF with --trans parsed; overlapping
 alignments one region; a region confirmed by its locus' HMM at the cutoff; a locus Single, Duplicated (two complete
 regions), Fragmented (a short HMM alignment) or Missing; the copy whole on its own strand with its exons and introns, its
@@ -16,7 +16,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukdb import loci, ncbi as ncbi_mod, odb as odb_mod  # noqa: E402
+from eukore import loci, ncbi as ncbi_mod, odb as odb_mod  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 

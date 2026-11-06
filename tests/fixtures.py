@@ -1,4 +1,4 @@
-"""A small world for EUKDB's tests (since 2026-11-05: NCBI's genomes, no EukDetect): NCBI's taxonomy of a few fungi,
+"""A small world for Eukore's tests (since 2026-11-05: NCBI's genomes, no EukDetect): NCBI's taxonomy of a few fungi,
 an unknown phylum, a nematode and human; NCBI's assembly tables; a stand-in BUSCO dataset (odb.py's layout) of three
 loci; a genome holding two genes; stand-in miniprot, hmmsearch and vsearch scripts (Python, as the tools write)."""
 

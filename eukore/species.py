@@ -1,8 +1,8 @@
-"""The model and host species EUKDB makes an extra effort for (data/model_species.tsv, since 2026-11-05; from protal's
+"""The model and host species Eukore makes an extra effort for (data/model_species.tsv, since 2026-11-05; from protal's
 model_species.py): human, mouse, rat, zebrafish, cow, pig, chicken, Drosophila, C. elegans, yeast and Arabidopsis.
 Each takes its reference assembly whatever genomes.rank would choose, and its curated rDNA unit
 (data/model_rdna_units.fna.gz) where its assembly gives no operon. The table's prokaryotes are checked by protal, not
-held by EUKDB.
+held by Eukore.
 """
 
 import gzip

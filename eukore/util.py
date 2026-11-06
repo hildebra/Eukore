@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""EUKDB's small helpers (since 2026-11-05; copied here so that EUKDB imports nothing from protal's scripts/):
+"""Eukore's small helpers (since 2026-11-05; copied here so that Eukore imports nothing from protal's scripts/):
 compressed files (zstd or gzip, as protal's scripts/compressed.py), a writer's temporary name, MD5s, downloads.
 
 open_write(path) writes zstd if the name ends in .zst, gzip if in .gz (a trailing .partial does not count), plain
@@ -130,7 +130,7 @@ def read_text(path):
         return fh.read().decode()
 
 
-# --- EUKDB's own helpers (since 2026-11-05; self-contained: nothing imported from protal's scripts/) ---------------
+# --- Eukore's own helpers (since 2026-11-05; self-contained: nothing imported from protal's scripts/) ---------------
 
 import hashlib  # noqa: E402
 import os  # noqa: E402
@@ -141,7 +141,7 @@ import urllib.request  # noqa: E402
 import http.client  # noqa: E402
 import zlib  # noqa: E402
 
-USER_AGENT = "EUKDB-build (https://protal.earlham.ac.uk)"
+USER_AGENT = "Eukore-build (https://protal.earlham.ac.uk)"
 ATTEMPTS = 5       # tries of a download before it is given up on
 RETRY_WAIT = 2.0   # seconds before the second try, doubled for each further one (or the server's Retry-After)
 

@@ -13,7 +13,7 @@ records (vsearch, SCREEN_ID or more, the first SCREEN_ACCEPTS). A part is anothe
 - and the matched record lies nearer its own clade than the part does (a contaminant among the records would
   otherwise make its source's own records look foreign); a matched record whose clade has no other genome vouches for
   nothing.
-The record's `screen` column names the parts and ranks (`28S 3':family`); `-` for none. EUKDB flags, the user drops.
+The record's `screen` column names the parts and ranks (`28S 3':family`); `-` for none. Eukore flags, the user drops.
 """
 
 import collections

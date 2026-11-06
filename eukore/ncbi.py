@@ -1,4 +1,4 @@
-"""NCBI's taxonomy, EUKDB's backbone (since 2026-11-05): each taxid's parent, rank, scientific name and synonyms, and the
+"""NCBI's taxonomy, Eukore's backbone (since 2026-11-05): each taxid's parent, rank, scientific name and synonyms, and the
 taxids merged into others, read from NCBI's taxdump.tar.gz or from a package's taxonomy/ (the subset of every taxon on
 its lineages, write_subset), so that a reader of the package has the same taxonomy the package was built on.
 """

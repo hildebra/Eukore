@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""How often EUKDB's caller finds each BUSCO across eukaryotes (since 2026-11-05): a panel of NCBI genomes, one per order
+"""How often Eukore's caller finds each BUSCO across eukaryotes (since 2026-11-05): a panel of NCBI genomes, one per order
 in each supergroup (GROUPS) up to --per_group (orders spread over the supergroup's classes), each the order's
 smallest representative genome (genomes.representatives) of --max_mb or fewer that carries no flag (NCBI's, a partial
 genome, small for its clade) and has MAX_CONTIGS_PER_MB or fewer contigs per Mb, in which every BUSCO of the dataset is called as a build calls
@@ -23,7 +23,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukdb import genomes, loci, ncbi as ncbi_mod, odb as odb_mod, placement, sources, util  # noqa: E402
+from eukore import genomes, loci, ncbi as ncbi_mod, odb as odb_mod, placement, sources, util  # noqa: E402
 
 GROUPS = [  # (name, NCBI taxid), the first that holds a species
     ("Vertebrata", 7742), ("Metazoa", 33208), ("Fungi", 4751), ("Viridiplantae", 33090), ("Rhodophyta", 2763),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of EUKDB's organelle genes (eukdb/organelle.py): RefSeq's GenBank records read (a COX1 across a circular
+"""Tests of Eukore's organelle genes (eukore/organelle.py): RefSeq's GenBank records read (a COX1 across a circular
 genome's origin on the minus strand, a qualifier over two lines, an animal's 16S as its LSU, a plastid's rRNA twice,
 its 4.5S left out), a species' record chosen, an assembly's mitochondrion searched (stand-in barrnap and nhmmer: its
 rRNA by bacterial models, its COX1 of two exons), and the genes written into the package.
@@ -17,7 +17,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukdb import genomes, ncbi as ncbi_mod, organelle, package, rrna  # noqa: E402
+from eukore import genomes, ncbi as ncbi_mod, organelle, package, rrna  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 YEAST = "GCA_000146045.2"
@@ -186,7 +186,7 @@ class AssemblyTest(unittest.TestCase):
             collected = dict(genomes={YEAST: dict(accession=YEAST, species_taxid=4932, taxid=559292, organism="y",
                                                   source="ncbi", representative="t", loci=0)},
                              copies={YEAST: {}}, features=[], copy_rows=[], taxids=set())
-            out = package.write(os.path.join(tmp, "out", "EUKDB_2026.11"), "2026.11", ncbi, collected, [],
+            out = package.write(os.path.join(tmp, "out", "Eukore_2026.11"), "2026.11", ncbi, collected, [],
                                 None, None, {}, records)
             self.assertIsNone(package.check(out, deep=True))
             table = package.read_table(out, "organelle/genes.tsv")

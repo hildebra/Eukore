@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Build EUKDB, the standalone eukaryote reference (FORMAT.md; since 2026-11-05).
+"""Build Eukore, the standalone eukaryote reference (FORMAT.md; since 2026-11-05).
 
-    python3 eukdb_build.py --work WORK --out OUT -t 16                 # all stages on a node with internet
-    python3 eukdb_build.py --work WORK --out OUT --stage fetch -t 8    # a cluster: the node with internet,
-    python3 eukdb_build.py --work WORK --out OUT --stage process -t 32 #   then any node (nothing fetched),
-    python3 eukdb_build.py --work WORK --out OUT --stage package       #   then the package
+    python3 eukore_build.py --work WORK --out OUT -t 16                 # all stages on a node with internet
+    python3 eukore_build.py --work WORK --out OUT --stage fetch -t 8    # a cluster: the node with internet,
+    python3 eukore_build.py --work WORK --out OUT --stage process -t 32 #   then any node (nothing fetched),
+    python3 eukore_build.py --work WORK --out OUT --stage package       #   then the package
 
 Stages:
 - fetch: the sources into WORK/sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
   BUSCO's eukaryota_odb12, EUKARYOME 2.1, ROD v1.2, RefSeq's organelle genomes, NCBI's FCS-GX and ANI reports, which
-  rank the genomes: eukdb/quality.py, PR2's and KSGP's taxonomies), then each species' genome (genomes.jobs) into
+  rank the genomes: eukore/quality.py, PR2's and KSGP's taxonomies), then each species' genome (genomes.jobs) into
   OUT/genomes;
 - process: each genome's BUSCO genes called (a genome searched for fewer than those called is run again) and its rRNA
   extracted (WORK/done/<accession>/); a genome not fetched yet waits for the next run; then the organelle genes
@@ -17,7 +17,7 @@ Stages:
   organelle molecules where RefSeq has none (WORK/organelle);
 - package: the copies' checks across species, the published rRNA reads' regions (WORK/published), the organelle genes
   of any assembly not searched yet, OUT/genomes cut back to --keep_gb (genomes.prune: the model species' and the
-  smallest kept first), then OUT/EUKDB_<version>/.
+  smallest kept first), then OUT/Eukore_<version>/.
 `all` runs them in turn. Every stage is resumable: a rerun does only what is not done.
 """
 
@@ -33,8 +33,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from eukdb import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
-from eukdb import labels, organelle as organelle_mod, quality  # noqa: E402
+from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
+from eukore import labels, organelle as organelle_mod, quality  # noqa: E402
+from eukore import __version__  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
 NO_ASSEMBLY = os.path.join(sources.DATA, "no_assembly.fna.gz")
@@ -226,7 +227,7 @@ def genome_rrna_records(opts, job_map, ncbi):
 
 
 def organelle_genes(opts, src_dir, job_map, ncbi):
-    """The organelle genes' sources (eukdb/organelle.py): RefSeq's organelle genomes, parsed once, and each species'
+    """The organelle genes' sources (eukore/organelle.py): RefSeq's organelle genomes, parsed once, and each species'
     own assembly where RefSeq has neither of its organelles' records (barrnap, nhmmer) -> RefSeq's records chosen,
     {(species taxid, organelle): rows}."""
     folder = os.path.join(opts.work, "organelle")
@@ -267,9 +268,11 @@ def inside_of(ncbi, wanted):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(description=f"Eukore {__version__}. " + __doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("-V", action="version", version=f"Eukore {__version__}", help="Eukore's own version, and exit")
     p.add_argument("--work", required=True, help="the build's work folder (sources, calls, extractions)")
-    p.add_argument("--out", required=True, help="where EUKDB_<version>/ and genomes/ go")
+    p.add_argument("--out", required=True, help="where Eukore_<version>/ and genomes/ go")
     p.add_argument("--stage", choices=("all", "fetch", "process", "package"), default="all")
     p.add_argument("--version", default=datetime.date.today().strftime("%Y.%m"), help="the package's version (YYYY.MM)")
     p.add_argument("--groups", default=",".join(sources.ASSEMBLY_GROUPS),
@@ -387,9 +390,9 @@ def main(argv=None):
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB (--keep_gb {opts.keep_gb:g}), "
             f"{sum(st == 'deleted' for *_x, st in rows_kept)} deleted")
         references = labels.references(src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say)
-        out = package.write(os.path.join(opts.out, f"EUKDB_{opts.version}"), opts.version, ncbi, collected,
+        out = package.write(os.path.join(opts.out, f"Eukore_{opts.version}"), opts.version, ncbi, collected,
                             loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references)
-        say(f"EUKDB: {out} ({json.dumps(package.read(out)['counts'])})")
+        say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")
     return 0
 
 

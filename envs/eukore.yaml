@@ -1,14 +1,14 @@
-# EUKDB's build environment (micromamba create -f envs/eukdb.yaml; then micromamba activate eukdb).
+# Eukore's build environment (micromamba create -f envs/eukore.yaml; then micromamba activate eukore).
 # tiara (optional: the windows around the copies classified) needs a Python of 3.9 or older: envs/tiara.yaml, given
 # to the build with --tiara <that env>/bin/tiara.
-name: eukdb
+name: eukore
 channels:
   - conda-forge
   - bioconda
 dependencies:
   - python>=3.12
   - zstd                 # zstd files where the Python is older than 3.14
-  - miniprot>=0.18       # the euk30 loci placed (eukdb/loci.py: --trans)
+  - miniprot>=0.18       # the euk30 loci placed (eukore/loci.py: --trans)
   - hmmer>=3.4           # hmmsearch: the loci confirmed by BUSCO's HMMs; nhmmer: the assemblies' organelle genes
   - barrnap              # the genomes' and published reads' rRNA genes
   - itsx                 # ITS1/5.8S/ITS2/28S borders (the build refuses an incomplete ITSx_db)

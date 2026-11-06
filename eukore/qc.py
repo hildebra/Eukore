@@ -1,4 +1,4 @@
-"""The BUSCO copies' checks across species (since 2026-11-05: EukDetect's per-gene QC, done on EUKDB's own copies).
+"""The BUSCO copies' checks across species (since 2026-11-05: EukDetect's per-gene QC, done on Eukore's own copies).
 Each a column of busco/copies.tsv; a copy failing one is kept and flagged, so that a user chooses.
 
 - own_species: a copy's coding sequence against the same locus' copies of every other species (vsearch, 70% at

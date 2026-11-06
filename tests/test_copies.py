@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of eukdb/copies.py (copied from protal's test_euk30_copies.py) (a gene copy fitted into MAX_LOCUS bases, every exon kept): a gene that fits stays whole;
+"""Tests of eukore/copies.py (copied from protal's test_euk30_copies.py) (a gene copy fitted into MAX_LOCUS bases, every exon kept): a gene that fits stays whole;
 one over it loses bases from its introns' middles in proportion to their lengths, each intron keeping FLANK bases at
 either end; the features say where every exon, intron and cut is, on either strand, and give the genome back; the
 exons joined are the coding sequence; soft-masked intron runs are N; exons alone over the cap keep their best window.
@@ -13,7 +13,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukdb import copies as ec  # noqa: E402
+from eukore import copies as ec  # noqa: E402
 
 
 def gene(rng, exon_lengths, intron_lengths, before=100, after=100):

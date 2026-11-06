@@ -1,0 +1,3 @@
+# Linux line endings in the repository and in every checkout, whatever the platform
+* text=auto eol=lf
+*.gz binary

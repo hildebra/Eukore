@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""data/no_assembly.fna.gz: the euk30 copies of the species EUKDB finds no NCBI assembly for, from EukDetect2 (Shih,
+"""data/no_assembly.fna.gz: the euk30 copies of the species Eukore finds no NCBI assembly for, from EukDetect2 (Shih,
 Zhao, Pollard & Lind 2026, bioRxiv 10.64898/2026.06.24.734308; Zenodo 19056625, CC BY 4.0), the one remnant of EukDetect
-in EUKDB (since 2026-11-05). EukDetect2 took them from EukProt's genomes and transcriptomes, and re-assembled
+in Eukore (since 2026-11-05). EukDetect2 took them from EukProt's genomes and transcriptomes, and re-assembled
 Dientamoeba fragilis' transcriptome; NCBI has no assembly of them. The build calls the loci in these records as in a
 genome (loci.py), which gives them exon models and the same checks as every other copy.
 
@@ -22,7 +22,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukdb import ncbi as ncbi_mod, sources  # noqa: E402
+from eukore import ncbi as ncbi_mod, sources  # noqa: E402
 
 LOCUS_RE = re.compile(r"-(\d+at\d+)-S\d+$")
 

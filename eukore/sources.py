@@ -1,7 +1,7 @@
-"""EUKDB's sources (since 2026-11-05; copied from protal's scripts/mini_db/eukaryotes.py, rdna_sources.py and
-download_ref_data.py, so that EUKDB imports nothing from them): the loci table, NCBI's GenBank and RefSeq assembly
+"""Eukore's sources (since 2026-11-05; copied from protal's scripts/mini_db/eukaryotes.py, rdna_sources.py and
+download_ref_data.py, so that Eukore imports nothing from them): the loci table, NCBI's GenBank and RefSeq assembly
 tables, and the published eukaryote rDNA operons (EUKARYOME 2.1's long reads, ROD v1.2). EukDetect1's and EukDetect2's
-copies were sources until 2026-11-05: EUKDB now calls the loci in NCBI's genomes itself (odb.py, loci.py).
+copies were sources until 2026-11-05: Eukore now calls the loci in NCBI's genomes itself (odb.py, loci.py).
 """
 
 import collections

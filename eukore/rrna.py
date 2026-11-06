@@ -1,4 +1,4 @@
-"""EUKDB's rRNA (since 2026-11-05; from protal's genome_18s.py and rdna_freeze.py, made complete and KSGP-free): every
+"""Eukore's rRNA (since 2026-11-05; from protal's genome_18s.py and rdna_freeze.py, made complete and KSGP-free): every
 18S span and complete rDNA operon of the build's genomes and of the published long reads (EUKARYOME 2.1, ROD v1.2),
 labelled by NCBI taxid, checked without any KSGP.
 

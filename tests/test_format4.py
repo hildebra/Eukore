@@ -15,7 +15,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukdb import labels, ncbi as ncbi_mod, package, rrna  # noqa: E402
+from eukore import labels, ncbi as ncbi_mod, package, rrna  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 PR2 = [

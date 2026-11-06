@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of EUKDB's genome set and package (since 2026-11-05: NCBI's genomes, no EukDetect): a species' genome by
+"""Tests of Eukore's genome set and package (since 2026-11-05: NCBI's genomes, no EukDetect): a species' genome by
 NCBI's flags (contaminated never, a metagenome's only without better), RefSeq's category, level, contigs and date; its
 RefSeq copy fetched where it has one; NCBI's placeholder species left out; a model species' reference whatever the
 ranking; a species without an assembly from its records; --species. One genome's run with stand-in tools into its done
@@ -19,7 +19,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukdb import genomes, labels, ncbi as ncbi_mod, odb as odb_mod, package, qc, rrna, sources  # noqa: E402
+from eukore import genomes, labels, ncbi as ncbi_mod, odb as odb_mod, package, qc, rrna, sources  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 YEAST = "GCA_000146045.2"
@@ -143,7 +143,7 @@ class RunTest(unittest.TestCase):
             with open(pr2, "w") as fh:
                 fh.write("A1\tEukaryota;Obazoa;Opisthokonta;Fungi;Saccharomycetes;Saccharomycetales;"
                          "Saccharomycetaceae;Saccharomyces;Saccharomyces_cerevisiae;\n")
-            out = package.write(os.path.join(tmp, "out", "EUKDB_2026.11"), "2026.11", ncbi, collected,
+            out = package.write(os.path.join(tmp, "out", "Eukore_2026.11"), "2026.11", ncbi, collected,
                                 loci, None, genomes_dir, {"test": True}, None, [labels.read_pr2(pr2)])
             self.assertIsNone(package.check(out, deep=True))
             g = {r["accession"]: r for r in package.read_table(out, "genomes.tsv")}

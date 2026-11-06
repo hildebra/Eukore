@@ -1,4 +1,4 @@
-"""EUKDB's genome set (since 2026-11-05: NCBI's own assemblies, no EukDetect): which eukaryote genome stands for each
+"""Eukore's genome set (since 2026-11-05: NCBI's own assemblies, no EukDetect): which eukaryote genome stands for each
 species, one genome's run (fetched, its BUSCO genes called, its rRNA extracted, its results kept in the work folder),
 and the prune of the kept genomes to a budget.
 

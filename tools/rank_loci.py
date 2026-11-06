@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """How each BUSCO of eukaryota_odb12 suits euk30 (since 2026-11-05): its presence and conservation across all
 eukaryotes, its presence in fungi and protists (EukDetect2's genomes, the measure euk30 was first chosen by), its copy
-length, and whether EUKDB's caller finds it in prokaryotes. -> a table ranked by `score`; data/euk30_loci.tsv's
+length, and whether Eukore's caller finds it in prokaryotes. -> a table ranked by `score`; data/euk30_loci.tsv's
 columns come from it.
 
     python3 tools/rank_loci.py --odb WORK/sources/eukaryota_odb12 --taxdump WORK/sources/taxdump.tar.gz \\
@@ -16,7 +16,7 @@ columns come from it.
   apart less.
 - fungi_share, protist_share, median_length: as euk30 was first chosen (Fungi and Protist genomes of EukDetect2 with
   a copy of 8,000 bases or fewer; the median length of the copies), with --eukdetect2.
-- prokaryotes: genomes of a prokaryote panel (tools/prokaryote_panel.py's output folders, --panel) in which EUKDB's
+- prokaryotes: genomes of a prokaryote panel (tools/prokaryote_panel.py's output folders, --panel) in which Eukore's
   caller confirms the BUSCO at its cutoff, with its gates (`prokaryote_calls`) and without (`prokaryote_relaxed`);
   `-` where the BUSCO was not searched. Informational: a homologue in prokaryotes harms nothing where reads cannot
   cross between the domains (tools/prokaryote_separation.py measures it); broad eukaryote representation counts more
@@ -41,7 +41,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukdb import ncbi as ncbi_mod, odb as odb_mod  # noqa: E402
+from eukore import ncbi as ncbi_mod, odb as odb_mod  # noqa: E402
 
 SUPERGROUPS = [  # (name, NCBI taxid), the first that holds a species
     ("Metazoa", 33208), ("Fungi", 4751), ("Viridiplantae", 33090), ("Rhodophyta", 2763), ("SAR", 2698737),

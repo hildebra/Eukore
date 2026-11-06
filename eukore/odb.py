@@ -1,5 +1,5 @@
 """BUSCO's eukaryota_odb12 dataset (since 2026-11-05): its BUSCOs' proteins, HMMs and score cutoffs, from which
-EUKDB calls the loci in every genome itself (loci.py), in place of EukDetect1's and EukDetect2's copies.
+Eukore calls the loci in every genome itself (loci.py), in place of EukDetect1's and EukDetect2's copies.
 
 The dataset (busco-data.ezlab.org; OrthoDB 12.1, 129 BUSCOs of 456 species, 2026-05-22) holds per BUSCO:
 - refseq_db.faa.gz: its orthologs' proteins in the 456 species (~770 a BUSCO; records <busco>_<taxid>_<id>);

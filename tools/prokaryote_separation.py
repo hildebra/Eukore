@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Can reads cross between a locus' eukaryote copies and its prokaryote homologues? (since 2026-11-05.) Every region a
 prokaryote panel (tools/prokaryote_panel.py) confirmed at a locus' cutoff, with or without the caller's gates, is cut
-from its genome and aligned (vsearch, MIN_ID or more) to the coding sequences of the locus' copies in a EUKDB package
+from its genome and aligned (vsearch, MIN_ID or more) to the coding sequences of the locus' copies in a Eukore package
 (its exons joined). -> per locus: the prokaryote regions, those with a eukaryote copy at MIN_ID or more, the best
 identity (`<50` where none), its pair. A read aligner that needs ~85% identity cannot place one domain's read on the
 other's gene where the best identity is far below that.
 
-    python3 tools/prokaryote_separation.py --panel PANEL [PANEL ...] --genome_dir DIR --package OUT/EUKDB_<version>
+    python3 tools/prokaryote_separation.py --panel PANEL [PANEL ...] --genome_dir DIR --package OUT/Eukore_<version>
 """
 
 import argparse
@@ -19,7 +19,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukdb import package, placement  # noqa: E402
+from eukore import package, placement  # noqa: E402
 
 MIN_ID = 0.5
 COMPLEMENT = str.maketrans("ACGTN", "TGCAN")

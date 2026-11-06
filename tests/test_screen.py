@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of the rRNA part screen (eukdb/screen.py): a record whose 28S is another family's (a mosaic) is flagged at
+"""Tests of the rRNA part screen (eukore/screen.py): a record whose 28S is another family's (a mosaic) is flagged at
 that part and rank; records whose parts agree with their lineages, and a matched record whose clade has no other
 genome, are not; parts cut from regions.
 
@@ -14,7 +14,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukdb import ncbi as ncbi_mod, screen  # noqa: E402
+from eukore import ncbi as ncbi_mod, screen  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 

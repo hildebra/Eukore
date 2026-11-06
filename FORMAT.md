@@ -1,30 +1,31 @@
-# EUKDB package format, version 4
+# Eukore package format, version 4
 
-EUKDB is a standalone eukaryote reference. It holds every BUSCO gene of eukaryota_odb12 and the rDNA operons of every
+Eukore is a standalone eukaryote reference. It holds every BUSCO gene of eukaryota_odb12 and the rDNA operons of every
 eukaryote species with an NCBI genome, complete (genes with all their introns, operons uncut) and checked, and the
 species' mitochondrial and plastid rRNA and mitochondrial COX1 where NCBI has them. Its taxonomy is NCBI's, tied to no
 GTDB release; each species also carries its lineage in PR2, EUKARYOME and KSGP (`species.tsv`), the versions named in
 the manifest. Each copy and record carries its checks, a confidence tier and the reasons for it, and the hints a user
 needs to spot a chimera (contig ends, assembly gaps, the screens). A user of the package (protal's build) takes what
 it needs (protal: the 30 BUSCOs of its euk30, chosen by `busco/loci.tsv`'s figures) and converts it: naming, length
-limits, masking, record cuts. Paths below are relative to the package folder, `EUKDB_<YYYY.MM>/`. A
+limits, masking, record cuts. Paths below are relative to the package folder, `Eukore_<YYYY.MM>/`. A
 `.tsv` has a header line, tab-separated columns and no quoting. `-` means "none". Coordinates are 0-based, end
 excluded, on the sequence as the package holds it, unless they are a contig's (1-based, inclusive).
 
 ## manifest.json
-`format` (4), `version` (`YYYY.MM`), `built` (ISO time), `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
+`format` (4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, `0.1`), `built` (ISO time),
+`inputs` (BUSCO's dataset and its date, the taxdump's MD5,
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
 references species.tsv's lineages come from (`references`: PR2's, EUKARYOME's, KSGP's version, file, MD5 and the
 species and genera it names); `inputs.partial.species_clades` in a trial package limited to those clades, which a user
-should not take for EUKDB), `counts` (species, species with rRNA alone, genomes, copies and their
+should not take for Eukore), `counts` (species, species with rRNA alone, genomes, copies and their
 calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa, `busco_loci`, the
 copies' and records' confidence tiers, `labels`: per reference the species by how they matched), and `files`: every
 file of the package with `[bytes, md5]`. The manifest is written last: a package without one is unfinished.
 
 ## taxonomy/
 NCBI's taxonomy, cut to every taxon on the package's lineages: `nodes.tsv` (taxid, parent, rank, gencode: NCBI's nuclear genetic code, the table a copy translates by), `names.tsv` (taxid,
-name, class: scientific name or synonym), `merged.tsv` (old, new). `eukdb.ncbi.Ncbi(folder)` reads it.
+name, class: scientific name or synonym), `merged.tsv` (old, new). `eukore.ncbi.Ncbi(folder)` reads it.
 
 A taxid is NCBI's of the taxdump the manifest names (`inputs.taxdump_md5`). A taxid NCBI has merged into another since
 is in `merged.tsv`: a user mapping older labels (or a later taxdump's) to the package goes through it.
@@ -37,7 +38,7 @@ One row per NCBI species the package holds:
 | `taxid` | NCBI species taxid |
 | `name` | NCBI scientific name |
 | `representative` | the genome its copies come from (an accession of `genomes.tsv`); `-` for a species with rRNA records alone |
-| `source` | `ncbi` (NCBI's genome of the species by EUKDB's ranking), `model` (a model species' reference), `no_assembly` (records of a species NCBI has no assembly of), `rrna` (rRNA records alone) |
+| `source` | `ncbi` (NCBI's genome of the species by Eukore's ranking), `model` (a model species' reference), `no_assembly` (records of a species NCBI has no assembly of), `rrna` (rRNA records alone) |
 | `loci` | BUSCO genes called in its genome |
 | `rrna_records` | its records in `rrna/records.tsv` |
 | `organelle_genes` | its records in `organelle/genes.tsv` |
@@ -74,7 +75,7 @@ The species' genomes and their other assemblies:
 | `rrna_18s`, `rdna_units`, `rdna_complete`, `rdna_contigs` | its 18S spans, rDNA units (from the 18S to the 28S), units with a whole 28S, and the contigs holding units, as `rrna/` found them in the assembly: copies in the assembly, a lower bound of the copies in the genome (an rDNA array is usually collapsed in an assembly); `-` where its rRNA was not searched |
 | `local` | the genome's file in the build's kept genomes (`genomes/<accession>.fna.gz` beside the package), `-` where it is not kept |
 
-A species' genome is NCBI's best by EUKDB's ranking: never one NCBI flags as contaminated, of an unverified source
+A species' genome is NCBI's best by Eukore's ranking: never one NCBI flags as contaminated, of an unverified source
 organism, misassembled, chimeric or of low quality, nor one NCBI's FCS-GX screen finds 50% or more another organism's
 (`FCS-GX: mostly foreign`) or that fails NCBI's ANI species check (`ANI: failed`; Saccharomycotina); another flagged
 one, or a metagenome's, only without better (`FCS-GX: contaminated`: 1% or more contaminant, or 100 kb or more of
@@ -205,7 +206,7 @@ The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz
 
 ## Changes
 - 1 (2026-11-05): first format (EukDetect1's and EukDetect2's copies, placed copies of model and RefSeq species).
-- 2 (2026-11-05): EUKDB's own locus calls in NCBI's genomes (BUSCO's eukaryota_odb12, miniprot, hmmsearch); one genome
+- 2 (2026-11-05): Eukore's own locus calls in NCBI's genomes (BUSCO's eukaryota_odb12, miniprot, hmmsearch); one genome
   a species; `busco/copies.tsv` with the calls and checks; `features.tsv` without `method`, `protein`, `identity` and
   `coverage` (in `copies.tsv`), with `soft_masked` and `low_complexity`; copies unmasked; `genomes.tsv` with `fetched`
   and `flags`; `species.tsv`'s `source` in place of `sources`, and species with rRNA alone.
@@ -218,3 +219,5 @@ The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz
   `confidence` and `flags`; `features.tsv`'s `gap`; `rrna/records.tsv`'s `contig`, `start`, `end`, `strand`,
   `contig_edge`, `introns`, `gaps`, `confidence` and `flags`; the manifest's `inputs.references`. EUKARYOME's records
   are labelled by their species (its `s__` is the epithet alone: until 4 every one was labelled by its genus).
+  Since 2026-11-06, still format 4: the reference renamed Eukore (was EUKDB), its folder `Eukore_<version>/` (was
+  `EUKDB_<version>/`); the manifest's `eukore`, the version of Eukore that built it.

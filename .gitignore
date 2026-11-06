@@ -1,5 +1,44 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# environments
+.venv/
+venv/
+envs/mamba*
+
+# the build's downloads in progress
 *.partial
 .*.partial
-envs/mamba*
+
+# a build's folders (README: --work work --out out, WORK, OUT)
+/work/
+/out/
+/WORK/
+/OUT/
+Eukore_*/
+
+# logs and scratch
+*.log
+*.tmp
+*.swp
+*~
+
+# editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# local Claude Code settings
+.claude/settings.local.json

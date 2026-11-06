@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of NCBI's quality reports in EUKDB's genome ranking (eukdb/quality.py): an assembly that is mostly another
+"""Tests of NCBI's quality reports in Eukore's genome ranking (eukore/quality.py): an assembly that is mostly another
 organism's (by its RefSeq copy's FCS-GX summary) or fails NCBI's ANI species check never taken; one contaminated by
 another eukaryote, or inconclusive, flagged; of two otherwise equal, the one without contaminant taken.
 
@@ -14,7 +14,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukdb import genomes, ncbi as ncbi_mod, quality, sources  # noqa: E402
+from eukore import genomes, ncbi as ncbi_mod, quality, sources  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 FCS_HEAD = ("assembly_accession", "fcs_gx_software_rev", "fcs_gx_db_rev", "fcs_gx_run_date", "asserted_division",

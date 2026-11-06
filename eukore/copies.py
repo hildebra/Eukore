@@ -18,7 +18,7 @@ a copy was left out, or cut to the run of its exons with the most coding bases (
 
 What was kept and cut is a copy's annotation (fit's features): its exons and introns on the copy as the reference
 holds it (0-based, end excluded, the copy's own strand), each with where it lies in the genome, and each cut as a
-zero-width row with the bases it removed. EUKDB fits nothing (no cap: loci.call); protal's converter does.
+zero-width row with the bases it removed. Eukore fits nothing (no cap: loci.call); protal's converter does.
 """
 
 import os

@@ -1,4 +1,4 @@
-"""EUKDB's package (FORMAT.md; format 2 since 2026-11-05: EUKDB's own locus calls in NCBI's genomes; format 3 since
+"""Eukore's package (FORMAT.md; format 2 since 2026-11-05: Eukore's own locus calls in NCBI's genomes; format 3 since
 2026-11-05: the organelle genes; format 4 since 2026-11-05: every BUSCO of the dataset, in busco/, with
 busco/loci.tsv; each species' PR2, EUKARYOME and KSGP lineages, the genomes' rRNA counts, the copies' and records'
 contig ends, gaps and confidence), written from the build's genome set and work folder, read and checked by its users
@@ -14,6 +14,7 @@ import shutil
 
 from . import qc
 from . import util
+from . import __version__
 
 FORMAT = 4
 MANIFEST = "manifest.json"
@@ -286,7 +287,8 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
             files[os.path.relpath(path, part).replace(os.sep, "/")] = [os.path.getsize(path), util.md5(path)]
     statuses = collections.Counter(r["status"] for r in collected["copy_rows"])
     inputs = dict(inputs or {}, references={ref.name: ref.stamp() for ref in references})
-    manifest = {"format": FORMAT, "version": version, "built": datetime.datetime.now().isoformat(timespec="seconds"),
+    manifest = {"format": FORMAT, "version": version, "eukore": __version__,
+                "built": datetime.datetime.now().isoformat(timespec="seconds"),
                 "inputs": inputs,
                 "counts": {"species": sum(1 for r in rows if r["representative"] != "-"),
                            "species_rrna_only": sum(1 for r in rows if r["representative"] == "-"),
@@ -328,7 +330,7 @@ def check(folder, deep=False):
     MD5), or None."""
     manifest = read(folder)
     if manifest is None:
-        return f"{folder}: no EUKDB package (no {MANIFEST})"
+        return f"{folder}: no Eukore package (no {MANIFEST})"
     if manifest.get("format") != FORMAT:
         return f"{folder}: format {manifest.get('format')}, this reader takes {FORMAT}"
     for rel, (size, digest) in manifest["files"].items():

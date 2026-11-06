@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Are BUSCO genes called in prokaryote genomes by EUKDB's caller? (since 2026-11-05; EukDetect2 dropped the BUSCOs it
+"""Are BUSCO genes called in prokaryote genomes by Eukore's caller? (since 2026-11-05; EukDetect2 dropped the BUSCOs it
 found in 971 gut bacteria, which hold almost no archaea or alphaproteobacteria.) A panel of prokaryote genomes (one per
 GTDB genus of a genome table, isolates first, then the most complete) is searched with ALL dataset proteins of the
 loci and their ancestral variants (stricter than a build, which takes the 30 nearest species'), miniprot then
@@ -24,7 +24,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukdb import loci, odb as odb_mod, sources  # noqa: E402
+from eukore import loci, odb as odb_mod, sources  # noqa: E402
 
 MIN_RATIO = 0.3
 COLUMNS = ("accession", "mode", "locus", "score", "cutoff", "ratio", "best_hmm", "hmm_coverage", "identity",

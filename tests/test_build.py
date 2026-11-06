@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of EUKDB's build: an rDNA unit uncut, with its 5.8S and an inline 5S (one block) and not a 5S elsewhere; a
+"""Tests of Eukore's build: an rDNA unit uncut, with its 5.8S and an inline 5S (one block) and not a 5S elsewhere; a
 EUKARYOME read's NCBI taxid by its species name, else its genus's; the record checks; a model species' genome run
 (stand-in miniprot and barrnap: its locus placed whole over 16 kb, its operon over 8,191 bases whole) and the package
 written from it and the test world, read back and checked.
@@ -19,7 +19,7 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukdb import genomes, ncbi as ncbi_mod, package, rrna, sources, species  # noqa: E402
+from eukore import genomes, ncbi as ncbi_mod, package, rrna, sources, species  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 VERTEBRATES = [(7711, 33208, "phylum", "Chordata"), (9605, 7711, "genus", "Homo"), (9606, 9605, "species", "Homo sapiens")]
@@ -128,19 +128,19 @@ class PartialTest(unittest.TestCase):
     def test_species_clades_limit_the_package(self):
         # --species (a trial build): the genus Saccharomyces and Candida albicans, as taxids or a file; a strain's
         # taxid is inside its species' clade
-        import eukdb_build  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
             listed = os.path.join(tmp, "clades.txt")
             with open(listed, "w") as fh:
                 fh.write("# trial\n4930\t# Saccharomyces\n5476\n")
-            self.assertEqual(eukdb_build.clades(listed), {4930, 5476})
-            self.assertEqual(eukdb_build.clades("4930,5476"), {4930, 5476})
-            self.assertIsNone(eukdb_build.clades(None))
-            inside = eukdb_build.inside_of(ncbi, {4930, 5476})
+            self.assertEqual(eukore_build.clades(listed), {4930, 5476})
+            self.assertEqual(eukore_build.clades("4930,5476"), {4930, 5476})
+            self.assertIsNone(eukore_build.clades(None))
+            inside = eukore_build.inside_of(ncbi, {4930, 5476})
             self.assertEqual([inside(t) for t in (559292, 4932, "5476", 28985, None, "-")],
                              [True, True, True, False, False, False])
-            self.assertTrue(eukdb_build.inside_of(ncbi, None)(28985))
+            self.assertTrue(eukore_build.inside_of(ncbi, None)(28985))
 
 
 if __name__ == "__main__":

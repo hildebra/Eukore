@@ -1,10 +1,10 @@
-"""NCBI's own quality reports on its assemblies, as flags EUKDB ranks a species' genomes by (since 2026-11-06).
+"""NCBI's own quality reports on its assemblies, as flags Eukore ranks a species' genomes by (since 2026-11-06).
 
 - FCS-GX (NCBI's Foreign Contamination Screen, run on every GenBank and RefSeq assembly; fcs_summary_*.txt.gz): an
   assembly whose contaminant share is MOSTLY or more is another organism's genome under the species' name
   (FCS_FOREIGN: never taken; Azolla's genomes are its cyanobacterium's, 2026-11-06); one with CONTAMINATED of it, or
   EUK_BP of another eukaryote's sequence (what can give a foreign gene or 18S copy), is taken only without better
-  (FCS_CONTAMINATED). The accession looked up is the one EUKDB fetches: the RefSeq copy where there is one (RefSeq's
+  (FCS_CONTAMINATED). The accession looked up is the one Eukore fetches: the RefSeq copy where there is one (RefSeq's
   copies are screened, and cleaned).
 - ANI (NCBI's species check of Saccharomycotina genomes against their species' type-strain genomes;
   ANI_report_saccharomycotina.txt): "Failed" is another species' genome (ANI_FAILED: never taken), "Inconclusive"
@@ -102,7 +102,7 @@ def flags_of(fcs, ani_status):
 
 def annotate(assemblies, refseq_rows, src_dir):
     """Each GenBank assembly row (sources.read_assemblies) given its flags by NCBI's reports (added to row["flags"])
-    and row["fcs_bp"] (its contaminant bases, None where not screened), by the accession EUKDB fetches (its RefSeq
+    and row["fcs_bp"] (its contaminant bases, None where not screened), by the accession Eukore fetches (its RefSeq
     copy where it has one) -> {flag: assemblies flagged}."""
     copy_of = {r["paired"]: r["accession"] for r in refseq_rows if r.get("paired", "na").startswith("GCA_")}
     wanted = {r["accession"] for r in assemblies} | set(copy_of.values())

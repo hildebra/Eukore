@@ -1,6 +1,8 @@
-# EUKDB
+# Eukore
 
-EUKDB is a standalone eukaryote reference, and this repository builds it. It holds:
+Version 0.1 (`eukore_build.py -V`). Named EUKDB until 2026-11-06.
+
+Eukore is a standalone eukaryote reference, and this repository builds it. It holds:
 - every BUSCO gene of BUSCO's eukaryota_odb12 (129), complete with all its introns;
 - the rDNA operons, complete and uncut;
 - the mitochondrial and plastid rRNA and the mitochondrial COX1, where NCBI has them;
@@ -12,31 +14,30 @@ confidence tier, its checks and the hints of a chimera. The package format is in
 
 A user converts a package to its own needs. protal's database build (`download_ref_data.py --eukdb`) does it with its
 own reader of the format: the 30 BUSCOs of its euk30 (its choice, by `busco/loci.tsv` and "Choosing loci" below),
-KSGP names, masking, copies fitted into 16 kb, records cut to 8,191 bases. EUKDB imports
-nothing from protal. It started inside protal's repository (`EUKDBbuild/`, 2026-11-05) and keeps that history.
+KSGP names, masking, copies fitted into 16 kb, records cut to 8,191 bases. Eukore imports nothing from protal. It started inside protal's repository (`EUKDBbuild/`, 2026-11-05) and keeps that history.
 
 ## Install
 
-EUKDB runs on Linux (or WSL on Windows): its tools are bioconda's. It needs a conda-style package manager (micromamba,
+Eukore runs on Linux (or WSL on Windows): its tools are bioconda's. It needs a conda-style package manager (micromamba,
 mamba or conda), and nothing else from the system but `git`.
 
 ### 1. The code
 
 ```bash
-git clone <this repository> EUKDB      # or copy the folder: EUKDB needs no build step
-cd EUKDB
+git clone <this repository> Eukore      # or copy the folder: Eukore needs no build step
+cd Eukore
 ```
 
-Run everything from this folder (`eukdb_build.py` finds its `eukdb/` package and `data/` beside it).
+Run everything from this folder (`eukore_build.py` finds its `eukore/` package and `data/` beside it).
 
 ### 2. The build environment
 
 ```bash
-micromamba create -f envs/eukdb.yaml
-micromamba activate eukdb
+micromamba create -f envs/eukore.yaml
+micromamba activate eukore
 ```
 
-`envs/eukdb.yaml` holds:
+`envs/eukore.yaml` holds:
 - Python 3.12 or later;
 - miniprot and HMMER (hmmsearch, nhmmer): the BUSCO calls and the organelle genes;
 - barrnap and ITSx: the rRNA genes and the ITS borders;
@@ -49,7 +50,7 @@ Check that the tools are found:
 
 ```bash
 for t in miniprot hmmsearch nhmmer barrnap ITSx vsearch 7za; do printf '%-10s %s\n' $t "$(command -v $t || echo MISSING)"; done
-python3 eukdb_build.py --help
+python3 eukore_build.py --help
 ```
 
 The build stops before any work if miniprot or hmmsearch is missing, or if ITSx's profile database is incomplete (a
@@ -65,7 +66,7 @@ tiara classifies the 50 kb around each BUSCO copy (eukaryote, prokaryote, organe
 micromamba create -f envs/tiara.yaml
 ```
 
-The build is then given it with `--tiara $MAMBA_ROOT_PREFIX/envs/eukdb-tiara/bin/tiara` (or finds `tiara` on the
+The build is then given it with `--tiara $MAMBA_ROOT_PREFIX/envs/eukore-tiara/bin/tiara` (or finds `tiara` on the
 PATH). Without it, `window_class` is `-`, and `--no_tiara` says so explicitly.
 
 ### 4. Optional: FCS-GX's database
@@ -111,11 +112,11 @@ python3 -m unittest discover -s tests -t tests      # ~40 tests with stand-in to
 A trial builds the package of a few clades on one machine, all stages in one run:
 
 ```bash
-python3 eukdb_build.py --work work --out out --groups fungi --species 4930 -t 8
+python3 eukore_build.py --work work --out out --groups fungi --species 4930 -t 8
 ```
 
 `--species` takes NCBI taxids (here *Saccharomyces*, 4930), comma-separated or a file of one per line. Only the species
-inside those clades are built, and the manifest says so (`inputs.partial`): a trial package is not EUKDB. The
+inside those clades are built, and the manifest says so (`inputs.partial`): a trial package is not Eukore. The
 2026-11-05 trial of seven clades (*Saccharomyces*, *Candida albicans*, *Blastocystis*, *Drosophila melanogaster*,
 *C. elegans*, *Arabidopsis*, *Trichuris trichiura*; 42 genomes, 1 Gb) took on 6 threads:
 - ~9 minutes for the genomes;
@@ -128,13 +129,13 @@ On a cluster, the stage that needs the network runs where the network is, and th
 
 ```bash
 # a node with internet: the sources, then every species' genome
-python3 eukdb_build.py --work WORK --out OUT --stage fetch --groups fungi,protozoa
+python3 eukore_build.py --work WORK --out OUT --stage fetch --groups fungi,protozoa
 
 # compute nodes, no network: each genome's BUSCOs and rRNA, then the organelle genes
-python3 eukdb_build.py --work WORK --out OUT --stage process --groups fungi,protozoa -t 64 -j 16
+python3 eukore_build.py --work WORK --out OUT --stage process --groups fungi,protozoa -t 64 -j 16
 
 # then the package: the checks across species, the published rRNA, the prune, the package
-python3 eukdb_build.py --work WORK --out OUT --stage package --groups fungi,protozoa -t 64 --keep_gb 1000 \
+python3 eukore_build.py --work WORK --out OUT --stage package --groups fungi,protozoa -t 64 --keep_gb 1000 \
     [--fcs_gx_db /dev/shm/gxdb/all] [--tiara .../bin/tiara] [--ksgp_tax .../KSGP_v4.4_plus2.tax]
 ```
 
@@ -162,19 +163,20 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   - takes the organelle genes of any genome not searched yet;
   - names each species in PR2, EUKARYOME and KSGP;
   - prunes `OUT/genomes` to `--keep_gb` (the model species first, then the smallest);
-  - writes `OUT/EUKDB_<version>/`.
+  - writes `OUT/Eukore_<version>/`.
 
 ### Options
 
 | option | default | |
 |---|---|---|
 | `--work DIR` | required | the build's work folder: sources, each genome's results, caches |
-| `--out DIR` | required | where `EUKDB_<version>/` and `genomes/` go |
+| `--out DIR` | required | where `Eukore_<version>/` and `genomes/` go |
 | `--stage` | `all` | `fetch`, `process`, `package` or `all` |
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
-| `--version` | `YYYY.MM` of today | the package's version, in its folder's name |
+| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.1, is in the manifest's `eukore`) |
+| `-V` | | print Eukore's own version and exit |
 | `--keep_gb` | 1000 | the genomes kept in `OUT/genomes` once the package is written, GB |
 | `-t`, `--threads` | 8 | threads in all |
 | `-j`, `--jobs` | threads / 4 | genomes at a time |
@@ -198,7 +200,7 @@ fetch stage again. Genomes already done are not run again.
 
 | path | |
 |---|---|
-| `OUT/EUKDB_<version>/` | the package (`FORMAT.md`); its `manifest.json` is written last, so a folder without one is unfinished |
+| `OUT/Eukore_<version>/` | the package (`FORMAT.md`); its `manifest.json` is written last, so a folder without one is unfinished |
 | `OUT/genomes/` | the genomes kept after the prune (`<accession>.fna.gz`, as NCBI serves them; `manifest.tsv` lists kept and deleted). `genomes.tsv`'s `local` column names them |
 | `WORK/sources/` | the sources, with their versions and checks (`source.json`, `labels.json`, ...) |
 | `WORK/done/<accession>/` | each genome's calls (`loci.tsv`, `copies.fna`, `features.tsv`), windows, rRNA (`rrna.tsv`), FCS-GX's ranges |
@@ -207,15 +209,15 @@ fetch stage again. Genomes already done are not run again.
 ### Checking and reading a package
 
 ```bash
-python3 -c "from eukdb import package; print(package.check('OUT/EUKDB_2026.11', deep=True) or 'whole')"
+python3 -c "from eukore import package; print(package.check('OUT/Eukore_2026.11', deep=True) or 'whole')"
 ```
 
 `check` compares every file with the manifest's size (and, with `deep`, its MD5), and says what is missing or
 changed. The tables are plain TSV (FORMAT.md):
 
 ```python
-from eukdb import package, ncbi
-pkg = "OUT/EUKDB_2026.11"
+from eukore import package, ncbi
+pkg = "OUT/Eukore_2026.11"
 species = package.read_table(pkg, "species.tsv")       # taxid, lineages in NCBI, PR2, EUKARYOME, KSGP, ...
 copies = package.read_table(pkg, "busco/copies.tsv")   # each BUSCO copy's call, checks and confidence
 loci = package.read_table(pkg, "busco/loci.tsv")       # each BUSCO's call rates, to choose loci by
@@ -223,14 +225,14 @@ seqs = package.read_copies(pkg, "10248812at2759")      # {accession: the copy, i
 tax = ncbi.Ncbi(f"{pkg}/taxonomy")                     # the NCBI taxonomy the package was built on
 ```
 
-A reader that is not EUKDB's own (protal's) reads the tables by their header, so that new columns do not break it.
+A reader that is not Eukore's own (protal's) reads the tables by their header, so that new columns do not break it.
 
 ### Into protal
 
 protal's database build converts a package into a GTDB release folder's eukaryote files:
 
 ```bash
-python3 scripts/download_ref_data.py ... --eukdb OUT/EUKDB_2026.11 [--eukdb_loci TABLE]
+python3 scripts/download_ref_data.py ... --eukdb OUT/Eukore_2026.11 [--eukdb_loci TABLE]
 ```
 
 It takes protal's 30 BUSCOs (`--eukdb_loci` others), names the species by its KSGP and masks and fits the copies.
@@ -238,17 +240,17 @@ protal's `docs/databases.md` describes it.
 
 ## How the BUSCO copies are made
 
-EUKDB calls every BUSCO of eukaryota_odb12 itself (OrthoDB 12.1, 129 BUSCOs; `--loci` restricts a trial), as
+Eukore calls every BUSCO of eukaryota_odb12 itself (OrthoDB 12.1, 129 BUSCOs; `--loci` restricts a trial), as
 compleasm does. A user picks its loci among them: `busco/loci.tsv` gives each one's call rate over the package's
 species and per supergroup (protal picks its euk30). A genome searched for fewer BUSCOs than the build calls (a run
 before format 4) is run again. EukDetect1 and EukDetect2 were its sources of copies (30 loci) until 2026-11-05.
 1. **The genome set.** For each NCBI species with a GenBank assembly in the `--groups`, the assembly that ranks best
-   (`eukdb/genomes.py`):
+   (`eukore/genomes.py`):
    - never one NCBI flags as contaminated, of an unverified source organism, misassembled, chimeric or of low
      quality;
    - never one that NCBI's own FCS-GX screen finds mostly another organism's (50% or more), or that fails NCBI's ANI
-     species check (Saccharomycotina against their type strains; `eukdb/quality.py`);
-   - another flagged one, or a metagenome's, only without better. EUKDB adds its flags: `partial genome` (NCBI's
+     species check (Saccharomycotina against their type strains; `eukore/quality.py`);
+   - another flagged one, or a metagenome's, only without better. Eukore adds its flags: `partial genome` (NCBI's
      `genome_rep`); `small for its clade`, an assembly under a quarter of the typical genome of its genus (else
      family, else order): a part of the genome, whatever NCBI calls it; `FCS-GX: contaminated` (1% or more
      contaminant, or 100 kb or more of another eukaryote's sequence); `ANI: inconclusive`;
@@ -263,7 +265,7 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
    Its RefSeq copy is fetched where it has one (RefSeq screens eukaryote genomes for contamination). A model species
    (`data/model_species.tsv`) takes its reference assembly. NCBI's placeholder species and interspecies hybrids
    ("A x B") are left out.
-2. **The calls** (`eukdb/odb.py`, `eukdb/loci.py`).
+2. **The calls** (`eukore/odb.py`, `eukore/loci.py`).
    - miniprot aligns, per locus, the proteins of the 30 dataset species nearest to the genome in NCBI's taxonomy and
      BUSCO's ancestral variants, with the genome's genetic code (NCBI's: ciliates and diplomonads read TAA and TAG as
      glutamine).
@@ -281,7 +283,7 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
    - tiara classifies them where installed (`--tiara`).
    - NCBI's FCS-GX screens them with `--fcs_gx_db` (its ~470 GB database; a node of ~512 GB). A copy overlapping a
      range FCS-GX calls another organism's gets an `fcs` column.
-4. **The checks across species** (`eukdb/qc.py`), each a column of `busco/copies.tsv`. They cover what EukDetect
+4. **The checks across species** (`eukore/qc.py`), each a column of `busco/copies.tsv`. They cover what EukDetect
    checked with its alien index, its 99% collapse and its length filter:
    - `own_species`: the copy's nearest copies of other species agree with its lineage, or are another clade's
      (a contaminant, a misidentified genome);
@@ -293,7 +295,7 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
    loci are called in those records as in a genome.
 
 The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it dropped those found in gut bacteria
-(see "The loci in prokaryotes" below for EUKDB's own check).
+(see "The loci in prokaryotes" below for Eukore's own check).
 
 ## How the rRNA records are made
 
@@ -305,12 +307,12 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
   - ambiguous bases and homopolymers;
   - the 99% 18S type within the species;
   - `own_species`, against the package's other sources;
-  - the part screen (`eukdb/screen.py`, `screen`): a record whose 18S, junction or 28S half is another organism's,
+  - the part screen (`eukore/screen.py`, `screen`): a record whose 18S, junction or 28S half is another organism's,
     by the nearest records of other genomes on NCBI's lineages (a contaminant contig, a mosaic, a chimeric read).
 
 ## How the organelle genes are made
 
-`eukdb/organelle.py`, for each species of the package and each of its organelles, from one source:
+`eukore/organelle.py`, for each species of the package and each of its organelles, from one source:
 - **RefSeq's organelle genomes** (its release's mitochondrion and plastid GenBank files, ~2.2 GB, parsed once into
   `WORK/organelle`). Their annotated rRNA features (SSU, LSU, 5S; the 16S is an animal mitochondrion's LSU, elsewhere
   the SSU) and COX1 CDS. Of a species' records, the one with the most of these genes, then its own taxid's, then the
@@ -332,7 +334,7 @@ yet.
 So that a user (protal's build) has what it needs without computing it again:
 - **Names.** `species.tsv` gives each species' NCBI lineage and supergroup, and its lineage in PR2 (5.1.1), EUKARYOME
   (2.1) and KSGP (`--ksgp_tax`, else the 4.0 KSGP's site serves), with how it matched: its name, a synonym, its genus,
-  or none (`eukdb/labels.py`). NCBI's taxids merged since are in `taxonomy/merged.tsv`.
+  or none (`eukore/labels.py`). NCBI's taxids merged since are in `taxonomy/merged.tsv`.
 - **Gene structure.** The BUSCO copies' exons and introns (`busco/features.tsv`), the 18S's introns on each rRNA record
   and its regions (18S, ITS1, 5.8S, ITS2, 28S, an inline 5S), the organelle genes' exon counts.
 - **Copies in the genome.** Per BUSCO copy its complete copies in the genome (`copies`); per genome its 18S spans and
@@ -347,17 +349,17 @@ So that a user (protal's build) has what it needs without computing it again:
 
 | path | contents |
 |---|---|
-| `eukdb_build.py` | the build |
-| `eukdb/odb.py`, `eukdb/loci.py` | BUSCO's dataset; the loci called in a genome |
-| `eukdb/genomes.py` | the genome set, one worker per genome (loci, windows, tiara, rRNA), FCS-GX, the prune |
-| `eukdb/qc.py` | the copies' checks across species |
-| `eukdb/rrna.py`, `eukdb/screen.py` | the rRNA records and their checks; the part screen |
-| `eukdb/organelle.py` | the mitochondrial and plastid rRNA and COX1 |
-| `eukdb/quality.py` | NCBI's FCS-GX and ANI reports, as the genomes' flags |
-| `eukdb/package.py` | collect, write, read and check a package; the copies' confidence |
-| `eukdb/labels.py` | each species' PR2, EUKARYOME and KSGP lineage; NCBI's lineage and supergroup |
-| `eukdb/ncbi.py`, `eukdb/sources.py`, `eukdb/species.py` | NCBI's taxonomy; the sources; the model species |
-| `eukdb/placement.py`, `eukdb/copies.py`, `eukdb/util.py` | genome files; a copy's exons and introns; I/O |
+| `eukore_build.py` | the build |
+| `eukore/odb.py`, `eukore/loci.py` | BUSCO's dataset; the loci called in a genome |
+| `eukore/genomes.py` | the genome set, one worker per genome (loci, windows, tiara, rRNA), FCS-GX, the prune |
+| `eukore/qc.py` | the copies' checks across species |
+| `eukore/rrna.py`, `eukore/screen.py` | the rRNA records and their checks; the part screen |
+| `eukore/organelle.py` | the mitochondrial and plastid rRNA and COX1 |
+| `eukore/quality.py` | NCBI's FCS-GX and ANI reports, as the genomes' flags |
+| `eukore/package.py` | collect, write, read and check a package; the copies' confidence |
+| `eukore/labels.py` | each species' PR2, EUKARYOME and KSGP lineage; NCBI's lineage and supergroup |
+| `eukore/ncbi.py`, `eukore/sources.py`, `eukore/species.py` | NCBI's taxonomy; the sources; the model species |
+| `eukore/placement.py`, `eukore/copies.py`, `eukore/util.py` | genome files; a copy's exons and introns; I/O |
 | `data/` | the model species table, curated rDNA units, the no-assembly records |
 | `envs/` | the micromamba environments |
 | `tools/` | `rank_loci.py`, `eukaryote_panel.py`, `prokaryote_panel.py`, `prokaryote_separation.py` (choosing loci); `no_assembly_records.py` (run once) |
@@ -369,7 +371,7 @@ Seven clades: *Saccharomyces*, *Candida albicans*, *Blastocystis*, *Drosophila m
 *Arabidopsis*, *Trichuris trichiura*. On 6 threads:
 - 42 species against EukDetect2's 19, 1,150 loci against its 491. The genome stage took 8.6 minutes, the published
   rRNA 21.
-- Of the 19 species both hold, EUKDB called 473 of EukDetect2's 491 loci, and 50 more.
+- Of the 19 species both hold, Eukore called 473 of EukDetect2's 491 loci, and 50 more.
 - Where the genome is the same (the yeasts, *C. albicans*), its copies hold all of EukDetect2's copy's 21-mers, at
   the same length.
 - The model species got 29-30 loci each.
@@ -402,7 +404,7 @@ What the 2026-11-05 checks showed:
 ## The loci in prokaryotes
 
 EukDetect2 dropped the BUSCOs it found in 971 gut bacteria, and the 30 loci are among those it kept. On 2026-11-05 that
-check was redone on EUKDB's own caller. The panel was 176 prokaryote genomes, one per GTDB genus of protal's local
+check was redone on Eukore's own caller. The panel was 176 prokaryote genomes, one per GTDB genus of protal's local
 inputs: 158 bacteria of 22 phyla and 18 archaea of 6. Each was searched with all ~23,000 dataset proteins of the 30
 loci, which is stricter than a build (the 30 nearest species' proteins). The results:
 

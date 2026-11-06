@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of EUKDB's core modules: the NCBI taxonomy and its subset (written into a package and read back the same for
+"""Tests of Eukore's core modules: the NCBI taxonomy and its subset (written into a package and read back the same for
 the package's taxa), NCBI's assembly tables read, the model species table.
 
     python3 -m unittest discover -s tests -t tests
@@ -12,7 +12,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukdb import ncbi, sources, species  # noqa: E402
+from eukore import ncbi, sources, species  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 
