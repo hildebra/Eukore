@@ -75,6 +75,7 @@ def fetch_sources(src_dir, groups, ksgp_tax=None):
     organelle_mod.fetch(src_dir, sources.download, say)
     quality.fetch(src_dir, sources.download, say)
     labels.fetch(src_dir, sources.download, say, ksgp_tax)
+    annotation.fetch_indexes(src_dir, sources.download, say)  # Ensembl's and TOGA2's gene models, by assembly
     if os.path.isfile(READ_BACKGROUND):
         reads_mod.fetch_background(READ_BACKGROUND, os.path.join(src_dir, "read_background"), say)
 
@@ -113,8 +114,13 @@ def plan(opts, src_dir, ncbi):
     no_assembly =genomes.no_assembly_genomes(NO_ASSEMBLY, os.path.join(opts.work, "no_assembly"), ncbi)
     job_map = genomes.jobs(ncbi, assemblies, refseq_rows, species.eukaryotes(species.read_table()), opts.inside,
                            no_assembly)
+    # TOGA2's genomes of the vertebrate species NCBI has none of (DNA Zoo's, Bat1K's), with their gene models
+    job_map.update(genomes.toga2_jobs(ncbi, annotation.read_toga2(src_dir), job_map, opts.inside, opts.groups))
     say(f"genome set: {len(job_map)} genomes ({dict(genomes.why_counts(job_map.values()))}); "
         f"{sum(j['size'] or 0 for j in job_map.values()) / 1e9:.0f} Gb")
+    others = annotation.assign(job_map, annotation.read_index(src_dir))
+    say(f"gene models: {sum(1 for j in job_map.values() if annotation.gff_url(j)):,} genomes may have NCBI's, "
+        f"{others:,} Ensembl's or TOGA2's (annotation.py)")
     return job_map, assemblies
 
 
@@ -245,12 +251,12 @@ def genome_rrna_records(opts, job_map, ncbi):
 
 
 def annotate_pass(opts, job_map, may_fetch):
-    """The done genomes with an NCBI annotation compared with it (annotation.py: its GFF beside the genome, from the
-    fetch stage, or fetched here where may_fetch), the GFF deleted after."""
+    """The done genomes with an annotation (NCBI's, Ensembl's or TOGA2's) compared with it (annotation.py: its GFF
+    beside the genome, from the fetch stage, or fetched here where may_fetch), the GFF deleted after."""
     todo = [j for _a, j in sorted(job_map.items()) if annotation.missing(opts.work, j)]
     if not todo:
         return
-    say(f"NCBI's annotation: {len(todo)} genomes' calls to compare")
+    say(f"gene models: {len(todo)} genomes' calls to compare with their annotation")
     compared, left, failed = 0, 0, []
     for j in todo:
         try:
@@ -449,7 +455,7 @@ def main(argv=None):
 
         def fetch_genome(j):
             path = genomes.genome_file(opts.genomes, j["accession"])
-            why = util.fetch_file(j["url"], path)
+            why = genomes.fetch_genome(j, path)
             return j, why, 0 if why else os.path.getsize(path)
 
         for done in at_a_time(fetch_genome, todo, downloads):
@@ -457,13 +463,13 @@ def main(argv=None):
             fetched += size
             rate = fetched / max(1e-9, time.time() - progress.started) / 1e6
             progress.step(j.get("size") or 0, failed=bool(why), note=f"; {fetched / 1e9:,.1f} GB at {rate:,.1f} MB/s")
-        # NCBI's own gene models (RefSeq's, a GenBank submitter's) beside the genomes, of all but those whose assembly
-        # summary gives no protein-coding genes, for the process stage's copies' models and their comparison
-        # (annotation.py)
-        todo = [j for a, j in sorted(job_map.items()) if annotation.gff_url(j)
-                and not os.path.isfile(annotation.gff_file(opts.genomes, a))
+        # the genomes' own gene models beside them, for the process stage's copies' models and their comparison
+        # (annotation.py): NCBI's (RefSeq's, a GenBank submitter's; not where the assembly summary gives no
+        # protein-coding genes), else Ensembl's, else TOGA2's
+        todo = [j for a, j in sorted(job_map.items()) if annotation.wanted(j)
+                and not annotation.found(opts.genomes, a)[0]
                 and not os.path.isfile(os.path.join(genomes.done_dir(opts.work, a), annotation.TABLE))]
-        say(f"fetching {len(todo):,} genomes' NCBI annotations into {opts.genomes}")
+        say(f"fetching {len(todo):,} genomes' annotations (NCBI's, else Ensembl's, else TOGA2's) into {opts.genomes}")
         progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1)
         for done in at_a_time(functools.partial(annotation.fetch, genomes_folder=opts.genomes), todo, downloads):
             try:

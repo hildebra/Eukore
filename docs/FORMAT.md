@@ -39,7 +39,7 @@ One row per NCBI species the package holds:
 | `taxid` | NCBI species taxid |
 | `name` | NCBI scientific name |
 | `representative` | the genome its copies come from (an accession of `genomes.tsv`); `-` for a species with rRNA records alone |
-| `source` | `ncbi` (NCBI's genome of the species by Eukore's ranking), `model` (a model species' reference), `no_assembly` (records of a species NCBI has no assembly of), `rrna` (rRNA records alone) |
+| `source` | `ncbi` (NCBI's genome of the species by Eukore's ranking), `model` (a model species' reference), `no_assembly` (records of a species NCBI has no assembly of), `toga2` (TOGA2's genome of a vertebrate species NCBI has no assembly of, accession `TOGA2_<assembly>`), `rrna` (rRNA records alone) |
 | `loci` | BUSCO genes called in its genome |
 | `rrna_records` | its records in `rrna/records.tsv` |
 | `organelle_genes` | its records in `organelle/genes.tsv` |
@@ -114,7 +114,7 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 | `copies` | complete copies of the locus in the genome |
 | `query` | the dataset protein that placed it (`<busco>_<taxid>_<id>`, or an ancestral variant; `<busco>_self` for the rescue pass' self protein) |
 | `rescued` | `t` where the rescue pass called it (its HMM in the genome's six-frame ORFs placed it; [methods.md](methods.md)), `f`, or `-` for a genome run before 2026-11-06 |
-| `model` | where its exons come from: `ncbi` (the genome's own NCBI annotation, its translation confirmed by the HMM; [methods.md](methods.md)), `miniprot`, or `-` for a genome run before 2026-11-06 |
+| `model` | where its exons come from: the genome's own annotation, its translation confirmed by the HMM (`ncbi`, `ensembl` or `toga2`; [methods.md](methods.md)), `miniprot`, or `-` for a genome run before 2026-11-06 |
 | `protein_length` | of its translation |
 | `window_class` | tiara's class of the 50 kb around it (`eukarya`, `bacteria`, `archaea`, `organelle`, `unknown`), `-` where not classified |
 | `fcs` | NCBI FCS-GX's call over the copy (`ACTION:division:top taxon`, its action `EXCLUDE`, `TRIM`, `FIX` or `REVIEW`), `-` for none or where not screened |
@@ -221,7 +221,7 @@ why. A reader needs none of them.
 | `selection.tsv` | supergroup and fate: NCBI's taxa with a GenBank assembly by what became of them (`chosen`, `chosen, flagged`, `model species`, `no assembly (records)`, `every assembly excluded`, `placeholder`, `hybrid`, `not a species`, `no download`) |
 | `breadth.tsv` | supergroup (and `all`): NCBI's species with an assembly, Eukore's (with a genome; with rRNA alone), another reference's (`compared`, the build's first `--read_compare`), and the two's overlap |
 | `genes.tsv` | species' genome: the rank it shares with the nearest other species of BUSCO's dataset (`odb_nearest`), whether it is in the dataset itself (`odb_self`), its copies' exon and intron bases |
-| `annotation.tsv` | copy of a genome with NCBI's own annotation (its GFF, RefSeq's or a submitter's): the annotated transcript sharing most coding bases with miniprot's model of it (also where the copy took NCBI's model, `model` ncbi), both's exons and introns, those exact, the coding bases each holds and shares |
+| `annotation.tsv` | copy of a genome with its own annotation (`source`: NCBI's, RefSeq's or a submitter's; else Ensembl's; else TOGA2's): the annotated transcript sharing most coding bases with miniprot's model of it (also where the copy took the annotation's model, `model` the source), both's exons and introns, those exact, the coding bases each holds and shares |
 | `flags.tsv` | supergroup, confidence and flags (as `busco/copies.tsv` writes them): copies |
 | `rrna_regions.tsv` | supergroup, source and region: records holding it, its length's quantiles; the organelle genes as source `mitochondrion` or `plastid` and region the gene (`organelle/genes.tsv`, those not partial; a COX1 with its introns) |
 | `organelle.tsv` | supergroup and organelle gene: species, and those with the gene |

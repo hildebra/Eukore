@@ -212,14 +212,29 @@ class RunTest(unittest.TestCase):
             job = dict(genomes.jobs(ncbi, gb)[YEAST], annotated=True)  # the summary: protein-coding genes
             self.assertTrue(annotation.gff_url(job).endswith("_genomic.gff.gz"))
             acc, summary, why = genomes.run((job, settings))
-            self.assertEqual((why, summary["annotated"], summary["ncbi_models"]), (None, True, 1))
+            self.assertEqual((why, summary["annotated"], summary["annotation"], summary["annotated_models"]),
+                             (None, True, "ncbi", 1))
             done = genomes.done_dir(work, YEAST)
             models = {r["locus"]: r["model"] for r in fx.read_tsv(os.path.join(done, "loci.tsv"))}
             self.assertEqual(models, {"1at2759": "ncbi", "2at2759": "miniprot", "3at2759": "-"})
             compared = {r["locus"]: r for r in fx.read_tsv(os.path.join(done, annotation.TABLE))}
-            self.assertEqual((compared["1at2759"]["exact_introns"], compared["2at2759"]["transcript"]), ("1", "-"))
+            self.assertEqual((compared["1at2759"]["exact_introns"], compared["2at2759"]["transcript"],
+                              compared["1at2759"]["source"]), ("1", "-", "ncbi"))
             self.assertFalse(os.path.isfile(ann))  # taken and compared: deleted
             self.assertIsNone(annotation.gff_url(dict(job, annotated=False)))
+            # no NCBI annotation, Ensembl's (a GTF here: TOGA2's form) beside the genome: its models, `ensembl`
+            other = dict(job, annotated=False, annotations=[("ensembl", "https://x/genes.gff3.gz")])
+            ann = annotation.gff_file(genomes_dir, YEAST, "ensembl")
+            with gzip.open(ann, "wt") as fh:
+                fh.write(f'c1\tensembl\tCDS\t{a}\t{a + 179}\t.\t+\t0\tgene_id "g1"; transcript_id "t1";\n'
+                         f'c1\tensembl\tCDS\t{a + 480}\t{b}\t.\t+\t0\tgene_id "g1"; transcript_id "t1";\n')
+            acc, summary, why = genomes.run((other, settings))
+            self.assertEqual((why, summary["annotation"], summary["annotated_models"]), (None, "ensembl", 1))
+            models = {r["locus"]: r["model"] for r in fx.read_tsv(os.path.join(done, "loci.tsv"))}
+            self.assertEqual(models["1at2759"], "ensembl")
+            compared = {r["locus"]: r for r in fx.read_tsv(os.path.join(done, annotation.TABLE))}
+            self.assertEqual((compared["1at2759"]["source"], compared["1at2759"]["transcript"]), ("ensembl", "t1"))
+            self.assertFalse(os.path.isfile(ann))
 
 
 class FcsTest(unittest.TestCase):

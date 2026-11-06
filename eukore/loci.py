@@ -16,9 +16,10 @@ own copies, in place of EukDetect1's and EukDetect2's.
    (esl-translate) places it, and miniprot aligns its queries and the HMM's hits joined (the "self" protein) on that
    place again, with sensitive seeding; the HMMs confirm as in 3. Its copy is `rescued` (a medium confidence: its span
    may be short of the gene's ends, and no own-protein run confirmed it);
-6. the gene model (annotated(), since 2026-11-06): in a genome with NCBI gene models (annotation.py), a copy takes the
-   annotated transcript sharing the most coding bases with miniprot's model where the locus' HMM confirms its
-   translation at ANNOTATION_SHARE of miniprot's score or more (`model` ncbi), else keeps miniprot's.
+6. the gene model (annotated(), since 2026-11-06): in a genome with its own gene models (annotation.py: NCBI's, else
+   Ensembl's, else TOGA2's), a copy takes the annotated transcript sharing the most coding bases with miniprot's model
+   where the locus' HMM confirms its translation at ANNOTATION_SHARE of miniprot's score or more (`model` the source:
+   ncbi, ensembl, toga2), else keeps miniprot's.
 
 A copy's coding sequence (`spliced`) leaves out the bases of miniprot's frameshifts (its CIGAR's F and G), which its
 GFF keeps inside the CDS; they are `frameshift` features of the copy.
@@ -64,7 +65,7 @@ RESCUE_JOIN = 20_000         # the hits joined to the best one: on its contig an
 RESCUE_FLANK = 5_000         # bases each side of the hits' place aligned again
 RESCUE_OPTIONS = ["-k5", "-M0", "-n1", "-l4"]  # miniprot's seeding: shorter k-mers, all of them, a chain of one
 RESCUE_MAX_BASES = 1_000_000_000  # a genome over this is not rescued (its six-frame ORFs' search too long)
-# Step 6 (since 2026-11-06): the genome's own NCBI annotation's gene model in place of miniprot's, where the locus' HMM
+# Step 6 (since 2026-11-06): the genome's own annotation's gene model in place of miniprot's, where the locus' HMM
 # scores its translation at this share of miniprot's or more. Against NCBI's curated models miniprot's are exact (every
 # intron) for 81% of Drosophila's and Arabidopsis' BUSCOs and 38% of C. elegans'; all their annotated models pass the
 # cutoff. Blastocystis hominis' 2011 annotation is weaker: miniprot's model outscores it by 5% or more in 23 of 94.
@@ -418,15 +419,15 @@ def frameshift_features(exons, shifts):
 
 
 def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hmm_db, table):
-    """Step 6: the genome's own annotated gene model (annotation: (NCBI GFF, assembly report or None)) in place of a
-    call's, where the GFF holds a transcript on the call's contig and strand sharing coding bases with it (the most:
-    annotation_mod.best_transcript) whose translation the locus' own HMM confirms (its best HMM, at the cutoff) at
-    ANNOTATION_SHARE of the call's HMM score or more. chosen: {locus: alignment} -> the same, an annotated model with
-    model="ncbi", the transcript, and miniprot's model kept as miniprot=dict(start, end, exons) (annotation.py's
-    benchmark compares that). The annotation's exons are its CDS: its 5' piece's phase left out (a partial gene)."""
+    """Step 6: the genome's own annotated gene model (annotation: (its GFF, NCBI's assembly report or None, its
+    source)) in place of a call's, where the GFF holds a transcript on the call's contig and strand sharing coding
+    bases with it (the most: annotation_mod.best_transcript) whose translation the locus' own HMM confirms (its best
+    HMM, at the cutoff) at ANNOTATION_SHARE of the call's HMM score or more. chosen: {locus: alignment} -> the same, an
+    annotated model with model=the source (annotation.SOURCES'), the transcript, and miniprot's model kept as
+    miniprot=dict(start, end, exons) (annotation.py's benchmark compares that). The annotation's exons are its CDS: its 5' piece's phase left out (a partial gene)."""
     from . import annotation as annotation_mod  # noqa: PLC0415
     from .benchmarks import translate  # noqa: PLC0415 (benchmarks imports this module's users)
-    gff, report = annotation
+    gff, report, source = (tuple(annotation) + ("ncbi",))[:3]
     spans = collections.defaultdict(list)
     for a in chosen.values():
         spans[a["contig"]].append((a["start"], a["end"]))
@@ -458,7 +459,7 @@ def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hm
         a = chosen[locus]
         if s >= odb.cutoff[locus] and s >= ANNOTATION_SHARE * a["hmm_score"]:
             out[locus] = dict(a, exons=m["exons"], start=m["start"], end=m["end"], shifts=[], hmm_score=s,
-                              hmm_coverage=cov, protein=proteins[locus], model="ncbi", transcript=m["transcript"],
+                              hmm_coverage=cov, protein=proteins[locus], model=source, transcript=m["transcript"],
                               miniprot=dict(start=a["start"], end=a["end"], exons=a["exons"]))
     return out
 
@@ -468,10 +469,10 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
     """The BUSCO genes of a genome (table: its NCBI genetic code) -> dict(loci {locus: dict(status, copy, spliced,
     features [(kind, start, end)],
     contig, start, end, strand, identity, coverage, score, hmm_score, hmm_coverage, cutoff, copies, query, protein,
-    rescued, model (miniprot or ncbi), miniprot (its model: start, end, exons))}, failed (why the genome could not be
+    rescued, model (miniprot, or the annotation's source: ncbi, ensembl, toga2), miniprot (its model: start, end, exons))}, failed (why the genome could not be
     called, or None), windows {name: sequence} of the copies' flanks).
     rescue_missing: the rescue pass (step 5) of the loci left Missing, in a genome of RESCUE_MAX_BASES or less;
-    annotation: (the genome's NCBI GFF, its assembly report or None) for step 6 (annotated()), or None."""
+    annotation: (the genome's GFF, NCBI's assembly report or None, its source) for step 6 (annotated()), or None."""
     lengths = {q: len(p) for q, p in queries.items()}
     with tempfile.TemporaryDirectory(dir=tmp) as work:
         hmm_db = hmm_db or odb.hmm_db(os.path.join(work, "loci.hmm"))

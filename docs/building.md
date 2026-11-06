@@ -144,9 +144,11 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   Then it fetches each species' genome into `OUT/genomes` (its RefSeq copy where it has one). After 1, 2, 3, 5 and
   8 minutes, then every 10 (`--report_minutes`), it says the genomes fetched, failed and left, the Gb left, the download rate and the time
   left, estimated by the genomes' sizes; the process stage reports its genomes alike. Beside each genome it fetches
-  NCBI's gene models (a GFF: RefSeq's or a GenBank submitter's) and the assembly report, but for the genomes whose
-  assembly summary gives no protein-coding genes (a 404 or a GFF without coding sequences: no annotation); the process stage takes a BUSCO copy's model from it where the HMM confirms it
-  ([methods.md](methods.md)), compares miniprot's models with it (`annotation.tsv`) and deletes it.
+  its gene models and NCBI's assembly report: NCBI's GFF (RefSeq's or a GenBank submitter's; not asked for where the
+  assembly summary gives no protein-coding genes; a 404 or a GFF without coding sequences is none), else Ensembl's,
+  else TOGA2's (their indexes fetched once into `SRC/annotation_sources`); the process stage takes a BUSCO copy's
+  model from it where the HMM confirms it ([methods.md](methods.md)), compares miniprot's models with it
+  (`annotation.tsv`) and deletes it.
 - **process** calls each fetched genome's BUSCOs and extracts its rRNA into `WORK/done/<accession>/`, `-j` genomes at a
   time with `-t / -j` threads each. A genome not fetched yet is left for the next run. Then it takes the organelle
   genes (`WORK/organelle`).
