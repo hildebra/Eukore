@@ -195,19 +195,20 @@ def annotate(folder, gff, report=None, calls=None):
     return len(rows)
 
 
-def fetch(job, genomes_folder):
+def fetch(job, genomes_folder, **how):
     """A job's NCBI annotation into genomes_folder (kept where there) -> its path, None where NCBI has none, or raises
-    OSError where it did not arrive (a later run asks again)."""
+    OSError where it did not arrive (a later run asks again). how: util.fetch_file's scratch and checker."""
     url = gff_url(job)
     if not url:
         return None
     path = gff_file(genomes_folder, job["accession"])
     report = report_file(genomes_folder, job["accession"])
     if not os.path.isfile(report):
-        util.fetch_file(report_url(job), report, gzip_check=False)  # without it, the names may not meet
+        util.fetch_file(report_url(job), report, gzip_check=False,  # without it, the names may not meet
+                        scratch=how.get("scratch"))
     if os.path.isfile(path):
         return path
-    why = util.fetch_file(url, path)
+    why = util.fetch_file(url, path, **how)
     if why == "not found":
         return None
     if why:
