@@ -536,7 +536,7 @@ def annotation_of(job, settings):
         if settings.get("staged_only"):
             return False, None, "-"
         try:
-            gff, source = annotation_mod.fetch(job, settings["genomes"])
+            gff, source = annotation_mod.fetch(job, settings["genomes"], settings.get("veupathdb_key"))
         except OSError:
             return False, None, "-"
     return gff, report if os.path.isfile(report) else None, source or "-"

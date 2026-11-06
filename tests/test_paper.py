@@ -168,6 +168,60 @@ class AnnotationTest(unittest.TestCase):
             self.assertFalse(os.path.isfile(annotation.gff_file(genomes_dir, "GCA_5.1", "ensembl")))
             self.assertEqual(annotation.found(genomes_dir, "GCA_5.1"), (path, "toga2"))
 
+    def test_veupathdb(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # its organism table: the GFF's URL moved to the file service; a genome without an accession left out
+            table = os.path.join(tmp, "organisms.json")
+            with open(table, "w") as fh:
+                json.dump({"records": [
+                    {"attributes": {"genome_version": "GCA_6.1", "annotation_source": "VEuPathDB",
+                                    "annotation_version": "2024",
+                                    "URLgff": "http://PlasmoDB.org/common/downloads/Current_Release/P/gff/data/P.gff"}},
+                    {"attributes": {"genome_version": "2014-05-13", "URLgff": "http://x/common/downloads/y.gff"}}]}, fh)
+            self.assertEqual(annotation.veupathdb_index(table), {"GCA_6.1": (
+                "VEuPathDB 2024", "https://PlasmoDB.org/a/service/raw-files/Current_Release/P/gff/data/P.gff")})
+            # without an API key its annotations are not given to the jobs
+            index = {"GCA_6.1": [("veupathdb", "https://v/P.gff"), ("ensembl", "https://e")]}
+            jobs = {"GCA_6.1": dict(accession="GCA_6.1", url="https://n/GCA_6.1_a_genomic.fna.gz", annotated=False)}
+            annotation.assign(jobs, index)
+            self.assertEqual(annotation.candidates(jobs["GCA_6.1"]), [("ensembl", "https://e")])
+            annotation.assign(jobs, index, veupathdb=True)
+            self.assertEqual(annotation.candidates(jobs["GCA_6.1"])[0], ("veupathdb", "https://v/P.gff"))
+            # with it: asked for with the key as a bearer token, kept plain; its own sequence names matched by length
+            asked = {}
+
+            def fetch_file(url, dest, **how):
+                asked[url] = how
+                if not url.startswith("https://v/"):
+                    return "not found"
+                with open(dest, "w") as fh:
+                    fh.write("##gff-version 3\n##sequence-region Pf_01 1 5000\n##sequence-region Pf_02 1 7000\n"
+                             "Pf_01\tVEuPathDB\tCDS\t101\t400\t.\t+\t0\tID=c1;Parent=PF01_t1\n")
+                return ""
+            genomes_dir = os.path.join(tmp, "genomes")
+            os.makedirs(genomes_dir)
+            real, annotation.util.fetch_file = annotation.util.fetch_file, fetch_file
+            try:
+                path, source = annotation.fetch(jobs["GCA_6.1"], genomes_dir, "KEY")
+            finally:
+                annotation.util.fetch_file = real
+            self.assertEqual((path, source), (annotation.gff_file(genomes_dir, "GCA_6.1", "veupathdb"), "veupathdb"))
+            self.assertTrue(path.endswith(".veupathdb.gff"))
+            self.assertEqual((asked["https://v/P.gff"]["headers"], asked["https://v/P.gff"]["gzip_check"]),
+                             ({"Authorization": "Bearer KEY"}, False))
+            self.assertNotIn("headers", asked["https://n/GCA_6.1_a_assembly_report.txt"])  # the key to VEuPathDB alone
+            report = os.path.join(tmp, "report.txt")
+            with open(report, "w") as fh:
+                fh.write("# Sequence-Name\tSequence-Role\tAssigned-Molecule\tAssigned-Molecule-Location/Type\t"
+                         "GenBank-Accn\tRelationship\tRefSeq-Accn\tAssembly-Unit\tSequence-Length\n"
+                         "1\tassembled-molecule\t1\tChromosome\tLR1.1\t<>\tna\tPrimary Assembly\t5000\n"
+                         "2\tassembled-molecule\t2\tChromosome\tLR2.1\t<>\tna\tPrimary Assembly\t7000\n"
+                         "3\tassembled-molecule\t3\tChromosome\tLR3.1\t<>\tna\tPrimary Assembly\t7000\n")
+            alias = annotation.aliases(report, path)
+            self.assertEqual(alias["Pf_01"], "LR1.1")
+            self.assertNotIn("Pf_02", alias)  # two sequences of its length: not told apart
+            self.assertEqual(sorted(annotation.read_cds(path, {"LR1.1": [(1, 5000)]}, alias)), ["PF01_t1"])
+
 
 class FatesTest(unittest.TestCase):
     def test_what_became_of_each_species(self):

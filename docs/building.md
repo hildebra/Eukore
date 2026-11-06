@@ -145,8 +145,8 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   8 minutes, then every 10 (`--report_minutes`), it says the genomes fetched, failed and left, the Gb left, the download rate and the time
   left, estimated by the genomes' sizes; the process stage reports its genomes alike. Beside each genome it fetches
   its gene models and NCBI's assembly report: NCBI's GFF (RefSeq's or a GenBank submitter's; not asked for where the
-  assembly summary gives no protein-coding genes; a 404 or a GFF without coding sequences is none), else Ensembl's,
-  else TOGA2's (their indexes fetched once into `SRC/annotation_sources`); the process stage takes a BUSCO copy's
+  assembly summary gives no protein-coding genes; a 404 or a GFF without coding sequences is none), else VEuPathDB's (with
+  `--veupathdb_key`), else Ensembl's, else TOGA2's (their indexes fetched once into `SRC/annotation_sources`); the process stage takes a BUSCO copy's
   model from it where the HMM confirms it ([methods.md](methods.md)), compares miniprot's models with it
   (`annotation.tsv`) and deletes it.
 - **process** calls each fetched genome's BUSCOs and extracts its rRNA into `WORK/done/<accession>/`, `-j` genomes at a
@@ -181,6 +181,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and runs (genomes left, time left) |
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
+| `--veupathdb_key KEY` | the environment's `VEUPATHDB_API_KEY`, else none | a VEuPathDB user's API key (its profile's Web Service Access), for VEuPathDB's gene models; it is sent to VEuPathDB alone and written nowhere |
 | `--fcs_gx_db PREFIX`, `--run_gx` | none, `run_gx` | FCS-GX's database (e.g. `/dev/shm/gxdb/all`) and runner |
 | `--ksgp_tax FILE` | KSGP 4.0, fetched | the KSGP release `species.tsv`'s KSGP lineages come from |
 | `--miniprot`, `--hmmsearch` | on the PATH | the tools, where not on the PATH |

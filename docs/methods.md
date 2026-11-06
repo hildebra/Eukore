@@ -69,6 +69,9 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
      the locus' HMM confirms its translation (its best HMM, at the cutoff) at 95% of miniprot's score or more
      (`model` in copies.tsv: its source); else miniprot's model stays. The annotation is the first there of:
      - NCBI's (about 37% of fungal and protist species, 11-29% of the other groups', RefSeq's or a submitter's);
+     - VEuPathDB's, with a VEuPathDB user's API key (`--veupathdb_key`; its organism table: 817 genomes of protists,
+       fungi, vectors and hosts, curated): 71 species NCBI annotates none of. Its own sequence names (`Pf3D7_01_v3`)
+       are matched to the genome's by length, where one sequence alone has it;
      - Ensembl's (its species.json, 2026-10: ~5,900 assemblies; Ensembl's own pipeline, BRAKER, Helixer, VEuPathDB's
        and community annotations, the newest build): 2,037 species of NCBI's assemblies NCBI annotates none of,
        mostly invertebrates (1,551; Darwin Tree of Life's, ERGA's), 230 plants, 196 vertebrates, 58 fungi, 2

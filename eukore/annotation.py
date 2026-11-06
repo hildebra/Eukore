@@ -5,12 +5,15 @@ A genome's annotation comes from the first of SOURCES that has one for its assem
 - `ncbi`: NCBI's GFF beside the genome on NCBI's server (a RefSeq copy, GCF_, mostly NCBI's Eukaryotic Genome
   Annotation Pipeline's; a GenBank assembly its submitter's: the assembly summary's protein-coding genes,
   sources.read_assemblies' `genes`). A 404, or a GFF without coding sequences, is none.
+- `veupathdb`: VEuPathDB's (its organism table gives each genome's accession; its curated annotations of protists'
+  and fungi's genomes, newer than Ensembl's copies of some), with a VEuPathDB user's API key alone (since 2026-08 its
+  files need one; eukore_build.py --veupathdb_key). Its own sequence names are matched by length (aliases()).
 - `ensembl`: Ensembl's (ftp.ebi.ac.uk/pub/ensemblorganisms, its species.json the index): Ensembl's own pipeline's, its
   BRAKER and Helixer runs, VEuPathDB's and community annotations; the biodiversity projects' genomes (Darwin Tree of
   Life, ERGA) RefSeq has not annotated. Of an assembly's builds the newest, Ensembl's own first on a tie.
 - `toga2`: TOGA2's (Malovichko et al. 2026; genome.senckenberg.de/download/TOGA2), ~2,500 vertebrate assemblies'
   genes projected from a reference species' (the first of TOGA2_REFERENCES listing the assembly).
-On 2026-11-06 Ensembl annotates 2,037 species of NCBI's assemblies that NCBI annotates none of (+32%; mostly
+On 2026-11-06 VEuPathDB annotates 71 species of NCBI's assemblies that NCBI annotates none of, Ensembl 2,037 (+32%; mostly
 invertebrates), TOGA2 907 more vertebrates.
 
 The process stage gives it to loci.call: a copy takes the annotated transcript sharing the most coding bases with
@@ -39,8 +42,13 @@ from . import util
 TABLE = "annotation.tsv"
 ANNOTATION_COLUMNS = ("locus", "status", "contig", "source", "transcript", "gene", "exons", "ann_exons", "exact_exons",
                       "introns", "ann_introns", "exact_introns", "bases", "ann_bases", "shared_bases")
-SOURCES = ("ncbi", "ensembl", "toga2")  # the order a genome's annotation is taken in
+SOURCES = ("ncbi", "veupathdb", "ensembl", "toga2")  # the order a genome's annotation is taken in
 INDEX_DIR = "annotation_sources"  # in the build's sources: the other sources' indexes (fetch_indexes)
+# VEuPathDB's genomes (open: each one's GenBank or RefSeq accession and GFF); its files need a user's API key
+VEUPATHDB_ORGANISMS = ("https://veupathdb.org/veupathdb/service/record-types/organism/searches/GenomeDataTypes/reports/"
+                       "standard?reportConfig=%7B%22attributes%22%3A%5B%22genome_version%22%2C%22URLgff%22%2C"
+                       "%22annotation_source%22%2C%22annotation_version%22%5D%7D")
+VEUPATHDB_KEY = "VEUPATHDB_API_KEY"  # the environment variable eukore_build.py --veupathdb_key defaults to
 ENSEMBL_FTP = "https://ftp.ebi.ac.uk/pub/ensemblorganisms"
 ENSEMBL_SKIP = {"prokka", "refseq", "genbank"}  # bacteria's; NCBI's own (the ncbi source)
 TOGA2_URL = "https://genome.senckenberg.de/download/TOGA2"
@@ -74,7 +82,9 @@ def wanted(job):
 
 
 def gff_file(genomes_folder, accession, source="ncbi"):
-    return os.path.join(genomes_folder, f"{accession}.gff.gz" if source == "ncbi" else f"{accession}.{source}.gff.gz")
+    """Where a genome's annotation is kept beside it (VEuPathDB's GFF is served plain)."""
+    return os.path.join(genomes_folder, f"{accession}.gff.gz" if source == "ncbi" else f"{accession}.{source}.gff"
+                        if source == "veupathdb" else f"{accession}.{source}.gff.gz")
 
 
 def found(genomes_folder, accession):
@@ -113,6 +123,21 @@ def ensembl_index(species_json):
                         best = (key, provider, date, f"{ENSEMBL_FTP}/{path}")
             if best:
                 out[acc] = best[1:]
+    return out
+
+
+def veupathdb_index(organisms_json):
+    """VEuPathDB's organism table (VEUPATHDB_ORGANISMS) -> {assembly accession: (annotation source and version, URL
+    of its GFF)}: the URL its file service serves (/a/service/raw-files/, with a user's API key), not the table's."""
+    with util.open_text(organisms_json) as fh:
+        records = json.load(fh).get("records", [])
+    out = {}
+    for r in records:
+        a = r.get("attributes", {})
+        acc, url = a.get("genome_version") or "", a.get("URLgff") or ""
+        if acc.startswith("GC") and url:
+            url = re.sub(r"^https?://([^/]+)/common/downloads/", r"https://\1/a/service/raw-files/", url)
+            out[acc] = (f"{a.get('annotation_source') or '-'} {a.get('annotation_version') or ''}".strip(), url)
     return out
 
 
@@ -193,6 +218,11 @@ def fetch_indexes(src_dir, download, log=print):
     rows += [(acc, "ensembl", f"{provider}/{date}", url)
              for acc, (provider, date, url) in sorted(ensembl_index(species).items())]
     os.remove(species)
+    organisms = os.path.join(folder, "veupathdb_organisms.json")
+    download(VEUPATHDB_ORGANISMS, organisms)
+    rows += [(acc, "veupathdb", build.replace("\t", " "), url)
+             for acc, (build, url) in sorted(veupathdb_index(organisms).items())]
+    os.remove(organisms)
     table = os.path.join(folder, "toga2_assemblies.tsv")
     download(f"{TOGA2_URL}/assemblies_and_species.tsv", table)
     listing = os.path.join(folder, "toga2.html")
@@ -216,8 +246,8 @@ def fetch_indexes(src_dir, download, log=print):
         fh.write("\t".join(INDEX_COLUMNS) + "\n")
         fh.writelines("\t".join(r) + "\n" for r in rows)
     os.replace(util.part_of(path), path)
-    log(f"annotations: Ensembl's of {sum(r[1] == 'ensembl' for r in rows):,} assemblies, TOGA2's of "
-        f"{sum(r[1] == 'toga2' for r in rows):,}")
+    log(f"annotations: Ensembl's of {sum(r[1] == 'ensembl' for r in rows):,} assemblies, VEuPathDB's of "
+        f"{sum(r[1] == 'veupathdb' for r in rows):,}, TOGA2's of {sum(r[1] == 'toga2' for r in rows):,}")
     return path
 
 
@@ -242,12 +272,14 @@ def read_index(src_dir):
     return dict(out)
 
 
-def assign(job_map, index):
+def assign(job_map, index, veupathdb=False):
     """Each job's other sources' annotations of its own assembly (its GenBank accession, or the RefSeq copy it fetches)
-    into job["annotations"] -> the jobs given one."""
+    into job["annotations"] -> the jobs given one. veupathdb: whether there is a VEuPathDB API key (else its
+    annotations are left out: its files need one)."""
     n = 0
     for job in job_map.values():
         got = index.get(job["accession"]) or index.get(job.get("fetch", "")) or []
+        got = [x for x in got if veupathdb or x[0] != "veupathdb"]
         if got:
             job["annotations"] = got
             n += 1
@@ -290,14 +322,16 @@ def report_file(genomes_folder, accession):
     return os.path.join(genomes_folder, f"{accession}.assembly_report.txt")
 
 
-def aliases(report):
+def aliases(report, gff=None):
     """An NCBI assembly report -> {another name of a sequence: a name the genome may give it}: its RefSeq name's
     GenBank name and the reverse (the GFF names the RefSeq copy's sequences, a genome fetched from GenBank the GenBank
     ones), a chromosome's name (Ensembl's: `1`, `X`) its GenBank name, and an accession without its version (TOGA2's)
-    the accession."""
+    the accession. gff: the annotation, whose ##sequence-region lines name a sequence the report does not (VEuPathDB's
+    own names: `Pf3D7_01_v3`) its GenBank name where its length is that of one sequence alone in both."""
     out = {}
     if not report or not os.path.isfile(report):
         return out
+    by_length = collections.defaultdict(list)
     with open(report) as fh:
         for line in fh:
             if line.startswith("#"):
@@ -313,6 +347,21 @@ def aliases(report):
                     out.setdefault(acc.rsplit(".", 1)[0], acc)
             if gb and f[1] == "assembled-molecule" and f[2] not in ("na", ""):
                 out.setdefault(f[2], gb)
+            if (gb or rs) and len(f) > 8 and f[8].isdigit():
+                by_length[int(f[8])].append(gb or rs)
+    if gff and os.path.isfile(gff):
+        theirs = collections.defaultdict(list)
+        with util.open_text(gff) as fh:
+            for line in fh:
+                if not line.startswith("#"):
+                    break
+                f = line.split()
+                if f[0] == "##sequence-region" and len(f) == 4 and f[3].isdigit():
+                    theirs[int(f[3])].append(f[1])
+        known = set(out) | {n for names in by_length.values() for n in names}
+        for length, names in theirs.items():
+            if len(names) == 1 and len(by_length.get(length, ())) == 1 and names[0] not in known:
+                out[names[0]] = by_length[length][0]
     return out
 
 
@@ -416,7 +465,7 @@ def annotate(folder, gff, report=None, calls=None, source="ncbi"):
         spans = collections.defaultdict(list)
         for c in calls.values():
             spans[c["contig"]].append((c["start"], c["end"]))
-        transcripts = read_cds(gff, spans, aliases(report))
+        transcripts = read_cds(gff, spans, aliases(report, gff))
         if transcripts or has_cds(gff):  # a GFF without coding sequences (an assembly's regions alone): no annotation
             rows = [dict(compare(c, transcripts), locus=locus, source=source) for locus, c in sorted(calls.items())]
     path = os.path.join(folder, TABLE)
@@ -427,11 +476,11 @@ def annotate(folder, gff, report=None, calls=None, source="ncbi"):
     return len(rows)
 
 
-def fetch(job, genomes_folder, **how):
+def fetch(job, genomes_folder, veupathdb_key=None, **how):
     """A job's annotation into genomes_folder (kept where there), from the first of its candidates() that has one
     (a 404, or a GFF without coding sequences, is none), with NCBI's assembly report -> (path, source), (None, None)
-    where none has one, or raises OSError where one did not arrive (a later run asks again). how: util.fetch_file's
-    scratch and checker."""
+    where none has one, or raises OSError where one did not arrive (a later run asks again). veupathdb_key: a
+    VEuPathDB user's API key (without, its annotation is not asked for); how: util.fetch_file's scratch and checker."""
     path, source = found(genomes_folder, job["accession"])
     if path:
         return path, source
@@ -441,7 +490,13 @@ def fetch(job, genomes_folder, **how):
                         **{k: v for k, v in how.items() if k == "scratch"})
     for source, url in candidates(job):
         path = gff_file(genomes_folder, job["accession"], source)
-        why = util.fetch_file(url, path, **how)
+        if source == "veupathdb":
+            if not veupathdb_key:
+                continue
+            why = util.fetch_file(url, path, gzip_check=False, headers={"Authorization": f"Bearer {veupathdb_key}"},
+                                  **{k: v for k, v in how.items() if k == "scratch"})
+        else:
+            why = util.fetch_file(url, path, **how)
         if why == "not found":
             continue
         if why:
@@ -452,7 +507,7 @@ def fetch(job, genomes_folder, **how):
     return None, None
 
 
-def annotate_genome(work, job, genomes_folder, may_fetch=True):
+def annotate_genome(work, job, genomes_folder, may_fetch=True, veupathdb_key=None):
     """A done genome compared with its annotation (fetched where may_fetch and not beside the genome), the GFF
     deleted after -> copies compared, or None where its GFF is not there (left for a stage that may fetch)."""
     from .genomes import done_dir  # noqa: PLC0415
@@ -460,7 +515,7 @@ def annotate_genome(work, job, genomes_folder, may_fetch=True):
     if not path:
         if not may_fetch:
             return None
-        path, source = fetch(job, genomes_folder)
+        path, source = fetch(job, genomes_folder, veupathdb_key)
     report = report_file(genomes_folder, job["accession"])
     n = annotate(done_dir(work, job["accession"]), path, report, source=source or "-")
     for done in (path, report):

@@ -431,7 +431,7 @@ def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hm
     spans = collections.defaultdict(list)
     for a in chosen.values():
         spans[a["contig"]].append((a["start"], a["end"]))
-    transcripts = annotation_mod.read_cds(gff, spans, annotation_mod.aliases(report))
+    transcripts = annotation_mod.read_cds(gff, spans, annotation_mod.aliases(report, gff))
     models, proteins = {}, {}
     for locus, a in chosen.items():
         name = annotation_mod.best_transcript(a, transcripts)

@@ -118,9 +118,10 @@ def plan(opts, src_dir, ncbi):
     job_map.update(genomes.toga2_jobs(ncbi, annotation.read_toga2(src_dir), job_map, opts.inside, opts.groups))
     say(f"genome set: {len(job_map)} genomes ({dict(genomes.why_counts(job_map.values()))}); "
         f"{sum(j['size'] or 0 for j in job_map.values()) / 1e9:.0f} Gb")
-    others = annotation.assign(job_map, annotation.read_index(src_dir))
+    others = annotation.assign(job_map, annotation.read_index(src_dir), veupathdb=bool(opts.veupathdb_key))
     say(f"gene models: {sum(1 for j in job_map.values() if annotation.gff_url(j)):,} genomes may have NCBI's, "
-        f"{others:,} Ensembl's or TOGA2's (annotation.py)")
+        f"{others:,} VEuPathDB's, Ensembl's or TOGA2's (annotation.py"
+        f"{'' if opts.veupathdb_key else '; no VEuPathDB API key: none of its'})")
     return job_map, assemblies
 
 
@@ -152,7 +153,7 @@ def settings_of(opts, src_dir, ncbi, staged_only):
                 threads=opts.threads_per_genome, staged_only=staged_only, odb=folder, loci=odb.loci, hmm_db=hmm_db,
                 odb_lineages=odb_mod.species_lineages(odb, ncbi), odb_own=odb_mod.own_taxids(odb, ncbi), tiara=tiara,
                 rescue=not opts.no_rescue and bool(shutil.which("esl-translate")),
-                esl_translate=shutil.which("esl-translate"),
+                esl_translate=shutil.which("esl-translate"), veupathdb_key=opts.veupathdb_key,
                 rrna=functools.partial(rrna_hook, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"),
                                        threads=opts.threads_per_genome) if shutil.which("barrnap") else None)
 
@@ -260,7 +261,7 @@ def annotate_pass(opts, job_map, may_fetch):
     compared, left, failed = 0, 0, []
     for j in todo:
         try:
-            n = annotation.annotate_genome(opts.work, j, opts.genomes, may_fetch)
+            n = annotation.annotate_genome(opts.work, j, opts.genomes, may_fetch, opts.veupathdb_key)
         except OSError as e:
             failed.append((j["accession"], str(e)[:100]))
             continue
@@ -399,6 +400,9 @@ def main(argv=None):
                                                     "tiara on the PATH, else none; envs/tiara.yaml's, as it needs a "
                                                     "Python of 3.9 or older)")
     p.add_argument("--no_tiara", action="store_true", help="do not classify the windows around the copies")
+    p.add_argument("--veupathdb_key", default=os.environ.get(annotation.VEUPATHDB_KEY),
+                   help="a VEuPathDB user's API key (its profile's Web Service Access), for VEuPathDB's gene models "
+                        f"(default the environment's {annotation.VEUPATHDB_KEY}; without, none of its)")
     p.add_argument("--no_rescue", action="store_true", help="no rescue pass of the BUSCOs miniprot missed (loci.py: "
                                                             "their HMMs in the genome's six-frame ORFs place them)")
     p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives (protal's "
@@ -469,9 +473,11 @@ def main(argv=None):
         todo = [j for a, j in sorted(job_map.items()) if annotation.wanted(j)
                 and not annotation.found(opts.genomes, a)[0]
                 and not os.path.isfile(os.path.join(genomes.done_dir(opts.work, a), annotation.TABLE))]
-        say(f"fetching {len(todo):,} genomes' annotations (NCBI's, else Ensembl's, else TOGA2's) into {opts.genomes}")
+        say(f"fetching {len(todo):,} genomes' annotations (the first of {', '.join(annotation.SOURCES)} that has one) "
+            f"into {opts.genomes}")
         progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1)
-        for done in at_a_time(functools.partial(annotation.fetch, genomes_folder=opts.genomes), todo, downloads):
+        get = functools.partial(annotation.fetch, genomes_folder=opts.genomes, veupathdb_key=opts.veupathdb_key)
+        for done in at_a_time(get, todo, downloads):
             try:
                 done.result()
                 progress.step(1)

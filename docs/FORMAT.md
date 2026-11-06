@@ -114,7 +114,7 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 | `copies` | complete copies of the locus in the genome |
 | `query` | the dataset protein that placed it (`<busco>_<taxid>_<id>`, or an ancestral variant; `<busco>_self` for the rescue pass' self protein) |
 | `rescued` | `t` where the rescue pass called it (its HMM in the genome's six-frame ORFs placed it; [methods.md](methods.md)), `f`, or `-` for a genome run before 2026-11-06 |
-| `model` | where its exons come from: the genome's own annotation, its translation confirmed by the HMM (`ncbi`, `ensembl` or `toga2`; [methods.md](methods.md)), `miniprot`, or `-` for a genome run before 2026-11-06 |
+| `model` | where its exons come from: the genome's own annotation, its translation confirmed by the HMM (`ncbi`, `veupathdb`, `ensembl` or `toga2`; [methods.md](methods.md)), `miniprot`, or `-` for a genome run before 2026-11-06 |
 | `protein_length` | of its translation |
 | `window_class` | tiara's class of the 50 kb around it (`eukarya`, `bacteria`, `archaea`, `organelle`, `unknown`), `-` where not classified |
 | `fcs` | NCBI FCS-GX's call over the copy (`ACTION:division:top taxon`, its action `EXCLUDE`, `TRIM`, `FIX` or `REVIEW`), `-` for none or where not screened |

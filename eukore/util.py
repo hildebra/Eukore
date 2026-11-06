@@ -174,17 +174,18 @@ def open_text(path):
     return open(path)
 
 
-def fetch_file(url, dest, attempts=None, gzip_check=True):
+def fetch_file(url, dest, attempts=None, gzip_check=True, headers=None):
     """Downloads url to dest: "" if it arrived whole (the length it announced, and, a gzip file, gzip reads it to its end),
     else why not. A missing file ("not found") or another refusal (HTTP 4xx but 429) is not asked for again; other
-    failures are (ATTEMPTS times), after growing waits, or as long as the server asks (Retry-After, a minute at most)."""
+    failures are (ATTEMPTS times), after growing waits, or as long as the server asks (Retry-After, a minute at most).
+    headers: the request's others (an API key's)."""
     why, part, asked = "", dest + ".part", 0.0
     for attempt in range(attempts or ATTEMPTS):
         if attempt:
             time.sleep(max(RETRY_WAIT * 2 ** (attempt - 1), asked))
         asked = 0.0
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
             with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as fh:
                 expected = response.headers.get("Content-Length")
                 shutil.copyfileobj(response, fh, 1 << 20)
