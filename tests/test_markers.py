@@ -168,7 +168,11 @@ class MarkerTest(unittest.TestCase):
             with open(os.path.join(folder, markers.STATE), "w") as fh:
                 fh.write('{"markers": {"EF2": {"kind": "clean"}, "ACT": {"kind": "family"}}}')
             self.assertEqual(markers.kinds(folder), {"EF2": "clean", "ACT": "family"})
+            state = markers.state_of(folder)  # the manifest's inputs.markers
+            self.assertEqual((state["markers"]["ACT"]["kind"], state["members_md5"]), ("family", None))
         self.assertEqual(markers.kinds(None), {})
+        self.assertIsNone(markers.state_of(None))
+        self.assertEqual(markers.release_id("UniProt Knowledgebase Release 2026_04 consists of:"), "2026_04")
 
     def test_a_decoy_best_is_no_call(self):
         odb = types.SimpleNamespace(cutoff={"RPB1": 100.0}, locus_of_hmm={"RPB1": "RPB1", "decoy-K02999": "decoy-K02999"},

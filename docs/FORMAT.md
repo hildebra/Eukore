@@ -50,7 +50,12 @@ measured on a panel of species ([Changes](#changes)).
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
 references species.tsv's lineages come from (`references`: PR2's, EUKARYOME's, KSGP's version, file, MD5 and the
-species and genera it names); `inputs.partial.species_clades` in a trial package limited to those clades, which a user
+species and genera it names), Eukore's marker set (`markers`, since 2026-11-07: `data/markers.tsv`'s, KOfam's
+`ko_list`'s and the members table's MD5s, Swiss-Prot's release, NCBI's query scope and proteins fetched per marker, when
+it was built, and per marker its kind, members, cutoff and members dropped as foreign; `null` without one), ENA's list
+of TSA transcriptome sets (`tsa`, since 2026-11-07: its file, MD5, date fetched and sets; `null` without one or with
+`--no_tsa`);
+`inputs.partial.species_clades` in a trial package limited to those clades, which a user
 should not take for Eukore), `counts` (species, species with rRNA alone, genomes, copies and their
 calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa, `busco_loci`, the
 copies' and records' confidence tiers, `labels`: per reference the species by how they matched; `metadata`: the rows of

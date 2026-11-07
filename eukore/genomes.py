@@ -222,6 +222,17 @@ def fetch_tsa(src_dir, download, log=print, refresh=False):
     return path
 
 
+def tsa_state(src_dir):
+    """ENA's TSA list a build read, for the package manifest's inputs.tsa (None without one): its file, MD5, date
+    fetched and sets."""
+    path = tsa_path(src_dir)
+    if not os.path.isfile(path):
+        return None
+    import datetime  # noqa: PLC0415
+    fetched = datetime.datetime.fromtimestamp(os.path.getmtime(path)).isoformat(timespec="seconds")
+    return dict(file=TSA_FILE, md5=util.md5(path), fetched=fetched, sets=len(read_tsa(path)))
+
+
 def read_tsa(path):
     """ENA's TSA list -> [row dicts] of its sets with a FASTA and a taxid, not of an environmental sample."""
     if not path or not os.path.isfile(path):

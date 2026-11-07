@@ -153,7 +153,8 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
     markers' and decoys' profiles (out of KOfam's 1.6 GB archive, fetched in 16 ranges at once and deleted),
     Swiss-Prot's eukaryote proteins (~90 MB, EBI's FTP) and NCBI's proteins named as each marker (`data/markers.tsv`'s
     Entrez query: RefSeq's of every eukaryote, GenBank's of the protists; 3 per organism, by E-utilities), scored with
-    the profiles (hmmsearch) into the markers' query proteins, one per species. About an hour, most of it NCBI's.
+    the profiles (hmmsearch, on `-t` threads) into the markers' query proteins, one per species. About an hour, most
+    of it NCBI's; what it was made of is the package manifest's `inputs.markers`.
 
   It also fetches the transcriptomes of species without a genome and the intraspecific panel's further assemblies,
   as it fetches genomes.

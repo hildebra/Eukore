@@ -9,8 +9,8 @@
 Stages:
 - fetch: the sources into WORK/sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
   BUSCO's eukaryota_odb12, EUKARYOME 2.1, ROD v1.2, RefSeq's organelle genomes, NCBI's FCS-GX and ANI reports, which
-  rank the genomes: eukore/quality.py, PR2's and KSGP's taxonomies), then each species' genome (genomes.jobs) into
-  OUT/genomes;
+  rank the genomes: eukore/quality.py, PR2's and KSGP's taxonomies, Eukore's marker set: KOfam's profiles, Swiss-Prot's
+  and NCBI's proteins, eukore/markers.py), then each species' genome (genomes.jobs) into OUT/genomes;
 - process: each genome's BUSCO genes called (a genome searched for fewer than those called is run again) and its rRNA
   extracted (WORK/done/<accession>/); a genome not fetched yet waits for the next run; then the organelle genes
   (mitochondrial and plastid rRNA, mitochondrial COX1) of RefSeq's organelle genomes, and of the assemblies' own
@@ -59,10 +59,11 @@ def say(text):
 
 # --- sources -----------------------------------------------------------------------------------------------------
 
-def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False):
+def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False, threads=1):
     """Every source into src_dir (kept when there and whole). refresh (--refresh): those that choose the genomes and
     their gene models fetched again (NCBI's assembly tables, its FCS-GX and ANI reports, the annotation indexes; each
-    old one kept where its download fails), so that the plan takes NCBI's newer assemblies and annotations."""
+    old one kept where its download fails), so that the plan takes NCBI's newer assemblies and annotations. threads
+    (-t): the marker set's hmmsearch (its ~280,000 candidates; the fetch node is often a shared login node)."""
     os.makedirs(os.path.join(src_dir, "ncbi_assemblies"), exist_ok=True)
     for group in groups:
         for kind, base in (("genbank", sources.ASSEMBLIES_URL), ("refseq", sources.REFSEQ_URL)):
@@ -86,9 +87,9 @@ def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False):
     # (until 2026-11-06 one failure stopped the stage, NCBI's quality reports then missing from the genome ranking)
     for what, fetch in (("RefSeq's organelle release", lambda: organelle_mod.fetch(src_dir, sources.download, say)),
                         ("Rfam's SSU model", lambda: regions_mod.fetch(src_dir, sources.download, say)),
-                        ("Eukore's marker set (KOfam, UniProt)",
+                        ("Eukore's marker set (KOfam, Swiss-Prot, NCBI's proteins)",
                          lambda: markers_mod.fetch(src_dir, sources.download, say, shutil.which("hmmsearch") or "hmmsearch",
-                                                   os.cpu_count() or 1)),
+                                                   threads)),
                         ("ENA's list of TSA transcriptomes",
                          lambda: genomes.fetch_tsa(src_dir, sources.download, say, refresh)),
                         ("NCBI's FCS-GX and ANI reports",
@@ -705,7 +706,7 @@ def main(argv=None):
     os.makedirs(opts.genomes, exist_ok=True)
     src_dir = os.path.join(opts.work, "sources")
     if opts.stage in ("all", "fetch"):
-        fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh)
+        fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh, opts.threads)
     ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
     wanted = opts.wanted = clades(opts.species)
     opts.inside = inside_of(ncbi, wanted)
@@ -891,7 +892,9 @@ def main(argv=None):
                   "groups": opts.groups, "no_assembly": util.md5(NO_ASSEMBLY) if os.path.isfile(NO_ASSEMBLY) else None,
                   "ncbi_quality": {os.path.basename(p): util.md5(p) for p in quality.paths(src_dir)},
                   "refseq_organelle": {os.path.basename(p): util.md5(p)
-                                       for p in organelle_mod.release_files(src_dir) if os.path.isfile(p)}}
+                                       for p in organelle_mod.release_files(src_dir) if os.path.isfile(p)},
+                  "markers": markers_mod.state_of(markers_of(opts, src_dir)),
+                  "tsa": genomes.tsa_state(src_dir) if not getattr(opts, "no_tsa", False) else None}
         if wanted is not None:
             inputs["partial"] = {"species_clades": sorted(wanted)}  # a trial package: these clades only
         # every genome is called and extracted: the kept ones cut back to the budget, then the package names those kept

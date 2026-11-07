@@ -279,11 +279,19 @@ def ncbi_proteins(term, path, log=print):
     return out
 
 
+def release_id(text):
+    """UniProt's release id (2026_04) of its reldate.txt's first line ("UniProt Knowledgebase Release 2026_04 consists
+    of:"), the text itself where it names none."""
+    import re  # noqa: PLC0415
+    found = re.search(r"Release (\S+)", text or "")
+    return found.group(1) if found else text
+
+
 def release_of(url):
-    """UniProt's release (its reldate.txt's first line), or "?"."""
+    """UniProt's release (release_id of its reldate.txt), or "?"."""
     try:
         with urllib.request.urlopen(url, timeout=60) as r:
-            return r.read().decode().splitlines()[0].strip()
+            return release_id(r.read().decode().splitlines()[0].strip())
     except (OSError, IndexError):
         return "?"
 
@@ -599,6 +607,23 @@ def fetch(src_dir, download=None, log=print, hmmsearch="hmmsearch", threads=1):
         return ready(src_dir) or build(src_dir, TABLE, hmmsearch, threads, log, download)
     except (ValueError, subprocess.CalledProcessError, tarfile.TarError) as e:
         raise OSError(f"marker set not built: {e}") from e
+
+
+def state_of(folder):
+    """What a built marker dataset was made of, for the package manifest's inputs.markers (None for none): its table's,
+    KOfam's ko_list's and members.tsv's MD5s, Swiss-Prot's release, NCBI's query scope and proteins fetched per
+    marker, when it was built, and per marker its members and cutoff."""
+    if not folder:
+        return None
+    with open(os.path.join(folder, STATE)) as fh:
+        state = json.load(fh)
+    members_tsv = os.path.join(folder, "members.tsv")
+    return dict(table_md5=state.get("table_md5"), kofam_ko_list_md5=state.get("kofam_ko_list_md5"),
+                swissprot=release_id(state.get("swissprot")), ncbi=state.get("ncbi"), built=state.get("built"),
+                members_md5=util.md5(members_tsv) if os.path.isfile(members_tsv) else None,
+                markers={locus: dict(kind=m.get("kind"), members=m.get("members"), cutoff=m.get("cutoff"),
+                                     foreign=len(m.get("foreign", ())))
+                         for locus, m in state.get("markers", {}).items()})
 
 
 def kinds(folder):

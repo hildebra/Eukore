@@ -103,6 +103,11 @@ class TsaTest(unittest.TestCase):
                              (["tsa"], "transcriptome", 6253,
                               "https://ftp.ebi.ac.uk/pub/databases/ena/tsa/public/gaa/GAAB01.fasta.gz"))
             self.assertNotIn("EUK_6253", job_map)  # the transcriptome stands for EukDetect2's records
+            os.makedirs(os.path.join(tmp, "tsa"))
+            os.replace(path, genomes.tsa_path(tmp))
+            state = genomes.tsa_state(tmp)  # the manifest's inputs.tsa
+            self.assertEqual((state["file"], state["sets"], len(state["md5"])), ("tsa_sets.tsv", 3, 32))
+            self.assertIsNone(genomes.tsa_state(os.path.join(tmp, "none")))
 
     def test_a_transcripts_confidence(self):
         from eukore import metadata, package
