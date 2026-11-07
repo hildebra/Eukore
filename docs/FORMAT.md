@@ -13,6 +13,36 @@ limits, masking, record cuts. Paths below are relative to the package folder, `E
 `.tsv` has a header line, tab-separated columns and no quoting. `-` means "none". Coordinates are 0-based, end
 excluded, on the sequence as the package holds it, unless they are a contig's (1-based, inclusive).
 
+Since format 5 (Eukore 0.2) it also holds the copies' coding sequences and proteins, their introns and the genomes'
+genetic codes and duplication, more organelle genes with their checks, the 18S variable regions and in-silico PCR of
+barcode primers, a two-level supergroup, three more references' lineages and other databases' ids, and a barcode gap
+measured on a panel of species ([Changes](#changes)).
+
+## Every file
+
+| file | what it holds | format |
+|---|---|---|
+| [`manifest.json`](#manifestjson) | versions, inputs, counts, every file's size and MD5 | |
+| [`taxonomy/`](#taxonomy) | NCBI's taxonomy cut to the package; nuclear, mitochondrial and plastid genetic codes | codes: 5 |
+| [`species.tsv`](#speciestsv) | one row per species: its genome, supergroup and group, NCBI lineage (and filled), lineages in PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2, type material | 4, more in 5 |
+| [`crossrefs.tsv`](#crossrefstsv-format-5) | each species' ids in Open Tree, GBIF, WoRMS, IRMNG, Index Fungorum, UNITE (SH), BOLD (BIN) | 5 |
+| [`genomes.tsv`](#genomestsv) | each genome: accession, flags, rRNA copies, genetic code and its check, duplication, introns, type material | 4, more in 5 |
+| [`busco/loci.tsv`](#busco) | each BUSCO's call rate, overall and per group | 4 |
+| [`busco/copies/`, `cds/`, `proteins/`](#busco) | each BUSCO's copies whole (introns and all), their coding sequences, their proteins | cds, proteins: 5 |
+| [`busco/copies.tsv`](#busco) | each copy's call, checks, confidence, internal stops, duplicated copies' identity | 4, more in 5 |
+| [`busco/features.tsv`](#busco) | each copy's exons, introns, frameshifts, masked runs, gaps | 4 |
+| [`busco/introns.tsv`, `intron_sites.tsv`](#busco) | each intron's phase, splice sites, class, U12 look, place on the HMM; the sites shared across species | 5 |
+| [`rrna/records.tsv`, `records.fna.gz`](#rrna) | 18S spans and rDNA units of genomes and published long reads, their parts, checks, confidence | 4 |
+| [`rrna/regions.tsv`](#rrna) | each record's 18S V1-V5, V7-V9 | 5 |
+| [`rrna/amplicons.tsv`](#rrna) | in-silico PCR of 10 18S, ITS and 28S primer pairs on each record | 5 |
+| [`organelle/genes.tsv`, `genes.fna.gz`](#organelle) | mitochondrial and plastid rRNA and protein-coding genes, the trnH-psbA spacer, their checks and confidence | 4, more in 5 |
+| [`organelle/cds.fna.gz`, `proteins.faa.gz`](#organelle) | the protein-coding genes' coding sequences and proteins by the organelle's code | 5 |
+| [`organelle/amplicons.tsv`](#organelle) | in-silico PCR of 8 COI, rbcL, matK, psbA-trnH, 12S and 16S primer pairs | 5 |
+| [`organelle/molecules.fna.gz`](#organelle) | the assemblies' organelle molecules, whole | 4 |
+| [`intraspecific/`](#intraspecific-format-5) | the panel's further assemblies' copies, rRNA and organelle genes; the barcode gap | 5 |
+| [`metadata/`](#metadata) | each genome's measures (size, contiguity, GC, masking, telomeres, ...), tetranucleotides, sketches, NCBI's summary, codon evidence | codons: 5 |
+| [`benchmarks/`](#benchmarks-optional) | the build's measures of the package | |
+
 ## manifest.json
 `format` (5; a reader of 5 also takes 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, `0.2`), `built` (ISO time),
 `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
@@ -43,7 +73,7 @@ One row per NCBI species the package holds:
 | `taxid` | NCBI species taxid |
 | `name` | NCBI scientific name |
 | `representative` | the genome its copies come from (an accession of `genomes.tsv`); `-` for a species with rRNA records alone |
-| `source` | `ncbi` (NCBI's genome of the species by Eukore's ranking), `model` (a model species' reference), `no_assembly` (records of a species NCBI has no assembly of), `toga2` (TOGA2's genome of a vertebrate species NCBI has no assembly of, accession `TOGA2_<assembly>`), `rrna` (rRNA records alone) |
+| `source` | `ncbi` (NCBI's genome of the species by Eukore's ranking), `model` (a model species' reference), `no_assembly` (records of a species NCBI has no assembly of), `toga2` (TOGA2's genome of a vertebrate species NCBI has no assembly of, accession `TOGA2_<assembly>`), `tsa` (format 5: an INSDC transcriptome of a species with no genome, its TSA set's accession; its copies flagged `transcript`), `rrna` (rRNA records alone) |
 | `loci` | BUSCO genes called in its genome |
 | `rrna_records` | its records in `rrna/records.tsv` |
 | `organelle_genes` | its records in `organelle/genes.tsv` |
@@ -90,7 +120,7 @@ The species' genomes and their other assemblies:
 | `level`, `genome_size`, `contigs`, `category` | the assembly's (`category`: isolate or derived from metagenome) |
 | `flags` | NCBI's reasons it would not take the assembly into RefSeq (`excluded_from_refseq`), and NCBI's quality reports' (`FCS-GX: mostly foreign`, `FCS-GX: contaminated`, `ANI: failed`, `ANI: inconclusive`; see below), comma-separated |
 | `ftp` | the assembly's folder on NCBI's FTP server |
-| `source` | as `species.tsv`'s; `assembly` for a further assembly of the species (no copies) |
+| `source` | as `species.tsv`'s; `assembly` for a further assembly of the species (no copies), `intraspecific` for one the barcode gap's panel ran (its copies in `intraspecific/`; format 5) |
 | `representative` | `t` for the species' genome |
 | `loci` | BUSCO genes called in it |
 | `rrna_18s`, `rdna_units`, `rdna_complete`, `rdna_contigs` | its 18S spans, rDNA units (from the 18S to the 28S), units with a whole 28S, and the contigs holding units, as `rrna/` found them in the assembly: copies in the assembly, a lower bound of the copies in the genome (an rDNA array is usually collapsed in an assembly); `-` where its rRNA was not searched |
@@ -343,6 +373,26 @@ there; one without a row was not.
   conserved position of its BUSCO genes: `accession`, `codon`, `table_aa` (NCBI's table's amino acid, `*` a stop),
   `inferred_aa` (the amino acid those positions favour), `n` (the positions), `llr` (how much more likely the inferred
   amino acid is than the table's: natural log; a stop's against a uniform background).
+
+## intraspecific/ (format 5)
+The barcode gap: for a panel of well-sampled species (`data/intraspecific_panel.tsv`, 40 species), further assemblies
+of each (`--intraspecific`, at most 3: other BioSamples, strains and isolates; `genomes.tsv` lists them with source
+`intraspecific`, `representative` f) are run as the species' genome is, so that each marker's variation within the
+species is set beside its distance to the nearest other species ([methods.md](methods.md)).
+- `copies.tsv`: the further assemblies' BUSCO calls (`accession`, `species_taxid`, `locus`, `status`, `contig`,
+  `start`, `end`, `strand`, `length`, `cds_length`, `exons`, `hmm_score`, `hmm_coverage`, `copies`, `dup_identity`, as
+  `busco/copies.tsv`'s); `copies.fna.gz`: their copies whole, `>accession|locus`.
+- `rrna.fna.gz`, `organelle.fna.gz`: their rRNA records (`>accession_kind_n`) and organelle genes (`>accession|gene`).
+- `barcode_gap.tsv`: per marker (each BUSCO by its id, `18S`, `ITS`, each organelle gene; `mito_SSU`, `plas_LSU`, ...
+  for the organelles' rRNA) and panel species:
+
+| column | |
+|---|---|
+| `marker`, `species_taxid`, `name`, `group` | the marker and the species |
+| `assemblies` | the species' assemblies holding the marker (its genome and its further ones) |
+| `intra_min`, `intra_median` | the identity of their copies to each other (vsearch, `--iddef 2`, %): the least alike pair, the median pair (a pair under 50% read as 50) |
+| `inter_max` | the identity of the species' genome's copy to its nearest copy of another species in the package (a BUSCO's: its check's, `qc.check`), `-` where none is 50% alike |
+| `gap`, `resolved` | `intra_min - inter_max`; `t` where above 0 (its assemblies nearer to each other than to any other species), `f` where not, `-` where not measured |
 
 ## benchmarks/ (optional)
 How complete, right and discriminating the package is, measured by the build (`eukore/benchmarks.py`; absent with

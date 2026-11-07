@@ -27,10 +27,12 @@ micromamba activate eukore
 
 `envs/eukore.yaml` holds:
 - Python 3.12 or later;
-- miniprot and HMMER (hmmsearch, nhmmer; its easel tools' esl-translate for the rescue pass): the BUSCO calls and the
+- miniprot and HMMER (hmmsearch, nhmmer, hmmalign; its easel tools' esl-translate for the rescue pass): the BUSCO calls,
+  the introns' places and the genetic code check (hmmalign), and the
   organelle genes;
 - barrnap and ITSx: the rRNA genes and the ITS borders;
-- vsearch: the checks across species and the part screen;
+- vsearch: the checks across species, the part screen, the duplicated copies' identity and the barcode gap;
+- Infernal (cmalign): the 18S variable regions (since 0.2; without it, none);
 - ISA-L's igzip: the downloads' gzip checks (else pigz, else Python's, ~3.5x slower);
 - p7zip: EUKARYOME's archive;
 - openpyxl: EUKARYOME's tables;
@@ -40,7 +42,7 @@ micromamba activate eukore
 Check that the tools are found:
 
 ```bash
-for t in miniprot hmmsearch esl-translate nhmmer barrnap ITSx vsearch 7za curl igzip; do printf '%-10s %s\n' $t "$(command -v $t || echo MISSING)"; done
+for t in miniprot hmmsearch hmmalign esl-translate nhmmer barrnap ITSx vsearch cmalign 7za curl igzip; do printf '%-10s %s\n' $t "$(command -v $t || echo MISSING)"; done
 python3 eukore_build.py --help
 ```
 
@@ -90,10 +92,12 @@ python3 -m unittest discover -s tests -t tests      # ~80 tests with stand-in to
 
 | | |
 |---|---|
-| sources (`WORK/sources`) | ~4 GB: NCBI's assembly tables, taxdump, FCS-GX and ANI reports; BUSCO's eukaryota_odb12; EUKARYOME 2.1; ROD v1.2; RefSeq's organelle genomes (~2.2 GB); PR2; KSGP (243 MB) |
+| sources (`WORK/sources`) | ~4.4 GB: NCBI's assembly tables, taxdump, FCS-GX and ANI reports; BUSCO's eukaryota_odb12; EUKARYOME 2.1; ROD v1.2; RefSeq's organelle genomes (~2.2 GB); PR2; KSGP (243 MB); since 0.2 Rfam's SSU model (1 MB), SILVA 138.2 SSU NR99 (201 MB), UNITE 10.0 (50 MB), Open Tree Taxonomy 3.7.3 (111 MB), ENA's list of TSA sets (2 MB) |
 | genomes, fungi and protozoa | 8,772 species, ~135 GB gzipped (445 Gb of sequence) |
 | genomes, all six groups | 29,114 species, ~6.5 TB gzipped (21.6 Tb); fetched and pruned as the build goes |
-| memory | ~2 GB for a trial's package stage; per genome job, miniprot's on that genome (a few GB, more for the largest plant and animal genomes) |
+| transcriptomes (since 0.2) | ~5,000 species without a genome, 341 Gb of transcripts (ENA's TSA sets, 2026-11); `--no_tsa` skips them |
+| the intraspecific panel (since 0.2) | up to 3 further assemblies of 40 species (2 of the vertebrates, rice and maize): ~110, deleted once run |
+| memory | ~2 GB for a trial's package stage; per genome job, miniprot's on that genome (a few GB, more for the largest plant and animal genomes); cmalign up to 2 GB per thread for the 18S regions |
 | network | the fetch stage alone |
 
 ## Usage
@@ -140,7 +144,14 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   - BUSCO's eukaryota_odb12;
   - EUKARYOME 2.1 and ROD v1.2;
   - RefSeq's organelle genomes (mitochondrion and plastid);
-  - PR2 5.1.1's taxonomy (5 MB) and KSGP 4.0's (243 MB; not with `--ksgp_tax`).
+  - PR2 5.1.1's taxonomy (5 MB) and KSGP 4.0's (243 MB; not with `--ksgp_tax`);
+  - since 0.2: SILVA 138.2's SSU Ref NR99, UNITE 10.0's release of all eukaryotes and Open Tree Taxonomy 3.7.3
+    (`WORK/sources/labels`), Rfam's eukaryote SSU model (`WORK/sources/rfam`), ENA's list of eukaryote TSA sets
+    (`WORK/sources/tsa`). MIDORI2 and BOLD are not fetched (their URLs change, BOLD's bulk data needs a login): give
+    them with `--midori2` and `--bold_tsv`.
+
+  It also fetches the transcriptomes of species without a genome and the intraspecific panel's further assemblies,
+  as it fetches genomes.
 
   Then it fetches each species' genome into `OUT/genomes` (its RefSeq copy where it has one). After 1, 2, 3, 5 and
   8 minutes, then every 10 (`--report_minutes`), it says the genomes fetched, failed and left, the Gb left, the download rate and the time
@@ -152,14 +163,20 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   (`annotation.tsv`) and deletes it.
 - **process** calls each fetched genome's BUSCOs and extracts its rRNA into `WORK/done/<accession>/`, `-j` genomes at a
   time with `-t / -j` threads each. A genome not fetched yet is left for the next run. Then it takes the organelle
-  genes (`WORK/organelle`).
+  genes (`WORK/organelle`), and runs the intraspecific panel's further assemblies (their BUSCOs, rRNA and organelle
+  genes), deleting their genome files once done.
 - **package**, in turn:
   - runs FCS-GX where asked;
   - checks the copies across species;
+  - since 0.2: aligns the copies' proteins to BUSCO's HMMs (hmmalign; cached in `WORK/align`), places their introns,
+    checks each genome's genetic code;
   - annotates the published rRNA reads (barrnap and ITSx over `-t` threads, 250 reads a batch);
   - runs the rRNA checks and the part screen;
-  - takes the organelle genes of any genome not searched yet;
-  - names each species in PR2, EUKARYOME and KSGP;
+  - since 0.2: finds the 18S variable regions (cmalign; cached in `WORK/cmalign`) and runs the in-silico PCR;
+  - takes the organelle genes of any genome not searched yet, checks them across species (since 0.2);
+  - since 0.2: measures the intraspecific panel's barcode gap;
+  - names each species in PR2, EUKARYOME, KSGP and (since 0.2) SILVA, UNITE and MIDORI2, and finds its ids in Open
+    Tree's taxonomy (`crossrefs.tsv`);
   - describes each done genome still on disk that lacks its metadata (`eukore/metadata.py`: a genome done before
     2026-11-07), as the process stage does after its runs;
   - prunes `OUT/genomes` to `--keep_gb` (the model species first, then the smallest);
