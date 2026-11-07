@@ -530,7 +530,8 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
     """The BUSCO genes of a genome (table: its NCBI genetic code) -> dict(loci {locus: dict(status, copy, spliced,
     features [(kind, start, end)],
     contig, start, end, strand, identity, coverage, score, hmm_score, hmm_coverage, cutoff, copies, query, protein,
-    rescued, model (miniprot, or the annotation's source: ncbi, ensembl, toga2), miniprot (its model: start, end, exons))}, failed (why the genome could not be
+    rescued, model (miniprot, or the annotation's source: ncbi, ensembl, toga2), miniprot (its model: start, end, exons),
+    others (the coding sequences of the locus' other complete copies, since 2026-11-07: dup_identity))}, failed (why the genome could not be
     called, or None), windows {name: sequence} of the copies' flanks).
     rescue_missing: the rescue pass (step 5) of the loci left Missing, in a genome of RESCUE_MAX_BASES or less;
     annotation: (the genome's GFF, NCBI's assembly report or None, its source) for step 6 (annotated()), or None."""
@@ -554,7 +555,7 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
             if rs:
                 chosen[locus] = max(complete or rs, key=lambda r: (r["hmm_score"], r["score"]))
                 statuses[locus] = ("Single" if len(complete) == 1 else "Duplicated" if complete else "Fragmented",
-                                   complete)
+                                   [r for r in complete if r is not chosen[locus]])
         if annotation and annotation[0] and chosen:
             chosen = annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hmm_db, table)
     loci, windows = {}, {}
@@ -563,7 +564,7 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
             loci[locus] = dict(status="Missing")
             continue
         best = chosen[locus]
-        status, complete = statuses[locus]
+        status, others = statuses[locus]
         seq = contigs[best["contig"]]
         fitted = copies_mod.whole(seq, best["start"], best["end"], best["strand"], best["exons"])
         raw = seq[best["start"] - 1:best["end"]]
@@ -576,10 +577,45 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
             feats, key=lambda f: (f[1], f[0])), contig=best["contig"], contig_length=len(seq), start=best["start"],
             end=best["end"], strand=best["strand"], identity=best["identity"], coverage=best["coverage"],
             score=best["score"], hmm_score=best["hmm_score"], hmm_coverage=best["hmm_coverage"],
-            cutoff=odb.cutoff[locus], copies=len(complete), query=best["query"].split("~", 1)[1],
+            cutoff=odb.cutoff[locus], copies=len(others) + (status != "Fragmented"),
+            others=[in_frame(copies_mod.whole(contigs[o["contig"]], o["start"], o["end"], o["strand"],
+                                              o["exons"])["spliced"], o.get("shifts")) for o in others],
+            query=best["query"].split("~", 1)[1],
             protein=best["protein"], exons=best["exons"], rescued=bool(best.get("rescued")),
             model=best.get("model", "miniprot"), transcript=best.get("transcript", "-"),
             miniprot=best.get("miniprot") or dict(start=best["start"], end=best["end"], exons=best["exons"]))
         w1, w2 = max(1, best["start"] - WINDOW), min(len(seq), best["end"] + WINDOW)
         windows[f"{locus}|{best['contig']}|{w1}-{w2}"] = seq[w1 - 1:w2].upper()
     return dict(loci=loci, failed=None, windows=windows)
+
+
+DUP_MIN_ID = 0.5  # a duplicated copy's other copies compared down to this identity (below it: "<50")
+
+
+def dup_identity(loci, vsearch, threads=1, tmp=None):
+    """How alike a Duplicated locus' copies are (since 2026-11-07): the identity (vsearch, --iddef 2, %) of the nearest
+    other complete copy's coding sequence to the chosen copy's -> {locus: "99.8", or "<50" where none is DUP_MIN_ID
+    identical}; {} without vsearch. Uncollapsed haplotypes of a diploid's assembly are 99% and more alike, a whole
+    genome duplication's copies less (package.duplication_of)."""
+    dups = {locus: r for locus, r in loci.items() if r.get("others")}
+    if not dups or not vsearch:
+        return {}
+    with tempfile.TemporaryDirectory(dir=tmp) as work:
+        query, db, out = (os.path.join(work, n) for n in ("others.fna", "chosen.fna", "hits.tsv"))
+        with open(query, "w") as fq, open(db, "w") as fd:
+            for locus, r in dups.items():
+                fd.write(f">{locus}\n{r['spliced']}\n")
+                fq.writelines(f">{locus}|{i}\n{s}\n" for i, s in enumerate(r["others"]) if s)
+        run = subprocess.run([vsearch, "--usearch_global", query, "--db", db, "--id", str(DUP_MIN_ID), "--iddef", "2",
+                              "--maxaccepts", "0", "--maxrejects", "0", "--userout", out,
+                              "--userfields", "query+target+id", "--threads", str(max(1, threads)), "--quiet"],
+                             capture_output=True, text=True, check=False)
+        if run.returncode != 0 or not os.path.isfile(out):
+            return {}  # not measured (not "unlike")
+        best = {}
+        with open(out) as fh:
+            for line in fh:
+                q, t, ident = line.rstrip("\n").split("\t")[:3]
+                if q.split("|")[0] == t:
+                    best[t] = max(best.get(t, 0.0), float(ident))
+    return {locus: f"{best[locus]:.1f}" if locus in best else f"<{DUP_MIN_ID * 100:.0f}" for locus in dups}

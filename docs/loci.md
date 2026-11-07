@@ -44,3 +44,12 @@ panel holds neither.
   the eukaryote's own is missing; `own_species`, tiara and FCS-GX then catch it.
 - **For a read profiler**, the nucleotide distance across domains is far beyond read alignment.
 - **Still, these four loci** are the ones to watch, or to replace by BUSCOs without prokaryote homologues.
+
+## Classic markers among the BUSCOs
+
+`tools/classic_markers.py` searches the proteins of ten classic phylogenetic and barcode markers (yeast's and human's,
+`data/classic_markers.faa`: RPB1, RPB2, EF-1α/TEF1, β-tubulin/TUB2, actin, HSP90, histone H3, GAPDH, EF-2,
+calmodulin) with every BUSCO HMM and writes `data/classic_markers.tsv`. On eukaryota_odb12 (2026-11-07) none of them is
+a BUSCO: no HMM scores any of their proteins near its cutoff (the best, HSP90 against 189968at2759, -1.9 bits). BUSCO
+keeps single-copy genes, and these are gene families (actin, tubulin, EF-1α, HSP90, histones) or were not chosen
+(RPB1, RPB2). Fungal multilocus phylogenies' RPB1, RPB2 and TEF1 would be new loci, not a name for existing ones.

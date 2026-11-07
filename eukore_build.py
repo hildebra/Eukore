@@ -39,8 +39,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
 from eukore import annotation, benchmarks, labels, metadata as metadata_mod, organelle as organelle_mod  # noqa: E402
-from eukore import quality  # noqa: E402
-from eukore import placement, reads as reads_mod  # noqa: E402
+from eukore import groups as groups_mod, intraspecific as intraspecific_mod, quality  # noqa: E402
+from eukore import placement, primers as primers_mod, reads as reads_mod, regions as regions_mod  # noqa: E402
 from eukore import __version__  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
@@ -85,6 +85,9 @@ def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False):
     # the optional sources each on its own: one that fails (a site moved, down) is said, the others still fetched
     # (until 2026-11-06 one failure stopped the stage, NCBI's quality reports then missing from the genome ranking)
     for what, fetch in (("RefSeq's organelle release", lambda: organelle_mod.fetch(src_dir, sources.download, say)),
+                        ("Rfam's SSU model", lambda: regions_mod.fetch(src_dir, sources.download, say)),
+                        ("ENA's list of TSA transcriptomes",
+                         lambda: genomes.fetch_tsa(src_dir, sources.download, say, refresh)),
                         ("NCBI's FCS-GX and ANI reports",
                          lambda: quality.fetch(src_dir, sources.download, say, refresh)),
                         ("PR2's and KSGP's taxonomies", lambda: labels.fetch(src_dir, sources.download, say, ksgp_tax)),
@@ -160,6 +163,11 @@ def plan(opts, src_dir, ncbi):
     if swaps:
         say(f"TOGA2: {len(swaps)} species' genomes TOGA2's in place of NCBI's (contig N50 {genomes.TOGA2_BETTER:g} "
             f"times or more, {genomes.TOGA2_LENGTH:.0%} of its length or more)")
+    if not getattr(opts, "no_tsa", False):  # since 2026-11-07: transcriptomes of the species with no genome
+        tsa = genomes.tsa_jobs(ncbi, genomes.read_tsa(genomes.tsa_path(src_dir)), job_map, opts.inside)
+        job_map.update(tsa)
+        if tsa:
+            say(f"TSA: {len(tsa)} species without a genome have a transcriptome (ENA's TSA sets)")
     say(f"genome set: {len(job_map)} genomes ({dict(genomes.why_counts(job_map.values()))}); "
         f"{sum(j['size'] or 0 for j in job_map.values()) / 1e9:.0f} Gb")
     # a species' genome another assembly takes the place of (TOGA2's; NCBI's newer, after --refresh): its file
@@ -211,7 +219,7 @@ def settings_of(opts, src_dir, ncbi, staged_only):
                 odb_lineages=odb_mod.species_lineages(odb, ncbi), odb_own=odb_mod.own_taxids(odb, ncbi), tiara=tiara,
                 rescue=not opts.no_rescue and bool(shutil.which("esl-translate")),
                 esl_translate=shutil.which("esl-translate"), sourmash=sourmash_of(opts),
-                veupathdb_key=opts.veupathdb_key,
+                veupathdb_key=opts.veupathdb_key, vsearch=shutil.which("vsearch"),
                 rrna=functools.partial(rrna_hook, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"),
                                        threads=opts.threads_per_genome) if shutil.which("barrnap") else None)
 
@@ -409,10 +417,91 @@ def organelle_genes(opts, src_dir, job_map, ncbi):
     barrnap, nhmmer = shutil.which("barrnap"), shutil.which("nhmmer")
     if barrnap and nhmmer:
         organelle_mod.assembly_pass(folder, job_map, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
-                                    barrnap, nhmmer, opts.jobs, opts.threads_per_genome, say)
+                                    barrnap, nhmmer, opts.jobs, opts.threads_per_genome, say,
+                                    shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None)
     else:
         say("WARNING: no barrnap or nhmmer: the assemblies' organelle molecules not searched")
     return chosen
+
+
+def extras_of(opts, src_dir, ncbi, job_map, assemblies):
+    """The intraspecific panel's further assemblies (genomes.intraspecific_jobs; since 2026-11-07) -> {accession: job},
+    {} with --intraspecific 0."""
+    if not opts.intraspecific:
+        return {}
+    refseq_rows = sources.read_assemblies(tables(src_dir, "refseq", opts.groups))
+    extras = genomes.intraspecific_jobs(ncbi, assemblies, refseq_rows, job_map, genomes.read_panel(),
+                                        opts.intraspecific, opts.inside)
+    if extras:
+        say(f"intraspecific panel: {len(extras)} further assemblies of "
+            f"{len({j['species_taxid'] for j in extras.values()})} species (--intraspecific {opts.intraspecific})")
+    return extras
+
+
+def intraspecific_pass(opts, src_dir, ncbi, extras, settings):
+    """The panel's further assemblies run (their BUSCOs and rRNA; no tiara, no held-out calls), their organelle
+    molecules searched for every organelle gene, then their genome files deleted: only their results are kept."""
+    if not extras:
+        return
+    run_genomes(opts, extras, dict(settings, tiara=None, odb_own={}))
+    folder = os.path.join(opts.work, "organelle")
+    chosen = organelle_mod.choose(organelle_mod.refseq_genes(src_dir, folder, ncbi, say), ncbi)
+    barrnap, nhmmer = shutil.which("barrnap"), shutil.which("nhmmer")
+    if barrnap and nhmmer:
+        organelle_mod.assembly_pass(folder, extras, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
+                                    barrnap, nhmmer, opts.jobs, opts.threads_per_genome, say,
+                                    shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
+                                    every=True)
+    for acc in extras:
+        path = genomes.genome_file(opts.genomes, acc)
+        if genomes.is_done(opts.work, acc) and os.path.isfile(organelle_mod.assembly_file(folder, acc)) \
+                and os.path.isfile(path):
+            os.remove(path)
+
+
+def intraspecific_writer(opts, ncbi, extras, collected, records, organelle, vsearch):
+    """The barcode gap (intraspecific.py) -> a package writer of intraspecific/, the extras' genomes.tsv rows set."""
+    rows, markers, whole, rrna_out, org_out = intraspecific_mod.collect(opts.work, extras,
+                                                                        os.path.join(opts.work, "organelle"))
+    reps = {a: int(g["species_taxid"]) for a, g in collected["genomes"].items() if g["representative"] == "t"}
+    panel = {sp: a for a, sp in reps.items() if any(int(j["species_taxid"]) == sp for j in extras.values())}
+    rep_markers = collections.defaultdict(dict)
+    for (acc, locus), seq in collected.get("cds", {}).items():
+        if acc in panel.values():
+            rep_markers[acc][locus] = seq
+    by_acc = collections.defaultdict(list)
+    for _name, seq, row in records:
+        by_acc[row.get("accession")].append(dict(kind=row["kind"], sequence=seq, regions=row.get("regions_list"),
+                                                 lsu_complete=row.get("lsu_complete") in (True, "t")))
+    for acc in panel.values():
+        rep_markers[acc].update(intraspecific_mod.first_rrna(by_acc.get(acc, [])))
+    org_by_sp = collections.defaultdict(list)
+    for _name, seq, row in organelle:
+        org_by_sp[int(row["species_taxid"])].append(dict(row, sequence=seq))
+    for sp, acc in panel.items():
+        rep_markers[acc].update(intraspecific_mod.organelle_seqs(org_by_sp.get(sp, [])))
+    # the other species' copies the representatives' nearest is measured against (the BUSCOs': qc.check's already)
+    others = collections.defaultdict(dict)
+    for acc, sp in reps.items():
+        for marker, seq in intraspecific_mod.first_rrna(by_acc.get(acc, [])).items():
+            others[marker][f"{sp}|{acc}"] = seq
+    for sp, rows_ in org_by_sp.items():
+        for marker, seq in intraspecific_mod.organelle_seqs(rows_).items():
+            others[marker][f"{sp}|org"] = seq
+    inter = {(reps[r["accession"]], r["locus"]): r.get("nearest_id") for r in collected["copy_rows"]
+             if r["accession"] in panel.values()}
+    species_of = dict(reps, **{a: int(j["species_taxid"]) for a, j in extras.items()})
+    gap = intraspecific_mod.barcode_gap(panel, rep_markers, markers, species_of, inter, others, ncbi, vsearch,
+                                        opts.threads, {sp: groups_mod.group_of(ncbi, sp) for sp in panel})
+    for acc, job in extras.items():
+        if acc in whole:
+            collected["genomes"].setdefault(acc, dict(accession=acc, species_taxid=job["species_taxid"],
+                                                      taxid=job["taxid"], organism=job.get("organism", "")))
+            collected["genomes"][acc].update(source="intraspecific", representative="f", loci=len(whole[acc]),
+                                             fetched=job.get("fetch", acc), gencode=job.get("gencode", 1))
+    say(f"intraspecific: {len(whole)} further assemblies of {len(panel)} species, {len(gap)} barcode gaps")
+    return functools.partial(intraspecific_mod.write, rows=rows, whole=whole, rrna_out=rrna_out, org_out=org_out,
+                             gap_rows=gap)
 
 
 @contextlib.contextmanager
@@ -546,8 +635,21 @@ def main(argv=None):
                         f"(default the environment's {annotation.VEUPATHDB_KEY}; without, none of its)")
     p.add_argument("--no_rescue", action="store_true", help="no rescue pass of the BUSCOs miniprot missed (loci.py: "
                                                             "their HMMs in the genome's six-frame ORFs place them)")
+    p.add_argument("--no_tsa", action="store_true",
+                   help="no transcriptomes (ENA's TSA sets) for the species without a genome (default: their BUSCOs "
+                        "called in them, source tsa)")
+    p.add_argument("--intraspecific", type=int, default=3,
+                   help="further assemblies of each species of data/intraspecific_panel.tsv run for the barcode gap "
+                        "(intraspecific/; default 3; 0: none)")
+    p.add_argument("--organelle_models", choices=organelle_mod.MODELS, default="nhmmer",
+                   help="the assemblies' organelle protein-coding genes: nhmmer's hits joined, or miniprot's exons "
+                        "by the organelle's code (default nhmmer; docs/methods.md)")
     p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives (protal's "
                                       f"KSGP, e.g. 4.4 or 5.2; default KSGP's served {labels.KSGP_VERSION}, fetched)")
+    p.add_argument("--midori2", help="a MIDORI2 RAW FASTA (its COI, e.g. MIDORI2_UNIQ_NUC_GB<release>_CO1_RAW.fasta.gz, "
+                                     "from reference-midori.info) whose lineages species.tsv gives, by NCBI taxid")
+    p.add_argument("--bold_tsv", help="a BOLD data package's TSV (its bin_uri and species columns): its BINs in "
+                                      "crossrefs.tsv")
     p.add_argument("--no_benchmarks", action="store_true", help="write the package without its benchmarks/ "
                                                                   "(eukore/benchmarks.py; docs/benchmarks.md)")
     p.add_argument("-t", "--threads", type=int, default=8)
@@ -587,6 +689,7 @@ def main(argv=None):
     wanted = opts.wanted = clades(opts.species)
     opts.inside = inside_of(ncbi, wanted)
     job_map, assemblies = plan(opts, src_dir, ncbi)
+    extras = extras_of(opts, src_dir, ncbi, job_map, assemblies)  # the barcode gap's panel (since 2026-11-07)
     # the genomes and their annotations fetched (--downloads at a time, through --scratch), by `all` too (until
     # 2026-11-06 `all` left them to the process stage's workers, --scratch and --downloads unused)
     if opts.stage in ("all", "fetch"):
@@ -599,7 +702,7 @@ def main(argv=None):
         if again:
             say(f"{len(again):,} done genomes no longer here fetched again for better gene models (e.g. "
                 f"{sorted(again)[:3]})")
-        todo = [j for a, j in sorted(job_map.items()) if j["url"] and not j.get("path")
+        todo = [j for a, j in sorted({**job_map, **extras}.items()) if j["url"] and not j.get("path")
                 and not os.path.isfile(genomes.genome_file(opts.genomes, a))
                 and (not genomes.is_done(opts.work, a, loci) or a in again)]
         downloads = max(1, opts.downloads)
@@ -680,6 +783,7 @@ def main(argv=None):
     if opts.stage in ("all", "process"):
         settings = settings_of(opts, src_dir, ncbi, staged_only=opts.stage == "process")
         waiting, failed = run_genomes(opts, job_map, settings)
+        intraspecific_pass(opts, src_dir, ncbi, extras, settings)
         describe_pass(opts, job_map)
         drop_superseded(opts, job_map)
         organelle_genes(opts, src_dir, job_map, ncbi)
@@ -726,14 +830,37 @@ def main(argv=None):
                 "without them (manifest: inputs.genomes_not_done)")
         with timed(stages, "BUSCO copies and their checks"):
             collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads)
+        with timed(stages, "introns and genetic codes"):
+            hmmalign = shutil.which("hmmalign")
+            if not hmmalign:
+                say("WARNING: no hmmalign: introns without their places in the genes, no genetic code check")
+            hmm_of = odb_mod.Odb(odb_mod.folder_of(src_dir), loci_of(opts, src_dir)).hmm
+            package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say)
         with timed(stages, "rRNA records and their checks"):
             records = genome_rrna_records(opts, job_map, ncbi) + published(opts, src_dir, ncbi)
             records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say)
+        extra_tables = []
+        with timed(stages, "18S variable regions and amplicons"):
+            cm, cmalign = regions_mod.cm_path(src_dir), shutil.which("cmalign")
+            if cmalign and os.path.isfile(cm):
+                extra_tables.append(("rrna/regions.tsv", regions_mod.REGION_COLUMNS,
+                                     regions_mod.run(records, cm, cmalign, opts.threads, opts.work, say)))
+            else:
+                say("WARNING: no cmalign (infernal) or no Rfam SSU model (--stage fetch fetches it): no 18S variable "
+                    "regions")
+            extra_tables.append(("rrna/amplicons.tsv", primers_mod.AMPLICON_COLUMNS, primers_mod.run(records, "rrna")))
         with timed(stages, "organelle genes"):
             chosen = organelle_genes(opts, src_dir, job_map, ncbi)  # before the prune: the genomes searched while there
             held = {int(g["species_taxid"]) for g in collected["genomes"].values() if g["representative"] == "t"}
             organelle = organelle_mod.collect(ncbi, job_map, held | {int(r["species_taxid"]) for _n, _s, r in records},
                                               chosen, os.path.join(opts.work, "organelle"))
+            organelle = organelle_mod.check(organelle, ncbi, vsearch, opts.threads)
+            extra_tables.append(("organelle/amplicons.tsv", primers_mod.AMPLICON_COLUMNS,
+                                 primers_mod.run(organelle, "organelle")))
+        writers = []
+        if extras:
+            with timed(stages, "intraspecific barcode gap"):
+                writers.append(intraspecific_writer(opts, ncbi, extras, collected, records, organelle, vsearch))
         inputs = {"odb": odb_mod.state_of(src_dir), "taxdump_md5": util.md5(os.path.join(src_dir, "taxdump.tar.gz")),
                   "sources": {n: sources.state_of(src_dir, n).get("version") for n in ("EUKARYOME", "ROD")},
                   "assembly_tables": {os.path.basename(p): util.md5(p) for p in sorted(
@@ -760,7 +887,14 @@ def main(argv=None):
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB (--keep_gb {opts.keep_gb:g}), "
             f"{sum(st == 'deleted' for *_x, st in rows_kept)} deleted")
         with timed(stages, "reference labels"):
-            references = labels.references(src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say)
+            references = labels.references(src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say,
+                                           opts.midori2)
+            held_species = {int(g["species_taxid"]) for g in collected["genomes"].values()
+                            if g["representative"] == "t"} | {int(r["species_taxid"]) for _n, _s, r in records}
+            extra_tables.append(("crossrefs.tsv", labels.CROSSREF_COLUMNS, labels.crossrefs(
+                ncbi, held_species, references, os.path.join(labels.folder_of(src_dir), labels.OTT_FILE),
+                opts.bold_tsv, say)))
+            groups_mod.check(ncbi, say)  # data/supergroups.tsv's clades against this taxdump
         hook = None if opts.no_benchmarks else functools.partial(
             measure, opts=opts, src_dir=src_dir, ncbi=ncbi, collected=collected, vsearch=vsearch, stages=stages,
             fates=genomes.fates(ncbi, assemblies, job_map, opts.inside if wanted is not None else None), tests=tests,
@@ -769,7 +903,7 @@ def main(argv=None):
                                  + tables(src_dir, "refseq", opts.groups), jobs=job_map)
         out = package.write(os.path.join(opts.out, f"Eukore_{opts.version}"), opts.version, ncbi, collected,
                             loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook,
-                            metadata=meta)
+                            metadata=meta, tables=extra_tables, writers=writers)
         say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")
     return 0
 

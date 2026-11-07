@@ -186,6 +186,11 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
 | `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
+| `--organelle_models` | `nhmmer` | the assemblies' organelle protein-coding genes: nhmmer's hits joined, or `miniprot`'s exons by the organelle's code (format 5) |
+| `--intraspecific` | 3 | further assemblies of each species of `data/intraspecific_panel.tsv` run for the barcode gap (`intraspecific/`); 0: none |
+| `--no_tsa` | transcriptomes on | no INSDC transcriptomes (ENA's TSA sets) for the species without a genome |
+| `--midori2` | none | a MIDORI2 RAW FASTA whose lineages `species.tsv` gives (its URLs change with each release: download it yourself) |
+| `--bold_tsv` | none | a BOLD data package's TSV (`bin_uri`, `species`): its BINs in `crossrefs.tsv` (BOLD's bulk data needs a login) |
 | `--refresh` | off | fetch again NCBI's assembly tables and quality reports and the annotation indexes: newer genomes and gene models taken, old genome files deleted once replaced ([Resuming and rebuilding](#resuming-and-rebuilding)) |
 | `--veupathdb_key KEY` | the environment's `VEUPATHDB_API_KEY`, else none | a VEuPathDB user's API key (its profile's Web Service Access), for VEuPathDB's gene models; it is sent to VEuPathDB alone and written nowhere |
 | `--fcs_gx_db PREFIX`, `--run_gx` | none, `run_gx` | FCS-GX's database (e.g. `/dev/shm/gxdb/all`) and runner |

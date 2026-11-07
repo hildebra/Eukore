@@ -318,12 +318,89 @@ class AssemblyTest(unittest.TestCase):
                                                ncbi, barrnap, nhmmer, 1, 1, lambda _t: 0)
             self.assertEqual(run(), (2, 0))  # the plant and the yeast, not the worm
             self.assertEqual(organelle.searched_of(organelle.assembly_file(work, plant)),
-                             {k: set(organelle.GENES_OF[k]) for k in organelle.KINDS})
+                             dict({k: set(organelle.GENES_OF[k]) for k in organelle.KINDS}, models={"nhmmer"}))
             self.assertEqual(organelle.searched_of(organelle.assembly_file(work, yeast)),
-                             {"mitochondrion": set(organelle.GENES_OF["mitochondrion"])})
+                             {"mitochondrion": set(organelle.GENES_OF["mitochondrion"]), "models": {"nhmmer"}})
             self.assertEqual(run(), (0, 0))
             records = organelle.collect(ncbi, jobs, {952}, chosen, work)
             self.assertIn(("mitochondrion", "COX1"), {(r["organelle"], r["gene"]) for _n, _s, r in records})
+
+
+class Format5Test(unittest.TestCase):
+    """Since 2026-11-07 (format 5): GenBank locations read whole (a trans-spliced gene), more genes (COX3, nad1, nad5,
+    atp6, psbA, ycf1, the trnH-psbA spacer), the genes' common names, coding sequences, proteins and checks."""
+
+    def test_locations(self):
+        self.assertEqual(organelle.parts_of("complement(join(2901..3000,1..200))"),
+                         ([(1, 200, "-"), (2901, 3000, "-")], False))
+        self.assertEqual(organelle.parts_of("join(complement(5000..5100),<200..300)"),
+                         ([(5000, 5100, "-"), (200, 300, "+")], True))
+        self.assertEqual(organelle.parts_of("join(1..10,20..30)"), ([(1, 10, "+"), (20, 30, "+")], False))
+        self.assertIsNone(organelle.parts_of("join(J01415.2:1..10,20..30)"))
+        self.assertTrue(organelle.trans_spliced([(5000, 5100, "-"), (200, 300, "+")]))
+        self.assertFalse(organelle.trans_spliced([(1, 200, "-"), (2901, 3000, "-")]))  # across the origin
+        self.assertTrue(organelle.trans_spliced([(500, 600, "+"), (100, 200, "+"), (900, 950, "+"), (10, 20, "+")]))
+        self.assertEqual(organelle.parts_read(organelle.parts_text([(1, 5, "+"), (9, 12, "-")])),
+                         [(1, 5, "+"), (9, 12, "-")])
+
+    def test_genes_named(self):
+        for quals, kind, gene in (([("gene", "nad1")], "mitochondrion", "nad1"),
+                                  ([("product", "NADH dehydrogenase subunit 5")], "mitochondrion", "nad5"),
+                                  ([("product", "ATP synthase F0 subunit 6")], "mitochondrion", "atp6"),
+                                  ([("gene", "COX3")], "mitochondrion", "COX3"),
+                                  ([("product", "cytochrome c oxidase subunit III")], "mitochondrion", "COX3"),
+                                  ([("product", "photosystem II protein D1")], "plastid", "psbA"),
+                                  ([("gene", "ycf1")], "plastid", "ycf1")):
+            self.assertEqual(organelle.cds_gene([(n, v) for n, v in quals], kind), gene, quals)
+        for quals, kind in (([("product", "NADH dehydrogenase subunit 4L")], "mitochondrion"),
+                            ([("product", "NADH dehydrogenase subunit 1")], "plastid"),
+                            ([("product", "cytochrome c oxidase subunit II")], "mitochondrion")):
+            self.assertIsNone(organelle.cds_gene(quals, kind), quals)
+        self.assertTrue(organelle.is_his_trna([("gene", "trnH-GUG"), ("product", "tRNA-His")]))
+        self.assertFalse(organelle.is_his_trna([("product", "tRNA-Lys")]))
+        self.assertEqual([organelle.name_of("mitochondrion", "SSU", animal=True), organelle.name_of("plastid", "LSU"),
+                          organelle.name_of("mitochondrion", "LSU", plant=True), organelle.name_of("mitochondrion", "SSU"),
+                          organelle.name_of("mitochondrion", "COX1", animal=True)], ["12S", "23S", "26S", "SSU", "COX1"])
+
+    def test_spacer_and_a_trans_spliced_gene(self):
+        seq = random_seq(4000, 9)
+        rec = dict(seqid="NC_9.1", taxid=952, length=len(seq), circular=True, sequence=seq, features=[
+            ("tRNA", ["complement(1..75)"], [("gene", "trnH-GUG"), ("product", "tRNA-His")]),
+            ("CDS", ["complement(400..1459)"], [("gene", "psbA")])])
+        got = organelle.record_genes(rec, "plastid")
+        spacer = got["trnH-psbA"]
+        self.assertEqual((spacer["start"], spacer["end"], spacer["strand"], spacer["regions"]),
+                         (1, 599, "-", "psbA3':0-200,spacer:200-524,trnH:524-599"))
+        self.assertEqual(spacer["sequence"], rrna.revcomp(seq[:599]))
+        mito = dict(rec, features=[("CDS", ["join(complement(3001..3100),100..200)"], [("gene", "nad1")])])
+        nad1 = organelle.record_genes(mito, "mitochondrion")["nad1"]
+        self.assertEqual((nad1["trans_spliced"], nad1["exons"], nad1["sequence"]),
+                         (True, 2, rrna.revcomp(seq[3000:3100]) + seq[99:200]))
+
+    def test_coding_sequences_proteins_and_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+        # a yeast's COX1 by miniprot: two exons on the minus strand of its record, read with its code (3: TGA is W)
+        cds = "ATG" + "TGA" * 20 + "AAA" * 20 + "TAA"
+        exon1, exon2 = cds[:60], cds[60:]
+        molecule = "C" * 50 + rrna.revcomp(exon2) + "G" * 30 + rrna.revcomp(exon1) + "C" * 50
+        start, end = 51, 50 + len(cds) + 30
+        record = organelle.subsequence(molecule, start, end, "-")
+        parts = [(end - 59, end, "-"), (start, start + len(exon2) - 1, "-")]
+        row = dict(gene="COX1", start=start, end=end, parts=organelle.parts_text(parts), exons=2)
+        self.assertEqual(organelle.coding_of(row, record), cds)
+        self.assertIsNone(organelle.coding_of(dict(row, parts="-"), record))  # nhmmer's hits joined: no exons
+        self.assertIsNone(organelle.coding_of(dict(gene="SSU"), "ACGT"))
+        records = [(f"m{i}_COX1", record, dict(record=f"m{i}_COX1", gene="COX1", organelle="mitochondrion",
+                                                taxid=t, species_taxid=t, partial="f", ambiguous="0.0000",
+                                                model="miniprot", exons=2, cds=cds))
+                   for i, t in enumerate((4932, 27291))]
+        organelle.check(records, ncbi)  # no vsearch: no own-species check
+        y = records[0][2]
+        self.assertEqual((y["protein"], y["internal_stops"]), ("M" + "W" * 20 + "K" * 20, 0))  # yeast's code: W
+        self.assertEqual((y["confidence"], y["flags"]), ("medium", "own_species_undecided"))  # no vsearch: undecided
+        self.assertEqual(organelle.confidence(dict(y, internal_stops=2, partial="t"))[1],
+                         "internal_stops,partial,own_species_undecided")
 
 
 if __name__ == "__main__":

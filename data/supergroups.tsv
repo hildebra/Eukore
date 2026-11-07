@@ -1,0 +1,44 @@
+# Eukore's supergroups and groups (eukore/groups.py; since 2026-11-07, format 5): a species takes the row of its most
+# specific NCBI clade below. supergroup: the deep lineages of Burki et al. 2020 (Trends Ecol Evol 35:43) and UniEuk,
+# as EukProt v3 names them (Obazoa, Amoebozoa, Archaeplastida, TSAR, Haptista, Cryptista, Discoba, Metamonada, CRuMs,
+# Ancyromonadida, Malawimonadida, Hemimastigophora, Provora; incertae sedis: none of them). NCBI has no node for Obazoa,
+# Archaeplastida or Cryptista: their clades are listed one by one. group: the finer level busco/loci.tsv's call rates
+# and the benchmarks use, which keeps the names of Eukore's groups before format 5 where they still fit (SAR is split
+# into its Stramenopiles, Alveolata, Rhizaria and Telonemia; Haptista into its Haptophyta and Centroplasthelida).
+# taxids of NCBI's taxdump of 2026-11; groups.py checks each name against the build's taxdump.
+taxid	ncbi_name	supergroup	group
+7742	Vertebrata	Obazoa	Vertebrata
+33208	Metazoa	Obazoa	Metazoa
+4751	Fungi	Obazoa	Fungi
+28009	Choanoflagellata	Obazoa	other Opisthokonta
+127916	Ichthyosporea	Obazoa	other Opisthokonta
+2687318	Filasterea	Obazoa	other Opisthokonta
+2686024	Rotosphaerida	Obazoa	other Opisthokonta
+33154	Opisthokonta	Obazoa	other Opisthokonta
+554296	Apusozoa	Obazoa	Apusozoa and Breviatea
+1401294	Breviatea	Obazoa	Apusozoa and Breviatea
+554915	Amoebozoa	Amoebozoa	Amoebozoa
+33090	Viridiplantae	Archaeplastida	Viridiplantae
+2763	Rhodophyta	Archaeplastida	Rhodophyta
+38254	Glaucocystophyceae	Archaeplastida	Glaucophyta
+2598132	Rhodelphea	Archaeplastida	other Archaeplastida
+419944	Picozoa	Archaeplastida	other Archaeplastida
+33634	Stramenopiles	TSAR	Stramenopiles
+33630	Alveolata	TSAR	Alveolata
+543769	Rhizaria	TSAR	Rhizaria
+660925	Telonemia	TSAR	Telonemia
+2698737	Sar	TSAR	other TSAR
+2830	Haptophyta	Haptista	Haptophyta
+193537	Centroplasthelida	Haptista	Centroplasthelida
+2608109	Haptista	Haptista	other Haptista
+3027	Cryptophyceae	Cryptista	Cryptophyceae
+339960	Kathablepharidacea	Cryptista	other Cryptista
+759891	Palpitomonas	Cryptista	other Cryptista
+2611352	Discoba	Discoba	Discoba
+2611341	Metamonada	Metamonada	Metamonada
+2608240	CRuMs	CRuMs	other eukaryotes
+2686027	Ancyromonadida	Ancyromonadida	other eukaryotes
+2795258	Malawimonadida	Malawimonadida	other eukaryotes
+2489521	Hemimastigophora	Hemimastigophora	other eukaryotes
+3004206	Provora	Provora	other eukaryotes
+2759	Eukaryota	incertae sedis	other eukaryotes

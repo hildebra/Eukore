@@ -36,11 +36,13 @@ version is 0.13 (package format 5); it was named EUKDB until 2026-11-06.
 
 | | per species | from | complete as |
 |---|---|---|---|
-| **BUSCO genes** | each of the 129 BUSCOs of eukaryota_odb12 called in its genome, with its exons and introns | NCBI's best assembly of the species, called by Eukore (miniprot, then BUSCO's HMMs) | the gene from first to last codon, introns and all, uncut and unmasked |
-| **rDNA operons** | its 18S spans and whole units (18S, ITS1, 5.8S, ITS2, 28S, an inline 5S) | its assembly (barrnap, ITSx); EUKARYOME's and ROD's long reads | from the 18S's start to the 28S's end |
-| **organelle genes** | mitochondrial and plastid SSU, LSU, 5S rRNA; mitochondrial COX1 and CYTB; plastid rbcL, matK and tufA | RefSeq's organelle genomes, else its assembly's organelle molecules (kept whole too) | the gene with its introns |
+| **BUSCO genes** | each of the 129 BUSCOs of eukaryota_odb12 called in its genome, with its exons and introns; their coding sequences and proteins | NCBI's best assembly of the species (else an INSDC transcriptome), called by Eukore (miniprot, then BUSCO's HMMs) | the gene from first to last codon, introns and all, uncut and unmasked |
+| **genetics** | each intron's phase, splice sites, U12 look and site on the gene's HMM; the genome's genetic code checked; its duplicated BUSCOs (haplotypes or a whole-genome duplication) | hmmalign on BUSCO's HMMs; vsearch | `busco/introns.tsv`, `intron_sites.tsv`, `genomes.tsv` |
+| **rDNA operons** | its 18S spans and whole units (18S, ITS1, 5.8S, ITS2, 28S, an inline 5S); the 18S's V1-V9; in-silico PCR of 10 amplicon primer pairs | its assembly (barrnap, ITSx); EUKARYOME's and ROD's long reads; Infernal on Rfam's SSU model | from the 18S's start to the 28S's end |
+| **organelle genes** | mitochondrial and plastid SSU, LSU, 5S rRNA; mitochondrial COX1, COX3, CYTB, nad1, nad5, atp6; plastid rbcL, matK, tufA, psbA, ycf1 and the trnH-psbA spacer; their proteins by the organelle's code, checks and confidence, barcode primers' PCR | RefSeq's organelle genomes, else its assembly's organelle molecules (kept whole too) | the gene with its introns |
 | **assembly metadata** | its genome's size, contiguity, gaps, GC and its spread, soft-masking, CpG, duplicates, telomeres, organelle molecules, tetranucleotides, a sourmash sketch; NCBI's own summary | measured while the genome is on disk, before the build deletes it | in the package's `metadata/` |
-| **taxonomy** | NCBI's lineage and supergroup; its lineage in PR2, EUKARYOME and KSGP | NCBI's taxdump, cut to the package | tied to no GTDB release |
+| **taxonomy** | NCBI's lineage (and with its empty ranks filled), supergroup (Obazoa, TSAR, ...) and group; its lineage in PR2, EUKARYOME, KSGP, SILVA, UNITE (and MIDORI2); its Open Tree, GBIF, WoRMS, IRMNG, UNITE SH (and BOLD BIN) ids; its genome's type material | NCBI's taxdump, cut to the package | tied to no GTDB release |
+| **barcode gap** | for a panel of 40 well-sampled species, each marker's variation within the species beside its distance to the nearest other species | 3 further assemblies of each (other strains) | `intraspecific/` |
 | **checks** | per copy and record: own-species agreement, 99% collapses, length outliers, contig ends, assembly gaps, tiara's and FCS-GX's contamination screens, an rRNA chimera screen; a `high`/`medium`/`low` tier with its reasons | Eukore's checks across species | flagged, never silently dropped |
 | **benchmarks** | completeness, agreement with OrthoDB's gene models, marker resolution, rRNA completeness, naming, run time | measured by each build | in the package's `benchmarks/` |
 
@@ -55,14 +57,16 @@ A package is plain TSV and gzipped FASTA with a `manifest.json` of checksums; it
 ```
 Eukore_2026.11/
 ├── manifest.json            versions, inputs, counts, every file's size and MD5 (written last)
-├── species.tsv              one row per species: NCBI, PR2, EUKARYOME and KSGP lineages, what it holds
-├── genomes.tsv              the species' genomes: accession, quality flags, rRNA copies in the assembly
-├── taxonomy/                NCBI's taxonomy, cut to the package (nodes, names, merged)
+├── species.tsv              one row per species: supergroup, group, NCBI and six references' lineages
+├── crossrefs.tsv            each species' ids: Open Tree, GBIF, WoRMS, IRMNG, UNITE SH, BOLD BIN
+├── genomes.tsv              the species' genomes: accession, quality flags, rRNA copies, genetic code, duplication
+├── taxonomy/                NCBI's taxonomy, cut to the package (nodes with nuclear and organelle codes, names)
 ├── busco/                   loci.tsv (call rates per BUSCO), copies.tsv (calls, checks, confidence),
-│                            features.tsv (exons, introns, masked runs), copies/<locus>.fna.gz
-├── rrna/                    records.tsv, records.fna.gz
-├── organelle/               genes.tsv, genes.fna.gz, molecules.fna.gz (the assemblies' organelle molecules)
-├── metadata/                assembly.tsv.gz, tetranucleotides.tsv.gz, sketches.zip (sourmash), ncbi.tsv.gz
+│                            features.tsv, introns.tsv, intron_sites.tsv, copies/, cds/, proteins/<locus>.*.gz
+├── rrna/                    records.tsv, records.fna.gz, regions.tsv (18S V1-V9), amplicons.tsv (in-silico PCR)
+├── organelle/               genes.tsv, genes.fna.gz, cds.fna.gz, proteins.faa.gz, amplicons.tsv, molecules.fna.gz
+├── intraspecific/           the panel's further assemblies' copies, barcode_gap.tsv
+├── metadata/                assembly.tsv.gz, tetranucleotides.tsv.gz, sketches.zip, ncbi.tsv.gz, codons.tsv.gz
 └── benchmarks/              the build's measures of the package
 ```
 
@@ -192,10 +196,10 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 | path | |
 |---|---|
 | `eukore_build.py` | the build (stages fetch, process, package) |
-| `eukore/` | the package: `genomes.py` (genome set, one genome's run), `odb.py`, `loci.py` (BUSCO calls), `rrna.py`, `screen.py` (rRNA and its chimera screen), `organelle.py`, `qc.py` (checks across species), `quality.py` (NCBI's FCS-GX and ANI reports), `labels.py` (PR2, EUKARYOME, KSGP), `package.py` (write, read, check), `benchmarks.py` |
+| `eukore/` | the package: `genomes.py` (genome set, one genome's run), `odb.py`, `loci.py` (BUSCO calls), `rrna.py`, `screen.py` (rRNA and its chimera screen), `organelle.py`, `qc.py` (checks across species), `quality.py` (NCBI's FCS-GX and ANI reports), `labels.py` (PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2; crossrefs), `groups.py` (supergroups, groups), `gencode.py` (NCBI's genetic codes), `align.py` (hmmalign), `introns.py`, `codecheck.py` (genetic code check), `regions.py` (18S V1-V9, cmalign), `primers.py` (in-silico PCR), `intraspecific.py` (barcode gap), `package.py` (write, read, check), `benchmarks.py` |
 | `data/` | the model species, curated rDNA units, the records of species without an assembly |
 | `envs/` | the micromamba environments (`eukore.yaml`; `tiara.yaml`, tiara needing an older Python) |
-| `tools/` | choosing loci: `rank_loci.py`, `eukaryote_panel.py`, `prokaryote_panel.py`, `prokaryote_separation.py` |
+| `tools/` | choosing loci: `rank_loci.py`, `eukaryote_panel.py`, `prokaryote_panel.py`, `prokaryote_separation.py`; `classic_markers.py` (classic markers among the BUSCOs), `primer_references.py` (the primers' test records), `organelle_models.py` (nhmmer against miniprot on RefSeq's exons) |
 | `tests/` | unit and end-to-end tests with stand-in tools |
 | `docs/` | documentation, the format, the benchmarks' plot script and figures, the logo |
 | `LICENSE` | GPL-2.0 |
@@ -204,7 +208,10 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 
 - Version 0.13. The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
-- The organelle genes have been built in tests only; they have no checks across species and no confidence yet.
+- The organelle genes have checks across species and a confidence tier since 0.13, measured on a trial without RefSeq's organelle release (assembly molecules alone); the assemblies' protein-coding genes are nhmmer's hits joined by default (`--organelle_models miniprot` for exact exons, being measured by `tools/organelle_models.py`).
+- The genetic code check judges only the stop codons and CTG, where seen often enough at conserved positions (CTG-clade yeasts avoid CTG: not judged); a transcriptome's BUSCO copies (TSA, a species without a genome) have no introns and are at most `medium`.
+- The 28S's D domains are not given (no published coordinates on one reference found); none of the classic markers RPB1, RPB2, TEF1, TUB2 is a BUSCO ([docs/loci.md](docs/loci.md)).
+- protal reads `call_<supergroup>` of format 4: format 5 has `call_<group>` (SAR split into Stramenopiles, Alveolata, Rhizaria, Telonemia).
 - `genomes.tsv`'s rDNA copy numbers are those of the assembly, a lower bound (arrays collapse);
   `tools/rdna_depth.py` measures a genome's own from its reads, a prototype run on 10 genomes
   ([docs/read_depth.md](docs/read_depth.md)). The intergenic spacer, 5S arrays away from the unit and the 28S's

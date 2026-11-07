@@ -188,3 +188,34 @@ So that a user (protal's build) has what it needs without computing it again:
   `own_species`, `same_as`, tiara's window, FCS-GX and the rRNA part screen.
 - **Confidence.** `high`, `medium` or `low` per copy and per record, with the flags that set it ([FORMAT.md](FORMAT.md)): a user
   drops the `low` ones and weighs the `medium` ones as it sees fit.
+
+## The copies' genetics (since 2026-11-07, format 5)
+
+- **Coding sequences and proteins.** Each copy's exons joined (miniprot's frameshift bases left out) and translated by
+  the genome's NCBI table (`eukore/gencode.py` holds every NCBI table; until 0.13 the nuclear ones alone):
+  `busco/cds/`, `busco/proteins/`. A stop inside a protein stays `*` and is counted (`internal_stops`).
+- **Places on the HMM.** hmmalign (HMMER) aligns each locus' proteins to BUSCO's HMM of it (`eukore/align.py`; cached
+  under WORK/align/). A residue's match state is a position shared across species; the alignments are not shipped.
+- **Introns** (`eukore/introns.py`). Each intron's phase, splice-site dinucleotides and class, a U12 look (the minor
+  spliceosome's 5' end and branch point), and the match state of the residue it falls in or before. Introns of one
+  locus and phase a match state apart are one site; `intron_sites.tsv` gives how widely each site is held, overall and
+  per group: an intron conserved across eukaryotes, one gained in a clade, one lost.
+- **Genetic code check** (`eukore/codecheck.py`, the idea of Codetta: Shulgina & Eddy 2021). Each codon of a genome's
+  copies at a conserved match state (its most likely amino acid at 0.5 or more) adds the state's log emission
+  probabilities to the codon's tally; the codon's amino acid is the tally's best. Of the codons nuclear codes are known
+  to reassign (TAA, TAG, TGA: Q, E, Y, W, C; CTG: S, A), one NCBI's table reads otherwise, seen at 10 such positions or
+  more (a stop at 5: under its own reading it is at none; on the trial no genome held more than 3) and 10 nats more
+  likely, is reported (`gencode_check`: `differs:CTG>S`). The other codons' tallies are kept
+  (`metadata/codons.tsv.gz`) but not judged: they lean toward the amino acids HMMs favour (on the 7-clade trial of
+  2026-11-07 ATG read as Leu in 30 of 33 genomes; Met is rarely a conserved position's best). miniprot placed the
+  genes with NCBI's table, through an in-frame stop where it had to, so a stop the genome reads as an amino acid is
+  still seen. The table that fits the tested codons best is `best_table`. Checked on that trial: every genome agrees
+  with its NCBI table; given table 12 instead, *S. cerevisiae*, *A. thaliana* and *D. melanogaster* are called
+  `differs:CTG>L`, best table 1. Given table 1, *C. albicans* is not caught: it uses CTG at 3 conserved positions
+  only (CTG-clade yeasts avoid the codon), so `gencode_codons` does not list CTG. The ciliate *Euplotes raikovi*'s
+  transcriptome (TSA GKLH01; NCBI's table 10, TGA Cys) agrees with table 10; given table 1 it is called
+  `differs:TGA>C`, best table 10 (TGA at 8 conserved positions).
+- **Duplication** (`loci.dup_identity`, `package.duplication_of`). Each Duplicated BUSCO's other complete copies are
+  kept by the run, and vsearch measures the nearest one's identity to the chosen copy (`dup_identity`). A genome with
+  many duplicated BUSCOs whose copies are 99.5% alike holds both haplotypes of a diploid (or a recent hybrid); less
+  alike, a whole-genome duplication or a polyploid (`genomes.tsv`'s `duplication`). The thresholds are a heuristic.

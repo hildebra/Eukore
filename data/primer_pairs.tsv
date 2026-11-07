@@ -1,0 +1,23 @@
+# Primer pairs in-silico PCR runs (eukore/primers.py; since 2026-11-07): their primers (data/primers.tsv), the region
+# they amplify, the records they run on (rrna: rrna/records.tsv's genome and published records; an organelle gene of
+# organelle/genes.tsv), the product's length range (primers included) and the record of data/primer_references.fna each
+# amplifies (tests/test_primers.py).
+pair	forward	reverse	region	records	min_length	max_length	reference
+V4_TAReuk	TAReuk454FWD1	TAReukREV3	18S V4	rrna	300	700	Sc_18S
+V9_1391F_EukB	1391F	EukB	18S V9	rrna	80	300	Sc_18S
+V9_1380F_1510R	1380F	1510R	18S V9	rrna	80	300	Sc_18S
+NS1_NS4	NS1	NS4	18S V1-V5	rrna	800	1500	Sc_18S
+ITS1F_ITS4	ITS1F	ITS4	ITS1-5.8S-ITS2	rrna	300	1500	Sc_rDNA
+ITS3_ITS4	ITS3	ITS4	ITS2	rrna	150	1000	Sc_rDNA
+gITS7_ITS4	gITS7	ITS4	ITS2	rrna	150	1000	Sc_rDNA
+ITS86F_ITS4	ITS86F	ITS4	ITS2	rrna	150	1000	Sc_rDNA
+NL1_NL4	NL1	NL4	28S D1-D2	rrna	450	800	Sc_rDNA
+LR0R_LR5	LR0R	LR5	28S D1-D3	rrna	700	1300	Sc_rDNA
+COI_Folmer	LCO1490	HCO2198	COX1 Folmer	COX1	650	750	Bm_COX1
+COI_Leray	mlCOIintF	jgHCO2198	COX1 Leray	COX1	330	400	Dr_COX1
+rbcLa	rbcLa-F	rbcLa-R	rbcL	rbcL	500	700	At_rbcL
+matK_KIM	matK-1R_KIM	matK-3F_KIM	matK	matK	750	1000	At_matK
+psbA-trnH	psbA3f	trnHf_05	trnH-psbA	trnH-psbA	150	1200	Nt_trnH-psbA
+MiFish-U	MiFish-U-F	MiFish-U-R	12S	SSU	150	300	Dr_12S
+12S_V5	12SV5F	12SV5R	12S	SSU	70	200	Dr_12S
+16S_Palumbi	16Sar	16Sbr	16S	LSU	400	700	Dr_16S

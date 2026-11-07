@@ -91,8 +91,17 @@ class LabelTest(unittest.TestCase):
                                                        "Kluyveromyces;Kluyveromyces_lactis", "species"))
             self.assertEqual(got[6253]["EUKARYOME"][1], "genus")
             self.assertEqual(got[4932]["EUKARYOME"], ("-", "-"))  # s__unclassified names no species
-            self.assertEqual(labels.supergroup(ncbi, 4932), "Fungi")
-            self.assertEqual(labels.supergroup(ncbi, 952), "other eukaryotes")
+            # format 5: two levels (data/supergroups.tsv), the most specific clade's row
+            self.assertEqual((labels.supergroup(ncbi, 4932), labels.group(ncbi, 4932)), ("Obazoa", "Fungi"))
+            self.assertEqual((labels.supergroup(ncbi, 6253), labels.group(ncbi, 6253)), ("Obazoa", "Metazoa"))
+            self.assertEqual((labels.supergroup(ncbi, 952), labels.group(ncbi, 952)),
+                             ("incertae sedis", "other eukaryotes"))
+            # NCBI's empty ranks filled: an unranked clade where one lies between, else the name above with _X
+            self.assertEqual(labels.ncbi_lineage_filled(ncbi, 6253),
+                             "Eukaryota;Metazoa;Nematoda;Nematoda_X;Nematoda_XX;Nematoda_XXX;Ascaris;Ascaris lumbricoides")
+            self.assertEqual(labels.ncbi_lineage_filled(ncbi, 4932), labels.ncbi_lineage(ncbi, 4932))  # none empty
+            from eukore import groups
+            self.assertTrue(groups.check(ncbi, lambda _t: None))  # the stand-in taxonomy lacks most clades
 
     def test_names(self):
         self.assertTrue(labels.is_species_name("Saccharomyces_cerevisiae"))

@@ -423,6 +423,8 @@ def genome_source(row, job=None):
     if why == "toga2":
         who = (job or {}).get("assembly_source", "-")
         return f"TOGA2 ({who})" if who not in ("-", "") else "TOGA2"
+    if why == "tsa":  # since 2026-11-07: INSDC's transcriptome, as ENA serves it
+        return "ENA TSA"
     if why == "no_assembly":
         return "EukProt"
     fetched = row.get("fetched") or row.get("accession", "")

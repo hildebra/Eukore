@@ -1,0 +1,39 @@
+# Primers of eukaryote barcodes and amplicon surveys (eukore/primers.py; since 2026-11-07). sequence: 5' to 3', IUPAC
+# (inosine written N); strand: forward (on the gene's strand) or reverse (on the other). The 18S primers' sequences
+# were checked against Hadziavdic et al. 2014 (PLoS ONE 9:e87624, Tables S1-S2); each pair amplifies its reference
+# record in data/primer_references.fna (tests/test_primers.py).
+name	sequence	strand	target	citation
+TAReuk454FWD1	CCAGCASCYGCGGTAATTCC	forward	18S	Stoeck et al. 2010 Mol Ecol 19:21
+TAReukREV3	ACTTTCGTTCTTGATYRA	reverse	18S	Stoeck et al. 2010 Mol Ecol 19:21
+1391F	GTACACACCGCCCGTC	forward	18S	Stoeck et al. 2010 Mol Ecol 19:21; Amaral-Zettler et al. 2009
+EukB	TGATCCTTCTGCAGGTTCACCTAC	reverse	18S	Medlin et al. 1988 Gene 71:491
+1380F	CCCTGCCHTTTGTACACAC	forward	18S	Amaral-Zettler et al. 2009 PLoS ONE 4:e6372
+1510R	CCTTCYGCAGGTTCACCTAC	reverse	18S	Amaral-Zettler et al. 2009 PLoS ONE 4:e6372
+NS1	GTAGTCATATGCTTGTCTC	forward	18S	White et al. 1990 PCR Protocols
+NS4	CTTCCGTCAATTCCTTTAAG	reverse	18S	White et al. 1990 PCR Protocols
+ITS1	TCCGTAGGTGAACCTGCGG	forward	ITS	White et al. 1990 PCR Protocols
+ITS1F	CTTGGTCATTTAGAGGAAGTAA	forward	ITS	Gardes & Bruns 1993 Mol Ecol 2:113
+ITS3	GCATCGATGAAGAACGCAGC	forward	ITS	White et al. 1990 PCR Protocols
+ITS4	TCCTCCGCTTATTGATATGC	reverse	ITS	White et al. 1990 PCR Protocols
+gITS7	GTGARTCATCGARTCTTTG	forward	ITS	Ihrmark et al. 2012 FEMS Microbiol Ecol 82:666
+ITS86F	GTGAATCATCGAATCTTTGAA	forward	ITS	Turenne et al. 1999 J Clin Microbiol 37:1846
+NL1	GCATATCAATAAGCGGAGGAAAAG	forward	28S	O'Donnell 1993; Kurtzman & Robnett 1998
+NL4	GGTCCGTGTTTCAAGACGG	reverse	28S	O'Donnell 1993; Kurtzman & Robnett 1998
+LR0R	ACCCGCTGAACTTAAGC	forward	28S	Vilgalys lab; Rehner & Samuels 1994
+LR5	TCCTGAGGGAAACTTCG	reverse	28S	Vilgalys & Hester 1990 J Bacteriol 172:4238
+LCO1490	GGTCAACAAATCATAAAGATATTGG	forward	COX1	Folmer et al. 1994 Mol Mar Biol Biotechnol 3:294
+HCO2198	TAAACTTCAGGGTGACCAAAAAATCA	reverse	COX1	Folmer et al. 1994 Mol Mar Biol Biotechnol 3:294
+mlCOIintF	GGWACWGGWTGAACWGTWTAYCCYCC	forward	COX1	Leray et al. 2013 Front Zool 10:34
+jgHCO2198	TANACYTCNGGRTGNCCRAARAAYCA	reverse	COX1	Geller et al. 2013 Mol Ecol Resour 13:851
+rbcLa-F	ATGTCACCACAAACAGAGACTAAAGC	forward	rbcL	Levin et al. 2003 Am J Bot 90:107
+rbcLa-R	GTAAAATCAAGTCCACCRCG	reverse	rbcL	Kress et al. 2009 PNAS 106:18621
+matK-1R_KIM	ACCCAGTCCATCTGGAAATCTTGGTTC	forward	matK	Ki-Joong Kim, unpublished; CBOL Plant Working Group 2009 PNAS 106:12794 (its 1R_KIM-f)
+matK-3F_KIM	CGTACAGTACTTTTGTGTTTACGAG	reverse	matK	Ki-Joong Kim, unpublished; CBOL Plant Working Group 2009 PNAS 106:12794 (its 3F_KIM-r)
+psbA3f	GTTATGCATGAACGTAATGCTC	forward	trnH-psbA	Sang et al. 1997 Am J Bot 84:1120
+trnHf_05	CGCGCATGGTGGATTCACAATCC	reverse	trnH-psbA	Tate & Simpson 2003 Syst Bot 28:723
+MiFish-U-F	GTCGGTAAAACTCGTGCCAGC	forward	12S	Miya et al. 2015 R Soc Open Sci 2:150088
+MiFish-U-R	CATAGTGGGGTATCTAATCCCAGTTTG	reverse	12S	Miya et al. 2015 R Soc Open Sci 2:150088
+12SV5F	ACTGGGATTAGATACCC	forward	12S	Riaz et al. 2011 Nucleic Acids Res 39:e145
+12SV5R	TAGAACAGGCTCCTCTAG	reverse	12S	Riaz et al. 2011 Nucleic Acids Res 39:e145
+16Sar	CGCCTGTTTATCAAAAACAT	forward	16S	Palumbi 1996 Molecular Systematics
+16Sbr	CCGGTCTGAACTCAGATCACGT	reverse	16S	Palumbi 1996 Molecular Systematics

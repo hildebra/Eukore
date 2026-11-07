@@ -26,19 +26,26 @@ import re
 import subprocess
 import tempfile
 
-from . import rrna, util
+from . import gencode, rrna, util
 
 REFSEQ_RELEASE = "https://ftp.ncbi.nlm.nih.gov/refseq/release"
 RELEASE_FILE = re.compile(r"\b((mitochondrion|plastid)\.\d+\.genomic\.gbff\.gz)\b")
 KINDS = ("mitochondrion", "plastid")
-GENES = ("SSU", "LSU", "5S", "COX1", "CYTB", "rbcL", "matK", "tufA")
+GENES = ("SSU", "LSU", "5S", "COX1", "COX3", "CYTB", "nad1", "nad5", "atp6", "rbcL", "matK", "tufA", "psbA", "ycf1",
+         "trnH-psbA")
 # each organelle's genes, since 2026-11-07 also: a mitochondrion's CYTB (vertebrates' and insects' barcode), a plastid's
-# rbcL and matK (land plants' core barcode; rbcL also algae's) and tufA (green algae's barcode)
-GENES_OF = {"mitochondrion": ("SSU", "LSU", "5S", "COX1", "CYTB"),
-            "plastid": ("SSU", "LSU", "5S", "rbcL", "matK", "tufA")}
+# rbcL and matK (land plants' core barcode; rbcL also algae's) and tufA (green algae's barcode); since 2026-11-07
+# (format 5) a mitochondrion's COX3, nad1, nad5 and atp6, a plastid's psbA, ycf1 and the trnH-psbA spacer (plants')
+GENES_OF = {"mitochondrion": ("SSU", "LSU", "5S", "COX1", "COX3", "CYTB", "nad1", "nad5", "atp6"),
+            "plastid": ("SSU", "LSU", "5S", "rbcL", "matK", "tufA", "psbA", "ycf1", "trnH-psbA")}
 OLD_GENES = ("SSU", "LSU", "5S", "COX1")  # what an assembly's search found before 2026-11-07 (no #searched line)
+RRNA_GENES = ("SSU", "LSU", "5S")
+SPACER = "trnH-psbA"
+CODING = tuple(g for g in GENES if g not in RRNA_GENES and g != SPACER)  # translated (cds.fna.gz, proteins.faa.gz)
 METAZOA = 33208
+EMBRYOPHYTA = 3193  # land plants: their mitochondrion's rRNA are 18S and 26S
 NO_PLASTID = {METAZOA, 4751}  # animals, fungi
+COMPARTMENT = {"mitochondrion": "mito", "plastid": "plastid"}  # ncbi.code_of's
 TITLE = rrna.ORGANELLE_TITLE
 MAX_MOLECULE = 15_000_000  # an organelle molecule this long at most (Silene's mitochondrial chromosomes: ~11 Mb)
 NEAREST = 3                # RefSeq species whose gene is queried in an assembly's organelle
@@ -48,10 +55,15 @@ MIN_COVER = 0.8            # of its query's exons a gene covers at least, else p
 BARRNAP = {"mito": {"12S_rRNA": "SSU", "16S_rRNA": "LSU"},
            "bac": {"16S_rRNA": "SSU", "23S_rRNA": "LSU", "5S_rRNA": "5S"}}
 GENE_COLUMNS = ("record", "gene", "organelle", "taxid", "species_taxid", "source", "seqid", "accession", "start",
-                "end", "strand", "length", "exons", "copies", "partial", "ambiguous")
+                "end", "strand", "length", "exons", "copies", "partial", "ambiguous",
+                # since 2026-11-07 (format 5): the gene's common name, where its exons come from, its parts on its
+                # source, a trans-spliced gene, the spacer's regions, its checks (check)
+                "name", "model", "parts", "trans_spliced", "regions", "internal_stops", "own_species", "same_as",
+                "length_check", "confidence", "flags")
 CACHE_COLUMNS = ("seqid", "organelle", "taxid", "record_length", "gene", "start", "end", "strand", "exons", "copies",
-                 "partial", "sequence", "spliced")
-ASSEMBLY_COLUMNS = ("gene", "organelle", "seqid", "start", "end", "strand", "exons", "copies", "partial", "sequence")
+                 "partial", "sequence", "spliced", "parts", "trans_spliced", "regions")
+ASSEMBLY_COLUMNS = ("gene", "organelle", "seqid", "start", "end", "strand", "exons", "copies", "partial", "sequence",
+                    "parts", "model")  # parts, model: since 2026-11-07
 
 
 # --- RefSeq's release ---------------------------------------------------------------------------------------------
@@ -146,17 +158,49 @@ def gbff_records(path):
 
 
 def parts_of(location):
-    """A GenBank location -> (parts [(start, end)] 1-based in the order written, strand, partial), or None where it
-    is another record's, or on both strands (a trans-spliced gene)."""
+    """A GenBank location -> (parts [(start, end, strand)] 1-based in the order transcribed, partial), or None where a
+    part is another record's (a gene spliced across a plant mitochondrion's chromosomes) or a site between bases.
+    complement() reverses its parts' order and strands; join() and order() keep theirs (since 2026-11-07: a part on
+    either strand, a trans-spliced gene's; until then such a gene was left out)."""
     if ":" in location or "^" in location:
         return None
-    spans = [(int(a), int(b or a)) for a, b in re.findall(r"(\d+)(?:\.\.[<>]?(\d+))?", location.replace("<", ""))]
-    if not spans:
+    text, pos = location.replace("<", "").replace(">", ""), 0
+
+    def expr():
+        nonlocal pos
+        for op in ("complement(", "join(", "order("):
+            if text.startswith(op, pos):
+                pos += len(op)
+                items = [expr()]
+                while text[pos] == ",":
+                    pos += 1
+                    items.append(expr())
+                if text[pos] != ")":
+                    raise ValueError(location)
+                pos += 1
+                parts = [p for item in items for p in item]
+                return [(a, b, "-" if s == "+" else "+") for a, b, s in reversed(parts)] if op == "complement(" \
+                    else parts
+        m = re.match(r"(\d+)(?:\.\.(\d+))?", text[pos:])
+        if not m:
+            raise ValueError(location)
+        pos += m.end()
+        return [(int(m.group(1)), int(m.group(2) or m.group(1)), "+")]
+    try:
+        parts = expr()
+    except (ValueError, IndexError):
         return None
-    n_complement = location.count("complement(")
-    if n_complement and not location.startswith("complement(") and n_complement != len(spans):
-        return None
-    return spans, "-" if n_complement else "+", "<" in location or ">" in location
+    return (parts, "<" in location or ">" in location) if parts and pos == len(text) else None
+
+
+def trans_spliced(parts, circular=True):
+    """Whether a gene's parts (parts_of's, in the order transcribed) are not one stretch of its molecule read along
+    one strand (once across a circular molecule's origin at most): a trans-spliced gene, its record its exons joined."""
+    if len({s for _a, _b, s in parts}) > 1:
+        return True
+    sign = 1 if parts[0][2] == "+" else -1
+    turns = sum(1 for p, q in zip(parts, parts[1:]) if sign * (q[0] - p[0]) < 0)
+    return turns > (1 if circular else 0)
 
 
 def span_of(spans, length, circular=True):
@@ -178,10 +222,25 @@ def subsequence(seq, start, end, strand):
     return rrna.revcomp(s) if strand == "-" else s
 
 
-def spliced(seq, spans, strand, location):
-    """A feature's parts joined in the order transcribed."""
-    order = list(reversed(spans)) if strand == "-" and location.startswith("complement(") else spans
-    return "".join(subsequence(seq, a, b, strand) for a, b in order)
+def spliced(seq, parts):
+    """A feature's parts (parts_of's) joined in the order transcribed."""
+    return "".join(subsequence(seq, a, b, s) for a, b, s in parts)
+
+
+def parts_text(parts):
+    """Parts [(start, end, strand)] -> `start-end:strand,...` (genes.tsv's `parts`)."""
+    return ",".join(f"{a}-{b}:{s}" for a, b, s in parts)
+
+
+def parts_read(text):
+    """genes.tsv's `parts` -> [(start, end, strand)], [] for `-`."""
+    out = []
+    for p in (text or "-").split(","):
+        if p and p != "-":
+            span, _c, strand = p.partition(":")
+            a, _d, b = span.partition("-")
+            out.append((int(a), int(b), strand or "+"))
+    return out
 
 
 NUMBER = re.compile(r"\brrn(\d+(?:\.\d+)?)\b|\b(\d+(?:\.\d+)?)\s?s\b")
@@ -217,6 +276,37 @@ MATK_PRODUCT = re.compile(r"\bmaturase k\b")
 CYTB_GENES = {"cytb", "cob", "cyb", "mt-cyb", "mtcyb"}
 CYTB_PRODUCT = re.compile(r"\b(apo)?cytochrome b\b(?![-\d])")  # not b5, b6 (petB), b559, b-245
 TUFA_PRODUCT = re.compile(r"\belongation factor tu\b")
+# the protein-coding genes (since 2026-11-07 one table, CDS_RULES): gene, organelle, its /gene names (lower case), its
+# /product, and whether the product names it beside another /gene (COX1's, as until then)
+CDS_RULES = (
+    ("COX1", "mitochondrion", COX1_GENES, COX1_PRODUCT, True),
+    ("COX3", "mitochondrion", {"cox3", "coiii", "co3", "coxiii", "cox-3", "mt-co3", "mtco3"},
+     re.compile(r"cytochrome (c )?oxidase subunit (3|iii)\b"), False),
+    ("CYTB", "mitochondrion", CYTB_GENES, CYTB_PRODUCT, False),
+    ("nad1", "mitochondrion", {"nad1", "nd1", "mt-nd1", "nadh1", "nadh-1"},
+     re.compile(r"\bnadh (dehydrogenase|ubiquinone oxidoreductase)( chain| subunit) (1|i)\b(?!-)"), False),
+    ("nad5", "mitochondrion", {"nad5", "nd5", "mt-nd5", "nadh5", "nadh-5"},
+     re.compile(r"\bnadh (dehydrogenase|ubiquinone oxidoreductase)( chain| subunit) (5|v)\b(?!-)"), False),
+    ("atp6", "mitochondrion", {"atp6", "mt-atp6", "atpase6", "atp-6", "atpase 6"},
+     re.compile(r"\batp synthase (f0 |fo )?(subunit|chain) (6|a)\b"), False),
+    ("rbcL", "plastid", {"rbcl"}, RBCL_PRODUCT, False),
+    ("matK", "plastid", {"matk"}, MATK_PRODUCT, False),
+    ("tufA", "plastid", {"tufa"}, TUFA_PRODUCT, False),
+    ("psbA", "plastid", {"psba"}, re.compile(r"photosystem ii (protein d1|d1 protein|reaction center protein d1)\b"),
+     False),
+    ("ycf1", "plastid", {"ycf1", "tic214"}, re.compile(r"\bycf1\b|\btic214\b"), False),
+)
+NAMES = {("mitochondrion", "SSU", True): "12S", ("mitochondrion", "LSU", True): "16S",
+         ("mitochondrion", "SSU", False): "SSU", ("mitochondrion", "LSU", False): "LSU",
+         ("plastid", "SSU", False): "16S", ("plastid", "LSU", False): "23S"}
+
+
+def name_of(organelle, gene, animal=False, plant=False):
+    """A gene's common name (genes.tsv's `name`): an animal mitochondrion's 12S and 16S, a land plant mitochondrion's
+    18S and 26S, a plastid's 16S and 23S; a fungus' or a protist's mitochondrial rRNA stays SSU or LSU (rns, rnl)."""
+    if organelle == "mitochondrion" and plant and gene in ("SSU", "LSU"):
+        return "18S" if gene == "SSU" else "26S"
+    return NAMES.get((organelle, gene, animal and organelle == "mitochondrion"), gene)
 
 
 def is_cox1(quals):
@@ -226,29 +316,31 @@ def is_cox1(quals):
 
 
 def cds_gene(quals, organelle):
-    """A CDS feature's gene of GENES_OF[organelle] (COX1, CYTB in a mitochondrion; rbcL, matK, tufA in a plastid): by
-    its /gene, else (none named) its /product; or None."""
+    """A CDS feature's gene of GENES_OF[organelle] (CDS_RULES): by its /gene, else (none named) its /product; or None."""
     gene = {v.lower() for n, v in quals if n == "gene"}
     product = " ".join(v.lower() for n, v in quals if n == "product")
-    if organelle == "mitochondrion":
-        if is_cox1(quals):
-            return "COX1"
-        if gene & CYTB_GENES or (not gene and CYTB_PRODUCT.search(product)):
-            return "CYTB"
-        return None
-    if "rbcl" in gene or (not gene and RBCL_PRODUCT.search(product)):
-        return "rbcL"
-    if "matk" in gene or (not gene and MATK_PRODUCT.search(product)):
-        return "matK"
-    if "tufa" in gene or (not gene and TUFA_PRODUCT.search(product)):
-        return "tufA"
+    for name, kind, names, products, by_product in CDS_RULES:
+        if kind == organelle and (gene & names or ((by_product or not gene) and products.search(product))):
+            return name
     return None
+
+
+def is_his_trna(quals):
+    """A tRNA feature of histidine's (trnH-GUG: the trnH-psbA spacer's end)."""
+    text = " ".join(v.lower() for n, v in quals if n in ("gene", "product"))
+    return bool(re.search(r"\btrnh\b|trnh-|trna-his\b", text))
+
+
+SPACER_FLANK = 200    # of psbA's 3' end the trnH-psbA record holds (the barcode's psbA primer sits there)
+SPACER_MAX = 3000     # trnH and psbA this far apart at most: neighbours
 
 
 def record_genes(rec, organelle, animal=False):
     """A RefSeq organelle record's genes -> {gene: dict(start, end, strand, exons, copies, partial, sequence, spliced
-    (its exons joined))}."""
-    found, counts = {}, collections.Counter()
+    (its exons joined), parts, trans_spliced, regions)}. A trans-spliced gene's sequence is its exons joined; the
+    trnH-psbA spacer (since 2026-11-07) runs from trnH-GUG's first base to SPACER_FLANK bases into psbA's 3' end."""
+    found, counts, his = {}, collections.Counter(), []
+    seq = rec["sequence"]
     for key, location, quals in rec["features"]:
         location = "".join(location)
         if key == "rRNA":
@@ -257,8 +349,11 @@ def record_genes(rec, organelle, animal=False):
                 rrna_gene(" ".join(v.lower() for n, v in quals if n == "note"), organelle == "mitochondrion" and animal)
         elif key == "CDS":
             gene = cds_gene(quals, organelle)
-            if not gene:
-                continue
+        elif key == "tRNA" and organelle == "plastid" and is_his_trna(quals):
+            parsed = parts_of(location)
+            if parsed:
+                his.append(parsed[0])
+            continue
         else:
             continue
         parsed = parts_of(location) if gene else None
@@ -267,16 +362,54 @@ def record_genes(rec, organelle, animal=False):
         counts[gene] += 1
         if gene in found:
             continue
-        spans, strand, partial = parsed
-        if max(e for _s, e in spans) > len(rec["sequence"]):
+        parts, partial = parsed
+        if max(b for _a, b, _s in parts) > len(seq):
             continue
-        start, end = span_of(spans, rec["length"], rec["circular"])
-        found[gene] = dict(start=start, end=end, strand=strand, exons=len(spans), partial=partial,
-                           sequence=subsequence(rec["sequence"], start, end, strand),
-                           spliced=spliced(rec["sequence"], spans, strand, location))
+        trans = trans_spliced(parts, rec["circular"])
+        joined = spliced(seq, parts)
+        if trans:  # its exons on different strands or out of order: the record is its exons joined
+            start, end, strand, whole = min(a for a, _b, _s in parts), max(b for _a, b, _s in parts), parts[0][2], joined
+        else:
+            strand = parts[0][2]
+            start, end = span_of([(a, b) for a, b, _s in parts], rec["length"], rec["circular"])
+            whole = subsequence(seq, start, end, strand)
+        found[gene] = dict(start=start, end=end, strand=strand, exons=len(parts), partial=partial, sequence=whole,
+                           spliced=joined, parts=parts_text(parts), trans_spliced=trans, regions="-")
     for gene, row in found.items():
         row["copies"] = counts[gene]
+    if "psbA" in found and his and not found["psbA"]["trans_spliced"]:
+        spacer = spacer_of(seq, found["psbA"], his)
+        if spacer:
+            found[SPACER] = spacer
     return found
+
+
+def spacer_of(seq, psba, his):
+    """The trnH-psbA record of a plastid record (its psbA's row, its trnH-GUG parts) -> a gene row, or None where
+    trnH is not psbA's neighbour on its strand. psbA's 3' end is its end on its strand; trnH lies beyond it."""
+    strand = psba["strand"]
+    if psba["start"] > psba["end"]:  # across the origin
+        return None
+    three = psba["start"] if strand == "-" else psba["end"]  # psbA's last base, on the molecule
+    for parts in his:
+        if len(parts) != 1 or parts[0][2] != strand:
+            continue
+        a, b, _s = parts[0]
+        if strand == "-" and b < three and three - b <= SPACER_MAX:
+            start, end = a, three + SPACER_FLANK - 1  # trnH below psbA's 3' end; read on the minus strand
+            regions = [("psbA3'", 0, SPACER_FLANK), ("spacer", SPACER_FLANK, end - b), ("trnH", end - b, end - a + 1)]
+        elif strand == "+" and a > three and a - three <= SPACER_MAX:
+            start, end = three - SPACER_FLANK + 1, b
+            regions = [("psbA3'", 0, SPACER_FLANK), ("spacer", SPACER_FLANK, a - start), ("trnH", a - start, b - start + 1)]
+        else:
+            continue
+        if start < 1 or end > len(seq):
+            continue
+        whole = subsequence(seq, start, end, strand)
+        return dict(start=start, end=end, strand=strand, exons=1, partial=False, sequence=whole, spliced=whole,
+                    parts=f"{start}-{end}:{strand}", trans_spliced=False, copies=1,
+                    regions=",".join(f"{n}:{x}-{y}" for n, x, y in regions))
+    return None
 
 
 def is_animal(ncbi, taxid):
@@ -289,9 +422,10 @@ def refseq_genes(src_dir, work_folder, ncbi, log=print):
     files = release_files(src_dir)
     if not files:
         return []
-    # the release's and the genes': parsed again where either changes (CYTB, rbcL, matK, tufA since 2026-11-07)
-    key = hashlib.md5((util.md5(os.path.join(folder_of(src_dir), "release.txt")) + ",".join(GENES)).encode()
-                      ).hexdigest()[:10]
+    # the release's and the genes': parsed again where either changes (CYTB, rbcL, matK, tufA since 2026-11-07; the
+    # format-5 genes and the cache's parts, trans-spliced genes and regions since 2026-11-07)
+    key = hashlib.md5((util.md5(os.path.join(folder_of(src_dir), "release.txt")) + ",".join(GENES + CACHE_COLUMNS)
+                       ).encode()).hexdigest()[:10]
     cache = os.path.join(work_folder, f"refseq_{key}.tsv.gz")
     if not os.path.isfile(cache):
         log(f"RefSeq organelles: parsing {len(files)} GenBank files")
@@ -305,7 +439,7 @@ def refseq_genes(src_dir, work_folder, ncbi, log=print):
                     for gene, g in genes.items():
                         row = (rec["seqid"], organelle, rec["taxid"] or "-", rec["length"], gene, g["start"], g["end"],
                                g["strand"], g["exons"], g["copies"], "t" if g["partial"] else "f", g["sequence"],
-                               g["spliced"])
+                               g["spliced"], g["parts"], "t" if g["trans_spliced"] else "f", g["regions"])
                         fh.write("\t".join(map(str, row)) + "\n")
         os.replace(util.part_of(cache), cache)
     rows = []
@@ -363,12 +497,16 @@ class Nearest:
     """RefSeq's genes (whole, of the chosen records; their exons joined), by organelle, gene and NCBI lineage."""
 
     def __init__(self, chosen, ncbi):
-        self.ncbi, self.seq = ncbi, {}
+        self.ncbi, self.seq, self.protein = ncbi, {}, {}
         self.under = collections.defaultdict(lambda: collections.defaultdict(list))
         for (sp, organelle), rows in sorted(chosen.items()):
             for r in rows:
-                if r["partial"] == "f":
+                if r["partial"] == "f" and r.get("trans_spliced", "f") != "t":
                     self.seq[(r["seqid"], r["gene"])] = r["spliced"]
+                    if r["gene"] in CODING:  # its protein, by its organelle's code (miniprot_genes' query)
+                        p, stops = gencode.protein_of(r["spliced"], ncbi.code_of(int(r["taxid"]), COMPARTMENT[organelle]))
+                        if not stops:
+                            self.protein[(r["seqid"], r["gene"])] = p
                     for a in ncbi.ancestors(sp):
                         self.under[(organelle, r["gene"])][a].append(r["seqid"])
 
@@ -387,6 +525,13 @@ class Nearest:
                     break
             out += [(f"{gene}|{s}", self.seq[(s, gene)]) for s in got]
         return out
+
+    def proteins(self, taxid, organelle, n=NEAREST):
+        """Each protein-coding gene's protein of the n RefSeq species nearest to taxid with it -> {gene~seqid:
+        protein} (miniprot's queries: loci.parse_alignments reads the gene before the ~)."""
+        return {f"{q.split('|')[0]}~{q.split('|')[1]}": self.protein[(q.split("|")[1], q.split("|")[0])]
+                for q, _s in self.queries(taxid, organelle, n)
+                if (q.split("|")[1], q.split("|")[0]) in self.protein}
 
 
 def barrnap_genes(molecules, barrnap, kingdom, threads=1):
@@ -408,7 +553,8 @@ def barrnap_genes(molecules, barrnap, kingdom, threads=1):
             for start, end, strand, partial, _share in found if gene else ():
                 hits[(organelle, gene)].append(dict(gene=gene, organelle=organelle, seqid=name, start=start, end=end,
                                                     strand=strand, exons=1, partial=partial,
-                                                    sequence=subsequence(seq, start, end, strand)))
+                                                    sequence=subsequence(seq, start, end, strand),
+                                                    parts=f"{start}-{end}:{strand}", model="barrnap"))
     return {k: (min(v, key=lambda h: (h["partial"], h["start"] - h["end"], h["seqid"], h["start"])), len(v))
             for k, v in hits.items()}
 
@@ -475,7 +621,40 @@ def nhmmer_genes(molecules, queries, nhmmer, threads=1):
         start, end = gene_span(same, best["strand"], q_len, len(seq))
         out[gene] = dict(gene=gene, organelle=organelle, seqid=best["target"], start=start, end=end,
                          strand=best["strand"], exons=len(same), copies=1, partial=len(covered) < MIN_COVER * q_len,
-                         sequence=subsequence(seq, start, end, best["strand"]))
+                         sequence=subsequence(seq, start, end, best["strand"]),
+                         parts=f"{start}-{end}:{best['strand']}" if len(same) == 1 else "-", model="nhmmer")
+    return out
+
+
+def miniprot_genes(molecules, proteins, miniprot, table=1, threads=1):
+    """miniprot of RefSeq's proteins (Nearest.proteins) over one organelle's molecules by the organelle's genetic code
+    (since 2026-11-07) -> {gene: row}: each protein-coding gene's best alignment, its exons miniprot's (exact, where
+    nhmmer's hits' ends are not), partial where it covers under MIN_COVER of its query. A gene across a circular
+    molecule's origin, or one miniprot does not align, is left to nhmmer's."""
+    if not molecules or not proteins or not miniprot:
+        return {}
+    from . import loci  # noqa: PLC0415
+    organelle, seqs = molecules[0][1], {n: s for n, _k, s in molecules}
+    with tempfile.TemporaryDirectory() as tmp:
+        fasta = os.path.join(tmp, "m.fna")
+        with open(fasta, "w", newline="\n") as fh:
+            fh.writelines(f">{n}\n{s}\n" for n, s in seqs.items())
+        alignments, why = loci.align(fasta, proteins, miniprot, threads, table, tmp)
+    if why:
+        raise RuntimeError(why)
+    out = {}
+    for a in sorted(alignments, key=lambda a: (-a["score"], a["contig"], a["start"])):
+        gene = a["locus"]
+        if gene in out or a["contig"] not in seqs or not a["exons"]:
+            continue
+        exons = sorted(a["exons"], reverse=a["strand"] == "-")  # in the order transcribed
+        parts = [(x, y, a["strand"]) for x, y in exons]
+        cover = (a["qend"] - a["qstart"]) / max(1, len(proteins[a["query"]]))
+        start, end = min(x for x, _y in exons), max(y for _x, y in exons)
+        out[gene] = dict(gene=gene, organelle=organelle, seqid=a["contig"], start=start, end=end, strand=a["strand"],
+                         exons=len(exons), copies=1, partial=cover < MIN_COVER,
+                         sequence=subsequence(seqs[a["contig"]], start, end, a["strand"]), parts=parts_text(parts),
+                         model="miniprot")
     return out
 
 
@@ -526,11 +705,17 @@ def assembly_rows(path):
     return [dict(zip(head, line.rstrip("\n").split("\t"))) for line in lines[1:] if line.strip()]
 
 
+MODELS = ("nhmmer", "miniprot")  # the assembly pass' protein-coding gene models: nhmmer's hits, or miniprot's exons
+
+
 def run_assembly(args):
     """One genome's organelle genes (a pool's task: accession, genome path, out file, animal, queries {organelle:
-    Nearest.queries}, barrnap, nhmmer, threads) into its out file (ASSEMBLY_COLUMNS; written, even empty, once done)
-    -> (accession, genes, why). nhmmer's genes first; barrnap's where nhmmer found none."""
-    acc, path, out, animal, queries, barrnap, nhmmer, threads = args
+    Nearest.queries}, barrnap, nhmmer, threads, and since 2026-11-07 proteins {organelle: Nearest.proteins}, codes
+    {organelle: genetic code}, miniprot or None) into its out file (ASSEMBLY_COLUMNS; written, even empty, once done)
+    -> (accession, genes, why). nhmmer's genes first; barrnap's rRNA where nhmmer found none; with miniprot, its
+    protein-coding genes where it aligns their whole (exact exons)."""
+    acc, path, out, animal, queries, barrnap, nhmmer, threads, *more = args
+    proteins, codes, miniprot = more if more else ({}, {}, None)
     try:
         molecules = organelle_molecules(path)
         rows = []
@@ -541,16 +726,22 @@ def run_assembly(args):
             found = nhmmer_genes(group, queries.get(organelle, []), nhmmer, threads)
             for (_k, gene), (row, copies) in barrnap_genes(group, barrnap, kingdom, threads).items():
                 found.setdefault(gene, dict(row, copies=copies))
+            if miniprot:
+                for gene, row in miniprot_genes(group, proteins.get(organelle, {}), miniprot,
+                                                codes.get(organelle, 1), threads).items():
+                    if not row["partial"] or gene not in found:
+                        found[gene] = row
             rows += found.values()
     except (OSError, EOFError, RuntimeError) as e:
         return acc, None, f"{type(e).__name__}: {e}"
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(util.part_of(out), "w", newline="\n") as fh:
-        fh.write("\t".join(["#searched"] + [f"{k}:{','.join(GENES_OF[k])}" for k in KINDS if k in queries]) + "\n")
+        fh.write("\t".join(["#searched"] + [f"{k}:{','.join(GENES_OF[k])}" for k in KINDS if k in queries]
+                           + [f"models:{'miniprot' if miniprot else 'nhmmer'}"]) + "\n")
         fh.write("\t".join(ASSEMBLY_COLUMNS) + "\n")
         for r in sorted(rows, key=lambda r: (KINDS.index(r["organelle"]), GENES.index(r["gene"]))):
-            fh.write("\t".join(str("t" if r[c] is True else "f" if r[c] is False else r[c]) for c in ASSEMBLY_COLUMNS)
-                     + "\n")
+            fh.write("\t".join(str("t" if r.get(c) is True else "f" if r.get(c) is False else r.get(c, "-"))
+                               for c in ASSEMBLY_COLUMNS) + "\n")
     os.replace(util.part_of(out), out)
     return acc, len(rows), None
 
@@ -561,26 +752,30 @@ def organelles_of(ncbi, taxid):
     return ("mitochondrion",) if lineage & NO_PLASTID else KINDS
 
 
-def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer, workers=1, threads=1, log=print):
+def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer, workers=1, threads=1, log=print,
+                  miniprot=None, every=False):
     """The organelle genes of each species' assembly where RefSeq has not every organelle's record it can hold
     (chosen; organelles_of: until 2026-11-06 every animal and fungus was searched for a plastid, ~10,000 genomes), its
     genome on disk (genome_of(accession) -> path) and not done yet -> how many were run, failed. Only the organelles
-    RefSeq lacks are searched."""
+    RefSeq lacks are searched; with miniprot (since 2026-11-07) its protein-coding genes' exons are miniprot's, by
+    the species' organelle code (an assembly searched with the other models is searched again)."""
     nearest = Nearest(chosen, ncbi)
+    models = "miniprot" if miniprot else "nhmmer"
     todo = []
     for acc, job in sorted(job_map.items()):
         sp = int(job["species_taxid"])
         out = assembly_file(work_folder, acc)
         path = genome_of(acc)
-        need = [k for k in organelles_of(ncbi, sp) if (sp, k) not in chosen]
+        need = [k for k in organelles_of(ncbi, sp) if every or (sp, k) not in chosen]  # every: the panel's extras
         if job.get("path") or not need or not os.path.isfile(path):
             continue
         if os.path.isfile(out):  # searched; again for genes added since (CYTB, rbcL, matK, tufA: 2026-11-07)
             got = searched_of(out)
-            if all(set(GENES_OF[k]) <= got.get(k, set()) for k in need):
+            if all(set(GENES_OF[k]) <= got.get(k, set()) for k in need) and got.get("models", {"nhmmer"}) == {models}:
                 continue
         todo.append((acc, path, out, is_animal(ncbi, sp), {k: nearest.queries(sp, k) for k in need}, barrnap,
-                     nhmmer, threads))
+                     nhmmer, threads, {k: nearest.proteins(sp, k) for k in need},
+                     {k: ncbi.code_of(sp, COMPARTMENT[k]) for k in need}, miniprot))
     if not todo:
         return 0, 0
     log(f"organelle genes: {len(todo)} assemblies to search")
@@ -614,26 +809,109 @@ def collect(ncbi, job_map, species_set, chosen, work_folder):
                 if os.path.isfile(path):
                     rows += [dict(r, taxid=int(job.get("taxid") or sp), source="assembly", accession=acc)
                              for r in assembly_rows(path) if r["organelle"] == organelle]
+            animal, plant = is_animal(ncbi, sp), EMBRYOPHYTA in ncbi.ancestors(ncbi.merged.get(sp, sp))
             for r in sorted(rows, key=lambda r: GENES.index(r["gene"])):
                 seq = r["sequence"]
                 name = f"{r['seqid']}_{r['gene']}"
+                model = "refseq" if r["source"] == "refseq" else r.get("model") or "-"
                 out.append((name, seq, dict(record=name, gene=r["gene"], organelle=organelle, taxid=r["taxid"],
                                             species_taxid=sp, source=r["source"], seqid=r["seqid"],
                                             accession=r["accession"], start=r["start"], end=r["end"],
                                             strand=r["strand"], length=len(seq), exons=r["exons"], copies=r["copies"],
-                                            partial=r["partial"], ambiguous=f"{rrna.ambiguous(seq):.4f}")))
+                                            partial=r["partial"], ambiguous=f"{rrna.ambiguous(seq):.4f}",
+                                            name=name_of(organelle, r["gene"], animal, plant), model=model,
+                                            parts=r.get("parts") or "-", trans_spliced=r.get("trans_spliced") or "f",
+                                            regions=r.get("regions") or "-", cds=coding_of(r, seq))))
     return out
 
 
+def coding_of(r, seq):
+    """A protein-coding gene's coding sequence (its exons joined): RefSeq's spliced, or its record cut by its parts
+    (miniprot's exons, one exon's record); None for an rRNA, the spacer, or nhmmer's hits joined (their ends are not
+    the exons')."""
+    if r["gene"] not in CODING:
+        return None
+    if r.get("spliced"):
+        return r["spliced"]
+    parts = parts_read(r.get("parts"))
+    if not parts:
+        return seq if str(r.get("exons")) == "1" else None
+    start, end = int(r["start"]), int(r["end"])
+    if start > end:
+        return None
+    return "".join(seq[x - start:y - start + 1] if s == "+" else seq[end - y:end - x + 1] for x, y, s in parts)
+
+
+MAX_AMBIGUOUS = 0.005  # a record with this share of other bases than ACGT: low
+
+
+def check(records, ncbi, vsearch=None, threads=1):
+    """The organelle genes' checks across species (since 2026-11-07; qc.check, each gene of each organelle a locus;
+    a protein-coding gene's coding sequence compared where it has one, else its record) and their proteins by the
+    species' organelle code -> records, their rows completed with own_species, same_as, length_check,
+    internal_stops, confidence and flags (`protein` kept in the row for write_genes)."""
+    from . import qc  # noqa: PLC0415
+    seqs, species, lengths = {}, {}, {}
+    for name, seq, row in records:
+        cds = row.get("cds")
+        if row["gene"] in CODING and cds:
+            p, stops = gencode.protein_of(cds, ncbi.code_of(int(row["taxid"]), COMPARTMENT[row["organelle"]]))
+            row.update(protein=p, internal_stops=stops)
+            lengths[(name, row["organelle"] + ":" + row["gene"])] = len(p)
+        key = (name, row["organelle"] + ":" + row["gene"])
+        seqs[key], species[name] = (cds or seq), int(row["species_taxid"])
+        lengths.setdefault(key, len(cds or seq) // 3)
+    checks = qc.check(seqs, species, ncbi, vsearch, threads, lengths)
+    for name, _seq, row in records:
+        c = checks[(name, row["organelle"] + ":" + row["gene"])]
+        row.update(own_species=c["own_species"], same_as=c["same_as"], length_check=c["length"])
+        row["confidence"], row["flags"] = confidence(row)
+    return records
+
+
+def confidence(row):
+    """An organelle gene's tier and why: low where a check calls it another organism's or not a working gene
+    (own_species f; ambiguous bases over MAX_AMBIGUOUS; a stop inside its protein by the organelle's code: a NUMT, a
+    pseudogene, or a code NCBI does not give); medium where something may be wrong (partial, own_species undecided,
+    its length in its gene's outer 5%, trans-spliced, nhmmer's hits joined: their exons not exact); else high."""
+    low, medium = [], []
+    if row.get("own_species") == "f":
+        low.append("own_species")
+    if float(row.get("ambiguous") or 0) > MAX_AMBIGUOUS:
+        low.append("ambiguous")
+    if int(row.get("internal_stops") or 0):
+        low.append("internal_stops")
+    if row.get("partial") in ("t", True):
+        medium.append("partial")
+    if row.get("own_species") in ("-", None):
+        medium.append("own_species_undecided")
+    if row.get("length_check", "ok") != "ok":
+        medium.append(f"length_{row['length_check']}")
+    if row.get("trans_spliced") in ("t", True):
+        medium.append("trans_spliced")
+    if row["gene"] in CODING and row.get("model") == "nhmmer" and str(row.get("exons")) != "1":
+        medium.append("exons_approximate")
+    return ("low" if low else "medium" if medium else "high"), ",".join(low + medium) or "-"
+
+
 def write_genes(folder, records):
-    """records [(name, sequence, row)] -> folder/genes.fna.gz and genes.tsv (GENE_COLUMNS)."""
+    """records [(name, sequence, row)] -> folder/genes.fna.gz and genes.tsv (GENE_COLUMNS); since 2026-11-07 the
+    protein-coding genes' coding sequences (cds.fna.gz) and proteins (proteins.faa.gz, by the organelle's code: check)
+    where they have them."""
     os.makedirs(folder, exist_ok=True)
-    fasta, table = os.path.join(folder, "genes.fna.gz"), os.path.join(folder, "genes.tsv")
-    with gzip.open(util.part_of(fasta), "wt", compresslevel=6) as fa, \
-            open(util.part_of(table), "w", newline="\n") as tb:
+    paths = {n: os.path.join(folder, n) for n in ("genes.fna.gz", "genes.tsv", "cds.fna.gz", "proteins.faa.gz")}
+    with gzip.open(util.part_of(paths["genes.fna.gz"]), "wt", compresslevel=6) as fa, \
+            open(util.part_of(paths["genes.tsv"]), "w", newline="\n") as tb, \
+            gzip.open(util.part_of(paths["cds.fna.gz"]), "wt", compresslevel=6) as fc, \
+            gzip.open(util.part_of(paths["proteins.faa.gz"]), "wt", compresslevel=6) as fp:
         tb.write("\t".join(GENE_COLUMNS) + "\n")
         for name, seq, row in records:
             fa.write(f">{name}\n{seq}\n")
-            tb.write("\t".join(str(row.get(c, "-")) for c in GENE_COLUMNS) + "\n")
-    os.replace(util.part_of(fasta), fasta)
-    os.replace(util.part_of(table), table)
+            tb.write("\t".join(str("t" if row.get(c) is True else "f" if row.get(c) is False else row.get(c, "-"))
+                               for c in GENE_COLUMNS) + "\n")
+            if row.get("cds"):
+                fc.write(f">{name}\n{row['cds'].upper()}\n")
+            if row.get("protein"):
+                fp.write(f">{name}\n{row['protein']}\n")
+    for path in paths.values():
+        os.replace(util.part_of(path), path)

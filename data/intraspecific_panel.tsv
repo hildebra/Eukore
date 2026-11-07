@@ -1,0 +1,46 @@
+# The intraspecific panel (eukore/intraspecific.py; since 2026-11-07): well-sampled species whose further assemblies
+# (other strains, isolates, BioSamples) the build runs too (--intraspecific N, at most N each; extras: fewer for large
+# genomes), so that a marker's variation within a species is measured beside its distance to the nearest other species
+# (the barcode gap: intraspecific/barcode_gap.tsv). NCBI's assembly tables of 2026-11 hold 4 to 2,400 assemblies of
+# each, of 2 or more strains.
+ncbi_taxid	species	extras	group
+9606	Homo sapiens	2	Vertebrata
+10090	Mus musculus	2	Vertebrata
+7955	Danio rerio	2	Vertebrata
+9031	Gallus gallus	2	Vertebrata
+7227	Drosophila melanogaster	-	Metazoa
+6239	Caenorhabditis elegans	-	Metazoa
+7165	Anopheles gambiae	-	Metazoa
+7460	Apis mellifera	-	Metazoa
+4932	Saccharomyces cerevisiae	-	Fungi
+5476	Candida albicans	-	Fungi
+498019	Candidozyma auris	-	Fungi
+4896	Schizosaccharomyces pombe	-	Fungi
+746128	Aspergillus fumigatus	-	Fungi
+5518	Fusarium graminearum	-	Fungi
+318829	Pyricularia oryzae	-	Fungi
+1047171	Zymoseptoria tritici	-	Fungi
+5207	Cryptococcus neoformans	-	Fungi
+109871	Batrachochytrium dendrobatidis	-	Fungi
+3702	Arabidopsis thaliana	-	Viridiplantae
+4530	Oryza sativa	2	Viridiplantae
+4577	Zea mays	2	Viridiplantae
+3055	Chlamydomonas reinhardtii	-	Viridiplantae
+2850	Phaeodactylum tricornutum	-	Stramenopiles
+4787	Phytophthora infestans	-	Stramenopiles
+12968	Blastocystis hominis	-	Stramenopiles
+2903	Emiliania huxleyi	-	Haptophyta
+5833	Plasmodium falciparum	-	Alveolata
+5855	Plasmodium vivax	-	Alveolata
+5811	Toxoplasma gondii	-	Alveolata
+5807	Cryptosporidium parvum	-	Alveolata
+5865	Babesia bovis	-	Alveolata
+5693	Trypanosoma cruzi	-	Discoba
+5691	Trypanosoma brucei	-	Discoba
+5661	Leishmania donovani	-	Discoba
+5763	Naegleria fowleri	-	Discoba
+5741	Giardia duodenalis	-	Metamonada
+5722	Trichomonas vaginalis	-	Metamonada
+5759	Entamoeba histolytica	-	Amoebozoa
+44689	Dictyostelium discoideum	-	Amoebozoa
+5755	Acanthamoeba castellanii	-	Amoebozoa

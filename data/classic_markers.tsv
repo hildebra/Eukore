@@ -1,0 +1,12 @@
+# BUSCO's eukaryota loci that are classic markers: tools/classic_markers.py (eukaryota_odb12)
+marker	busco	name	score	cutoff
+RPB1	-	-	-	-
+RPB2	-	-	-	-
+TEF1	-	-	-	-
+TUB2	-	-	-	-
+ACT1	-	-	-	-
+HSP90	-	-	-	-
+H3	-	-	-	-
+GAPDH	-	-	-	-
+EF2	-	-	-	-
+CMD1	-	-	-	-

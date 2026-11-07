@@ -4,6 +4,7 @@ loci; a genome holding two genes; stand-in miniprot, hmmsearch and vsearch scrip
 
 import gzip
 import io
+import math
 import os
 import random
 import stat
@@ -71,21 +72,22 @@ def taxdump(path):
 
 ASSEMBLY_COLUMNS = ("assembly_accession", "refseq_category", "taxid", "species_taxid", "organism_name",
                     "infraspecific_name", "isolate", "version_status", "assembly_level", "seq_rel_date", "asm_name",
-                    "gbrs_paired_asm", "ftp_path", "excluded_from_refseq", "genome_size", "contig_count")
+                    "gbrs_paired_asm", "ftp_path", "excluded_from_refseq", "genome_size", "contig_count",
+                    "relation_to_type_material")
 
 
 def assembly(acc, taxid, species, organism, level="Scaffold", contigs=50, size=12_000_000, category="na",
-             paired="na", flags="na", date="2020/01/01", status="latest"):
+             paired="na", flags="na", date="2020/01/01", status="latest", type_material="na"):
     return dict(assembly_accession=acc, refseq_category=category, taxid=taxid, species_taxid=species,
                 organism_name=organism, infraspecific_name="", isolate="", version_status=status,
                 assembly_level=level, seq_rel_date=date, asm_name=acc.replace(".", "_"), gbrs_paired_asm=paired,
                 ftp_path=f"https://ftp.example/{acc}", excluded_from_refseq=flags, genome_size=size,
-                contig_count=contigs)
+                contig_count=contigs, relation_to_type_material=type_material)
 
 
 GENBANK = [
     assembly("GCA_000146045.2", 559292, 4932, "Saccharomyces cerevisiae S288C", "Complete Genome", 17,
-             category="reference genome", paired="GCF_000146045.2"),
+             category="reference genome", paired="GCF_000146045.2", type_material="assembly from type material"),
     assembly("GCA_000000003.1", 4932, 4932, "Saccharomyces cerevisiae", "Contig", 300),
     assembly("GCA_000000011.1", 27291, 27291, "Saccharomyces paradoxus", "Contig", 900, flags="contaminated"),
     assembly("GCA_000000012.1", 27291, 27291, "Saccharomyces paradoxus", "Scaffold", 400,
@@ -351,7 +353,8 @@ difference for those of one length), written to --userout (query, target, id), s
 import sys
 args = sys.argv[1:]
 q, db, out = (args[args.index(o) + 1] for o in ("--usearch_global", "--db", "--userout"))
-accepts = int(args[args.index("--maxaccepts") + 1]) if "--maxaccepts" in args else 1 << 30
+accepts = int(args[args.index("--maxaccepts") + 1]) if "--maxaccepts" in args else 0
+accepts = accepts or 1 << 30  # 0: no limit, as vsearch reads it
 
 
 def read(path):
@@ -390,3 +393,46 @@ def read_tsv(path):
     with open(path) as fh:
         header = fh.readline().rstrip("\n").split("\t")
         return [dict(zip(header, line.rstrip("\n").split("\t"))) for line in fh]
+
+
+HMMALIGN = '''#!/usr/bin/env python3
+"""hmmalign --outformat Pfam -o out hmm faa's stand-in: every residue on the match state of its own position (the
+profile as long as the longest protein), the rows padded with deletions, an RF line of x."""
+import sys
+args = sys.argv[1:]
+out, faa = args[args.index("-o") + 1], args[-1]
+proteins, name = {}, None
+for line in open(faa):
+    if line.startswith(">"):
+        name = line[1:].split()[0]
+        proteins[name] = ""
+    else:
+        proteins[name] += line.strip()
+n = max(len(p) for p in proteins.values())
+with open(out, "w") as fh:
+    fh.write("# STOCKHOLM 1.0\\n")
+    for name, p in proteins.items():
+        fh.write(f"{name} {p.upper() + '-' * (n - len(p))}\\n")
+    fh.write("#=GC RF " + "x" * n + "\\n//\\n")
+'''
+
+
+def hmmalign(folder):
+    return tool(folder, "hmmalign", HMMALIGN)
+
+
+def hmm_text(name, emissions):
+    """An HMMER3 profile's text whose match states emit `emissions` ([{amino acid: p}], the rest shared out)."""
+    amino = "ACDEFGHIKLMNPQRSTVWY"
+    lines = [f"HMMER3/f [3.4]\nNAME  {name}\nLENG  {len(emissions)}\nALPH  amino\n",
+             "HMM          " + "        ".join(amino) + "\n",
+             "            m->m     m->i     m->d     i->m     i->i     d->m     d->d\n",
+             "  COMPO   " + "  ".join(["2.99573"] * 20) + "\n", "          " + "  ".join(["2.99573"] * 20) + "\n",
+             "          0.1 2.3 3.0 0.6 0.8 0.0 *\n"]
+    for k, em in enumerate(emissions, 1):
+        rest = (1 - sum(em.values())) / (20 - len(em)) if len(em) < 20 else 0
+        probs = [em.get(a, rest) for a in amino]
+        lines.append(f"     {k}   " + "  ".join(f"{-math.log(p):.5f}" for p in probs) + f"  {k} - - - -\n")
+        lines.append("          " + "  ".join(["2.99573"] * 20) + "\n")
+        lines.append("          0.1 2.3 3.0 0.6 0.8 0.0 *\n")
+    return "".join(lines) + "//\n"

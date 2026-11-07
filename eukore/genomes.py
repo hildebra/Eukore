@@ -49,7 +49,8 @@ LEVEL = {"Complete Genome": 0, "Chromosome": 1, "Scaffold": 2, "Contig": 3}
 LOCI_COLUMNS = ("locus", "status", "contig", "contig_length", "start", "end", "strand", "length", "cds_length",
                 "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies", "query",
                 "protein_length", "window_class", "rescued",  # rescued: loci.py's rescue pass (since 2026-11-06)
-                "model")  # model: miniprot's, or the annotation's source (loci.annotated, since 2026-11-06)
+                "model",  # model: miniprot's, or the annotation's source (loci.annotated, since 2026-11-06)
+                "dup_identity")  # a Duplicated locus' nearest other copy (loci.dup_identity, since 2026-11-07)
 
 
 def safe(name):
@@ -138,29 +139,36 @@ def download_of(row, refseq):
     return use["accession"], placement.genome_url(use)
 
 
+def job_of(ncbi, row, why, sp, refseq, others=(), unit="-", path=None):
+    """One assembly's job (jobs()'s), or None where it cannot be fetched."""
+    from . import rrna  # noqa: PLC0415
+    fetch, url = download_of(row, refseq) if path is None else (row["accession"], None)
+    if url is None and path is None:
+        return None
+    sp = int(sp)
+    genes = (refseq.get(row["accession"]) or row).get("genes")  # the fetched assembly's annotation
+    return dict(
+        accession=row["accession"], fetch=fetch, url=url, size=row.get("size"), species_taxid=sp,
+        taxid=int(row.get("taxid") or sp), organism=row.get("organism", ""), why=[why],
+        lineage=list(ncbi.ancestors(ncbi.merged.get(sp, sp))), itsx=rrna.itsx_groups(ncbi, sp), rdna_unit=unit,
+        flags=sorted(row.get("flags") or ()), others=[o["accession"] for o in others], path=path,
+        level=row.get("level", ""), category=row.get("category", ""),
+        refseq_category=(refseq.get(row["accession"]) or row).get("refseq_category", ""),
+        gencode=ncbi.code_of(int(row.get("taxid") or sp)), annotated=None if genes is None else genes > 0)
+
+
 def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assembly=None):
     """The genome set -> {accession: job}: job = dict(accession (GenBank's), fetch (the accession fetched), url, size,
     species_taxid, taxid, organism, why [ncbi | model | no_assembly], lineage (ancestor taxids), itsx (ITSx's sets),
     rdna_unit, flags, others (the species' other assemblies' accessions), path (no_assembly: its records' FASTA), gencode
     (its NCBI genetic code), annotated (the fetched assembly has NCBI gene models, annotation.py; None: not known))."""
     refseq = {r["paired"]: r for r in refseq_rows if r.get("paired", "na").startswith("GCA_")}
-    from . import rrna  # noqa: PLC0415
     out = {}
 
     def add(row, why, sp, others=(), unit="-", path=None):
-        fetch, url = download_of(row, refseq) if path is None else (row["accession"], None)
-        if url is None and path is None:
-            return
-        sp = int(sp)
-        genes = (refseq.get(row["accession"]) or row).get("genes")  # the fetched assembly's annotation
-        out[row["accession"]] = dict(
-            accession=row["accession"], fetch=fetch, url=url, size=row.get("size"), species_taxid=sp,
-            taxid=int(row.get("taxid") or sp), organism=row.get("organism", ""), why=[why],
-            lineage=list(ncbi.ancestors(ncbi.merged.get(sp, sp))), itsx=rrna.itsx_groups(ncbi, sp), rdna_unit=unit,
-            flags=sorted(row.get("flags") or ()), others=[o["accession"] for o in others], path=path,
-            level=row.get("level", ""), category=row.get("category", ""),
-            refseq_category=(refseq.get(row["accession"]) or row).get("refseq_category", ""),
-            gencode=ncbi.code_of(int(row.get("taxid") or sp)), annotated=None if genes is None else genes > 0)
+        job = job_of(ncbi, row, why, sp, refseq, others, unit, path)
+        if job:
+            out[row["accession"]] = job
 
     reps = representatives(assemblies, ncbi, inside)
     model_species = {}
@@ -188,6 +196,128 @@ def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assemb
             continue
         add(dict(accession=acc, taxid=sp, organism=organism), "no_assembly", sp, path=path)
     return out
+
+
+# NCBI's Transcriptome Shotgun Assemblies (TSA) as ENA mirrors them (since 2026-11-07, format 5): INSDC's TSA sets, their
+# NCBI taxids, sizes and FASTA files, listed by ENA's portal (NCBI's own TSA lists name no taxids)
+TSA_FIELDS = ("accession", "tax_id", "scientific_name", "base_count", "first_public", "strain", "environmental_sample",
+              "set_fasta_ftp")
+TSA_URL = ("https://www.ebi.ac.uk/ena/portal/api/search?result=tsa_set&query=tax_tree(2759)&format=tsv&limit=0"
+           f"&fields={','.join(TSA_FIELDS)}")
+TSA_FILE = "tsa_sets.tsv"
+
+
+def tsa_path(src_dir):
+    return os.path.join(src_dir, "tsa", TSA_FILE)
+
+
+def fetch_tsa(src_dir, download, log=print, refresh=False):
+    """ENA's list of eukaryote TSA sets into src_dir/tsa (kept when there, unless refresh)."""
+    path = tsa_path(src_dir)
+    if os.path.isfile(path) and os.path.getsize(path) > 0 and not refresh:
+        return path
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    log("TSA: fetching ENA's list of eukaryote transcriptome sets")
+    download(TSA_URL, path)
+    return path
+
+
+def read_tsa(path):
+    """ENA's TSA list -> [row dicts] of its sets with a FASTA and a taxid, not of an environmental sample."""
+    if not path or not os.path.isfile(path):
+        return []
+    with util.open_text(path) as fh:
+        head = fh.readline().rstrip("\n").split("\t")
+        rows = [dict(zip(head, line.rstrip("\n").split("\t"))) for line in fh if line.strip()]
+    return [r for r in rows if r.get("set_fasta_ftp") and r.get("tax_id", "").isdigit()
+            and r.get("environmental_sample", "false").lower() != "true"]
+
+
+def tsa_jobs(ncbi, rows, job_map, inside=None):
+    """The species with no genome (no NCBI, model or TOGA2 job; EukDetect2's records alone, or nothing) and a TSA set ->
+    {set accession: job} (why "tsa", kind "transcriptome"): of each species, its set of the most bases, then the
+    newest. A species' no_assembly job is then dropped from job_map: its transcriptome stands for it."""
+    held = {int(j["species_taxid"]) for j in job_map.values() if j["why"][0] != "no_assembly"}
+    best = {}
+    for r in rows:
+        sp = ncbi.species_of(int(r["tax_id"]))
+        if ncbi.rank.get(sp) != "species" or sp in held or ncbi.is_placeholder(sp) or (inside and not inside(sp)):
+            continue
+        rank = (int(r["base_count"]) if r.get("base_count", "").isdigit() else 0, r.get("first_public", ""))
+        if sp not in best or rank > best[sp][0]:
+            best[sp] = (rank, r)
+    out = {}
+    from . import rrna  # noqa: PLC0415
+    for sp, (_rank, r) in sorted(best.items()):
+        url = "https://" + r["set_fasta_ftp"].split(";")[0].removeprefix("ftp://")
+        out[r["accession"]] = dict(
+            accession=r["accession"], fetch=r["accession"], url=url, size=int(r["base_count"] or 0) or None,
+            species_taxid=sp, taxid=int(r["tax_id"]), organism=r.get("scientific_name", ""), why=["tsa"],
+            kind="transcriptome", lineage=list(ncbi.ancestors(sp)), itsx=rrna.itsx_groups(ncbi, sp), rdna_unit="-",
+            flags=[], others=[], path=None, level="transcriptome", category="transcriptome", refseq_category="",
+            gencode=ncbi.code_of(int(r["tax_id"])), annotated=False, strain=r.get("strain", ""))
+    for acc in [a for a, j in job_map.items() if j["why"][0] == "no_assembly"
+                and int(j["species_taxid"]) in {j2["species_taxid"] for j2 in out.values()}]:
+        del job_map[acc]
+    return out
+
+
+PANEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "intraspecific_panel.tsv")
+
+
+def read_panel(path=PANEL):
+    """The intraspecific panel (data/intraspecific_panel.tsv) -> {species taxid: extra assemblies wanted, or None for
+    --intraspecific's number}."""
+    out = {}
+    with open(path) as fh:
+        lines = [line.rstrip("\n").split("\t") for line in fh if line.strip() and not line.startswith("#")]
+    head = lines[0]
+    for f in lines[1:]:
+        r = dict(zip(head, f))
+        out[int(r["ncbi_taxid"])] = int(r["extras"]) if r.get("extras", "-").isdigit() else None
+    return out
+
+
+def intraspecific_jobs(ncbi, assemblies, refseq_rows, job_map, panel, extras=3, inside=None):
+    """The panel species' further assemblies (since 2026-11-07; the barcode gap, intraspecific.py) -> {accession:
+    job} (why "intraspecific"): of each panel species with a genome in job_map, up to its number (panel's, else extras)
+    of its other assemblies, by Eukore's ranking (NCBI's flagged ones last; never one it excludes), each of another
+    BioSample, strain and isolate than the species' genome and those taken. They are runs of their own: job_map keeps
+    one genome per species."""
+    refseq = {r["paired"]: r for r in refseq_rows if r.get("paired", "na").startswith("GCA_")}
+    reps = representatives(assemblies, ncbi, inside)
+    by_species = {int(j["species_taxid"]): j for j in job_map.values()}
+    by_accession = {r["accession"]: r for r in assemblies}
+    out = {}
+    for sp, n in sorted(panel.items()):
+        sp = ncbi.species_of(sp)
+        rep = by_species.get(sp)
+        n = extras if n is None else min(n, extras) if extras else 0
+        if rep is None or sp not in reps or not n:
+            continue
+        seen = [by_accession.get(rep["accession"], {})]
+        best, rest = reps[sp]
+        taken = 0
+        for row in [best, *rest]:
+            if taken >= n:
+                break
+            if row["accession"] == rep["accession"] or any(same_sample(row, s) for s in seen):
+                continue
+            job = job_of(ncbi, row, "intraspecific", sp, refseq)
+            if job:
+                out[row["accession"]] = job
+                seen.append(row)
+                taken += 1
+    return out
+
+
+def same_sample(a, b):
+    """Whether two assemblies are of one sample: the same BioSample, strain or isolate (where named)."""
+    for k in ("biosample", "strain", "isolate"):
+        x, y = (a.get(k) or "").strip().lower(), (b.get(k) or "").strip().lower()
+        if x and x not in ("na", "-") and x == y:
+            return True
+    return False
 
 
 MAMMALIA = 40674
@@ -542,13 +672,14 @@ def run(args):
     with gzip.open(windows, "wt", compresslevel=6) as fh:
         fh.writelines(f">{n}\n{s}\n" for n, s in got["windows"].items())
     classes = {}
-    if settings.get("tiara"):
+    if settings.get("tiara") and job.get("kind") != "transcriptome":  # a transcript's flanks are no window
         plain = os.path.join(tmp, "windows.fna")
         with open(plain, "w") as fh:
             fh.writelines(f">{n}\n{s}\n" for n, s in got["windows"].items())
         classes = tiara_classes(plain, settings["tiara"], settings.get("threads", 1), tmp)
         os.remove(plain)
     window_of = {n.split("|", 1)[0]: n for n in got["windows"]}
+    dup = loci_mod.dup_identity(got["loci"], settings.get("vsearch"), settings.get("threads", 1), tmp)
     taken = 0
     with open(os.path.join(tmp, "copies.fna"), "w", newline="\n") as fa, \
             open(os.path.join(tmp, "loci.tsv"), "w", newline="\n") as tb, \
@@ -568,17 +699,18 @@ def run(args):
                 len(r["copy"]), len(r["spliced"]), exons, f"{r['identity']:.4f}", f"{r['coverage']:.3f}",
                 f"{r['hmm_score']:.1f}", f"{r['cutoff']:.1f}", f"{r['hmm_coverage']:.3f}", r["copies"], r["query"],
                 len(r["protein"]), classes.get(window_of.get(locus, ""), "-"),
-                "t" if r.get("rescued") else "f", r.get("model", "miniprot")])) + "\n")
+                "t" if r.get("rescued") else "f", r.get("model", "miniprot"), dup.get(locus, "-")])) + "\n")
             ft.writelines(f"{locus}\t{k}\t{s}\t{e}\n" for k, s, e in r["features"])
     rrna = None
-    if settings.get("rrna") and not job.get("path"):  # records of a species without an assembly: no genome's rRNA
+    # records of a species without an assembly, a transcriptome (since 2026-11-07): no genome's rRNA
+    if settings.get("rrna") and not job.get("path") and job.get("kind") != "transcriptome":
         try:
             rrna = settings["rrna"](path, job, tmp)
         except (OSError, ValueError, EOFError, RuntimeError) as e:  # RuntimeError: barrnap's, ITSx's
             shutil.rmtree(tmp, ignore_errors=True)
             return acc, None, f"rRNA extraction failed: {e}"
     seconds = round(time.time() - started, 1)
-    own = own_of(job, settings)
+    own = own_of(job, settings) if job.get("kind") != "transcriptome" else []
     if own:  # its species is in BUSCO's dataset: its BUSCOs called again without its own proteins (HELD_OUT)
         why = held_out(path, job, settings, odb, own, tmp)
         if why:

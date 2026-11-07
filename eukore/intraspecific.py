@@ -1,0 +1,177 @@
+"""The barcode gap (since 2026-11-07; intraspecific/): how far each marker varies within a species, beside how far it is
+from its nearest other species. The panel's species (data/intraspecific_panel.tsv) have further assemblies run
+(genomes.intraspecific_jobs: other strains, isolates, BioSamples); their BUSCO copies, rRNA and organelle genes are
+compared with each other and with the species' genome's.
+
+- intra_min, intra_median: the identity (vsearch, --iddef 2, %) of the species' assemblies' copies of a marker to each
+  other: their least alike pair, the median pair ("<50" pairs read as 50).
+- inter_max: the identity of the species' genome's copy to its nearest copy of another species in the package (a
+  BUSCO's: busco/copies.tsv's own check, qc.check's nearest_id; the 18S, the ITS, an organelle gene's: vsearch against
+  every other species' in the package).
+- gap: intra_min - inter_max; resolved: t where it is above 0 (every assembly of the species nearer to each other than
+  to any other species), f where not, - where the species has no other species' copy 50% alike.
+
+Markers: each BUSCO (its coding sequence), 18S, ITS (ITS1, 5.8S and ITS2 of an rDNA unit), and the organelle genes
+(their coding sequence where known, else their record).
+"""
+
+import collections
+import gzip
+import os
+import statistics
+import subprocess
+import tempfile
+
+from . import organelle as organelle_mod
+from . import package, qc, rrna, util
+
+MIN_ID = 0.5
+GAP_COLUMNS = ("marker", "species_taxid", "name", "group", "assemblies", "intra_min", "intra_median", "inter_max",
+               "gap", "resolved")
+COPY_COLUMNS = ("accession", "species_taxid", "locus", "status", "contig", "start", "end", "strand", "length",
+                "cds_length", "exons", "hmm_score", "hmm_coverage", "copies", "dup_identity")
+
+
+def first_rrna(rows):
+    """A genome's 18S and ITS (its first rDNA unit holding them, else its first 18S record) -> {marker: sequence}."""
+    out = {}
+    for r in sorted(rows, key=lambda r: (r["kind"] != "rDNA", not r.get("lsu_complete"))):
+        regions = {n: (a, b) for n, a, b in (r.get("regions") or ())}
+        seq = r["sequence"]
+        if "18S" not in out:
+            if r["kind"] == "18S":
+                out["18S"] = seq
+            elif "18S" in regions:
+                out["18S"] = seq[slice(*regions["18S"])]
+        if "ITS" not in out and "ITS1" in regions and "ITS2" in regions:
+            out["ITS"] = seq[regions["ITS1"][0]:regions["ITS2"][1]]
+    return out
+
+
+def organelle_seqs(rows):
+    """Organelle gene rows (organelle.assembly_rows', or the package's) -> {marker: sequence}: a gene's coding sequence
+    where known, else its record; an animal mitochondrion's SSU and LSU by their common names (12S, 16S)."""
+    out = {}
+    for r in rows:
+        marker = r["gene"] if r["gene"] not in ("SSU", "LSU", "5S") else f"{r['organelle'][:4]}_{r['gene']}"
+        seq = r.get("cds") or organelle_mod.coding_of(r, r["sequence"]) or r["sequence"]
+        out.setdefault(marker, seq)
+    return out
+
+
+def collect(work, extras, organelle_folder):
+    """The panel's further assemblies' results (their done folders, their organelle search files) -> (copy rows
+    (COPY_COLUMNS), {accession: {marker: sequence}}, whole copies {accession: {locus: copy}}, rRNA {accession:
+    [(name, sequence)]}, organelle genes {accession: [(name, sequence)]})."""
+    from .genomes import done_dir  # noqa: PLC0415
+    rows, markers, whole, rrna_out, org_out = [], {}, {}, {}, {}
+    for acc, job in sorted(extras.items()):
+        copies = package.done_copies(work, acc)
+        if not copies:
+            continue
+        feats = collections.defaultdict(list)
+        for f in package.done_table(work, acc, "features.tsv"):
+            feats[f["locus"]].append((f["kind"], int(f["start"]), int(f["end"])))
+        m = {}
+        for r in package.done_table(work, acc, "loci.tsv"):
+            if r["status"] == "Missing" or r["locus"] not in copies:
+                continue
+            rows.append(dict(r, accession=acc, species_taxid=job["species_taxid"]))
+            m[r["locus"]] = qc.spliced(copies[r["locus"]], feats[r["locus"]])
+        whole[acc] = copies
+        rr = rrna.load(done_dir(work, acc))
+        m.update(first_rrna(rr))
+        rrna_out[acc] = [(f"{acc}_{r['kind']}_{i}", r["sequence"]) for i, r in enumerate(rr, 1)]
+        path = organelle_mod.assembly_file(organelle_folder, acc)
+        org = organelle_mod.assembly_rows(path) if os.path.isfile(path) else []
+        m.update(organelle_seqs(org))
+        org_out[acc] = [(f"{acc}|{r['gene']}", r["sequence"]) for r in org]
+        markers[acc] = m
+    return rows, markers, whole, rrna_out, org_out
+
+
+def _pairs(query, db, vsearch, threads=1, maxaccepts=0):
+    """vsearch of query {name: seq} against db {name: seq} -> [(query, target, identity)]."""
+    if not query or not db or not vsearch:
+        return []
+    with tempfile.TemporaryDirectory() as tmp:
+        q, d, out = (os.path.join(tmp, n) for n in ("q.fna", "d.fna", "hits.tsv"))
+        for path, seqs in ((q, query), (d, db)):
+            with open(path, "w") as fh:
+                fh.writelines(f">{n}\n{s}\n" for n, s in seqs.items() if s)
+        run = subprocess.run([vsearch, "--usearch_global", q, "--db", d, "--id", str(MIN_ID), "--iddef", "2",
+                              "--maxaccepts", str(maxaccepts), "--maxrejects", "0" if not maxaccepts else "256",
+                              "--userout", out, "--userfields", "query+target+id", "--threads", str(max(1, threads)),
+                              "--quiet"], capture_output=True, text=True, check=False)
+        if run.returncode != 0 or not os.path.isfile(out):
+            return []
+        with open(out) as fh:
+            return [(f[0], f[1], float(f[2])) for f in (line.rstrip("\n").split("\t") for line in fh) if len(f) >= 3]
+
+
+def barcode_gap(panel_species, rep_markers, extra_markers, species_of, inter, others, ncbi, vsearch, threads=1,
+                group_of=None):
+    """The barcode gap's rows (GAP_COLUMNS). panel_species: {species taxid: representative accession};
+    rep_markers / extra_markers: {accession: {marker: sequence}}; species_of: {accession: species taxid}; inter: {(species
+    taxid, marker): the representative's nearest other species' identity} known (the BUSCOs'); others: {marker: {name:
+    sequence}} of every other species in the package for the markers whose inter is measured here, names
+    `<species taxid>|...`."""
+    by_marker = collections.defaultdict(dict)
+    for acc, markers in list(rep_markers.items()) + list(extra_markers.items()):
+        sp = species_of[acc]
+        if sp not in panel_species:
+            continue
+        for marker, seq in markers.items():
+            if seq:
+                by_marker[marker][f"{sp}|{acc}"] = seq
+    inter = dict(inter)
+    for marker, db in others.items():  # the representatives' nearest other species, where not known
+        query = {name: s for name, s in by_marker.get(marker, {}).items()
+                 if name.split("|")[1] == panel_species.get(int(name.split("|")[0]))}
+        best = {}
+        for q, t, ident in _pairs(query, db, vsearch, threads, maxaccepts=64):
+            if q.split("|")[0] != t.split("|")[0]:
+                best[q] = max(best.get(q, 0.0), ident)
+        for name in query:
+            inter[(int(name.split("|")[0]), marker)] = best.get(name)
+    out = []
+    for marker, seqs in sorted(by_marker.items()):
+        hits = collections.defaultdict(dict)
+        for q, t, ident in _pairs(seqs, seqs, vsearch, threads):
+            if q != t and q.split("|")[0] == t.split("|")[0]:
+                key = tuple(sorted((q, t)))
+                hits[q.split("|")[0]][key] = max(hits[q.split("|")[0]].get(key, 0.0), ident)
+        by_species = collections.defaultdict(list)
+        for name in seqs:
+            by_species[name.split("|")[0]].append(name)
+        for sp, names in sorted(by_species.items()):
+            if len(names) < 2:
+                continue
+            pairs = [(a, b) for i, a in enumerate(sorted(names)) for b in sorted(names)[i + 1:]]
+            ids = [hits[sp].get((a, b), MIN_ID * 100) for a, b in pairs]
+            near = inter.get((int(sp), marker))
+            intra_min = min(ids)
+            out.append(dict(marker=marker, species_taxid=sp, name=ncbi.name.get(int(sp), "-"),
+                            group=(group_of or {}).get(int(sp), "-"), assemblies=len(names),
+                            intra_min=f"{intra_min:.1f}", intra_median=f"{statistics.median(ids):.1f}",
+                            inter_max="-" if near is None else f"{near:.1f}",
+                            gap="-" if near is None else f"{intra_min - near:.1f}",
+                            resolved="-" if near is None else "t" if intra_min > near else "f"))
+    return out
+
+
+def write(part, rows, whole, rrna_out, org_out, gap_rows):
+    """intraspecific/ of the unfinished package: copies.tsv, copies.fna.gz (>accession|locus), rrna.fna.gz,
+    organelle.fna.gz, barcode_gap.tsv."""
+    folder = os.path.join(part, "intraspecific")
+    os.makedirs(folder, exist_ok=True)
+    package._tsv(os.path.join(folder, "copies.tsv"), COPY_COLUMNS, rows)
+    package._tsv(os.path.join(folder, "barcode_gap.tsv"), GAP_COLUMNS, gap_rows)
+    for name, records in (("copies.fna.gz", [(f"{a}|{lo}", s) for a, c in sorted(whole.items())
+                                             for lo, s in sorted(c.items())]),
+                          ("rrna.fna.gz", [r for a in sorted(rrna_out) for r in rrna_out[a]]),
+                          ("organelle.fna.gz", [r for a in sorted(org_out) for r in org_out[a]])):
+        path = os.path.join(folder, name)
+        with gzip.open(util.part_of(path), "wt", compresslevel=6) as fh:
+            fh.writelines(f">{n}\n{s.upper()}\n" for n, s in records)
+        os.replace(util.part_of(path), path)

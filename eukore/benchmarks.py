@@ -48,8 +48,8 @@ QUANTILES = (("q05", 0.05), ("q25", 0.25), ("median", 0.5), ("q75", 0.75), ("q95
 SSU_MIN = 1000      # an 18S this long at least, for resolution.tsv (a read's fragment would understate identity)
 REGIONS = ("18S", "ITS1", "5.8S", "ITS2", "28S", "5S")
 TIERS = ("high", "medium", "low")
-MATCHES = ("species", "synonym", "genus", "-")
-REFERENCES = ("PR2", "EUKARYOME", "KSGP")
+MATCHES = ("taxid", "species", "synonym", "genus", "-")  # taxid: MIDORI2's own (since format 5)
+REFERENCES = package.REFERENCES
 ALL_BUSCOS = "BUSCO (all)"
 
 COMPLETENESS_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "source", "level", "genome_size",
@@ -308,11 +308,40 @@ def rrna_rows(folder):
     return out
 
 
+PRIMER_COLUMNS = ("pair", "supergroup", "species", "amplified", "share")
+
+
+def primer_rows(folder, species):
+    """primers.tsv's rows (since 2026-11-07): per primer pair and supergroup (and `all`), the species with a record the
+    pair runs on, those with one it amplifies (rrna/amplicons.tsv, organelle/amplicons.tsv)."""
+    species_of = {}
+    for sub, table in (("rrna", "records.tsv"), ("organelle", "genes.tsv")):
+        path = os.path.join(folder, sub, table)
+        species_of.update({r["record"]: r["species_taxid"] for r in rows_of(path)} if os.path.isfile(path) else {})
+    tried, amplified = collections.defaultdict(set), collections.defaultdict(set)
+    for sub in ("rrna", "organelle"):
+        path = os.path.join(folder, sub, "amplicons.tsv")
+        for r in rows_of(path) if os.path.isfile(path) else ():
+            sp = species_of.get(r["record"])
+            if sp is None:
+                continue
+            for group in (species.get(sp, {}).get("supergroup", "-"), "all"):
+                tried[(r["pair"], group)].add(sp)
+                if r["amplifies"] == "t":
+                    amplified[(r["pair"], group)].add(sp)
+    return [dict(pair=p, supergroup=g, species=len(s), amplified=len(amplified[(p, g)]),
+                 share=f"{len(amplified[(p, g)]) / len(s):.3f}")
+            for (p, g), s in sorted(tried.items(), key=lambda kv: (kv[0][0], kv[0][1] == "all", kv[0][1]))]
+
+
 def label_rows(species):
-    """labels.tsv's rows: per supergroup (and `all`) and reference its species by how they were named."""
+    """labels.tsv's rows: per supergroup (and `all`) and reference its species by how they were named; a reference
+    that named none (not in the package: an older format, MIDORI2 not given) left out."""
     counts = collections.defaultdict(collections.Counter)
+    held = [ref for ref in REFERENCES if ref in REFERENCES[:3] or
+            any(r.get(f"{ref.lower()}_match", "-") != "-" for r in species.values())]
     for r in species.values():
-        for ref in REFERENCES:
+        for ref in held:
             how = r.get(f"{ref.lower()}_match", "-")
             for group in (r.get("supergroup", "-"), "all"):
                 counts[(group, ref)][how if how in MATCHES else "-"] += 1
@@ -368,7 +397,7 @@ NEAREST_RANKS = ("genus", "family", "order", "class", "phylum")
 def supergroup_of(ncbi, taxid, cache):
     if taxid not in cache:
         from . import labels  # noqa: PLC0415
-        cache[taxid] = labels.supergroup(ncbi, taxid)
+        cache[taxid] = labels.group(ncbi, taxid)
     return cache[taxid]
 
 
@@ -649,7 +678,9 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
     out = out or os.path.join(folder, FOLDER)
     os.makedirs(out, exist_ok=True)
     loci = [r["locus"] for r in rows_of(os.path.join(folder, "busco", "loci.tsv"))]
-    species = {r["taxid"]: r for r in rows_of(os.path.join(folder, "species.tsv"))}
+    # the benchmarks split species by their group (format 5's species.tsv `group`; a format-4 package's supergroup)
+    species = {r["taxid"]: dict(r, supergroup=r.get("group") or r.get("supergroup", "-"))
+               for r in rows_of(os.path.join(folder, "species.tsv"))}
     genomes = {r["accession"]: r for r in rows_of(os.path.join(folder, "genomes.tsv")) if r["representative"] == "t"}
     species_of = {a: int(g["species_taxid"]) for a, g in genomes.items()}
     summary = {"species": len(genomes), "busco_loci": len(loci), "left_out": {}}
@@ -763,10 +794,26 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
         summary["rrna"] = {"records": sum(r["records"] for r in rows), "operons": n_operons,
                            "lsu_complete_of_operons": round(sum(r["lsu_complete"] for r in operons) / n_operons, 4)
                            if n_operons else None}
+    rows = primer_rows(folder, species)
+    if rows:
+        write(out, "primers.tsv", PRIMER_COLUMNS, rows)
+        summary["primers"] = {r["pair"]: float(r["share"]) for r in rows if r["supergroup"] == "all"}
+    else:
+        summary["left_out"]["primers"] = "no amplicons (a package before format 5)"
+    gap = list(rows_of(os.path.join(folder, "intraspecific", "barcode_gap.tsv")) or ())
+    if gap:  # the panel's barcode gap (intraspecific.py): per marker, the species resolved of those measured
+        by_marker = collections.defaultdict(list)
+        for r in gap:
+            if r["resolved"] in ("t", "f"):
+                by_marker["BUSCO (all)" if r["marker"].endswith("at2759") else r["marker"]].append(r["resolved"] == "t")
+        summary["barcode_gap"] = {m: {"species_markers": len(v), "resolved": round(sum(v) / len(v), 4)}
+                                  for m, v in sorted(by_marker.items())}
+    else:
+        summary["left_out"]["barcode_gap"] = "no intraspecific panel (--intraspecific 0, or a package before format 5)"
     rows = label_rows(species)
     write(out, "labels.tsv", LABEL_COLUMNS, rows)
-    summary["labels"] = {r["reference"]: round((r["species"] + r["synonym"]) / max(1, sum(r[m] for m in (
-        "species", "synonym", "genus", "none"))), 4) for r in rows if r["supergroup"] == "all"}
+    summary["labels"] = {r["reference"]: round((r["taxid"] + r["species"] + r["synonym"]) / max(1, sum(r[m] for m in (
+        "taxid", "species", "synonym", "genus", "none"))), 4) for r in rows if r["supergroup"] == "all"}
 
     if work:
         rows = runtime_rows(work, genomes, species)

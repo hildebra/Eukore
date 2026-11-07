@@ -73,7 +73,8 @@ def read_assemblies(paths):
                                  category="derived from metagenome" if "metagenome" in excluded else "isolate",
                                  ftp=f.get("ftp_path", ""), flags=flags, refseq_category=f.get("refseq_category", ""),
                                  paired=f.get("gbrs_paired_asm", "na"), date=f.get("seq_rel_date", ""),
-                                 submitter=f.get("submitter", ""),
+                                 submitter=f.get("submitter", ""), biosample=f.get("biosample", ""),
+                                 type_material=f.get("relation_to_type_material", "") or "na",  # since 2026-11-07
                                  genes=(int(f["protein_coding_gene_count"]) if f["protein_coding_gene_count"].isdigit()
                                         else 0) if "protein_coding_gene_count" in f else None,
                                  group=re.sub(r"^(genbank|refseq|assembly_summary)_", "",

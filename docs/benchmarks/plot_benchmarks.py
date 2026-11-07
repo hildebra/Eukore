@@ -44,8 +44,11 @@ NONE = "#d6d5d0"  # missing, unnamed: a gray, not a series
 TIER_COLORS = {"high": BLUE[550], "medium": BLUE[400], "low": BLUE[250]}
 SEQUENTIAL = LinearSegmentedColormap.from_list("blue", ["#f3f7fd", BLUE[100], BLUE[250], BLUE[400], BLUE[550],
                                                         BLUE[700]])
-SUPERGROUPS = ("Vertebrata", "Metazoa", "Fungi", "Viridiplantae", "Rhodophyta", "SAR", "Discoba", "Metamonada",
-               "Amoebozoa", "Haptista", "Cryptophyceae", "other", "other eukaryotes")
+# the groups in order (data/supergroups.tsv's, format 5), then a format-4 package's SAR and Haptista
+SUPERGROUPS = ("Vertebrata", "Metazoa", "Fungi", "other Opisthokonta", "Apusozoa and Breviatea", "Amoebozoa",
+               "Viridiplantae", "Rhodophyta", "Glaucophyta", "other Archaeplastida", "Stramenopiles", "Alveolata",
+               "Rhizaria", "Telonemia", "other TSAR", "SAR", "Haptophyta", "Centroplasthelida", "other Haptista",
+               "Haptista", "Cryptophyceae", "other Cryptista", "Discoba", "Metamonada", "other", "other eukaryotes")
 RANKS = ("genus", "family", "order", "class", "phylum", "none")
 BUSCOS = "BUSCO (all)"
 

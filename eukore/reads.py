@@ -81,7 +81,7 @@ def choose(ncbi, reps, per_group=PER_GROUP, exists=os.path.isfile):
     by_group = collections.defaultdict(list)
     for a, (sp, path) in reps.items():
         if path and exists(path):
-            by_group[labels.supergroup(ncbi, sp)].append(a)
+            by_group[labels.group(ncbi, sp)].append(a)
     out = []
     for group in sorted(by_group):
         ranked = sorted(by_group[group], key=lambda a: (-(size[genus[a]] - 1 if genus[a] else 0), a))
@@ -388,7 +388,8 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
     os.makedirs(work, exist_ok=True)
     rng = random.Random(seed)
     genomes = {r["accession"]: r for r in package.read_table(folder, "genomes.tsv") if r["representative"] == "t"}
-    species = {int(r["taxid"]): r for r in package.read_table(folder, "species.tsv")}
+    species = {int(r["taxid"]): dict(r, supergroup=r.get("group") or r.get("supergroup", "-"))  # format 5: its group
+               for r in package.read_table(folder, "species.tsv")}
     genus_size = collections.Counter(genus_of(ncbi, int(g["species_taxid"])) for g in genomes.values())
     refs = references(folder, os.path.join(work, "refs"), ncbi, compare, inside)
     reads_fa = os.path.join(work, "reads.fa")

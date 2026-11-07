@@ -145,13 +145,18 @@ class RunTest(unittest.TestCase):
             settings = dict(work=work, genomes=genomes_dir, miniprot=fx.miniprot(tmp, gff),
                             hmmsearch=fx.hmmsearch(tmp), threads=1, staged_only=True, odb=root, loci=fx.LOCI,
                             hmm_db=odb.hmm_db(os.path.join(tmp, "loci.hmm")),
-                            odb_lineages=odb_mod.species_lineages(odb, ncbi), tiara=None, rrna=None)
+                            odb_lineages=odb_mod.species_lineages(odb, ncbi), tiara=None, rrna=None,
+                            vsearch=fx.vsearch(tmp))
             gb = sources.read_assemblies([fx.assembly_table(os.path.join(tmp, "genbank_fungi.txt"), fx.GENBANK)])
             jobs = genomes.jobs(ncbi, gb)
             acc, summary, why = genomes.run((jobs[YEAST], settings))
             self.assertEqual((acc, why, summary["loci"], summary["status"]),
                              (YEAST, None, 2, {"Duplicated": 1, "Single": 1, "Missing": 1}))
             self.assertTrue(genomes.is_done(work, YEAST))
+            # the duplicated locus' two copies alike (loci.dup_identity: the genome's two identical copies)
+            done = {r["locus"]: r for r in package.done_table(work, YEAST, "loci.tsv")}
+            self.assertEqual((done["1at2759"]["dup_identity"], done["2at2759"]["dup_identity"],
+                              done["1at2759"]["copies"], done["2at2759"]["copies"]), ("100.0", "-", "2", "1"))
             # its assembly's metadata measured by the run (metadata.py; no sourmash: no sketch, none missing)
             folder = genomes.done_dir(work, YEAST)
             self.assertEqual(metadata.missing(folder), set())
@@ -168,6 +173,7 @@ class RunTest(unittest.TestCase):
                 fh.write(f">c1\n{seq}\n")
             self.assertIsNone(genomes.run((jobs[other], settings))[2])
             collected = package.collect(ncbi, jobs, gb, work, fx.vsearch(tmp), 1)
+            package.genetics(collected, ncbi, odb.hmm, fx.hmmalign(tmp), work, log=lambda *_: None)
             rows = {(r["accession"], r["locus"]): r for r in collected["copy_rows"]}
             self.assertEqual(rows[(YEAST, "1at2759")]["status"], "Duplicated")
             self.assertEqual(rows[(YEAST, "1at2759")]["same_as"], "4930")  # identical in two species: their genus
@@ -185,8 +191,27 @@ class RunTest(unittest.TestCase):
             self.assertEqual((g[YEAST]["source"], g[YEAST]["representative"], g[YEAST]["loci"], g[YEAST]["local"]),
                              ("ncbi", "t", "2", f"genomes/{YEAST}.fna.gz"))
             self.assertEqual((g["GCA_000000003.1"]["source"], g["GCA_000000003.1"]["loci"]), ("assembly", "0"))
+            self.assertEqual((g[YEAST]["type_material"], g["GCA_000000003.1"]["type_material"]),
+                             ("assembly from type material", "-"))  # NCBI's relation_to_type_material
             a, b = spans["1at2759"]
             self.assertEqual(package.read_copies(out, "1at2759")[YEAST], seq[a - 1:b].upper())
+            # its coding sequence (the intron out) and protein (the stop out), format 5
+            self.assertEqual(package.read_copies(out, "1at2759", "cds")[YEAST], fx.cds_of(fx.PROTEINS["1at2759"]))
+            self.assertEqual(package.read_copies(out, "1at2759", "proteins")[YEAST], fx.PROTEINS["1at2759"])
+            self.assertEqual(package.read_copies(out, "2at2759", "proteins")[YEAST], fx.PROTEINS["2at2759"])
+            self.assertEqual((g[YEAST]["gencode"], g[YEAST]["duplication"]), ("1", "-"))  # 2 BUSCOs: too few
+            # its intron: between codons 60 and 61 (180 coding bases before it), on the HMM's state 61 (hmmalign's
+            # stand-in: every residue on its own position); both genomes hold it there
+            (intron,) = [r for r in package.read_table(out, "busco/introns.tsv") if r["accession"] == YEAST]
+            self.assertEqual((intron["locus"], intron["start"], intron["end"], intron["phase"], intron["class"],
+                              intron["u12"], intron["aa_position"], intron["hmm_position"], intron["site"]),
+                             ("1at2759", "180", "480", "0", "GT-AG", "f", "60", "61", "61.0"))
+            (site,) = package.read_table(out, "busco/intron_sites.tsv")
+            self.assertEqual((site["site"], site["genomes"], site["share"], site["share_Fungi"]),
+                             ("61.0", "2", "1.000", "1.000"))
+            self.assertEqual((g[YEAST]["introns"], g[YEAST]["median_intron_length"], g[YEAST]["gencode_check"]),
+                             ("1", "300", "undecided"))  # the stand-in HMMs have no emissions: no codon seen
+            self.assertTrue(os.path.isfile(os.path.join(out, "metadata", "codons.tsv.gz")))
             feats = [(f["kind"], f["start"], f["end"]) for f in package.read_table(out, "busco/features.tsv")
                      if f["accession"] == YEAST and f["locus"] == "1at2759"]
             self.assertIn(("intron", "180", "480"), feats)
@@ -197,6 +222,7 @@ class RunTest(unittest.TestCase):
             one = next(c for c in copies if c["accession"] == YEAST and c["locus"] == "1at2759")
             self.assertEqual((one["contig_edge"], one["gaps"]), (str(spans["1at2759"][0] - 1), "0"))
             self.assertEqual((one["confidence"], one["flags"]), ("medium", "duplicated"))  # the yeast's two copies
+            self.assertEqual((one["internal_stops"], one["dup_identity"]), ("0", "100.0"))
             with open(os.path.join(out, "manifest.json")) as fh:
                 manifest = json.load(fh)
             self.assertEqual((manifest["format"], manifest["counts"]["species"], manifest["counts"]["copies"],
@@ -209,9 +235,10 @@ class RunTest(unittest.TestCase):
                               got["3at2759"]["call_rate"], got["1at2759"]["cutoff"], got["1at2759"]["hmm_length"]),
                              ("2", "1.000", "1.000", "0.000", "50.0", "120"))
             sp = {r["taxid"]: r for r in package.read_table(out, "species.tsv")}
-            self.assertEqual((sp["4932"]["representative"], sp["4932"]["source"]), (YEAST, "ncbi"))
-            self.assertEqual((sp["4932"]["supergroup"], sp["4932"]["pr2_match"], sp["4932"]["ksgp"]),
-                             ("Fungi", "species", "-"))
+            self.assertEqual((sp["4932"]["representative"], sp["4932"]["source"], sp["4932"]["type_material"]),
+                             (YEAST, "ncbi", "assembly from type material"))
+            self.assertEqual((sp["4932"]["supergroup"], sp["4932"]["group"], sp["4932"]["pr2_match"], sp["4932"]["ksgp"]),
+                             ("Obazoa", "Fungi", "species", "-"))
             self.assertTrue(sp["4932"]["pr2"].endswith(";Saccharomyces;Saccharomyces_cerevisiae"))
             self.assertEqual(sp["27291"]["pr2_match"], "genus")  # S. paradoxus: PR2 names its genus alone
             self.assertEqual(sp["4932"]["ncbi_lineage"], "Eukaryota;Fungi;Ascomycota;Saccharomycetes;"
@@ -336,6 +363,18 @@ class QcTest(unittest.TestCase):
                              ("short", "long", "ok"))
             self.assertEqual(qc.lca(ncbi, [4932, 27291]), 4930)
             self.assertEqual(qc.depth(ncbi, 4932, 28985), 4)  # to the family
+
+    def test_duplication(self):
+        def rows(single, dups):
+            return [dict(status="Single")] * single + [dict(status="Duplicated", dup_identity=d) for d in dups]
+        got = package.duplication_of(rows(60, ["99.9"] * 30 + ["98.0"] * 10))  # a diploid's two haplotypes
+        self.assertEqual((got["duplicated_share"], got["dup_identity_median"], got["duplication"]),
+                         ("0.400", "99.9", "haplotypes"))
+        self.assertEqual(package.duplication_of(rows(60, ["85.0"] * 20 + ["<50"] * 20))["duplication"],
+                         "wgd_or_polyploid")
+        self.assertEqual(package.duplication_of(rows(95, ["99.9"] * 5))["duplication"], "low")
+        self.assertEqual(package.duplication_of(rows(5, ["99.9"] * 5))["duplication"], "-")  # too few called
+        self.assertEqual(package.duplication_of(rows(60, ["-"] * 30))["duplication"], "-")  # run before 0.13
 
 
 class RecheckTest(unittest.TestCase):

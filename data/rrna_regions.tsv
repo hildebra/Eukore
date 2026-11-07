@@ -1,0 +1,12 @@
+# The 18S variable regions (eukore/regions.py; since 2026-11-07) on Saccharomyces cerevisiae's 18S (Z75578.1,
+# data/primer_references.fna's Sc_18S), 1-based, start included, end excluded (each region ends where the next
+# begins): Hadziavdic et al. 2014 PLoS ONE 9:e87624, Table S3. V6 is conserved in eukaryotes and has none.
+region	start	end
+V1	40	167
+V2	167	395
+V3	395	575
+V4	575	971
+V5	971	1150
+V7	1267	1460
+V8	1460	1648
+V9	1648	1789
