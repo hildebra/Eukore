@@ -5,6 +5,7 @@ parts makes available. Drawn with the paper's palette (docs/benchmarks/plot_benc
     python3 docs/figures/overview.py                              # docs/figures/overview.png, the numbers below
     python3 docs/figures/overview.py --package OUT/Eukore_2026.11 # the package's counts (its manifest) head panel b
     python3 docs/figures/overview.py --format svg --no_marks      # without the "added in 0.2" marks
+    python3 docs/figures/overview.py --slide                      # overview_slide.png: fewer items, 16:9, the logo
 
 The numbers are NUMBERS below (NCBI's tables and the sources' releases of 2026-11); an item that starts with "*" is a
 part added in Eukore 0.2 (format 5) and gets a mark. After the first full build, run it with --package so that panel b
@@ -325,16 +326,112 @@ def manifest_counts(package):
             ("organelle genes", f"{organelle:,}"), ("taxa", f"{c['taxa']:,}")]
 
 
+def slide(n, counts):
+    """The simplified overview for a presentation: a 16:9 slide, sources -> build -> package, with the logo."""
+    global PAD, LINE, TITLE, GAP, INDENT, FS_BODY, FS_TITLE, FS_HEAD, EM
+    PAD, LINE, TITLE, GAP, INDENT = 2.6, 5.0, 6.4, 3.2, 3.6
+    FS_BODY, FS_TITLE, FS_HEAD = 11.0, 12.5, 15.0
+    EM = 0.57 * FS_BODY * 0.3528
+    W, H = 338, 190
+    fig = plt.figure(figsize=(W / 25.4, H / 25.4))
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, W)
+    ax.set_ylim(0, H)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    logo = plt.imread(os.path.join(HERE, "..", "logo", "eukore_logo.png"))
+    lh = 34
+    lw = lh * logo.shape[1] / logo.shape[0]
+    ax.imshow(logo, extent=[4, 4 + lw, H - 3 - lh, H - 3], zorder=3, interpolation="lanczos")
+    ax.text(4 + lw + 10, H - 13, "Every eukaryote genome at NCBI, to one checked package of marker genes",
+            fontsize=18, fontweight="bold", color=INK, va="center", ha="left")
+    ax.text(4 + lw + 10, H - 24, fmt("Eukore 0.2  ·  package format 5  ·  NCBI's tables and the references of "
+                                    "{ncbi_date}", n),
+            fontsize=FS_BODY, color=INK2, va="center", ha="left")
+    top = H - 48
+    xs, ws = 4, 96          # sources
+    xb, wb = 116, 96        # the build
+    xk, wk = 224, 110       # the package
+    sources = [Box(t, items, ws) for t, items in [
+        ("genomes", [
+            fmt("NCBI: {ncbi_species} species, {ncbi_tb}", n),
+            fmt("TOGA2: {toga2_species} vertebrates", n),
+            fmt("transcriptomes: {tsa_species} species", n),
+            fmt("EukProt records: {eukprot_species} protists", n)]),
+        ("models", [
+            fmt("BUSCO eukaryota_odb12: {buscos} genes", n),
+            "RefSeq organelle genomes",
+            fmt("Rfam 18S model, {primer_pairs} primer pairs", n),
+            "gene models: NCBI, Ensembl, VEuPathDB, TOGA2",
+            "published rDNA: EUKARYOME, ROD"]),
+        ("names and ids", [
+            "NCBI taxonomy; PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2",
+            "Open Tree, GBIF, WoRMS, IRMNG, BOLD"]),
+        ("quality", ["NCBI's FCS-GX and ANI reports, tiara"]),
+    ]]
+    build = [Box(t, items, wb) for t, items in [
+        ("fetch: the genome set", ["one best assembly per species; contaminated and misidentified ones excluded"]),
+        ("process: each genome once", [
+            "BUSCO genes: miniprot, then BUSCO's HMMs; the genome's own gene model where it agrees",
+            "rDNA operons: barrnap, ITSx",
+            "organelle genes; assembly metadata; 50 kb windows for contamination screens"]),
+        ("package: all species together", [
+            "own-species, 99% and chimera checks; a confidence tier on every copy, record and gene",
+            "introns, proteins, genetic code; 18S V1–V9; in-silico PCR; names and ids; barcode gap",
+            fmt("{benchmark_tables} benchmarks; manifest with checksums", n)]),
+    ]]
+    package = [Box(t, items, wk) for t, items in [
+        ("BUSCO genes", [
+            fmt("{buscos} per species, each whole with its introns; coding sequences, proteins, intron sites", n)]),
+        ("rDNA", [fmt("18S spans and whole operons; V1–V9; {rrna_primer_pairs} primer pairs", n)]),
+        ("organelle genes", [
+            fmt("mitochondrial and plastid rRNA, COX1, CYTB, rbcL, matK, ...; proteins; "
+                "{organelle_primer_pairs} primer pairs", n)]),
+        ("taxonomy", [fmt("NCBI lineage and supergroup; lineages in {references} references; ids in {id_systems} "
+                          "systems", n)]),
+        ("also", [fmt("assembly metadata, sketches; barcode gap of {panel_species} species; benchmarks", n),
+                  "plain TSV and FASTA: protal, phylogenetics, primer design, contamination screens"]),
+    ]]
+    heads = [(xs, fmt("{sources} sources", n)), (xb, "the build"), (xk, "the package: one row per species")]
+    for x, title in heads:
+        ax.text(x, top + 2, title, fontsize=FS_HEAD, fontweight="bold", color=INK, va="bottom", ha="left")
+    s_spans = column(ax, xs, top - 2, sources, SOURCE_FILL, False)
+    b_spans = column(ax, xb, top - 2, build, STAGE_FILL, False, gap=GAP * 2)
+    k_spans = column(ax, xk, top - 2, package, SOURCE_FILL, False)
+    s_mid = (s_spans[0][0] + s_spans[-1][1]) / 2
+    b_mid = (b_spans[0][0] + b_spans[-1][1]) / 2
+    k_mid = (k_spans[0][0] + k_spans[-1][1]) / 2
+    for (t, b) in s_spans:
+        arrow(ax, (xs + ws, (t + b) / 2), (xb - 0.5, min(max((t + b) / 2, b_spans[-1][1] + 6), b_spans[0][0] - 6)),
+              lw=1.4)
+    for (t, b) in b_spans[:-1]:
+        y = (b + b_spans[b_spans.index((t, b)) + 1][0]) / 2
+        arrow(ax, (xb + wb / 2, b), (xb + wb / 2, b_spans[b_spans.index((t, b)) + 1][0] + 0.5), lw=1.4)
+    arrow(ax, (xb + wb, b_mid), (xk - 0.5, min(max(b_mid, k_spans[-1][1] + 6), k_spans[0][0] - 6)), lw=1.4)
+    if counts:
+        line = "  ·  ".join(f"{k}: {v}" for k, v in counts)
+    else:
+        line = fmt("the first full build: {ncbi_species} species with a genome, {tsa_species} with a transcriptome, "
+                   "{eukprot_species} with records", n)
+    ax.text(W / 2, 3, line, fontsize=FS_BODY, color=INK2, va="bottom", ha="center")
+    return fig
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--package", help="a package whose manifest's counts head panel b")
     p.add_argument("--out", default=HERE)
-    p.add_argument("--name", default="overview")
+    p.add_argument("--name", help="the file's name (overview; overview_slide with --slide)")
     p.add_argument("--format", default="png", choices=("png", "svg", "pdf"))
     p.add_argument("--no_marks", action="store_true", help="no marks on the parts added in 0.2")
+    p.add_argument("--slide", action="store_true", help="the simplified 16:9 version, with the logo")
     a = p.parse_args(argv)
     counts = manifest_counts(a.package) if a.package else None
     os.makedirs(a.out, exist_ok=True)
+    if a.slide:
+        print(pb.save(slide(NUMBERS, counts), a.out, a.name or "overview_slide", a.format))
+        return
+    a.name = a.name or "overview"
     # the panels' heights come from their content: lay them out once on throwaway axes
     probe = plt.figure()
     ha = panel_a(probe.add_subplot(211), NUMBERS, not a.no_marks)
