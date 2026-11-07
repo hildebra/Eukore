@@ -22,6 +22,7 @@ class Ncbi:
 
     def __init__(self, source):
         self.parent, self.rank, self.name, self.merged, self.gencode = {}, {}, {}, {}, {}
+        self.mgcode, self.pgcode = {}, {}  # the mitochondrial and plastid codes (since 2026-11-07)
         self.synonyms = collections.defaultdict(list)
         if os.path.isdir(source):
             self._read_subset(source)
@@ -41,8 +42,9 @@ class Ncbi:
                         self.merged[taxid] = int(fields[1])
                     elif base == "nodes.dmp":
                         self.parent[taxid], self.rank[taxid] = int(fields[1]), fields[2]
-                        if len(fields) > 6 and fields[6].strip().isdigit():
-                            self.gencode[taxid] = int(fields[6])
+                        for column, codes in ((6, self.gencode), (8, self.mgcode), (13, self.pgcode)):
+                            if len(fields) > column and fields[column].strip().isdigit():
+                                codes[taxid] = int(fields[column])
                     elif fields[3] == "scientific name":
                         self.name[taxid] = fields[1]
                     elif fields[3] in SYNONYM_CLASSES:
@@ -59,8 +61,9 @@ class Ncbi:
 
     def _node(self, f):
         self.parent[int(f[0])], self.rank[int(f[0])] = int(f[1]), f[2]
-        if len(f) > 3 and f[3].isdigit():
-            self.gencode[int(f[0])] = int(f[3])
+        for column, codes in ((3, self.gencode), (4, self.mgcode), (5, self.pgcode)):
+            if len(f) > column and f[column].isdigit():
+                codes[int(f[0])] = int(f[column])
 
     def _name(self, f):
         if f[2] == "scientific name":
@@ -87,9 +90,12 @@ class Ncbi:
                 return t
         return taxid
 
-    def code_of(self, taxid):
-        """A taxon's nuclear genetic code (NCBI's translation table; 1 where the taxonomy gives none)."""
-        return self.gencode.get(self.merged.get(taxid, taxid), 1)
+    def code_of(self, taxid, compartment="nuclear"):
+        """A taxon's genetic code (NCBI's translation table) of its nucleus, mitochondrion ("mito") or plastid
+        ("plastid"); where the taxonomy gives none: 1, 1, 11 (a taxdump before NCBI's plastid column gives none)."""
+        codes, default = {"nuclear": (self.gencode, 1), "mito": (self.mgcode, 1),
+                          "plastid": (self.pgcode, 11)}[compartment]
+        return codes.get(self.merged.get(taxid, taxid), default)
 
     def ranks(self, taxid):
         """{rank: name} of the taxid's lineage."""
@@ -115,9 +121,9 @@ class Ncbi:
         for taxid in taxids:
             keep.update(self.ancestors(self.merged.get(taxid, taxid)))
         os.makedirs(folder, exist_ok=True)
-        rows = {"nodes.tsv": ("taxid\tparent\trank\tgencode\n",
-                              [f"{t}\t{self.parent[t]}\t{self.rank.get(t, '')}\t{self.gencode.get(t, 1)}\n"
-                               for t in sorted(keep)]),
+        rows = {"nodes.tsv": ("taxid\tparent\trank\tgencode\tmgcode\tpgcode\n",
+                              [f"{t}\t{self.parent[t]}\t{self.rank.get(t, '')}\t{self.code_of(t)}\t"
+                               f"{self.code_of(t, 'mito')}\t{self.code_of(t, 'plastid')}\n" for t in sorted(keep)]),
                 "names.tsv": ("taxid\tname\tclass\n",
                               [f"{t}\t{self.name[t]}\tscientific name\n" for t in sorted(keep) if t in self.name] +
                               [f"{t}\t{s}\tsynonym\n" for t in sorted(keep) for s in self.synonyms.get(t, ())]),

@@ -16,7 +16,8 @@ from . import qc
 from . import util
 from . import __version__
 
-FORMAT = 4
+FORMAT = 5
+READABLE = (4, 5)  # the formats a reader of this one takes (5 adds files and columns, and regroups supergroup)
 MANIFEST = "manifest.json"
 LOCI_COLUMNS = ("locus", "name", "cutoff", "hmm_length", "species", "called", "duplicated", "fragmented", "call_rate",
                 "median_length", "median_cds_length", "median_protein_length")
@@ -351,8 +352,8 @@ def check(folder, deep=False):
     manifest = read(folder)
     if manifest is None:
         return f"{folder}: no Eukore package (no {MANIFEST})"
-    if manifest.get("format") != FORMAT:
-        return f"{folder}: format {manifest.get('format')}, this reader takes {FORMAT}"
+    if manifest.get("format") not in READABLE:
+        return f"{folder}: format {manifest.get('format')}, this reader takes {', '.join(map(str, READABLE))}"
     for rel, (size, digest) in manifest["files"].items():
         path = os.path.join(folder, rel)
         if not os.path.isfile(path):

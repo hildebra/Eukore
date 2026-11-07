@@ -50,12 +50,15 @@ SYNONYMS = [(28985, "Candida sphaerica", "anamorph")]
 
 
 CODES = {28985: 6}  # a stand-in: Kluyveromyces lactis given the ciliates' code, to test that it is read
+MITO_CODES = {9606: 2, 9605: 2, 4932: 3, 28985: 3}  # vertebrate and yeast mitochondria; else 1
 
 
 def taxdump(path):
     with tarfile.open(path, "w:gz") as tar:
-        # nodes.dmp: taxid, parent, rank, EMBL code, division, inherited, genetic code (a ciliate's 6, else 1), ...
-        for name, lines in (("nodes.dmp", [f"{t}\t|\t{p}\t|\t{r}\t|\t\t|\t0\t|\t1\t|\t{CODES.get(t, 1)}\t|\t1\t|\n"
+        # nodes.dmp as NCBI writes it (13 fields): taxid, parent, rank, EMBL code, division, inherited, genetic code (a
+        # ciliate's 6, else 1), inherited, mitochondrial code, inherited, GenBank hidden, hidden subtree, comments
+        for name, lines in (("nodes.dmp", [f"{t}\t|\t{p}\t|\t{r}\t|\t\t|\t0\t|\t1\t|\t{CODES.get(t, 1)}\t|\t1\t|\t"
+                                           f"{MITO_CODES.get(t, 1)}\t|\t1\t|\t0\t|\t0\t|\t\t|\n"
                                            for t, p, r, _ in NODES]),
                             ("names.dmp", [f"{t}\t|\t{n}\t|\t\t|\tscientific name\t|\n" for t, _, _, n in NODES]
                              + [f"{t}\t|\t{n}\t|\t\t|\t{c}\t|\n" for t, n, c in SYNONYMS])):

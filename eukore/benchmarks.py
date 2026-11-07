@@ -28,7 +28,6 @@ A benchmark whose inputs are missing (BUSCO's dataset, vsearch, the work folder)
 
 import argparse
 import collections
-import functools
 import json
 import os
 import shutil
@@ -38,7 +37,7 @@ import time
 
 from . import odb as odb_mod
 from . import genomes as genomes_mod
-from . import package, qc, rrna, util
+from . import gencode, package, qc, rrna, util
 
 FOLDER = "benchmarks"
 KMER = 5
@@ -67,34 +66,8 @@ LABEL_COLUMNS = ("supergroup", "reference") + tuple("none" if m == "-" else m fo
 RUNTIME_COLUMNS = ("accession", "species_taxid", "supergroup", "genome_size", "genome_bytes", "searched", "threads",
                    "seconds")
 
-# NCBI's nuclear genetic codes (ncbieaa, codons in TCAG order); another table reads as the standard one
-BASES = "TCAG"
-CODES = {
-    1: "FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
-    6: "FFLLSSSSYYQQCC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
-    10: "FFLLSSSSYY**CCCWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
-    12: "FFLLSSSSYY**CC*WLLLSPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
-    15: "FFLLSSSSYY*QCC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
-    26: "FFLLSSSSYY**CC*WLLLAPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
-    27: "FFLLSSSSYYQQCCWWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
-    28: "FFLLSSSSYYQQCCWWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
-    29: "FFLLSSSSYYYYCC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
-    30: "FFLLSSSSYYEECC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
-    31: "FFLLSSSSYYEECCWWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
-}
-
-
-@functools.lru_cache(maxsize=None)
-def codons(table=1):
-    aa = CODES.get(table, CODES[1])
-    return {a + b + c: aa[16 * i + 4 * j + k] for i, a in enumerate(BASES) for j, b in enumerate(BASES)
-            for k, c in enumerate(BASES)}
-
-
-def translate(cds, table=1):
-    """A coding sequence's protein (X for a codon with another base than ACGT)."""
-    code, cds = codons(table), cds.upper()
-    return "".join(code.get(cds[i:i + 3], "X") for i in range(0, len(cds) - 2, 3))
+# NCBI's genetic codes: every table since 2026-11-07 (eukore/gencode.py; the nuclear ones alone until then)
+translate = gencode.translate
 
 
 def kmers(protein, k=KMER):

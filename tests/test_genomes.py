@@ -200,7 +200,7 @@ class RunTest(unittest.TestCase):
             with open(os.path.join(out, "manifest.json")) as fh:
                 manifest = json.load(fh)
             self.assertEqual((manifest["format"], manifest["counts"]["species"], manifest["counts"]["copies"],
-                              manifest["counts"]["busco_loci"]), (4, 2, 4, 3))
+                              manifest["counts"]["busco_loci"]), (package.FORMAT, 2, 4, 3))
             self.assertEqual(manifest["inputs"]["references"]["PR2"]["species"], 1)
             # each BUSCO's calls over the package's species: two fungi, 1at2759 and 2at2759 called in both
             got = {r["locus"]: r for r in package.read_table(out, "busco/loci.tsv")}

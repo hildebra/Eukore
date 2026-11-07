@@ -31,6 +31,22 @@ class CoreTest(unittest.TestCase):
             self.assertNotIn(40410, sub.name)  # not on the lineages asked for
             # the genetic code, NCBI's nodes.dmp column 7, kept in the subset
             self.assertEqual((full.code_of(28985), sub.code_of(28985), sub.code_of(4932)), (6, 6, 1))
+            # the mitochondrial code (column 9) and the plastid code (11: this taxdump has no plastid column)
+            for t in (full, sub):
+                self.assertEqual((t.code_of(4932, "mito"), t.code_of(559292, "mito"), t.code_of(4932, "plastid")),
+                                 (3, 1, 11))
+
+    def test_genetic_codes(self):
+        from eukore import gencode
+        self.assertEqual(len(gencode.TABLES), 27)
+        self.assertTrue(all(len(t) == 64 for t in gencode.TABLES.values()))
+        self.assertEqual(gencode.translate("AGAAGGATATGA", 2), "**MW")  # vertebrate mitochondria
+        self.assertEqual(gencode.translate("TGA", 4), "W")
+        self.assertEqual(gencode.translate("TAATAG", 6), "QQ")  # ciliates
+        self.assertEqual(gencode.translate("CTG", 12), "S")  # the CTG clade's yeasts
+        self.assertEqual(gencode.translate("CTGTGA", 3), "TW")  # yeast mitochondria
+        self.assertEqual(gencode.translate("ATGTAAAAA", 99), "M*K")  # an unknown table reads as the standard one
+        self.assertEqual(gencode.protein_of("ATGTAAAAATAA"), ("M*K", 1))  # the last stop dropped, internal kept
 
     def test_assembly_tables(self):
         with tempfile.TemporaryDirectory() as tmp:

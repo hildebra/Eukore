@@ -1,4 +1,4 @@
-# Eukore package format, version 4
+# Eukore package format, version 5
 
 Eukore is a standalone eukaryote reference. It holds every BUSCO gene of eukaryota_odb12 and the rDNA operons of every
 eukaryote species with an NCBI genome, complete (genes with all their introns, operons uncut) and checked, and the
@@ -14,7 +14,7 @@ limits, masking, record cuts. Paths below are relative to the package folder, `E
 excluded, on the sequence as the package holds it, unless they are a contig's (1-based, inclusive).
 
 ## manifest.json
-`format` (4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, `0.12`), `built` (ISO time),
+`format` (5; a reader of 5 also takes 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, `0.13`), `built` (ISO time),
 `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
@@ -29,7 +29,7 @@ headline figures of `benchmarks/summary.json`, where the build measured them), a
 with `[bytes, md5]`. The manifest is written last: a package without one is unfinished.
 
 ## taxonomy/
-NCBI's taxonomy, cut to every taxon on the package's lineages: `nodes.tsv` (taxid, parent, rank, gencode: NCBI's nuclear genetic code, the table a copy translates by), `names.tsv` (taxid,
+NCBI's taxonomy, cut to every taxon on the package's lineages: `nodes.tsv` (taxid, parent, rank, gencode: NCBI's nuclear genetic code, the table a BUSCO copy translates by; mgcode and pgcode: its mitochondrial and plastid codes, which the organelle genes translate by, since 2026-11-07; pgcode is 11 where the taxdump has no plastid column), `names.tsv` (taxid,
 name, class: scientific name or synonym), `merged.tsv` (old, new). `eukore.ncbi.Ncbi(folder)` reads it.
 
 A taxid is NCBI's of the taxdump the manifest names (`inputs.taxdump_md5`). A taxid NCBI has merged into another since
@@ -338,6 +338,8 @@ The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz
   `benchmarks`, the build's measures of the package (a reader of format 4 needs neither). Since 2026-11-07, still
   format 4: `organelle/genes.tsv`'s mitochondrial `CYTB` and plastid `rbcL`, `matK` and `tufA`; `organelle/molecules.fna.gz`; `metadata/` and the
   manifest's `counts.metadata` (a reader of format 4 needs none of them).
+- 5 (2026-11-07, Eukore 0.13): `taxonomy/nodes.tsv`'s `mgcode` and `pgcode`; translations by every NCBI table
+  (until 5 the nuclear tables 1, 6, 10, 12, 15 and 26-31 alone; another read as the standard code).
 - 2026-11-06, no new format (optional, added to a built package): `depth.tsv`, `genomes.tsv`'s `rdna_copies_reads`,
   `mt_copies_reads` and `pt_copies_reads`, the manifest's `inputs.read_depth` (`tools/rdna_depth.py`). A reader
   takes a package with or without them.

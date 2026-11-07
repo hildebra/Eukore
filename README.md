@@ -30,7 +30,7 @@ Eukore is two things:
 
 It is made for tools that detect and profile eukaryotes in metagenomes (protal reads it as its eukaryote reference),
 and for anyone needing clean eukaryote marker genes: phylogenetics, primer design, contamination screens. Eukore's
-version is 0.12; it was named EUKDB until 2026-11-06.
+version is 0.13 (package format 5); it was named EUKDB until 2026-11-06.
 
 ## What is in Eukore
 
@@ -50,7 +50,7 @@ FCS-GX and ANI screens find contaminated or misidentified where a better one exi
 (protists from EukProt) come with their records.
 
 A package is plain TSV and gzipped FASTA with a `manifest.json` of checksums; its format is
-[docs/FORMAT.md](docs/FORMAT.md) (format 4).
+[docs/FORMAT.md](docs/FORMAT.md) (format 5).
 
 ```
 Eukore_2026.11/
@@ -202,7 +202,7 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 
 ## Status and limitations
 
-- Version 0.12. The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades.
+- Version 0.13. The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
 - The organelle genes have been built in tests only; they have no checks across species and no confidence yet.
 - `genomes.tsv`'s rDNA copy numbers are those of the assembly, a lower bound (arrays collapse);
