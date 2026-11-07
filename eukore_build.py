@@ -641,9 +641,10 @@ def main(argv=None):
     p.add_argument("--intraspecific", type=int, default=3,
                    help="further assemblies of each species of data/intraspecific_panel.tsv run for the barcode gap "
                         "(intraspecific/; default 3; 0: none)")
-    p.add_argument("--organelle_models", choices=organelle_mod.MODELS, default="nhmmer",
-                   help="the assemblies' organelle protein-coding genes: nhmmer's hits joined, or miniprot's exons "
-                        "by the organelle's code (default nhmmer; docs/methods.md)")
+    p.add_argument("--organelle_models", choices=organelle_mod.MODELS, default="miniprot",
+                   help="the assemblies' organelle protein-coding genes: nhmmer's hits alone, or (default) miniprot's "
+                        "exons by the organelle's code where nhmmer joined several hits (a gene with introns; "
+                        "docs/methods.md)")
     p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives (protal's "
                                       f"KSGP, e.g. 4.4 or 5.2; default KSGP's served {labels.KSGP_VERSION}, fetched)")
     p.add_argument("--midori2", help="a MIDORI2 RAW FASTA (its COI, e.g. MIDORI2_UNIQ_NUC_GB<release>_CO1_RAW.fasta.gz, "

@@ -310,7 +310,7 @@ name a mitochondrion, chloroplast, plastid or apicoplast).
 | `partial` | `t` where RefSeq marks the feature partial, barrnap's hit is partial, or nhmmer's hits cover under 80% of the query's exons |
 | `ambiguous` | the share of non-ACGT bases |
 | `name` | its common name (format 5): an animal mitochondrion's `12S` and `16S`, a land plant mitochondrion's `18S` and `26S`, a plastid's `16S` and `23S`, else the gene |
-| `model` | where its exons come from (format 5): `refseq`, `miniprot` (the 3 nearest RefSeq species' proteins aligned by the organelle's code, `--organelle_models miniprot`), `nhmmer`, `barrnap` |
+| `model` | where its exons come from (format 5): `refseq`, `miniprot` (the 3 nearest RefSeq species' proteins aligned by the organelle's code, where nhmmer joined several hits: a gene with introns; `--organelle_models`), `nhmmer`, `barrnap` |
 | `parts` | its exons on `seqid` in the order transcribed, `start-end:strand,...` (format 5), `-` where not known (nhmmer's hits joined) |
 | `trans_spliced` | `t` for a trans-spliced gene (its record its exons joined), else `f` (format 5) |
 | `regions` | the trnH-psbA record's parts on it, `psbA3':0-200,spacer:200-...,trnH:...` (0-based, end excluded), else `-` (format 5) |

@@ -377,6 +377,19 @@ class Format5Test(unittest.TestCase):
         self.assertEqual((nad1["trans_spliced"], nad1["exons"], nad1["sequence"]),
                          (True, 2, rrna.revcomp(seq[3000:3100]) + seq[99:200]))
 
+    def test_models_combined(self):
+        # nhmmer's single hit kept; its several hits (introns) replaced by miniprot's whole model; a gene nhmmer missed
+        # taken; miniprot's partial model never replaces nhmmer's
+        found = {"CYTB": dict(gene="CYTB", exons=1, model="nhmmer"), "COX1": dict(gene="COX1", exons=3, model="nhmmer"),
+                 "nad5": dict(gene="nad5", exons=2, model="nhmmer"), "SSU": dict(gene="SSU", exons=1, model="barrnap")}
+        models = {"CYTB": dict(gene="CYTB", partial=False, model="miniprot"),
+                  "COX1": dict(gene="COX1", partial=False, model="miniprot"),
+                  "nad5": dict(gene="nad5", partial=True, model="miniprot"),
+                  "atp6": dict(gene="atp6", partial=True, model="miniprot")}
+        got = organelle.with_miniprot(found, models)
+        self.assertEqual({g: r["model"] for g, r in got.items()},
+                         {"CYTB": "nhmmer", "COX1": "miniprot", "nad5": "nhmmer", "SSU": "barrnap", "atp6": "miniprot"})
+
     def test_coding_sequences_proteins_and_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))

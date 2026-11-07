@@ -227,11 +227,22 @@ So that a user (protal's build) has what it needs without computing it again:
   primer sits). The protein-coding genes are named by one table (`organelle.CDS_RULES`: a feature's /gene, else its
   /product). GenBank locations are read whole, so a trans-spliced gene (a plant mitochondrion's nad1 and nad5:
   exons on both strands, or out of order) is kept as its exons joined (until 0.2 it was left out).
-- **Exact exons in assemblies** (`--organelle_models miniprot`). miniprot aligns the 3 nearest RefSeq species'
+- **Exons in assemblies** (`--organelle_models`, default `miniprot`). miniprot aligns the 3 nearest RefSeq species'
   proteins to the assembly's organelle molecules by the species' organelle code (`taxonomy/nodes.tsv`'s mgcode,
-  pgcode); where it aligns a gene whole its exons replace nhmmer's joined hits. `tools/organelle_models.py` measures
-  both against RefSeq's own exons (each sampled RefSeq record searched as an assembly, its own species' genes left out
-  of the queries); nhmmer stays the default until that measure says otherwise.
+  pgcode). Where nhmmer joined several hits (a gene with introns, its exons otherwise unknown) and miniprot aligns the
+  whole protein, miniprot's model is taken; nhmmer's single hit is kept (`organelle.with_miniprot`). The rule is
+  measured (`tools/organelle_models.py`, 2026-11-07): 100 RefSeq records of each organelle, each searched as an
+  assembly with its own species' records left out of the queries, against RefSeq's own exons:
+
+| genes | nhmmer: found, exons exact, median F1 of exon bases | miniprot: the same |
+|---|---|---|
+| without introns (mitochondrial COX1, COX3, CYTB, atp6, nad1, nad5; plastid matK, psbA, rbcL, tufA, ycf1; 16 to 95 genes each) | all (67 of 68 ycf1); 53-96%; 1.00 | all (66 of 68 ycf1); 53-96%; 1.00 |
+| with introns (1 to 36 genes each) | all (16 of 17 nad1); none; 0.27-0.60 (0.79-0.99 for tufA, ycf1, matK) | 88-100%; 0-20%; 0.955-0.997 |
+
+  Without introns nhmmer's ends are exact as often or more (COX3 67 of 86, miniprot 46; CYTB 53 of 74, miniprot 41);
+  with introns miniprot's exons are nearly right (its splice sites a few bases off: group I and II introns have no
+  spliceosomal signals) where nhmmer's hits give none. A gene RefSeq annotates trans-spliced or partial is not
+  measured.
 - **Proteins and checks.** Each protein-coding gene's coding sequence translated by the organelle's code
   (`organelle/proteins.faa.gz`; an internal stop is a NUMT, a pseudogene, RNA editing or a code NCBI does not give);
   `qc.check` on each gene of each organelle across species (own-species, 99% collapses, length outliers); a tier

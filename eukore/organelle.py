@@ -706,7 +706,22 @@ def assembly_rows(path):
     return [dict(zip(head, line.rstrip("\n").split("\t"))) for line in lines[1:] if line.strip()]
 
 
-MODELS = ("nhmmer", "miniprot")  # the assembly pass' protein-coding gene models: nhmmer's hits, or miniprot's exons
+MODELS = ("nhmmer", "miniprot")  # the assembly pass' protein-coding gene models: nhmmer's hits alone, or with miniprot's
+
+
+def with_miniprot(found, models):
+    """nhmmer's (and barrnap's) genes of an organelle and miniprot's models of its protein-coding genes -> the genes
+    taken: miniprot's where nhmmer joined several hits (a gene with introns: its exons unknown) and miniprot aligned the
+    whole protein, or where nhmmer found none; nhmmer's single hit kept. tools/organelle_models.py on 100 RefSeq
+    records of each organelle (2026-11-07), each searched as an assembly against RefSeq's own exons: with introns,
+    miniprot's exons reach a median F1 of 0.96-0.99, nhmmer's joined hits 0.27-0.60; without, both 1.00, nhmmer's ends
+    exact more often (COX3 67 of 86 genes, miniprot's 46)."""
+    out = dict(found)
+    for gene, row in models.items():
+        mine = out.get(gene)
+        if mine is None or (str(mine.get("exons")) != "1" and not row["partial"]):
+            out[gene] = row
+    return out
 
 
 def run_assembly(args):
@@ -714,7 +729,7 @@ def run_assembly(args):
     Nearest.queries}, barrnap, nhmmer, threads, and since 2026-11-07 proteins {organelle: Nearest.proteins}, codes
     {organelle: genetic code}, miniprot or None) into its out file (ASSEMBLY_COLUMNS; written, even empty, once done)
     -> (accession, genes, why). nhmmer's genes first; barrnap's rRNA where nhmmer found none; with miniprot, its
-    protein-coding genes where it aligns their whole (exact exons)."""
+    models of the protein-coding genes nhmmer found in several hits (with_miniprot)."""
     acc, path, out, animal, queries, barrnap, nhmmer, threads, *more = args
     proteins, codes, miniprot = more if more else ({}, {}, None)
     try:
@@ -728,10 +743,8 @@ def run_assembly(args):
             for (_k, gene), (row, copies) in barrnap_genes(group, barrnap, kingdom, threads).items():
                 found.setdefault(gene, dict(row, copies=copies))
             if miniprot:
-                for gene, row in miniprot_genes(group, proteins.get(organelle, {}), miniprot,
-                                                codes.get(organelle, 1), threads).items():
-                    if not row["partial"] or gene not in found:
-                        found[gene] = row
+                found = with_miniprot(found, miniprot_genes(group, proteins.get(organelle, {}), miniprot,
+                                                            codes.get(organelle, 1), threads))
             rows += found.values()
     except (OSError, EOFError, RuntimeError) as e:
         return acc, None, f"{type(e).__name__}: {e}"

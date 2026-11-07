@@ -260,7 +260,7 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 
 - Version 0.2. The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
-- The organelle genes have checks across species and a confidence tier since 0.2, measured on a trial without RefSeq's organelle release (assembly molecules alone); the assemblies' protein-coding genes are nhmmer's hits joined by default (`--organelle_models miniprot` for exact exons, being measured by `tools/organelle_models.py`).
+- The organelle genes have checks across species and a confidence tier since 0.2, measured on a trial without RefSeq's organelle release (assembly molecules alone). In assemblies, a protein-coding gene with introns takes miniprot's exons (median F1 0.96-0.99 against RefSeq's, against nhmmer's joined hits' 0.27-0.60), one without nhmmer's single hit ([methods.md](docs/methods.md)); a few splice sites stay off by some bases.
 - The genetic code check judges only the stop codons and CTG, where seen often enough at conserved positions (CTG-clade yeasts avoid CTG: not judged); a transcriptome's BUSCO copies (TSA, a species without a genome) have no introns and are at most `medium`.
 - The 28S's D domains are not given (no published coordinates on one reference found); none of the classic markers RPB1, RPB2, TEF1, TUB2 is a BUSCO ([docs/loci.md](docs/loci.md)).
 - protal reads `call_<supergroup>` of format 4: format 5 has `call_<group>` (SAR split into Stramenopiles, Alveolata, Rhizaria, Telonemia).
