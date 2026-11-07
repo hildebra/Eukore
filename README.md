@@ -35,6 +35,10 @@ It is made for tools that detect and profile eukaryotes in metagenomes (protal r
 and for anyone needing clean eukaryote marker genes: phylogenetics, primer design, contamination screens. Eukore's
 version is 0.2 (package format 5); it was named EUKDB until 2026-11-06.
 
+<p align="center">
+  <img src="docs/figures/overview_slide.png" alt="Eukore at a glance: 21 sources, the build's three stages, the package's parts" width="860">
+</p>
+
 ## What is in Eukore
 
 | | per species | from | complete as |
@@ -195,7 +199,8 @@ outputs are in [docs/building.md](docs/building.md).
 </p>
 
 The figure (`docs/figures/overview.py`; the parts added in Eukore 0.2 marked) carries NCBI's and the references'
-numbers of 2026-11; a package's own counts head its panel b with `--package`.
+numbers of 2026-11; a package's own counts head its panel b with `--package`. The figure at the top of this page is
+its short form (`--slide`, 16:9, for a presentation).
 
 Details, and what was checked on real genomes, are in [docs/methods.md](docs/methods.md).
 
