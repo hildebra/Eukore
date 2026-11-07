@@ -299,7 +299,7 @@ def confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work):
     scores = hmmsearch({n: a["protein"] for n, (_j, a) in candidates.items()}, hmm_db, hmmsearch_bin, threads, work)
     by_region = {}  # (locus, region) -> its confirmed alignment of the best HMM score
     for name, (key, r) in candidates.items():
-        got = {odb.locus_of_hmm.get(h, h): v for h, v in scores.get(name, {}).items()}
+        got = odb.by_locus(scores.get(name, {}))
         if not got:
             continue
         best_hmm = max(got, key=lambda h: got[h][0])
@@ -513,7 +513,7 @@ def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hm
     scores = hmmsearch(proteins, hmm_db, hmmsearch_bin, threads, work)
     out = dict(chosen)
     for locus, m in models.items():
-        got = {odb.locus_of_hmm.get(h, h): v for h, v in scores.get(locus, {}).items()}
+        got = odb.by_locus(scores.get(locus, {}))
         if not got or max(got, key=lambda h: got[h][0]) != locus:
             continue
         s, cov = got[locus]

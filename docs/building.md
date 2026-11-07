@@ -149,6 +149,11 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
     (`WORK/sources/labels`), Rfam's eukaryote SSU model (`WORK/sources/rfam`), ENA's list of eukaryote TSA sets
     (`WORK/sources/tsa`). MIDORI2 and BOLD are not fetched (their URLs change, BOLD's bulk data needs a login): give
     them with `--midori2` and `--bold_tsv`.
+  - since 0.2, Eukore's marker set (`WORK/sources/eukore_markers`, `eukore/markers.py`): KOfam's `ko_list` and its
+    markers' and decoys' profiles (out of KOfam's 1.6 GB archive, fetched in 16 ranges at once and deleted),
+    Swiss-Prot's eukaryote proteins (~90 MB, EBI's FTP) and NCBI's proteins named as each marker (`data/markers.tsv`'s
+    Entrez query: RefSeq's of every eukaryote, GenBank's of the protists; 3 per organism, by E-utilities), scored with
+    the profiles (hmmsearch) into the markers' query proteins, one per species. About an hour, most of it NCBI's.
 
   It also fetches the transcriptomes of species without a genome and the intraspecific panel's further assemblies,
   as it fetches genomes.
@@ -205,6 +210,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
 | `--organelle_models` | `miniprot` | the assemblies' organelle protein-coding genes: `nhmmer`'s hits alone, or with `miniprot`'s exons by the organelle's code where nhmmer joined several hits (a gene with introns; measured: [methods.md](methods.md); format 5) |
 | `--intraspecific` | 3 | further assemblies of each species of `data/intraspecific_panel.tsv` run for the barcode gap (`intraspecific/`); 0: none |
+| `--no_markers` | markers on | no Eukore marker loci (`data/markers.tsv`: RPB1, RPB2, EF-2, EF-1α, ...), the BUSCOs alone |
 | `--no_tsa` | transcriptomes on | no INSDC transcriptomes (ENA's TSA sets) for the species without a genome |
 | `--midori2` | none | a MIDORI2 RAW FASTA whose lineages `species.tsv` gives (its URLs change with each release: download it yourself) |
 | `--bold_tsv` | none | a BOLD data package's TSV (`bin_uri`, `species`): its BINs in `crossrefs.tsv` (BOLD's bulk data needs a login) |

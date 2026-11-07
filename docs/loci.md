@@ -74,6 +74,12 @@ species) are nearly universal but single-copy in few species:
 
 So none fails for being rare: they fail BUSCO's single-copy rule, mostly because OrthoDB groups them with paralogs
 older than eukaryotes' last common ancestor or because lineages duplicated them. Phylogenies that use them pick the
-right paralog by hand (RPB1 against RPA190 and RPC160), which a single-copy screen cannot. Fungal multilocus
-phylogenies' RPB1, RPB2 and TEF1 would be new loci of Eukore's own, with a paralog-aware caller, not a name for existing
-ones. (`tools/classic_markers.py` makes the first part of this check; the OrthoDB figures were read from its API.)
+right paralog by hand (RPB1 against RPA190 and RPC160), which a single-copy screen cannot. (`tools/classic_markers.py`
+makes the first part of this check; the OrthoDB figures were read from its API.)
+
+Since 0.2 (2026-11-07) nine of them are loci of Eukore's own, with a paralog-aware caller: the package's `markers/`
+([FORMAT.md](FORMAT.md#markers-format-5), `eukore/markers.py`). Each is defined by KEGG KOfam profiles of the ortholog
+and of its paralogs, the decoys: a region whose best profile is a decoy's is not the marker, the hand choice above
+made a rule. RPB1, RPB2, EF-2 and EF-1α are `clean` (an ortholog, its paralogs apart); β-tubulin, actin, HSP90, GAPDH
+and H3 are `family` (a multigene family: its best copy, its other copies counted). Calmodulin is not one: its EF-hand
+relatives are too many and too alike. How they were checked: [methods.md](methods.md#eukores-marker-loci).

@@ -541,10 +541,11 @@ _ODB = {}
 
 def odb_of(settings):
     """The worker's dataset (read once per process)."""
-    key = settings["odb"]
+    key = (settings["odb"], settings.get("markers"), tuple(settings["loci"]))
     if key not in _ODB:
         _ODB.clear()
-        _ODB[key] = odb_mod.Odb(settings["odb"], settings["loci"])
+        _ODB[key] = odb_mod.Odb(settings["odb"], settings["loci"],
+                                [settings["markers"]] if settings.get("markers") else [])
     return _ODB[key]
 
 

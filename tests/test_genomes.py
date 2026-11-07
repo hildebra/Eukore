@@ -244,6 +244,19 @@ class RunTest(unittest.TestCase):
             self.assertEqual(sp["4932"]["ncbi_lineage"], "Eukaryota;Fungi;Ascomycota;Saccharomycetes;"
                                                          "Saccharomycetales;Saccharomycetaceae;Saccharomyces;"
                                                          "Saccharomyces cerevisiae")
+            # a locus of Eukore's own markers (since 2026-11-07) in its own folder, with the same files
+            marked = [dict(i, set="markers") if i["locus"] == "2at2759" else i for i in loci]
+            out2 = package.write(os.path.join(tmp, "out", "Eukore_2026.12"), "2026.12", ncbi, collected, marked,
+                                 None, genomes_dir, {"test": True}, None, [labels.read_pr2(pr2)])
+            self.assertIsNone(package.check(out2, deep=True))
+            self.assertEqual(set(package.read_copies(out2, "2at2759", "proteins", "markers")), {YEAST, other})
+            self.assertFalse(os.path.isfile(os.path.join(out2, "busco", "copies", "2at2759.fna.gz")))
+            self.assertEqual([r["locus"] for r in package.read_table(out2, "markers/loci.tsv")], ["2at2759"])
+            self.assertNotIn("2at2759", {r["locus"] for r in package.read_table(out2, "busco/copies.tsv")})
+            self.assertEqual({r["locus"] for r in package.read_table(out2, "markers/copies.tsv")}, {"2at2759"})
+            with open(os.path.join(out2, "manifest.json")) as fh:
+                counts = json.load(fh)["counts"]
+            self.assertEqual((counts["busco_loci"], counts["marker_loci"]), (2, 1))
             # the prune: the model species' genome kept first
             size = os.path.getsize(genomes.genome_file(genomes_dir, YEAST))
             kept = genomes.prune(genomes_dir, work, size, set(), {YEAST})

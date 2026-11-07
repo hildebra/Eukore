@@ -108,53 +108,99 @@ def names_of(folder):
     return out
 
 
-class Odb:
-    """A dataset's loci: proteins (refseq_db and ancestral variants), HMMs, cutoffs. loci: the BUSCOs to keep."""
+def hmm_names(path):
+    """Every profile's NAME in an HMM file (a marker locus may hold two: markers.py)."""
+    with open(path) as fh:
+        return [line.split()[1] for line in fh if line.startswith("NAME ")]
 
-    def __init__(self, folder, loci):
+
+class Odb:
+    """A dataset's loci: proteins (refseq_db and ancestral variants), HMMs, cutoffs. loci: the BUSCOs to keep; extra:
+    further datasets in the same layout holding the rest of loci (since 2026-11-07: Eukore's markers, markers.py),
+    whose decoy profiles (decoys/*.hmm) join the HMMs a candidate is scored against but are no locus."""
+
+    def __init__(self, folder, loci, extra=()):
         self.folder = folder
         self.loci = list(loci)
         wanted = set(self.loci)
-        self.cutoff = {}
-        with open(os.path.join(folder, "scores_cutoff")) as fh:
-            for line in fh:
-                f = line.split()
-                if len(f) >= 2 and f[0] in wanted:
-                    self.cutoff[f[0]] = float(f[1])
+        self.cutoff, self.home, self.names = {}, {}, {}
+        folders = [folder] + [f for f in extra if f]
+        for f in folders:
+            with open(os.path.join(f, "scores_cutoff")) as fh:
+                for line in fh:
+                    x = line.split()
+                    if len(x) >= 2 and x[0] in wanted and x[0] not in self.cutoff:
+                        self.cutoff[x[0]], self.home[x[0]] = float(x[1]), f
+            self.names.update({k: v for k, v in names_of(f).items() if k not in self.names})
         missing = wanted - set(self.cutoff)
         if missing:
             raise ValueError(f"{folder}: no {sorted(missing)[:5]} (another dataset?)")
-        self.hmm = {locus: os.path.join(folder, "hmms", f"{locus}.hmm") for locus in self.loci}
-        self.names = names_of(folder)
+        self.markers = {locus for locus in self.loci if self.home[locus] != folder}  # Eukore's own loci
+        self.hmm = {locus: os.path.join(self.home[locus], "hmms", f"{locus}.hmm") for locus in self.loci}
         headers = {locus: hmm_header(path) for locus, path in self.hmm.items()}
         self.length = {locus: h[1] for locus, h in headers.items()}
         self.locus_of_hmm = {h[0] or locus: locus for locus, h in headers.items()}  # hmmsearch's names -> loci
+        for locus in self.markers:
+            self.locus_of_hmm.update({name: locus for name in hmm_names(self.hmm[locus])})
+        self.span = {}  # a marker profile's span share (hmm_spans): KOfam's are longer than the proteins they model
+        for f in folders[1:]:
+            path = os.path.join(f, "hmm_spans")
+            if os.path.isfile(path):
+                with open(path) as fh:
+                    self.span.update({x[0]: float(x[1]) for x in (line.split() for line in fh) if len(x) >= 2})
+        self.decoys = sorted(os.path.join(f, "decoys", n) for f in folders[1:]
+                             if os.path.isdir(os.path.join(f, "decoys"))
+                             for n in os.listdir(os.path.join(f, "decoys")) if n.endswith(".hmm"))
         self.proteins = collections.defaultdict(list)  # locus -> [(taxid, name, protein)]
-        for name, seq in read_fasta(os.path.join(folder, "refseq_db.faa.gz")):
-            locus, _, rest = name.partition("_")
-            taxid = rest.split("_", 1)[0]
-            if locus in wanted and taxid.isdigit():
-                self.proteins[locus].append((int(taxid), name, seq))
         self.ancestral = collections.defaultdict(list)
-        path = os.path.join(folder, "ancestral_variants")
-        if os.path.isfile(path):
-            for name, seq in read_fasta(path):
-                locus = name.rsplit("_", 1)[0]
-                if locus in wanted:
-                    self.ancestral[locus].append((name, seq))
+        for f in folders:
+            mine = {locus for locus in wanted if self.home[locus] == f}
+            for name, seq in read_fasta(os.path.join(f, "refseq_db.faa.gz")):
+                locus, _, rest = name.partition("_")
+                taxid = rest.split("_", 1)[0]
+                if locus in mine and taxid.isdigit():
+                    self.proteins[locus].append((int(taxid), name, seq))
+            path = os.path.join(f, "ancestral_variants")
+            if os.path.isfile(path):
+                for name, seq in read_fasta(path):
+                    locus = name.rsplit("_", 1)[0]
+                    if locus in mine:
+                        self.ancestral[locus].append((name, seq))
+
+    def by_locus(self, hits):
+        """A protein's hmmsearch hits {profile: (score, HMM coverage)} -> {locus: (score, coverage)}, per locus its best
+        profile's (a marker may have two), a decoy's under its own name; a marker profile's coverage over its span
+        share (its members' median coverage, hmm_spans), at most 1: complete reads as it does for a BUSCO."""
+        got = {}
+        for h, (s, cov) in hits.items():
+            locus = self.locus_of_hmm.get(h, h)
+            if locus not in got or s > got[locus][0]:
+                got[locus] = (s, min(1.0, cov / self.span.get(h, 1.0)))
+        return got
 
     def species(self):
+        """The BUSCO dataset's species (its loci's proteins'; the markers' UniProt species left out): the OrthoDB
+        benchmark's and the held-out calls'."""
+        return sorted({t for locus, ps in self.proteins.items() if locus not in self.markers for t, _n, _s in ps})
+
+    def all_species(self):
+        """Every species whose proteins are queries (the markers' too): their lineages rank a genome's queries."""
         return sorted({t for ps in self.proteins.values() for t, _n, _s in ps})
 
     def hmm_db(self, path):
-        """The loci's HMMs in one file (hmmsearch's query) -> path."""
+        """The loci's HMMs and the markers' decoys in one file (hmmsearch's query) -> path."""
         if not os.path.isfile(path):
             with open(util.part_of(path), "w", newline="\n") as out:
-                for locus in self.loci:
-                    with open(self.hmm[locus]) as fh:
+                for p in [self.hmm[locus] for locus in self.loci] + self.decoys:
+                    with open(p) as fh:
                         out.write(fh.read())
             os.replace(util.part_of(path), path)
         return path
+
+    def digest(self):
+        """A short digest of the loci and decoys (an hmm_db's name: a new locus makes a new one)."""
+        import hashlib  # noqa: PLC0415
+        return hashlib.md5(",".join(self.loci + [os.path.basename(d) for d in self.decoys]).encode()).hexdigest()[:10]
 
     def queries(self, lineage, lineages, nearest=NEAREST, leave_out=()):
         """A genome's queries -> {query name: protein}: per locus its `nearest` proteins of the species closest to it
@@ -192,8 +238,9 @@ def read_fasta(path):
 
 
 def species_lineages(odb, ncbi):
-    """{dataset species taxid: its NCBI ancestor taxids} (a genome's queries' ranking; workers get it as data)."""
-    return {t: list(ncbi.ancestors(ncbi.merged.get(t, t))) for t in odb.species()}
+    """{dataset species taxid: its NCBI ancestor taxids} (a genome's queries' ranking; workers get it as data; the
+    markers' species too, since 2026-11-07)."""
+    return {t: list(ncbi.ancestors(ncbi.merged.get(t, t))) for t in odb.all_species()}
 
 
 def own_taxids(odb, ncbi):

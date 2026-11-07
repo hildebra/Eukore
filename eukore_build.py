@@ -39,7 +39,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
 from eukore import annotation, benchmarks, labels, metadata as metadata_mod, organelle as organelle_mod  # noqa: E402
-from eukore import groups as groups_mod, intraspecific as intraspecific_mod, quality  # noqa: E402
+from eukore import groups as groups_mod, intraspecific as intraspecific_mod, markers as markers_mod, quality  # noqa: E402
 from eukore import placement, primers as primers_mod, reads as reads_mod, regions as regions_mod  # noqa: E402
 from eukore import __version__  # noqa: E402
 
@@ -86,6 +86,9 @@ def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False):
     # (until 2026-11-06 one failure stopped the stage, NCBI's quality reports then missing from the genome ranking)
     for what, fetch in (("RefSeq's organelle release", lambda: organelle_mod.fetch(src_dir, sources.download, say)),
                         ("Rfam's SSU model", lambda: regions_mod.fetch(src_dir, sources.download, say)),
+                        ("Eukore's marker set (KOfam, UniProt)",
+                         lambda: markers_mod.fetch(src_dir, sources.download, say, shutil.which("hmmsearch") or "hmmsearch",
+                                                   os.cpu_count() or 1)),
                         ("ENA's list of TSA transcriptomes",
                          lambda: genomes.fetch_tsa(src_dir, sources.download, say, refresh)),
                         ("NCBI's FCS-GX and ANI reports",
@@ -201,21 +204,35 @@ def loci_of(opts, src_dir):
     return [locus for locus in every if locus in wanted]
 
 
+def markers_of(opts, src_dir):
+    """Eukore's own marker dataset (markers.py; since 2026-11-07), or None (--no_markers, or not built: the fetch
+    stage builds it)."""
+    return None if getattr(opts, "no_markers", False) else markers_mod.ready(src_dir)
+
+
+def odb_of(opts, src_dir):
+    """The loci called: the BUSCOs (loci_of) and the markers, in one dataset object."""
+    marker_folder = markers_of(opts, src_dir)
+    loci = loci_of(opts, src_dir) + (markers_mod.all_loci(marker_folder) if marker_folder else [])
+    return odb_mod.Odb(odb_mod.folder_of(src_dir), loci, [marker_folder] if marker_folder else [])
+
+
 def loci_items(opts, src_dir):
-    """The BUSCOs called as package.write takes them: locus, OrthoDB name, cutoff, the HMM's length."""
-    folder = odb_mod.folder_of(src_dir)
-    odb = odb_mod.Odb(folder, loci_of(opts, src_dir))
-    return [dict(locus=l, name=odb.names.get(l, "-"), cutoff=odb.cutoff[l], hmm_length=odb.length[l])
-            for l in odb.loci]
+    """The loci called as package.write takes them: locus, its name, cutoff, the HMM's length, and its set (busco, or
+    markers: Eukore's own, since 2026-11-07)."""
+    odb = odb_of(opts, src_dir)
+    return [dict(locus=l, name=odb.names.get(l, "-"), cutoff=odb.cutoff[l], hmm_length=odb.length[l],
+                 set="markers" if l in odb.markers else "busco") for l in odb.loci]
 
 
 def settings_of(opts, src_dir, ncbi, staged_only):
     folder = odb_mod.folder_of(src_dir)
-    odb = odb_mod.Odb(folder, loci_of(opts, src_dir))
-    hmm_db = odb.hmm_db(os.path.join(opts.work, "busco_loci.hmm"))
+    odb = odb_of(opts, src_dir)
+    hmm_db = odb.hmm_db(os.path.join(opts.work, f"loci_{odb.digest()}.hmm"))  # a new locus or decoy: a new file
     tiara = None if opts.no_tiara else shutil.which(opts.tiara)
     return dict(work=opts.work, genomes=opts.genomes, miniprot=opts.miniprot, hmmsearch=opts.hmmsearch,
                 threads=opts.threads_per_genome, staged_only=staged_only, odb=folder, loci=odb.loci, hmm_db=hmm_db,
+                markers=markers_of(opts, src_dir),
                 odb_lineages=odb_mod.species_lineages(odb, ncbi), odb_own=odb_mod.own_taxids(odb, ncbi), tiara=tiara,
                 rescue=not opts.no_rescue and bool(shutil.which("esl-translate")),
                 esl_translate=shutil.which("esl-translate"), sourmash=sourmash_of(opts),
@@ -539,7 +556,8 @@ def measure(part, opts, src_dir, ncbi, collected, vsearch, stages, fates=None, t
     try:
         return benchmarks.run(part, ncbi, odb_mod.folder_of(src_dir), vsearch, opts.threads, opts.work, nearest,
                               stages, log=say, fates=fates, compare=opts.read_compare, inside=inside, reads=reads,
-                              databases=databases_of(src_dir, ncbi, references, inside))
+                              databases=databases_of(src_dir, ncbi, references, inside),
+                              marker_folder=markers_of(opts, src_dir))
     except Exception as e:  # noqa: BLE001
         say(f"WARNING: the benchmarks failed ({type(e).__name__}: {e}): the package is written without them")
         shutil.rmtree(os.path.join(part, benchmarks.FOLDER), ignore_errors=True)
@@ -635,6 +653,8 @@ def main(argv=None):
                         f"(default the environment's {annotation.VEUPATHDB_KEY}; without, none of its)")
     p.add_argument("--no_rescue", action="store_true", help="no rescue pass of the BUSCOs miniprot missed (loci.py: "
                                                             "their HMMs in the genome's six-frame ORFs place them)")
+    p.add_argument("--no_markers", action="store_true",
+                   help="no Eukore marker loci (RPB1, RPB2, EF-2, EF-1a, ...: data/markers.tsv), the BUSCOs alone")
     p.add_argument("--no_tsa", action="store_true",
                    help="no transcriptomes (ENA's TSA sets) for the species without a genome (default: their BUSCOs "
                         "called in them, source tsa)")
@@ -830,12 +850,13 @@ def main(argv=None):
             say(f"WARNING: {len(undone)} genomes of the plan are not done (e.g. {undone[:3]}): the package is written "
                 "without them (manifest: inputs.genomes_not_done)")
         with timed(stages, "BUSCO copies and their checks"):
-            collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads)
+            collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads,
+                                        markers_mod.kinds(markers_of(opts, src_dir)))
         with timed(stages, "introns and genetic codes"):
             hmmalign = shutil.which("hmmalign")
             if not hmmalign:
                 say("WARNING: no hmmalign: introns without their places in the genes, no genetic code check")
-            hmm_of = odb_mod.Odb(odb_mod.folder_of(src_dir), loci_of(opts, src_dir)).hmm
+            hmm_of = odb_of(opts, src_dir).hmm
             package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say)
         with timed(stages, "rRNA records and their checks"):
             records = genome_rrna_records(opts, job_map, ncbi) + published(opts, src_dir, ncbi)

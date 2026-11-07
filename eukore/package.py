@@ -19,6 +19,7 @@ from . import __version__
 
 FORMAT = 5
 READABLE = (4, 5)  # the formats a reader of this one takes (5 adds files and columns, and regroups supergroup)
+LOCUS_SETS = ("busco", "markers")  # the loci's folders: BUSCO's, Eukore's own markers (markers.py; since 2026-11-07)
 MANIFEST = "manifest.json"
 LOCI_COLUMNS = ("locus", "name", "cutoff", "hmm_length", "species", "called", "duplicated", "fragmented", "call_rate",
                 "median_length", "median_cds_length", "median_protein_length")
@@ -65,11 +66,13 @@ def gap_runs(seq, min_run=GAP_MIN):
         i = j
 
 
-def copy_confidence(r):
+def copy_confidence(r, family=False):
     """A copy's tier and why (busco/copies.tsv's confidence and flags): low where a check calls it another organism's
     (own_species f, FCS-GX's EXCLUDE/TRIM/FIX, tiara's prokaryote window); medium where something may be wrong
     (Fragmented, Duplicated, called by the rescue pass, its protein's length in the locus' outer 5%, an assembly gap in
-    it, at a contig's end, its own-species check undecided, an organelle window, FCS-GX's REVIEW); else high."""
+    it, at a contig's end, its own-species check undecided, an organelle window, FCS-GX's REVIEW); else high.
+    family: a multigene family's marker (markers.py's kind family: actin, tubulins, ...), whose Duplicated is its
+    nature, no flag."""
     low, medium = [], []
     if r.get("own_species") == "f":
         low.append("own_species")
@@ -80,7 +83,8 @@ def copy_confidence(r):
         low.append("window_prokaryote")
     if r.get("transcript") == "t":  # a transcriptome's copy (TSA): no introns, its Duplicated its isoforms
         medium.append("transcript")
-    if r.get("status") == "Fragmented" or (r.get("status") == "Duplicated" and r.get("transcript") != "t"):
+    if r.get("status") == "Fragmented" or (r.get("status") == "Duplicated" and r.get("transcript") != "t"
+                                           and not family):
         medium.append(r["status"].lower())
     if r.get("rescued") == "t":  # loci.py's rescue pass: its span may fall short of the gene's ends
         medium.append("rescued")
@@ -153,11 +157,13 @@ def done_copies(work, accession):
     return {lines[i][1:]: lines[i + 1] for i in range(0, len(lines) - 1, 2)}
 
 
-def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1):
+def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None):
     """What the package holds of the BUSCO genes -> dict(genomes {accession: row}, copies {accession: {locus: sequence}},
     features [FEATURE_COLUMNS dicts], copy_rows [COPY_COLUMNS dicts], taxids). Each species' genome (its job) with
     the copies its run called; the species' other assemblies listed (source "assembly", no copies); the copies'
-    checks across species (qc.check)."""
+    checks across species (qc.check). kinds: {marker locus: clean or family} (markers.kinds): a genome's duplication
+    is read on its BUSCOs alone, a family marker's Duplicated is no flag."""
+    kinds = kinds or {}
     by_accession = {r["accession"]: r for r in assemblies}
     genomes, copies, features, copy_rows = {}, {}, [], []
     from .genomes import is_done  # noqa: PLC0415
@@ -226,11 +232,12 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1):
                  nearest_id=c["nearest_id"], nearest_depth=c["nearest_depth"])  # the last two: benchmarks', no columns
         if genomes[r["accession"]].get("source") == "tsa":  # since 2026-11-07: a transcriptome's copy
             r["transcript"] = "t"
-        r["confidence"], r["flags"] = copy_confidence(r)
+        r["confidence"], r["flags"] = copy_confidence(r, kinds.get(r["locus"]) == "family")
         proteins[key], r["internal_stops"] = gencode.protein_of(cds[key], genomes[r["accession"]].get("gencode", 1))
     by_genome = collections.defaultdict(list)
     for r in copy_rows:
-        by_genome[r["accession"]].append(r)
+        if r["locus"] not in kinds:  # the BUSCOs' (single-copy by their choice): the markers' are not
+            by_genome[r["accession"]].append(r)
     for acc, g in genomes.items():
         if g["representative"] == "t" and g.get("source") != "tsa":  # a transcriptome's isoforms are no duplication
             g.update(duplication_of(by_genome.get(acc, [])))
@@ -303,7 +310,10 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
     functions of the unfinished folder writing further files (since 2026-11-07: intraspecific/)."""
     part = util.part_of(out)
     shutil.rmtree(part, ignore_errors=True)
-    for sub in ("taxonomy", "busco/copies", "busco/cds", "busco/proteins", "rrna", "organelle"):
+    # each locus' set: busco/ (BUSCO's), markers/ (Eukore's own, markers.py; since 2026-11-07), the same files in each
+    set_of = {item["locus"]: item.get("set", "busco") for item in loci}
+    sets = [s for s in LOCUS_SETS if s in set_of.values()] or ["busco"]
+    for sub in ["taxonomy", "rrna", "organelle"] + [f"{s}/{k}" for s in sets for k in ("copies", "cds", "proteins")]:
         os.makedirs(os.path.join(part, sub))
     genomes = collected["genomes"]
     local = set()
@@ -313,8 +323,9 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
         r["local"] = f"genomes/{acc}.fna.gz" if acc in local else "-"
     _tsv(os.path.join(part, "genomes.tsv"), GENOME_COLUMNS,
          sorted(genomes.values(), key=lambda r: (str(r["species_taxid"]), r["representative"] != "t", r["accession"])))
-    rows_of_loci, call_columns = loci_rows(loci, collected, ncbi)
-    _tsv(os.path.join(part, "busco", "loci.tsv"), LOCI_COLUMNS + tuple(call_columns), rows_of_loci)
+    for s in sets:
+        rows_of_loci, call_columns = loci_rows([i for i in loci if set_of[i["locus"]] == s], collected, ncbi)
+        _tsv(os.path.join(part, s, "loci.tsv"), LOCI_COLUMNS + tuple(call_columns), rows_of_loci)
     order = {item["locus"]: i for i, item in enumerate(loci)}
     copies = collected["copies"]
     cds, proteins = collected.get("cds", {}), collected.get("proteins", {})
@@ -324,20 +335,27 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
         for sub, ext, seqs in (("copies", "fna", {a: c.get(locus) for a, c in copies.items()}),
                                ("cds", "fna", {a: s for (a, lo), s in cds.items() if lo == locus}),
                                ("proteins", "faa", {a: s for (a, lo), s in proteins.items() if lo == locus})):
-            with gzip.open(os.path.join(part, "busco", sub, f"{locus}.{ext}.gz"), "wt", compresslevel=6) as fh:
+            with gzip.open(os.path.join(part, set_of[locus], sub, f"{locus}.{ext}.gz"), "wt", compresslevel=6) as fh:
                 fh.writelines(f">{acc}\n{seqs[acc].upper()}\n" for acc in sorted(seqs) if seqs[acc])
-    _tsv(os.path.join(part, "busco", "copies.tsv"), COPY_COLUMNS,
-         sorted(collected["copy_rows"], key=lambda r: (r["accession"], order.get(r["locus"], 1 << 20))))
-    _tsv(os.path.join(part, "busco", "features.tsv"), FEATURE_COLUMNS,
-         sorted(collected["features"], key=lambda f: (f["accession"], f["locus"], int(f["start"]), f["kind"])))
+
+    def of_set(rows, s):
+        return [r for r in rows if set_of.get(r["locus"], "busco") == s]
+    for s in sets:
+        _tsv(os.path.join(part, s, "copies.tsv"), COPY_COLUMNS,
+             sorted(of_set(collected["copy_rows"], s), key=lambda r: (r["accession"], order.get(r["locus"], 1 << 20))))
+        _tsv(os.path.join(part, s, "features.tsv"), FEATURE_COLUMNS,
+             sorted(of_set(collected["features"], s), key=lambda f: (f["accession"], f["locus"], int(f["start"]),
+                                                                     f["kind"])))
     if "introns" in collected:  # package.genetics (since 2026-11-07)
         from . import codecheck, introns as introns_mod  # noqa: PLC0415
-        _tsv(os.path.join(part, "busco", "introns.tsv"), introns_mod.INTRON_COLUMNS,
-             sorted(collected["introns"], key=lambda r: (r["accession"], order.get(r["locus"], 1 << 20), r["start"])))
-        _tsv(os.path.join(part, "busco", "intron_sites.tsv"),
-             introns_mod.SITE_COLUMNS + tuple(collected["intron_site_columns"]),
-             sorted(collected["intron_sites"], key=lambda r: (order.get(r["locus"], 1 << 20), int(r["hmm_position"]),
-                                                               int(r["phase"]))))
+        for s in sets:
+            _tsv(os.path.join(part, s, "introns.tsv"), introns_mod.INTRON_COLUMNS,
+                 sorted(of_set(collected["introns"], s), key=lambda r: (r["accession"], order.get(r["locus"], 1 << 20),
+                                                                         r["start"])))
+            _tsv(os.path.join(part, s, "intron_sites.tsv"),
+                 introns_mod.SITE_COLUMNS + tuple(collected["intron_site_columns"]),
+                 sorted(of_set(collected["intron_sites"], s), key=lambda r: (order.get(r["locus"], 1 << 20),
+                                                                              int(r["hmm_position"]), int(r["phase"]))))
         os.makedirs(os.path.join(part, "metadata"), exist_ok=True)
         path = os.path.join(part, "metadata", "codons.tsv.gz")
         with gzip.open(util.part_of(path), "wt", compresslevel=6, newline="\n") as fh:
@@ -407,7 +425,8 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                                                                            if row["organelle"] == k))
                                                for k in organelle_mod.KINDS},
                            "species_organelle_genes": len(n_organelle), "taxa": taxa,
-                           "busco_loci": len(loci),
+                           "busco_loci": sum(1 for s in set_of.values() if s == "busco"),
+                           "marker_loci": sum(1 for s in set_of.values() if s == "markers"),
                            "copy_confidence": dict(collections.Counter(r["confidence"] for r in collected["copy_rows"]
                                                                        if r.get("confidence"))),
                            "rrna_confidence": dict(collections.Counter(row.get("confidence", "-")
@@ -470,12 +489,12 @@ def read_table(folder, name):
         return [dict(zip(head, line.rstrip("\n").split("\t"))) for line in fh if line.strip()]
 
 
-def read_copies(folder, locus, kind="copies"):
+def read_copies(folder, locus, kind="copies", locus_set="busco"):
     """A locus's copies (kind "copies": whole; "cds": their coding sequences; "proteins": their proteins; the last two
-    since format 5) -> {accession: sequence}."""
+    since format 5; locus_set: busco, or markers for Eukore's own loci) -> {accession: sequence}."""
     out, name = {}, None
     ext = "faa" if kind == "proteins" else "fna"
-    with gzip.open(os.path.join(folder, "busco", kind, f"{locus}.{ext}.gz"), "rt") as fh:
+    with gzip.open(os.path.join(folder, locus_set, kind, f"{locus}.{ext}.gz"), "rt") as fh:
         for line in fh:
             if line.startswith(">"):
                 name = line[1:].strip()

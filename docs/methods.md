@@ -303,3 +303,64 @@ So that a user (protal's build) has what it needs without computing it again:
   annotation; its copies are `medium` at best (`transcript`: no introns, Duplicated its isoforms), `low` where the
   own-species check calls them another clade's (cultures' food, cross-contamination). On ENA's list of 2026-11-07,
   5,025 species without a genome have a transcriptome (341 Gb), most of them animals and plants, some 400 protists.
+
+## Eukore's marker loci
+
+Since 2026-11-07 (0.2): nine classic phylogenetic and barcode genes that are not BUSCOs ([loci.md](loci.md)) are called
+as loci of Eukore's own (`data/markers.tsv`, `eukore/markers.py`; the package's `markers/`).
+
+- **Definition.** Each is one or two KEGG KOfam profiles of the ortholog (its targets) and the profiles of its
+  paralogs (its decoys): RNA polymerases I, III, IV and V for RPB1 and RPB2; the U5 snRNP GTPase, mitochondrial EF-G and
+  RIA1 for EF-2; eRF3, HBS1 and EF-Tu for EF-1α; α, γ, δ and ε tubulin for β-tubulin; ARP1 to ARP10 and the actin-likes
+  for actin; GRP94 and TRAP1 for HSP90; the Calvin cycle's GAPA/B, the spermatogenic and the NAD(P) GAPDHs for GAPDH;
+  CENP-A for H3. The decoys join the BUSCOs' HMMs: a region whose best profile is a decoy's is not the marker, the
+  BUSCOs' own rule. Checked on model species' Swiss-Prot paralogs: Arabidopsis's plastid HSP90-5 and mitochondrial
+  HSP90-6 score best against GRP94's profile, its chloroplast GAPA and GAPB against theirs, human's testis GAPDHS against
+  its own, yeast's CSE4 against CENP-A's; only Arabidopsis's plastid glycolytic GAPCp scores as its cytosolic GAPC
+  does (a duplicate of it). The skeletal muscle actin's profile is neither target nor decoy: it scores plants' and
+  yeast's actins as well as the actin profiles do.
+- **Query proteins.** Swiss-Prot's eukaryote proteins and NCBI's named as the marker (each row's Entrez query, with a
+  length range: RefSeq's of every eukaryote, GenBank's of the protists, no environmental sample; of an organism the 3 of
+  the length nearest the median). A name only gathers: a candidate is the marker's where its best profile of all the
+  targets and decoys is one of the marker's targets and one of them reaches its KO's own threshold (KOfam's rule; a
+  plant's actin scores best against the vertebrate actin profile, under its threshold, and reaches the other
+  eukaryotes' one), which leaves out the misnamed and the paralogs. A member is of 0.6 to 1.6 times the median length
+  and complete (its profile's coverage at 0.8 of the median's), both medians of whole records, Swiss-Prot's and
+  RefSeq's: GenBank's protist records are many PCR fragments (EF-1α's: 351 residues on average against RefSeq's 460;
+  16,000 of them are left out). Of a species one: the best checked record (Swiss-Prot's, then RefSeq's curated NP_,
+  RefSeq's predicted XP_, GenBank's), then one of typical length (within 10% of the median: Arabidopsis's plastid
+  GAPCp, a transit peptide longer, scores 1.7 bits over its cytosolic GAPC), then the best scoring.
+- **Contamination.** A GenBank member (RefSeq annotates assemblies NCBI screened; Swiss-Prot is curated) is dropped
+  as another organism's protein where its nearest member by shared 5-mers (both ways) is of another phylum, at 0.9 or
+  more and more alike than the marker's members of two phyla are but for 1% of pairs (pairs of its kingdom where the
+  nearest is of it: animals' β-tubulins are alike across phyla, fungi's are not; else pairs of two kingdoms), and no
+  member of its own phylum is within 0.15 of it (that is the true owner of a contaminant's copy: *Meyerozyma* sp. JA9's
+  RPB1, with *M. guilliermondii*'s at 0.88 behind *Naganishia cerealis*'s copy at 0.97); within its kingdom, only where
+  its phylum has other members (a lone phylum's conserved β-tubulin or H3 is no evidence). On the build of 2026-11-07
+  this drops 12 of ~32,000 members, each another organism's protein to look at: *Naganishia cerealis*'s RPB1, EF-2
+  and β-tubulin (*Meyerozyma*'s), *Cerrena zonata*'s β-tubulin and H3 (*Hyphopichia*'s), *Anthurium amnicola*'s EF-2
+  (a thrips's) and H3 (*Rhizophagus*'s, its mycorrhiza), an insect's actin filed as *Colletotrichum*'s, a vertebrate's
+  as *Acacia*'s, β-tubulins of one fungal phylum filed under another; one doubtful (*Mnemiopsis*'s β-tubulin). The
+  build's `members.tsv` gives every candidate assigned, its source, score, coverage and fate (member, foreign,
+  incomplete, other).
+- **Calls.** As the BUSCOs' (miniprot, then the HMMs), with the marker's cutoff half its members' 5th percentile score.
+  KOfam's profiles are longer than the proteins they model (EF-1α's 772 positions for ~460 residues), so a call's HMM
+  coverage is read over its profile's median coverage of the members (`hmm_spans`), and `complete` means what it
+  means for a BUSCO. A family marker's call is its best copy (`Duplicated` is no flag); a genome's `duplication` is
+  read on its BUSCOs alone.
+- **Validation** (`tools/validate_markers.py`, 2026-11-07, on the trial's 47 genomes): each genome whose species has
+  a member (17: the models, five *Saccharomyces*, two *Candida albicans*, two *Trichuris trichiura*, two
+  *Blastocystis*, a second *D. melanogaster*) has its markers called as the build calls them, with every query and
+  held out (its species' own proteins left out of the queries), and each call's protein compared with its species'
+  member by shared 5-mers both ways. Held out, 115 of 124 calls are concordant (0.9 or more both ways), 7 similar
+  (0.5), 1 discordant, 1 missed; held out changes no verdict (9 calls' scores by under 1.2 bits, an exon's end). RPB1
+  and RPB2 are concordant in all 26. Every call scores over its best decoy (HSP90 against GRP94
+  the nearest: 1,165 against 994 bits in *D. melanogaster*). The rest: the second *D. melanogaster* assembly
+  (GCA_038396815) calls EF-1α, β-tubulin and GAPDH with lower scores than the reference assembly does (808 against
+  1,056 bits; 618 against 709), which calls them all concordant: that assembly's errors; *S. pastorianus*'s GAPDH, a
+  hybrid's other subgenome copy; *C. elegans*'s H3, a variant; *Blastocystis hominis*'s EF-2 and EF-1α (0.7), its
+  Swiss-Prot proteins of another subtype. *Blastocystis* ST4's HSP90 is missed with its own protein as the query: the
+  one region it finds in GCA_000963395 is 45% identical, a GRP94 gene, scoring 1,033 bits against GRP94's profile and
+  782 against HSP90's: the decoy rule kept it out. Before the members' checks, KOfam's two actin profiles failed
+  Arabidopsis's actin (its best, the vertebrates', under its threshold) and Arabidopsis's member was its plastid GAPCp:
+  both fixed above.

@@ -21,4 +21,5 @@ dependencies:
   - ncbi-fcs-gx          # optional: FCS-GX (run_gx) with --fcs_gx_db, on a node of ~512 GB
   - matplotlib-base      # docs/benchmarks/plot_benchmarks.py: the benchmarks' figures
   - numpy                # eukore/metadata.py: the genomes' base and tetranucleotide counts
+  - scipy                # eukore/markers.py: the marker members' contamination check (sparse 5-mer counts)
   - sourmash>=4.8        # optional: each genome's sketch before the prune (metadata/sketches.zip)

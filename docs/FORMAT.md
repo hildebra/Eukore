@@ -32,6 +32,7 @@ measured on a panel of species ([Changes](#changes)).
 | [`busco/copies.tsv`](#busco) | each copy's call, checks, confidence, internal stops, duplicated copies' identity | 4, more in 5 |
 | [`busco/features.tsv`](#busco) | each copy's exons, introns, frameshifts, masked runs, gaps | 4 |
 | [`busco/introns.tsv`, `intron_sites.tsv`](#busco) | each intron's phase, splice sites, class, U12 look, place on the HMM; the sites shared across species | 5 |
+| [`markers/`](#markers-format-5) | Eukore's own marker loci (RPB1, RPB2, EF-2, EF-1α, ...): the same files as `busco/`, for genes BUSCO cannot hold | 5 |
 | [`rrna/records.tsv`, `records.fna.gz`](#rrna) | 18S spans and rDNA units of genomes and published long reads, their parts, checks, confidence | 4 |
 | [`rrna/regions.tsv`](#rrna) | each record's 18S V1-V5, V7-V9 | 5 |
 | [`rrna/amplicons.tsv`](#rrna) | in-silico PCR of 10 18S, ITS and 28S primer pairs on each record | 5 |
@@ -220,6 +221,26 @@ A copy failing a check is kept and flagged, so that a user chooses.
 - `intron_sites.tsv` (format 5): per locus and site, how widely its genomes hold an intron there: `locus`, `site`,
   `hmm_position`, `phase`, `genomes` (holding one), `share` (of the genomes whose copy was aligned), `share_<group>`
   (within each group, as `loci.tsv`'s `call_<group>`).
+
+## markers/ (format 5)
+Eukore's own marker loci (`data/markers.tsv`, `eukore/markers.py`): classic phylogenetic and barcode genes that are not
+BUSCOs, because OrthoDB groups each with its paralogs or lineages duplicated it ([loci.md](loci.md)). Two kinds:
+- `clean`, an ortholog apart from its old paralogs: `RPB1` and `RPB2` (RNA polymerase II's two largest subunits),
+  `EF2` (EF-2) and `TEF1` (EF-1α);
+- `family`, a multigene family whose best copy is taken (its `Duplicated` is its nature, no `confidence` flag):
+  `TUB2` (β-tubulin), `ACT` (actin), `HSP90` (cytosolic HSP90), `GAPDH` (glycolytic GAPDH) and `H3` (histone H3).
+
+Each is defined by KEGG KOfam profiles of the ortholog and of its paralogs (decoys: RNA polymerases I, III, IV and V's
+subunits for RPB1 and RPB2; the U5 snRNP GTPase, mitochondrial EF-G and RIA1 for EF-2; eRF3, HBS1 and EF-Tu for EF-1α;
+α, γ, δ and ε tubulin for β-tubulin; the actin-related proteins ARP1 to ARP10 and the actin-likes for actin; GRP94 and
+TRAP1 for HSP90, which also take the plastid's and mitochondrion's HSP90; the Calvin cycle's GAPA/B, the spermatogenic
+and the NAD(P) GAPDHs for GAPDH; CENP-A for H3): a region whose best profile is a decoy's is not the marker. A copy's
+`hmm_coverage` is read over its profile's span share (`hmm_spans`: KOfam's profiles are longer than the proteins they
+model), so that `complete` means for a marker what it means for a BUSCO. Their copies are called as the BUSCOs' are,
+in genomes (introns and all) and transcriptomes, and the folder holds the same files as `busco/`: `loci.tsv` (its
+`name` the marker's, `cutoff` the set's), `copies/`, `cds/`, `proteins/<locus>.*.gz`, `copies.tsv`, `features.tsv`,
+`introns.tsv`, `intron_sites.tsv`. `genomes.tsv`'s `loci` counts both sets, its `duplication` the BUSCOs alone; the
+manifest's `counts.marker_loci` the markers.
 
 ## rrna/
 - `records.fna.gz`: every record, `>record`, uncut.

@@ -308,6 +308,51 @@ def rrna_rows(folder):
     return out
 
 
+MARKER_COLUMNS = ("marker", "accession", "species_taxid", "status", "reference", "recall", "precision", "verdict")
+
+
+def marker_rows(folder, ncbi, marker_folder):
+    """markers.tsv's rows (since 2026-11-07): each marker call (markers/copies.tsv, its protein) against UniProt's
+    protein of its species in the marker set (its query set: a species' reference proteome's member, markers.py) by
+    shared 5-mers both ways, as orthodb.tsv against OrthoDB's: `concordant` (0.9 both ways: that gene, its model),
+    `similar` (0.5: that gene, another model or allele), `discordant` (another gene: a paralog the decoys did not
+    tell), `missed` (no call where UniProt has one). Circular in part: the species' own protein was a query."""
+    path = os.path.join(folder, "markers", "copies.tsv")
+    if not os.path.isfile(path) or not marker_folder:
+        return []
+    from .odb import read_fasta  # noqa: PLC0415
+    refs = collections.defaultdict(dict)  # (marker, species) -> {UniProt accession: protein}
+    for name, seq in read_fasta(os.path.join(marker_folder, "refseq_db.faa.gz")):
+        marker, taxid, acc = name.split("_", 2)
+        refs[(marker, ncbi.species_of(int(taxid)))][acc] = seq
+    genomes = {r["accession"]: r for r in rows_of(os.path.join(folder, "genomes.tsv")) if r["representative"] == "t"}
+    calls = {(r["locus"], r["accession"]): r for r in rows_of(path)}
+    loci_ = [r["locus"] for r in rows_of(os.path.join(folder, "markers", "loci.tsv"))]
+    out = []
+    for marker in loci_:
+        from .package import read_copies  # noqa: PLC0415
+        proteins = read_copies(folder, marker, "proteins", "markers")
+        for acc, g in sorted(genomes.items()):
+            sp = int(g["species_taxid"])
+            mine = refs.get((marker, sp))
+            if not mine:
+                continue
+            call = calls.get((marker, acc))
+            if call is None or acc not in proteins:
+                out.append(dict(marker=marker, accession=acc, species_taxid=sp, status="Missing", reference="-",
+                                recall="-", precision="-", verdict="missed"))
+                continue
+            got = kmers(proteins[acc])
+            best = max(mine, key=lambda a: shared(kmers(mine[a]), got) + shared(got, kmers(mine[a])))
+            ref = kmers(mine[best])
+            recall, precision = shared(ref, got), shared(got, ref)
+            verdict = ("concordant" if min(recall, precision) >= CONCORDANT else
+                       "similar" if min(recall, precision) >= SIMILAR else "discordant")
+            out.append(dict(marker=marker, accession=acc, species_taxid=sp, status=call["status"], reference=best,
+                            recall=f"{recall:.3f}", precision=f"{precision:.3f}", verdict=verdict))
+    return out
+
+
 PRIMER_COLUMNS = ("pair", "supergroup", "species", "amplified", "share")
 
 
@@ -664,7 +709,7 @@ def paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside
 
 
 def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, nearest=None, stages=None, out=None,
-        log=print, fates=None, compare=None, inside=None, reads=None, databases=None):
+        log=print, fates=None, compare=None, inside=None, reads=None, databases=None, marker_folder=None):
     """The benchmarks of the package in `folder` (finished, or the build's unfinished one once its tables are written)
     into out (default folder/benchmarks) -> summary.json's figures. ncbi: the taxonomy (the build's, or the package's
     taxonomy/); odb_folder: BUSCO's dataset (orthodb.tsv); vsearch: resolution.tsv; nearest: the build's own
@@ -772,7 +817,7 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
 
     if vsearch:
         markers = dict(busco_nearest)
-        markers[ALL_BUSCOS] = [v for vs in busco_nearest.values() for v in vs]
+        markers[ALL_BUSCOS] = [v for locus, vs in busco_nearest.items() if locus in set(loci) for v in vs]  # BUSCOs alone
         ssu = ssu_nearest(folder, ncbi, vsearch, threads)
         if ssu:
             markers["18S"] = ssu
@@ -794,6 +839,15 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
         summary["rrna"] = {"records": sum(r["records"] for r in rows), "operons": n_operons,
                            "lsu_complete_of_operons": round(sum(r["lsu_complete"] for r in operons) / n_operons, 4)
                            if n_operons else None}
+    rows = marker_rows(folder, ncbi, marker_folder)
+    if rows:  # Eukore's own markers against UniProt's proteins of the same species (since 2026-11-07)
+        write(out, "markers.tsv", MARKER_COLUMNS, rows)
+        summary["markers"] = {}
+        for m in sorted({r["marker"] for r in rows}):
+            v = collections.Counter(r["verdict"] for r in rows if r["marker"] == m)
+            summary["markers"][m] = dict(species=sum(v.values()), **{k: v[k] for k in ("concordant", "similar",
+                                                                                      "discordant", "missed")})
+        log(f"benchmarks: markers against UniProt's same species: {summary['markers']}")
     rows = primer_rows(folder, species)
     if rows:
         write(out, "primers.tsv", PRIMER_COLUMNS, rows)
