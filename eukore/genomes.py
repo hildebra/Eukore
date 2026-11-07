@@ -32,6 +32,7 @@ import time
 
 from . import annotation as annotation_mod
 from . import loci as loci_mod
+from . import metadata as metadata_mod
 from . import odb as odb_mod
 from . import placement, quality, species, util
 
@@ -376,7 +377,8 @@ def run(args):
     "staged_only": not fetched, left for a later run), its BUSCO genes called (loci.call with odb's queries for its
     lineage), its rRNA extracted (settings["rrna"]: a function of (genome path, job, out folder) -> its summary),
     the windows around its copies classified (settings["tiara"]), a dataset species' BUSCOs called again without its
-    own proteins (settings["odb_own"], HELD_OUT), its results written into WORK/done/<accession>/
+    own proteins (settings["odb_own"], HELD_OUT), its assembly's metadata measured (metadata.describe: stats.json,
+    organelle.fna.gz, and sketch.sig.gz by settings["sourmash"]), its results written into WORK/done/<accession>/
     (copies.fna, loci.tsv, features.tsv, windows.fna.gz, then done.json) -> (accession, summary or None, why it is
     not done or None)."""
     job, settings = args
@@ -467,6 +469,10 @@ def run(args):
                "annotated": bool(gff), "ncbi_models": sum(1 for r in got["loci"].values() if r.get("model") == "ncbi")}
     if own:
         summary["held_out"] = {"left_out": own, "seconds": round(time.time() - started - seconds, 1)}
+    if not job.get("path"):  # the assembly's metadata while it is here (metadata.py); a failure the pass tries again
+        why = metadata_mod.describe(path, tmp, acc, job.get("fetch", acc), settings.get("sourmash"))
+        if why:
+            summary["metadata_failed"] = why
     with open(os.path.join(tmp, "done.json"), "w", newline="\n") as fh:
         json.dump(summary, fh, indent=1)
     if os.path.isdir(folder):

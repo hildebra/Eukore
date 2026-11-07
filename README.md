@@ -7,7 +7,7 @@
 
 <p align="center">
   <b>A checked, complete reference of eukaryote marker genes, built from every eukaryote genome NCBI holds.</b><br>
-  BUSCO genes with all their introns · whole rDNA operons · mitochondrial and plastid rRNA and COX1
+  BUSCO genes with all their introns · whole rDNA operons · organelle rRNA, COX1, CYTB, rbcL, matK and tufA · assembly metadata
 </p>
 
 <p align="center">
@@ -38,7 +38,8 @@ version is 0.12; it was named EUKDB until 2026-11-06.
 |---|---|---|---|
 | **BUSCO genes** | each of the 129 BUSCOs of eukaryota_odb12 called in its genome, with its exons and introns | NCBI's best assembly of the species, called by Eukore (miniprot, then BUSCO's HMMs) | the gene from first to last codon, introns and all, uncut and unmasked |
 | **rDNA operons** | its 18S spans and whole units (18S, ITS1, 5.8S, ITS2, 28S, an inline 5S) | its assembly (barrnap, ITSx); EUKARYOME's and ROD's long reads | from the 18S's start to the 28S's end |
-| **organelle genes** | mitochondrial and plastid SSU, LSU, 5S rRNA; mitochondrial COX1 | RefSeq's organelle genomes, else its assembly's organelle molecules | the gene with its introns |
+| **organelle genes** | mitochondrial and plastid SSU, LSU, 5S rRNA; mitochondrial COX1 and CYTB; plastid rbcL, matK and tufA | RefSeq's organelle genomes, else its assembly's organelle molecules (kept whole too) | the gene with its introns |
+| **assembly metadata** | its genome's size, contiguity, gaps, GC and its spread, soft-masking, CpG, duplicates, telomeres, organelle molecules, tetranucleotides, a sourmash sketch; NCBI's own summary | measured while the genome is on disk, before the build deletes it | in the package's `metadata/` |
 | **taxonomy** | NCBI's lineage and supergroup; its lineage in PR2, EUKARYOME and KSGP | NCBI's taxdump, cut to the package | tied to no GTDB release |
 | **checks** | per copy and record: own-species agreement, 99% collapses, length outliers, contig ends, assembly gaps, tiara's and FCS-GX's contamination screens, an rRNA chimera screen; a `high`/`medium`/`low` tier with its reasons | Eukore's checks across species | flagged, never silently dropped |
 | **benchmarks** | completeness, agreement with OrthoDB's gene models, marker resolution, rRNA completeness, naming, run time | measured by each build | in the package's `benchmarks/` |
@@ -60,7 +61,8 @@ Eukore_2026.11/
 ├── busco/                   loci.tsv (call rates per BUSCO), copies.tsv (calls, checks, confidence),
 │                            features.tsv (exons, introns, masked runs), copies/<locus>.fna.gz
 ├── rrna/                    records.tsv, records.fna.gz
-├── organelle/               genes.tsv, genes.fna.gz
+├── organelle/               genes.tsv, genes.fna.gz, molecules.fna.gz (the assemblies' organelle molecules)
+├── metadata/                assembly.tsv.gz, tetranucleotides.tsv.gz, sketches.zip (sourmash), ncbi.tsv.gz
 └── benchmarks/              the build's measures of the package
 ```
 
@@ -130,12 +132,14 @@ outputs are in [docs/building.md](docs/building.md).
    cutoffs; the best copy is kept whole, its exons and introns annotated.
 3. **rRNA.** barrnap finds each genome's rRNA genes and ITSx the ITS borders (with the lineage's profiles); whole
    units are kept uncut. EUKARYOME's and ROD's long reads are labelled by NCBI taxid and annotated alike.
-4. **Organelle genes** from RefSeq's organelle genomes, else from the assembly's organelle molecules (nhmmer,
-   barrnap).
-5. **Checks across species.** Each copy against the same gene of every other species (own-species agreement,
+4. **Organelle genes** (rRNA, COX1, CYTB, rbcL, matK, tufA) from RefSeq's organelle genomes, else from the assembly's organelle
+   molecules (nhmmer, barrnap).
+5. **Assembly metadata.** One pass over each genome while it is on disk (`eukore/metadata.py`), and a sourmash
+   sketch: what a user needs of the genome once the build has deleted it.
+6. **Checks across species.** Each copy against the same gene of every other species (own-species agreement,
    identical copies, length outliers), an rRNA part screen for chimeras, tiara and FCS-GX on each copy's 50 kb
    window; each copy and record gets a confidence tier with its reasons.
-6. **Package and benchmarks**, the manifest written last.
+7. **Package and benchmarks**, the manifest written last.
 
 Details, and what was checked on real genomes, are in [docs/methods.md](docs/methods.md).
 

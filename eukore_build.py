@@ -38,7 +38,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
-from eukore import annotation, benchmarks, labels, organelle as organelle_mod, quality  # noqa: E402
+from eukore import annotation, benchmarks, labels, metadata as metadata_mod, organelle as organelle_mod  # noqa: E402
+from eukore import quality  # noqa: E402
 from eukore import placement, reads as reads_mod  # noqa: E402
 from eukore import __version__  # noqa: E402
 
@@ -168,9 +169,37 @@ def settings_of(opts, src_dir, ncbi, staged_only):
                 threads=opts.threads_per_genome, staged_only=staged_only, odb=folder, loci=odb.loci, hmm_db=hmm_db,
                 odb_lineages=odb_mod.species_lineages(odb, ncbi), odb_own=odb_mod.own_taxids(odb, ncbi), tiara=tiara,
                 rescue=not opts.no_rescue and bool(shutil.which("esl-translate")),
-                esl_translate=shutil.which("esl-translate"),
+                esl_translate=shutil.which("esl-translate"), sourmash=sourmash_of(opts),
                 rrna=functools.partial(rrna_hook, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"),
                                        threads=opts.threads_per_genome) if shutil.which("barrnap") else None)
+
+
+def sourmash_of(opts):
+    """sourmash, which sketches each genome (metadata.SKETCH), or None (--no_sketches, or not on the PATH)."""
+    return None if opts.no_sketches else shutil.which(opts.sourmash)
+
+
+def describe_pass(opts, job_map):
+    """The metadata of each done genome still on disk that lacks it (metadata.py: a genome run before 2026-11-07, or
+    whose measure failed), before the prune deletes the genomes -> how many were described, failed."""
+    sourmash = sourmash_of(opts)
+    todo = []
+    for acc, j in sorted(job_map.items()):
+        folder, path = genomes.done_dir(opts.work, acc), genomes.genome_file(opts.genomes, acc)
+        if not j.get("path") and genomes.is_done(opts.work, acc) and os.path.isfile(path) \
+                and metadata_mod.missing(folder, sourmash):
+            todo.append((acc, path, folder, j.get("fetch", acc), sourmash))
+    if not todo:
+        return 0, 0
+    say(f"assembly metadata: {len(todo)} genomes to describe" + ("" if sourmash else " (no sourmash: no sketches)"))
+    failed = []
+    with multiprocessing.Pool(max(1, opts.jobs)) as pool:
+        for i, (acc, why) in enumerate(pool.imap_unordered(metadata_mod.describe_task, todo), 1):
+            if why:
+                failed.append((acc, why))
+            if i % max(1, len(todo) // 20) == 0 or i == len(todo):
+                say(f"  {i}/{len(todo)} described ({len(failed)} failed{', e.g. ' + str(failed[0]) if failed else ''})")
+    return len(todo) - len(failed), len(failed)
 
 
 def run_one(item):
@@ -448,6 +477,10 @@ def main(argv=None):
                                                     "tiara on the PATH, else none; envs/tiara.yaml's, as it needs a "
                                                     "Python of 3.9 or older)")
     p.add_argument("--no_tiara", action="store_true", help="do not classify the windows around the copies")
+    p.add_argument("--sourmash", default="sourmash", help="sourmash, which sketches each genome before the prune "
+                                                          "(metadata/sketches.zip; default: sourmash on the PATH, else "
+                                                          "none)")
+    p.add_argument("--no_sketches", action="store_true", help="no sourmash sketches of the genomes")
     p.add_argument("--no_rescue", action="store_true", help="no rescue pass of the BUSCOs miniprot missed (loci.py: "
                                                             "their HMMs in the genome's six-frame ORFs place them)")
     p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives (protal's "
@@ -569,6 +602,7 @@ def main(argv=None):
     if opts.stage in ("all", "process"):
         settings = settings_of(opts, src_dir, ncbi, staged_only=opts.stage == "process")
         waiting, failed = run_genomes(opts, job_map, settings)
+        describe_pass(opts, job_map)
         organelle_genes(opts, src_dir, job_map, ncbi)
         annotate_pass(opts, job_map, may_fetch=opts.stage == "all")
         # a rerun mends a genome not fetched yet or a download that may come; not one NCBI no longer serves, nor a
@@ -639,6 +673,8 @@ def main(argv=None):
         reps = {a: (int(g["species_taxid"]), genomes.genome_file(opts.genomes, a))
                 for a, g in collected["genomes"].items() if g["representative"] == "t" and not job_map[a].get("path")}
         tests = reads_mod.choose(ncbi, reps, opts.read_genomes) if opts.read_genomes and not opts.no_benchmarks else []
+        with timed(stages, "assembly metadata"):
+            describe_pass(opts, job_map)  # before the prune: measured while the genomes are there
         rows_kept = genomes.prune(opts.genomes, opts.work, opts.keep_gb * 1e9, set(tests), firsts)
         kept = sum(s for _a, s, st in rows_kept if st != "deleted")
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB (--keep_gb {opts.keep_gb:g}), "
@@ -649,8 +685,11 @@ def main(argv=None):
             measure, opts=opts, src_dir=src_dir, ncbi=ncbi, collected=collected, vsearch=vsearch, stages=stages,
             fates=genomes.fates(ncbi, assemblies, job_map, opts.inside if wanted is not None else None), tests=tests,
             references=references)
+        meta = functools.partial(metadata_mod.write, work=opts.work, tables=tables(src_dir, "genbank", opts.groups)
+                                 + tables(src_dir, "refseq", opts.groups))
         out = package.write(os.path.join(opts.out, f"Eukore_{opts.version}"), opts.version, ncbi, collected,
-                            loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook)
+                            loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook,
+                            metadata=meta)
         say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")
     return 0
 

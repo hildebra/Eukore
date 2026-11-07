@@ -2,7 +2,9 @@
 """Tests of Eukore's organelle genes (eukore/organelle.py): RefSeq's GenBank records read (a COX1 across a circular
 genome's origin on the minus strand, a qualifier over two lines, an animal's 16S as its LSU, a plastid's rRNA twice,
 its 4.5S left out), a species' record chosen, an assembly's mitochondrion searched (stand-in barrnap and nhmmer: its
-rRNA by bacterial models, its COX1 of two exons), and the genes written into the package.
+rRNA by bacterial models, its COX1 of two exons), a mitochondrion's CYTB and a plastid's rbcL, matK and tufA (since
+2026-11-07; an assembly searched before them searched again, one searched for them all not), and the genes written into
+the package.
 
     python3 -m unittest discover -s tests -t tests
 """
@@ -51,7 +53,7 @@ def random_seq(n, seed):
 
 HUMAN_MT = random_seq(3000, 1)
 HUMAN_MT2 = random_seq(2500, 2)
-PLASTID = random_seq(3000, 3)
+PLASTID = random_seq(7000, 3)  # rbcL and matK beyond its rRNA
 YEAST_MT = random_seq(4000, 4)
 
 
@@ -65,6 +67,7 @@ def release(src_dir):
             feature("CDS", "complement(join(2901..3000,1..200))", '/gene="COX1"',
                     '/product="cytochrome c oxidase\nsubunit I"'),
             feature("CDS", "1601..2000", '/product="cytochrome c oxidase subunit II"'),
+            feature("CDS", "2101..2800", '/gene="CYTB"', '/product="cytochrome b"'),
             feature("rRNA", "J01415.2:1..10", '/product="12S ribosomal RNA"')]))
         fh.write(gbff_record("NC_000002.1", HUMAN_MT2, 9606, "mitochondrion", [
             feature("rRNA", "101..500", '/product="12S ribosomal RNA"')]))
@@ -73,7 +76,14 @@ def release(src_dir):
             feature("rRNA", "101..1600", '/gene="rrn16"'),
             feature("rRNA", "complement(2001..2400)", '/product="16S ribosomal RNA"'),
             feature("rRNA", "2501..2600", '/product="4.5S ribosomal RNA"'),
-            feature("rRNA", "2701..2820", '/product="5S ribosomal RNA"')]))
+            feature("rRNA", "2701..2820", '/product="5S ribosomal RNA"'),
+            feature("CDS", "3001..4428", '/gene="rbcL"',
+                    '/product="ribulose-1,5-bisphosphate carboxylase/oxygenase\nlarge subunit"'),
+            feature("CDS", "complement(4501..6000)", '/product="maturase K"'),
+            feature("CDS", "6101..6400", '/gene="rbcS"',
+                    '/product="ribulose-1,5-bisphosphate carboxylase/oxygenase small subunit"'),
+            feature("CDS", "6401..6900", '/product="translation elongation factor Tu"'),
+            feature("CDS", "6901..6990", '/product="cytochrome b6"')]))
     with open(os.path.join(folder, "release.txt"), "w") as fh:
         fh.write("mitochondrion.1.genomic.gbff.gz\nplastid.1.genomic.gbff.gz\n")
 
@@ -101,9 +111,12 @@ for l in open(q):
     else:
         seqs[name] += l.strip()
 target = [l[1:].split()[0] for l in open(t) if l.startswith(">")][0]
-first = next(n for n in seqs if n.startswith("COX1|")); half = len(seqs[first]) // 2
+first = next((n for n in seqs if n.startswith("COX1|")), None)
 with open(tbl, "w") as fh:
     fh.write("# target query\n")
+    if first is None:
+        sys.exit(0)
+    half = len(seqs[first]) // 2
     fh.write(f"{target} - {first} - 3 {half} 1003 {1000 + half} 1003 {1000 + half} 4000 + 1e-50 500.0 0 -\n")
     fh.write(f"{target} - {first} - {half + 1} {2 * half} 1501 {1500 + half} 1501 {1500 + half} "
              "4000 + 1e-40 300.0 0 -\n")
@@ -121,6 +134,20 @@ class ParseTest(unittest.TestCase):
         self.assertTrue(organelle.is_cox1([("product", "cytochrome c oxidase subunit I")]))
         self.assertFalse(organelle.is_cox1([("product", "cytochrome c oxidase subunit II")]))
         self.assertTrue(organelle.is_cox1([("gene", "COI")]))
+        self.assertEqual(organelle.cds_gene([("gene", "rbcL")], "plastid"), "rbcL")
+        self.assertEqual(organelle.cds_gene([("product", "RuBisCO large subunit")], "plastid"), "rbcL")
+        self.assertEqual(organelle.cds_gene([("gene", "matK"), ("product", "maturase K")], "plastid"), "matK")
+        self.assertIsNone(organelle.cds_gene([("gene", "rbcS")], "plastid"))
+        self.assertIsNone(organelle.cds_gene([("gene", "rbcL")], "mitochondrion"))
+        self.assertIsNone(organelle.cds_gene([("gene", "COX1")], "plastid"))
+        for quals in ([("gene", "cob"), ("product", "apocytochrome b")], [("product", "cytochrome b")],
+                      [("gene", "MT-CYB")]):
+            self.assertEqual(organelle.cds_gene(quals, "mitochondrion"), "CYTB", quals)
+        for product in ("cytochrome b6", "cytochrome b559 alpha subunit", "cytochrome b-245", "cytochrome b5"):
+            self.assertIsNone(organelle.cds_gene([("product", product)], "mitochondrion"), product)
+        self.assertEqual(organelle.cds_gene([("gene", "tufA")], "plastid"), "tufA")
+        self.assertEqual(organelle.cds_gene([("product", "elongation factor Tu")], "plastid"), "tufA")
+        self.assertIsNone(organelle.cds_gene([("gene", "tufA")], "mitochondrion"))
 
     def test_refseq_records(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -128,8 +155,15 @@ class ParseTest(unittest.TestCase):
             release(os.path.join(tmp, "sources"))
             rows = organelle.refseq_genes(os.path.join(tmp, "sources"), os.path.join(tmp, "work"), ncbi, lambda _t: 0)
             got = {(r["seqid"], r["gene"]): r for r in rows}
-            self.assertEqual(sorted(got), [("NC_000001.1", "COX1"), ("NC_000001.1", "LSU"), ("NC_000001.1", "SSU"),
-                                           ("NC_000002.1", "SSU"), ("NC_000003.1", "5S"), ("NC_000003.1", "SSU")])
+            self.assertEqual(sorted(got), [("NC_000001.1", "COX1"), ("NC_000001.1", "CYTB"), ("NC_000001.1", "LSU"),
+                                           ("NC_000001.1", "SSU"), ("NC_000002.1", "SSU"), ("NC_000003.1", "5S"),
+                                           ("NC_000003.1", "SSU"), ("NC_000003.1", "matK"), ("NC_000003.1", "rbcL"),
+                                           ("NC_000003.1", "tufA")])
+            self.assertEqual(got[("NC_000001.1", "CYTB")]["sequence"], HUMAN_MT[2100:2800])
+            self.assertEqual(got[("NC_000003.1", "tufA")]["sequence"], PLASTID[6400:6900])
+            rbcl, matk = got[("NC_000003.1", "rbcL")], got[("NC_000003.1", "matK")]
+            self.assertEqual(rbcl["sequence"], PLASTID[3000:4428])
+            self.assertEqual((matk["strand"], matk["sequence"]), ("-", rrna.revcomp(PLASTID[4500:6000])))
             cox1 = got[("NC_000001.1", "COX1")]
             self.assertEqual((cox1["start"], cox1["end"], cox1["strand"], cox1["exons"]), ("2901", "200", "-", "2"))
             self.assertEqual(cox1["sequence"], rrna.revcomp(HUMAN_MT[2900:] + HUMAN_MT[:200]))
@@ -145,7 +179,11 @@ class ParseTest(unittest.TestCase):
             self.assertEqual(sorted(chosen), [(9606, "mitochondrion"), (28985, "plastid")])
             near = organelle.Nearest(chosen, ncbi)
             self.assertEqual([s for s, _q in near.queries(4932, "mitochondrion")],
-                             ["SSU|NC_000001.1", "LSU|NC_000001.1", "COX1|NC_000001.1"])  # the nearest with each gene
+                             ["SSU|NC_000001.1", "LSU|NC_000001.1", "COX1|NC_000001.1",
+                              "CYTB|NC_000001.1"])  # the nearest with each gene
+            self.assertEqual([s for s, _q in near.queries(952, "plastid")],
+                             ["SSU|NC_000003.1", "5S|NC_000003.1", "rbcL|NC_000003.1", "matK|NC_000003.1",
+                              "tufA|NC_000003.1"])
 
 
 class JoinTest(unittest.TestCase):
@@ -223,7 +261,7 @@ class AssemblyTest(unittest.TestCase):
             records = organelle.collect(ncbi, jobs, {4932, 9606, 6253}, chosen, work)
             rows = {(r["species_taxid"], r["gene"]): r for _n, _s, r in records}
             self.assertEqual(sorted(rows), [(4932, "COX1"), (4932, "LSU"), (4932, "SSU"),
-                                            (9606, "COX1"), (9606, "LSU"), (9606, "SSU")])
+                                            (9606, "COX1"), (9606, "CYTB"), (9606, "LSU"), (9606, "SSU")])
             lsu = rows[(4932, "LSU")]  # bacterial models (a yeast's mitochondrion), the whole hit of two
             self.assertEqual((lsu["start"], lsu["end"], lsu["copies"], lsu["partial"], lsu["source"]),
                              ("3101", "3500", "2", "f", "assembly"))
@@ -240,13 +278,52 @@ class AssemblyTest(unittest.TestCase):
                                 None, None, {}, records)
             self.assertIsNone(package.check(out, deep=True))
             table = package.read_table(out, "organelle/genes.tsv")
-            self.assertEqual((len(table), set(table[0])), (6, set(organelle.GENE_COLUMNS)))
+            self.assertEqual((len(table), set(table[0])), (7, set(organelle.GENE_COLUMNS)))
             self.assertEqual(package.read_table(out, "species.tsv")[0]["organelle_genes"], "3")
             with open(os.path.join(out, "manifest.json")) as fh:
                 counts = json.load(fh)["counts"]
-            self.assertEqual(counts["organelle_genes"]["mitochondrion"], {"COX1": 2, "LSU": 2, "SSU": 2})
+            self.assertEqual(counts["organelle_genes"]["mitochondrion"], {"COX1": 2, "CYTB": 1, "LSU": 2, "SSU": 2})
             with gzip.open(os.path.join(out, "organelle", "genes.fna.gz"), "rt") as fh:
-                self.assertEqual(fh.read().count(">"), 6)
+                self.assertEqual(fh.read().count(">"), 7)
+
+    def test_an_assembly_searched_before_its_genes_were_added(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            src = os.path.join(tmp, "sources")
+            release(src)
+            work = os.path.join(tmp, "work", "organelle")
+            chosen = organelle.choose(organelle.refseq_genes(src, work, ncbi, lambda _t: 0), ncbi)
+            genomes_dir = os.path.join(tmp, "genomes")
+            os.makedirs(genomes_dir)
+            plant, yeast, worm = "GCA_000000952.1", YEAST, "GCA_000006253.1"
+            for acc in (plant, yeast, worm):
+                with gzip.open(genomes.genome_file(genomes_dir, acc), "wt") as fh:
+                    fh.write(f">m1 mitochondrion\n{YEAST_MT}\n>p1 chloroplast\n{PLASTID}\n")
+            jobs = {plant: dict(accession=plant, species_taxid=952), yeast: dict(accession=yeast, species_taxid=4932),
+                    worm: dict(accession=worm, species_taxid=6253)}
+            head = "\t".join(organelle.ASSEMBLY_COLUMNS) + "\n"
+            for acc, searched in ((plant, ""),  # a file of before 2026-11-07: no #searched line
+                                  (yeast, "#searched\tmitochondrion:SSU,LSU,5S,COX1\n"),  # before CYTB
+                                  (worm, "#searched\tmitochondrion:" + ",".join(organelle.GENES_OF["mitochondrion"])
+                                   + "\n")):  # every gene of its mitochondrion: not searched again
+                os.makedirs(os.path.dirname(organelle.assembly_file(work, acc)), exist_ok=True)
+                with open(organelle.assembly_file(work, acc), "w") as fh:
+                    fh.write(searched + head)
+            self.assertEqual(organelle.searched_of(organelle.assembly_file(work, plant))["plastid"],
+                             set(organelle.OLD_GENES))
+            barrnap, nhmmer = fx.tool(tmp, "barrnap", BARRNAP), fx.tool(tmp, "nhmmer", NHMMER)
+
+            def run():
+                return organelle.assembly_pass(work, jobs, lambda a: genomes.genome_file(genomes_dir, a), chosen,
+                                               ncbi, barrnap, nhmmer, 1, 1, lambda _t: 0)
+            self.assertEqual(run(), (2, 0))  # the plant and the yeast, not the worm
+            self.assertEqual(organelle.searched_of(organelle.assembly_file(work, plant)),
+                             {k: set(organelle.GENES_OF[k]) for k in organelle.KINDS})
+            self.assertEqual(organelle.searched_of(organelle.assembly_file(work, yeast)),
+                             {"mitochondrion": set(organelle.GENES_OF["mitochondrion"])})
+            self.assertEqual(run(), (0, 0))
+            records = organelle.collect(ncbi, jobs, {952}, chosen, work)
+            self.assertIn(("mitochondrion", "COX1"), {(r["organelle"], r["gene"]) for _n, _s, r in records})
 
 
 if __name__ == "__main__":

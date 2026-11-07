@@ -216,13 +216,15 @@ def loci_rows(loci, collected, ncbi):
 
 
 def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None, organelle=None,
-          references=(), before_manifest=None):
+          references=(), before_manifest=None, metadata=None):
     """The package into `out` (written beside it and renamed into place; the manifest last) -> its folder.
     before_manifest: a function of the unfinished package's folder, run once its tables are written (the build's
     benchmarks: benchmarks.run), whose result (a dict) the manifest keeps as `benchmarks`.
     loci: the BUSCOs called ([{locus, name, cutoff, hmm_length}], in the dataset's order); rrna: (records [(name,
     sequence, row dict of records.tsv)]) or None; organelle: the organelle genes' records (organelle.collect) or
-    None; references: labels.Reference of PR2, EUKARYOME and KSGP, each species' lineage in them (species.tsv)."""
+    None; references: labels.Reference of PR2, EUKARYOME and KSGP, each species' lineage in them (species.tsv);
+    metadata: a function of (the unfinished folder, the genomes' rows) writing the assemblies' metadata
+    (metadata.write: metadata/, organelle/molecules.fna.gz), its counts the manifest's `metadata`."""
     part = util.part_of(out)
     shutil.rmtree(part, ignore_errors=True)
     for sub in ("taxonomy", "busco/copies", "rrna", "organelle"):
@@ -284,6 +286,7 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                              set(collected["taxids"]) | {int(r["species_taxid"]) for r in genomes.values()} |
                              set(n_records) | ({int(row["taxid"]) for _n, _s, row in rrna} if rrna else set()) |
                              {int(row["taxid"]) for _n, _s, row in organelle})
+    described = metadata(part, genomes) if metadata else None
     # the package's tables are written: its benchmarks (benchmarks.run) read them, before the manifest lists them all
     measured = before_manifest(part) if before_manifest else None
     files = {}
@@ -312,6 +315,8 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                            "labels": {ref.lower(): dict(collections.Counter(r[f"{ref.lower()}_match"] for r in rows))
                                       for ref in REFERENCES}},
                 "files": dict(sorted(files.items()))}
+    if described is not None:
+        manifest["counts"]["metadata"] = described
     if measured:
         manifest["benchmarks"] = measured
     with open(os.path.join(part, MANIFEST), "w", newline="\n") as fh:

@@ -1,11 +1,13 @@
-"""Eukore's organelle genes (since 2026-11-05; docs/FORMAT.md 3): each species' mitochondrial and plastid rRNA (SSU, LSU, 5S)
-and its mitochondrial COX1, where NCBI has them.
+"""Eukore's organelle genes (since 2026-11-05; docs/FORMAT.md 3): each species' mitochondrial and plastid rRNA (SSU, LSU,
+5S), its mitochondrial COX1 and (since 2026-11-07) CYTB, its plastid rbcL, matK and tufA, where NCBI has them
+(GENES_OF).
 
 - RefSeq's organelle genomes (its release's mitochondrion and plastid GenBank files, REFSEQ_RELEASE): their annotated
-  rRNA and COX1 features (rrna_gene, is_cox1), parsed once into WORK/organelle (refseq_genes). A species takes, of
-  each organelle, its records' genes (choose): those of the one with the most of GENES, then its own taxid's (not a
-  strain's or subspecies'), then the longest, and a gene it lacks from the next (a mitogenome in several
-  chromosomes). A gene annotated twice (a plastid's inverted repeat) is taken once, its first, `copies` counting them.
+  rRNA and protein-coding genes' features (rrna_gene, cds_gene), parsed once into WORK/organelle (refseq_genes). A
+  species takes, of each organelle, its records' genes (choose): those of the one with the most of GENES, then its own
+  taxid's (not a strain's or subspecies'), then the longest, and a gene it lacks from the next (a mitogenome in
+  several chromosomes). A gene annotated twice (a plastid's inverted repeat) is taken once, its first, `copies`
+  counting them.
 - Else the species' own assembly (assembly_pass): the molecules NCBI's FASTA titles name an organelle (TITLE:
   mitochondrion, chloroplast, plastid, apicoplast). nhmmer finds each gene, queried with that gene of the NEAREST
   RefSeq species in NCBI's lineage (its exons joined); barrnap the rRNA nhmmer does not (--kingdom mito in animals'
@@ -17,6 +19,7 @@ I and II introns), on its strand; one across a circular genome's origin is joine
 
 import collections
 import gzip
+import hashlib
 import multiprocessing
 import os
 import re
@@ -28,7 +31,12 @@ from . import rrna, util
 REFSEQ_RELEASE = "https://ftp.ncbi.nlm.nih.gov/refseq/release"
 RELEASE_FILE = re.compile(r"\b((mitochondrion|plastid)\.\d+\.genomic\.gbff\.gz)\b")
 KINDS = ("mitochondrion", "plastid")
-GENES = ("SSU", "LSU", "5S", "COX1")
+GENES = ("SSU", "LSU", "5S", "COX1", "CYTB", "rbcL", "matK", "tufA")
+# each organelle's genes, since 2026-11-07 also: a mitochondrion's CYTB (vertebrates' and insects' barcode), a plastid's
+# rbcL and matK (land plants' core barcode; rbcL also algae's) and tufA (green algae's barcode)
+GENES_OF = {"mitochondrion": ("SSU", "LSU", "5S", "COX1", "CYTB"),
+            "plastid": ("SSU", "LSU", "5S", "rbcL", "matK", "tufA")}
+OLD_GENES = ("SSU", "LSU", "5S", "COX1")  # what an assembly's search found before 2026-11-07 (no #searched line)
 METAZOA = 33208
 NO_PLASTID = {METAZOA, 4751}  # animals, fungi
 TITLE = rrna.ORGANELLE_TITLE
@@ -203,10 +211,38 @@ def rrna_gene(text, animal_mitochondrion=False):
     return "SSU" if s < 20 else "LSU"
 
 
+RBCL_PRODUCT = re.compile(r"ribulose[- ]1,5[- ]bis-?phosphate carboxylase(/oxygenase)? large|"
+                          r"ribulose bisphosphate carboxylase large|rubisco large")
+MATK_PRODUCT = re.compile(r"\bmaturase k\b")
+CYTB_GENES = {"cytb", "cob", "cyb", "mt-cyb", "mtcyb"}
+CYTB_PRODUCT = re.compile(r"\b(apo)?cytochrome b\b(?![-\d])")  # not b5, b6 (petB), b559, b-245
+TUFA_PRODUCT = re.compile(r"\belongation factor tu\b")
+
+
 def is_cox1(quals):
     gene = {v.lower() for n, v in quals if n == "gene"}
     product = " ".join(v.lower() for n, v in quals if n == "product")
     return bool(gene & COX1_GENES or COX1_PRODUCT.search(product))
+
+
+def cds_gene(quals, organelle):
+    """A CDS feature's gene of GENES_OF[organelle] (COX1, CYTB in a mitochondrion; rbcL, matK, tufA in a plastid): by
+    its /gene, else (none named) its /product; or None."""
+    gene = {v.lower() for n, v in quals if n == "gene"}
+    product = " ".join(v.lower() for n, v in quals if n == "product")
+    if organelle == "mitochondrion":
+        if is_cox1(quals):
+            return "COX1"
+        if gene & CYTB_GENES or (not gene and CYTB_PRODUCT.search(product)):
+            return "CYTB"
+        return None
+    if "rbcl" in gene or (not gene and RBCL_PRODUCT.search(product)):
+        return "rbcL"
+    if "matk" in gene or (not gene and MATK_PRODUCT.search(product)):
+        return "matK"
+    if "tufa" in gene or (not gene and TUFA_PRODUCT.search(product)):
+        return "tufA"
+    return None
 
 
 def record_genes(rec, organelle, animal=False):
@@ -219,8 +255,10 @@ def record_genes(rec, organelle, animal=False):
             text = " ".join(v.lower() for n, v in quals if n in ("gene", "product"))
             gene = rrna_gene(text, organelle == "mitochondrion" and animal) or \
                 rrna_gene(" ".join(v.lower() for n, v in quals if n == "note"), organelle == "mitochondrion" and animal)
-        elif key == "CDS" and organelle == "mitochondrion" and is_cox1(quals):
-            gene = "COX1"
+        elif key == "CDS":
+            gene = cds_gene(quals, organelle)
+            if not gene:
+                continue
         else:
             continue
         parsed = parts_of(location) if gene else None
@@ -251,7 +289,9 @@ def refseq_genes(src_dir, work_folder, ncbi, log=print):
     files = release_files(src_dir)
     if not files:
         return []
-    key = util.md5(os.path.join(folder_of(src_dir), "release.txt"))[:10]
+    # the release's and the genes': parsed again where either changes (CYTB, rbcL, matK, tufA since 2026-11-07)
+    key = hashlib.md5((util.md5(os.path.join(folder_of(src_dir), "release.txt")) + ",".join(GENES)).encode()
+                      ).hexdigest()[:10]
     cache = os.path.join(work_folder, f"refseq_{key}.tsv.gz")
     if not os.path.isfile(cache):
         log(f"RefSeq organelles: parsing {len(files)} GenBank files")
@@ -335,7 +375,7 @@ class Nearest:
     def queries(self, taxid, organelle, n=NEAREST):
         """Each gene of the n RefSeq species nearest to taxid with it -> [(gene|seqid, its exons)]."""
         out = []
-        for gene in GENES:
+        for gene in GENES_OF[organelle]:
             under, got = self.under.get((organelle, gene), {}), []
             for a in self.ncbi.ancestors(self.ncbi.merged.get(taxid, taxid)):
                 for s in under.get(a, ()):
@@ -464,6 +504,28 @@ def assembly_file(work_folder, accession):
     return os.path.join(work_folder, "assembly", f"{accession}.tsv")
 
 
+def searched_of(path):
+    """An assembly's search file's genes searched -> {organelle: set of genes}: its #searched line's, else (a file of
+    before 2026-11-07) OLD_GENES of each organelle."""
+    with open(path) as fh:
+        line = fh.readline()
+    if not line.startswith("#searched"):
+        return {k: set(OLD_GENES) for k in KINDS}
+    out = {}
+    for part in line.rstrip("\n").split("\t")[1:]:
+        kind, _colon, genes = part.partition(":")
+        out[kind] = {g for g in genes.split(",") if g}
+    return out
+
+
+def assembly_rows(path):
+    """An assembly's search file -> its gene rows (ASSEMBLY_COLUMNS dicts)."""
+    with open(path) as fh:
+        lines = [line for line in fh if not line.startswith("#")]
+    head = lines[0].rstrip("\n").split("\t") if lines else []
+    return [dict(zip(head, line.rstrip("\n").split("\t"))) for line in lines[1:] if line.strip()]
+
+
 def run_assembly(args):
     """One genome's organelle genes (a pool's task: accession, genome path, out file, animal, queries {organelle:
     Nearest.queries}, barrnap, nhmmer, threads) into its out file (ASSEMBLY_COLUMNS; written, even empty, once done)
@@ -484,6 +546,7 @@ def run_assembly(args):
         return acc, None, f"{type(e).__name__}: {e}"
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(util.part_of(out), "w", newline="\n") as fh:
+        fh.write("\t".join(["#searched"] + [f"{k}:{','.join(GENES_OF[k])}" for k in KINDS if k in queries]) + "\n")
         fh.write("\t".join(ASSEMBLY_COLUMNS) + "\n")
         for r in sorted(rows, key=lambda r: (KINDS.index(r["organelle"]), GENES.index(r["gene"]))):
             fh.write("\t".join(str("t" if r[c] is True else "f" if r[c] is False else r[c]) for c in ASSEMBLY_COLUMNS)
@@ -510,8 +573,12 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
         out = assembly_file(work_folder, acc)
         path = genome_of(acc)
         need = [k for k in organelles_of(ncbi, sp) if (sp, k) not in chosen]
-        if job.get("path") or not need or os.path.isfile(out) or not os.path.isfile(path):
+        if job.get("path") or not need or not os.path.isfile(path):
             continue
+        if os.path.isfile(out):  # searched; again for genes added since (CYTB, rbcL, matK, tufA: 2026-11-07)
+            got = searched_of(out)
+            if all(set(GENES_OF[k]) <= got.get(k, set()) for k in need):
+                continue
         todo.append((acc, path, out, is_animal(ncbi, sp), {k: nearest.queries(sp, k) for k in need}, barrnap,
                      nhmmer, threads))
     if not todo:
@@ -545,13 +612,8 @@ def collect(ncbi, job_map, species_set, chosen, work_folder):
                 acc, job = by_species[sp]
                 path = assembly_file(work_folder, acc)
                 if os.path.isfile(path):
-                    with open(path) as fh:
-                        head = fh.readline().rstrip("\n").split("\t")
-                        for line in fh:
-                            r = dict(zip(head, line.rstrip("\n").split("\t")))
-                            if r["organelle"] == organelle:
-                                rows.append(dict(r, taxid=int(job.get("taxid") or sp), source="assembly",
-                                                 accession=acc))
+                    rows += [dict(r, taxid=int(job.get("taxid") or sp), source="assembly", accession=acc)
+                             for r in assembly_rows(path) if r["organelle"] == organelle]
             for r in sorted(rows, key=lambda r: GENES.index(r["gene"])):
                 seq = r["sequence"]
                 name = f"{r['seqid']}_{r['gene']}"

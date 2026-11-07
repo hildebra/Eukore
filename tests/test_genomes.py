@@ -18,7 +18,8 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import annotation, genomes, labels, ncbi as ncbi_mod, odb as odb_mod, package, qc, sources  # noqa: E402
+from eukore import annotation, genomes, labels, metadata, ncbi as ncbi_mod, odb as odb_mod, package, qc  # noqa: E402
+from eukore import sources  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 YEAST = "GCA_000146045.2"
@@ -151,6 +152,13 @@ class RunTest(unittest.TestCase):
             self.assertEqual((acc, why, summary["loci"], summary["status"]),
                              (YEAST, None, 2, {"Duplicated": 1, "Single": 1, "Missing": 1}))
             self.assertTrue(genomes.is_done(work, YEAST))
+            # its assembly's metadata measured by the run (metadata.py; no sourmash: no sketch, none missing)
+            folder = genomes.done_dir(work, YEAST)
+            self.assertEqual(metadata.missing(folder), set())
+            self.assertEqual(metadata.missing(folder, "sourmash"), {metadata.SKETCH})
+            with open(os.path.join(folder, metadata.STATS)) as fh:
+                stats = json.load(fh)
+            self.assertEqual((stats["sequences"], stats["length"], stats["fetched"]), (1, len(seq), YEAST))
             self.assertTrue(genomes.is_done(work, YEAST, fx.LOCI))
             self.assertFalse(genomes.is_done(work, YEAST, fx.LOCI + ["4at2759"]))  # a BUSCO it was not searched for
             self.assertEqual(genomes.run((jobs["GCA_000000013.1"], settings))[2], "not fetched yet")

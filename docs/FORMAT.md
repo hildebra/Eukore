@@ -2,7 +2,9 @@
 
 Eukore is a standalone eukaryote reference. It holds every BUSCO gene of eukaryota_odb12 and the rDNA operons of every
 eukaryote species with an NCBI genome, complete (genes with all their introns, operons uncut) and checked, and the
-species' mitochondrial and plastid rRNA and mitochondrial COX1 where NCBI has them. Its taxonomy is NCBI's, tied to no
+species' mitochondrial and plastid rRNA, mitochondrial COX1 and CYTB, and plastid rbcL, matK and tufA where NCBI has
+them, and what the
+build measured of each genome before deleting it (`metadata/`). Its taxonomy is NCBI's, tied to no
 GTDB release; each species also carries its lineage in PR2, EUKARYOME and KSGP (`species.tsv`), the versions named in
 the manifest. Each copy and record carries its checks, a confidence tier and the reasons for it, and the hints a user
 needs to spot a chimera (contig ends, assembly gaps, the screens). A user of the package (protal's build) takes what
@@ -20,7 +22,8 @@ references species.tsv's lineages come from (`references`: PR2's, EUKARYOME's, K
 species and genera it names); `inputs.partial.species_clades` in a trial package limited to those clades, which a user
 should not take for Eukore), `counts` (species, species with rRNA alone, genomes, copies and their
 calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa, `busco_loci`, the
-copies' and records' confidence tiers, `labels`: per reference the species by how they matched), `benchmarks` (the
+copies' and records' confidence tiers, `labels`: per reference the species by how they matched; `metadata`: the rows of
+`metadata/ncbi.tsv.gz`, the genomes described, sketched, and the organelle molecules), `benchmarks` (the
 headline figures of `benchmarks/summary.json`, where the build measured them), and `files`: every file of the package
 with `[bytes, md5]`. The manifest is written last: a package without one is unfinished.
 
@@ -179,7 +182,9 @@ plants' 5S arrays) is not searched.
 A record that fails a check is kept and flagged, so that a user chooses.
 
 ## organelle/
-Each species' mitochondrial rRNA, plastid rRNA and mitochondrial COX1, where NCBI has them. Of each organelle, a
+Each species' mitochondrial rRNA, plastid rRNA, mitochondrial COX1 and (since 2026-11-07) CYTB (vertebrates' and
+insects' barcode), and plastid rbcL and matK (land plants' core barcode; rbcL also algae's) and tufA (green algae's
+barcode), where NCBI has them. Of each organelle, a
 species' genes come from one source: its RefSeq organelle genome (the one with the most of these genes, then of the
 species' own taxid, then the longest), else the organelle molecules of its own assembly (those NCBI's FASTA titles
 name a mitochondrion, chloroplast, plastid or apicoplast).
@@ -190,7 +195,7 @@ name a mitochondrion, chloroplast, plastid or apicoplast).
 | column | |
 |---|---|
 | `record` | its name: `<seqid>_<gene>` |
-| `gene` | `SSU` (12S in animals' mitochondria, 16S in plastids, 18S in plants' mitochondria, ...), `LSU` (16S in animals' mitochondria, 23S, 26S, ...), `5S`, `COX1` |
+| `gene` | `SSU` (12S in animals' mitochondria, 16S in plastids, 18S in plants' mitochondria, ...), `LSU` (16S in animals' mitochondria, 23S, 26S, ...), `5S`, `COX1`, `CYTB` (mitochondrion), `rbcL`, `matK`, `tufA` (plastid) |
 | `organelle` | `mitochondrion` or `plastid` (chloroplasts, apicoplasts and other plastids) |
 | `taxid`, `species_taxid` | NCBI's |
 | `source` | `refseq` (RefSeq's organelle genome, its annotated features) or `assembly` (the species' assembly: each gene by nhmmer with that gene of the 3 nearest RefSeq species, its exons joined; rRNA nhmmer misses by barrnap, `--kingdom mito` in animals' mitochondria, `bac` elsewhere) |
@@ -202,6 +207,54 @@ name a mitochondrion, chloroplast, plastid or apicoplast).
 | `copies` | the gene's copies on the source (a plastid's inverted repeat: 2): the record is the first, or barrnap's longest whole hit |
 | `partial` | `t` where RefSeq marks the feature partial, barrnap's hit is partial, or nhmmer's hits cover under 80% of the query's exons |
 | `ambiguous` | the share of non-ACGT bases |
+
+- `molecules.fna.gz` (since 2026-11-07): the organelle molecules of each species' genome as its assembly holds them
+  (those its FASTA titles name a mitochondrion, chloroplast, plastid or apicoplast; up to 15 Mb each), whole,
+  `>accession|seqid organelle`, upper case: for organelle genes a later build or a user wants (the nad genes, a
+  plastid's psbA), whatever source `genes.tsv` took. RefSeq's organelle genomes are not copied.
+
+## metadata/
+What the build measured of each species' genome (the assembly file it read: `genomes.tsv`'s `fetched`) while the file
+was on disk, and NCBI's own summaries of the genomes (since 2026-11-07). The build deletes most genomes after
+(`--keep_gb`): these stand for them. A genome done by a build before 2026-11-07 is described where its file was still
+there; one without a row was not.
+
+- `assembly.tsv.gz`: one row per species' genome (`representative` `t` of `genomes.tsv`), by `eukore/metadata.py` in one
+  pass over its FASTA:
+
+| column | |
+|---|---|
+| `accession`, `fetched` | the genome (`genomes.tsv`) and the assembly file read (its RefSeq copy where it has one) |
+| `md5`, `bytes` | of the file read, as NCBI served it (gzipped) |
+| `sequences`, `length`, `longest` | its sequences, their bases, the longest |
+| `acgt`, `n_bases`, `other_bases` | its A, C, G and T, its N, and its other IUPAC bases (either case) |
+| `n50`, `l50`, `n90`, `l90` | of its sequences (scaffolds): the length the longest reach 50% (90%) of its bases at, and how many |
+| `contigs`, `contig_n50`, `contig_l50` | its sequences split at its gaps |
+| `gaps`, `gap_bases` | its runs of 10 Ns or more (NCBI's gaps) and their bases |
+| `short_1kb`, `short_10kb` | the share of its bases in sequences under 1 kb, under 10 kb |
+| `gc` | G and C over A, C, G and T |
+| `gc_windows`, `gc_window_sd`, `gc_window_q05`, `gc_window_q95`, `gc_outlier_windows` | the GC of its 10 kb windows (each sequence's, from its start; its last one where it holds 5 kb of ACGT or more): their number, spread, 5% and 95% quantiles, and the share 0.10 or more from their median (another organism's contigs, isochores) |
+| `masked` | the soft-masked (lower-case) share of its A, C, G and T: 0 where its submitter did not mask it, not where it holds no repeats |
+| `cpg_oe` | CpG observed over expected (CG dinucleotides × ACGT / (C × G)): low in genomes with methylated CpG (vertebrates, plants) |
+| `duplicate_sequences`, `duplicate_bases` | sequences identical to an earlier one (as written: the reverse complement is not compared), their bases |
+| `telomere_motif`, `telomeric_ends`, `telomere_both` | the telomeric repeat most of its sequences' ends hold, of TTAGGG, TTTAGGG, TTTTAGGG, TTAGG, TTAGGC, TTGGGG and TTTTGGGG (an end: the outer 5 kb of a sequence of 10 kb or more; holding a motif: its copies on either strand cover 500 bases or more, the motif covering most; yeasts' irregular TG repeats are none of them), `-` for none; the ends holding it; the sequences holding it at both ends (whole chromosomes, telomere to telomere) |
+| `mitochondrion_molecules`, `mitochondrion_length`, `mitochondrion_gc`; `plastid_...` | its organelle molecules (`organelle/molecules.fna.gz`): their number, bases, GC |
+| `sketch` | `t` where `sketches.zip` holds its sketch |
+
+- `tetranucleotides.tsv.gz`: one row per genome of `assembly.tsv.gz`: `accession`, then the count of each of the 136
+  canonical tetranucleotides (a 4-mer and its reverse complement counted as the first of the two in ACGT order; 4-mers
+  with another base than ACGT left out), in either case. Divided by the row's sum: the genome's composition, as binning
+  and contamination screens compare it.
+- `sketches.zip` (where sourmash was there): one sourmash FracMinHash signature per genome (`signatures/<accession>.sig.gz`,
+  named by its accession; k 21 and 31, scaled 10,000, no abundances), a collection sourmash reads whole: `sourmash
+  search`, `compare`, `gather` and ANI against any genome or metagenome sketched alike.
+- `ncbi.tsv.gz`: NCBI's assembly_summary row (GenBank's and RefSeq's tables the build read; `inputs.assembly_tables`) of
+  every assembly of `genomes.tsv` and of the RefSeq copy fetched: `genome` (its `genomes.tsv` accession), `fetched`
+  (`t` for the assembly file Eukore read), then every column of NCBI's tables as NCBI names them (`assembly_accession`,
+  `bioproject`, `biosample`, `refseq_category`, `asm_submitter`, `seq_rel_date`, `assembly_type`,
+  `relation_to_type_material`, `genome_size_ungapped`, `gc_percent`, `replicon_count`, `scaffold_count`,
+  `contig_count`, `annotation_provider`, `total_gene_count`, `protein_coding_gene_count`, ...; their meanings:
+  NCBI's README_assembly_summary.txt).
 
 ## benchmarks/ (optional)
 How complete, right and discriminating the package is, measured by the build (`eukore/benchmarks.py`; absent with
@@ -252,4 +305,6 @@ The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz
   are labelled by their species (its `s__` is the epithet alone: until 4 every one was labelled by its genus).
   Since 2026-11-06, still format 4: the reference renamed Eukore (was EUKDB), its folder `Eukore_<version>/` (was
   `EUKDB_<version>/`); the manifest's `eukore`, the version of Eukore that built it; `benchmarks/` and the manifest's
-  `benchmarks`, the build's measures of the package (a reader of format 4 needs neither).
+  `benchmarks`, the build's measures of the package (a reader of format 4 needs neither). Since 2026-11-07, still
+  format 4: `organelle/genes.tsv`'s mitochondrial `CYTB` and plastid `rbcL`, `matK` and `tufA`; `organelle/molecules.fna.gz`; `metadata/` and the
+  manifest's `counts.metadata` (a reader of format 4 needs none of them).

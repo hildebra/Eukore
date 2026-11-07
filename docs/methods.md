@@ -113,12 +113,15 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
 `eukore/organelle.py`, for each species of the package and each of its organelles, from one source:
 - **RefSeq's organelle genomes** (its release's mitochondrion and plastid GenBank files, ~2.2 GB, parsed once into
   `WORK/organelle`). Their annotated rRNA features (SSU, LSU, 5S; the 16S is an animal mitochondrion's LSU, elsewhere
-  the SSU) and COX1 CDS. Of a species' records, the one with the most of these genes, then its own taxid's, then the
+  the SSU), a mitochondrion's COX1 CDS and (since 2026-11-07) its CYTB, and a plastid's rbcL, matK and tufA CDS (by
+  `/gene`, else `/product`; rbcS, the small subunit, is not rbcL, nor the plastid's cytochrome b6 or b559 CYTB). Of a species' records, the one with the most of these genes, then its own taxid's, then the
   longest.
 - **Else its own assembly's organelle molecules**, those NCBI's FASTA titles name a mitochondrion, chloroplast, plastid
   or apicoplast. nhmmer finds each gene, queried with that gene of the 3 nearest RefSeq species (its exons joined);
   barrnap the rRNA nhmmer misses (`--kingdom mito` in animals' mitochondria, `bac` elsewhere). This runs after the
-  genomes in the process stage, and again in the package stage before the prune, on the genomes still on disk.
+  genomes in the process stage, and again in the package stage before the prune, on the genomes still on disk. An
+  assembly searched before a gene of its organelles was added (its `WORK/organelle/assembly/` file's `#searched`
+  line, none before 2026-11-07) is searched again where its genome is still on disk.
 
 A gene is kept whole, introns and all (fungi's and plants' COX1 hold group I and II introns). Checked on real genomes
 (2026-11-05): human's mitochondrion (queried with the chimpanzee's) gave its 12S, 16S and COX1 within 6 bases of
@@ -126,6 +129,18 @@ RefSeq's annotation; yeast's (queried with *Kluyveromyces lactis*') its COX1 exa
 and 21S within 90 bases. barrnap alone found no rRNA in yeast's mitochondrion, and Arabidopsis' plastid 16S and 23S
 but not its 5S. A species with neither source has no organelle genes. The organelle genes have no checks across species
 yet.
+
+## assembly metadata is measured
+
+`eukore/metadata.py`, for each species' genome, while its file is on disk: at the end of its run (`genomes.run`), and
+for a genome done before 2026-11-07 (or whose measure failed) in a pass after the process stage's runs and again in
+the package stage before the prune. One pass over the gzipped FASTA (decompressed by igzip or pigz where there;
+~27 s a Gb on one core, 2026-11-07, WSL) measures its contiguity, gaps, composition, GC windows, soft-masking, CpG,
+duplicate sequences, telomeric repeats at its sequences' ends and its 136 canonical tetranucleotides, and keeps its
+organelle molecules whole; sourmash sketches it alongside (k 21 and 31, scaled 10,000; `--no_sketches` none). Into
+`WORK/done/<accession>/` (`stats.json`, `organelle.fna.gz`, `sketch.sig.gz`); the package gathers them into
+`metadata/` with NCBI's assembly_summary rows of every genome ([FORMAT.md](FORMAT.md)). Each measure was checked
+against slow counts and in any chunking (`tests/test_metadata.py`).
 
 ## What else a package tells its user
 

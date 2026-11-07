@@ -158,6 +158,8 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   - runs the rRNA checks and the part screen;
   - takes the organelle genes of any genome not searched yet;
   - names each species in PR2, EUKARYOME and KSGP;
+  - describes each done genome still on disk that lacks its metadata (`eukore/metadata.py`: a genome done before
+    2026-11-07), as the process stage does after its runs;
   - prunes `OUT/genomes` to `--keep_gb` (the model species first, then the smallest);
   - writes `OUT/Eukore_<version>/`, with its benchmarks ([benchmarks.md](benchmarks.md)).
 
@@ -180,6 +182,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--scratch DIR` | beside `OUT/genomes` | the fetch stage's unfinished downloads (`.part` files) and their gzip checks, e.g. a node's local disk or a scratch file system without backups; each file is copied into `OUT/genomes` once whole |
 | `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and runs (genomes left, time left) |
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
+| `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
 | `--fcs_gx_db PREFIX`, `--run_gx` | none, `run_gx` | FCS-GX's database (e.g. `/dev/shm/gxdb/all`) and runner |
 | `--ksgp_tax FILE` | KSGP 4.0, fetched | the KSGP release `species.tsv`'s KSGP lineages come from |
