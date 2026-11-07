@@ -280,6 +280,12 @@ So that a user (protal's build) has what it needs without computing it again:
   searched for every gene; their genome files are then deleted. For each marker (each BUSCO's coding sequence, the
   18S, the ITS, each organelle gene) the identities within the species are set beside the species' genome's nearest
   other species (a BUSCO's from its own check; the others by vsearch against every other species in the package).
+  On the 7-clade trial (2 further assemblies of each of its 6 panel species, 2026-11-07), the 18S and the ITS resolve
+  *A. thaliana*, *C. albicans*, *C. elegans* and *D. melanogaster* (ITS gaps of 33 to 40 points), not *S. cerevisiae*
+  (other *Saccharomyces* in the trial, the hybrid *S. pastorianus* among them, hold its 18S at 100%) nor "*Blastocystis
+  hominis*" (its assemblies are of different subtypes: their 18S only 75% alike). A BUSCO's gap is `-` where no other
+  species' copy is 70% alike (the trial holds no congener of most panel species). Those assemblies' FASTA files hold
+  no organelle molecules, so their organelle genes are not compared.
 - **Transcriptomes** (`genomes.tsa_jobs`). ENA's list of INSDC's eukaryote TSA sets names their NCBI taxids
   (NCBI's own lists do not); a species with no NCBI, model or TOGA2 genome takes its set of the most bases (not an
   environmental sample), in place of EukDetect2's records. Its BUSCOs are called as in a genome; no rRNA, tiara or

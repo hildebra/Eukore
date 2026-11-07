@@ -68,18 +68,22 @@ def main(argv=None):
             if rec["seqid"] in wanted:
                 seqs[rec["seqid"]] = rec["sequence"]
     stats = collections.defaultdict(lambda: dict(genes=0, found=0, exact=0, f1=[]))
+    near = organelle.Nearest(chosen, ncbi)  # once: each record's own species' records excluded from its queries
+    done = 0
     for kind, items in sample.items():
         for sp, rs in items:
-            others = {k: v for k, v in chosen.items() if k[0] != sp}
-            near = organelle.Nearest(others, ncbi)
+            own = {r["seqid"] for (s, _k), v in chosen.items() if s == sp for r in v}
             truth = {r["gene"]: r for r in rs if r["gene"] in organelle.CODING and r["trans_spliced"] == "f"
                      and r["partial"] == "f"}
+            done += 1
+            if done % 20 == 0:
+                print(f"# {done} records searched", file=sys.stderr, flush=True)
             if not truth:
                 continue
             molecules = [(s, kind, seqs[s]) for s in {r["seqid"] for r in truth.values()} if s in seqs]
-            got = {"nhmmer": organelle.nhmmer_genes(molecules, [q for q in near.queries(sp, kind)
+            got = {"nhmmer": organelle.nhmmer_genes(molecules, [q for q in near.queries(sp, kind, exclude=own)
                                                                 if q[0].split("|")[0] in truth], nhmmer, opts.threads),
-                   "miniprot": organelle.miniprot_genes(molecules, near.proteins(sp, kind), miniprot,
+                   "miniprot": organelle.miniprot_genes(molecules, near.proteins(sp, kind, exclude=own), miniprot,
                                                         ncbi.code_of(sp, organelle.COMPARTMENT[kind]), opts.threads)}
             for gene, t in truth.items():
                 true_bases = exon_bases(organelle.parts_read(t["parts"]))

@@ -510,8 +510,9 @@ class Nearest:
                     for a in ncbi.ancestors(sp):
                         self.under[(organelle, r["gene"])][a].append(r["seqid"])
 
-    def queries(self, taxid, organelle, n=NEAREST):
-        """Each gene of the n RefSeq species nearest to taxid with it -> [(gene|seqid, its exons)]."""
+    def queries(self, taxid, organelle, n=NEAREST, exclude=()):
+        """Each gene of the n RefSeq species nearest to taxid with it -> [(gene|seqid, its exons)]; exclude: seqids
+        not taken (tools/organelle_models.py: a record's own, searched as if it were an assembly's)."""
         out = []
         for gene in GENES_OF[organelle]:
             under, got = self.under.get((organelle, gene), {}), []
@@ -519,18 +520,18 @@ class Nearest:
                 for s in under.get(a, ()):
                     if len(got) >= n:
                         break
-                    if s not in got:
+                    if s not in got and s not in exclude:
                         got.append(s)
                 if len(got) >= n:
                     break
             out += [(f"{gene}|{s}", self.seq[(s, gene)]) for s in got]
         return out
 
-    def proteins(self, taxid, organelle, n=NEAREST):
+    def proteins(self, taxid, organelle, n=NEAREST, exclude=()):
         """Each protein-coding gene's protein of the n RefSeq species nearest to taxid with it -> {gene~seqid:
         protein} (miniprot's queries: loci.parse_alignments reads the gene before the ~)."""
         return {f"{q.split('|')[0]}~{q.split('|')[1]}": self.protein[(q.split("|")[1], q.split("|")[0])]
-                for q, _s in self.queries(taxid, organelle, n)
+                for q, _s in self.queries(taxid, organelle, n, exclude)
                 if (q.split("|")[1], q.split("|")[0]) in self.protein}
 
 

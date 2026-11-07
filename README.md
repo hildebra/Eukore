@@ -190,6 +190,13 @@ outputs are in [docs/building.md](docs/building.md).
    window; each copy and record gets a confidence tier with its reasons.
 7. **Package and benchmarks**, the manifest written last.
 
+<p align="center">
+  <img src="docs/figures/overview.png" alt="Eukore: the build from its sources to the package, and what the package holds" width="860">
+</p>
+
+The figure (`docs/figures/overview.py`; the parts added in Eukore 0.2 marked) carries NCBI's and the references'
+numbers of 2026-11; a package's own counts head its panel b with `--package`.
+
 Details, and what was checked on real genomes, are in [docs/methods.md](docs/methods.md).
 
 ## Benchmarks
