@@ -129,7 +129,7 @@ def gzip_whole(path, tool=None):
             pass
 
 
-def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=None, times=None):
+def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=None, times=None, headers=None):
     """Downloads url to dest (by curl where there, else urllib): "" if it arrived whole (the length it announced, and, a
     gzip file, gzip reads it to its end), else why not. A missing file ("not found") or another refusal (HTTP 4xx but
     429) is not asked for again; other failures are (ATTEMPTS times), after growing waits, or as long as the server
@@ -137,7 +137,8 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
     scratch: the folder of the download's .part file (eukore_build.py --scratch: dest's storage then gets the whole
     file once, written in one go), else beside dest; checker: a process pool the gzip check runs in (a core of its own),
     else this thread; times: a dict (a Counter) its seconds of transfer, check (with its wait for the checker) and
-    copy (from scratch) are added to, and the bytes of the file it placed."""
+    copy (from scratch) are added to, and the bytes of the file it placed; headers: the request's others (an API
+    key's: by urllib, never on curl's command line, where other users of the node could read it)."""
     why, asked = "", 0.0
     times = collections.Counter() if times is None else times
     part = os.path.join(scratch, os.path.basename(dest) + ".part") if scratch else dest + ".part"
@@ -150,10 +151,10 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
         asked = 0.0
         try:
             expected, started = None, time.monotonic()
-            if CURL:
+            if CURL and not headers:
                 curl_get(url, part)
             else:
-                request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+                request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
                 with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as fh:
                     expected = response.headers.get("Content-Length")
                     shutil.copyfileobj(response, fh, 1 << 20)

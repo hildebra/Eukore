@@ -52,7 +52,8 @@ TELOMERES = ("TTAGGG",     # vertebrates, many fungi and protists, some inverteb
              "TTTTGGGG")   # hypotrich ciliates (Oxytricha, Euplotes)
 SKETCH_PARAMS = "k=21,k=31,scaled=10000,noabund"
 ASSEMBLY_COLUMNS = (
-    "accession", "fetched", "md5", "bytes", "sequences", "length", "acgt", "n_bases", "other_bases", "longest",
+    "accession", "fetched", "genome_source", "genome_url", "annotation_source", "md5", "bytes", "sequences", "length",
+    "acgt", "n_bases", "other_bases", "longest",
     "n50", "l50", "n90", "l90", "contigs", "contig_n50", "contig_l50", "gaps", "gap_bases", "short_1kb", "short_10kb",
     "gc", "gc_windows", "gc_window_sd", "gc_window_q05", "gc_window_q95", "gc_outlier_windows", "masked", "cpg_oe",
     "duplicate_sequences", "duplicate_bases", "telomere_motif", "telomeric_ends", "telomere_both",
@@ -411,12 +412,42 @@ def _gz_table(path, columns, rows):
     os.replace(util.part_of(path), path)
 
 
-def write(part, genomes, work, tables=()):
-    """The package's metadata (in its unfinished folder part) of its genomes (package.collect's {accession: row}):
-    metadata/ncbi.tsv.gz (NCBI's rows of every genome and of the RefSeq copy fetched), and of each genome Eukore read
-    metadata/assembly.tsv.gz, metadata/tetranucleotides.tsv.gz, metadata/sketches.zip and organelle/molecules.fna.gz
-    -> counts for the manifest."""
+ANNOTATION_NAMES = {"veupathdb": "VEuPathDB", "ensembl": "Ensembl", "toga2": "TOGA2"}
+
+
+def genome_source(row, job=None):
+    """The database a genome was downloaded from (since 2026-11-07): `NCBI RefSeq` or `NCBI GenBank` (by the
+    accession fetched), `TOGA2 (<who assembled it>)`, `EukProt` (a species without an assembly: EukDetect2's records
+    of EukProt's genomes and transcriptomes, data/no_assembly.fna.gz)."""
+    why = (job or {}).get("why", [row.get("source", "")])[0]
+    if why == "toga2":
+        who = (job or {}).get("assembly_source", "-")
+        return f"TOGA2 ({who})" if who not in ("-", "") else "TOGA2"
+    if why == "no_assembly":
+        return "EukProt"
+    fetched = row.get("fetched") or row.get("accession", "")
+    return "NCBI RefSeq" if fetched.startswith("GCF_") else "NCBI GenBank" if fetched.startswith("GCA_") else "-"
+
+
+def annotation_source(work, row, job=None):
+    """The database of the gene models a genome's run took (genomes.annotation_record): `NCBI RefSeq` or `NCBI
+    GenBank` (NCBI's GFF of the assembly fetched), `VEuPathDB`, `Ensembl`, `TOGA2`; `-` for none (miniprot's alone)."""
+    from .genomes import annotation_record  # noqa: PLC0415
+    got = annotation_record(work, job or dict(accession=row["accession"]))
+    used = got[0] if got else "-"
+    if used == "ncbi":
+        return "NCBI RefSeq" if (row.get("fetched") or "").startswith("GCF_") else "NCBI GenBank"
+    return ANNOTATION_NAMES.get(used, "-")
+
+
+def write(part, genomes, work, tables=(), jobs=None):
+    """The package's metadata (in its unfinished folder part) of its genomes (package.collect's {accession: row};
+    jobs: the plan's {accession: job}, where the sources' details are): metadata/ncbi.tsv.gz (NCBI's rows of every
+    genome and of the RefSeq copy fetched); metadata/assembly.tsv.gz, a row per species' genome (where it came from,
+    and the measures of those Eukore described); of those, metadata/tetranucleotides.tsv.gz, metadata/sketches.zip and
+    organelle/molecules.fna.gz -> counts for the manifest."""
     from .genomes import done_dir  # noqa: PLC0415
+    jobs = jobs or {}
     folder = os.path.join(part, FOLDER)
     os.makedirs(folder, exist_ok=True)
     os.makedirs(os.path.join(part, "organelle"), exist_ok=True)
@@ -428,7 +459,7 @@ def write(part, genomes, work, tables=()):
             if name in rows:
                 out.append(dict(rows[name], genome=acc, fetched="t" if name == fetched[acc] else "f"))
     _gz_table(os.path.join(folder, "ncbi.tsv.gz"), NCBI_EXTRA + tuple(c for c in columns if c not in NCBI_EXTRA), out)
-    described, sketches = [], []
+    described, listed, sketches = [], [], []
     molecules = os.path.join(part, "organelle", "molecules.fna.gz")
     n_molecules = 0
     with gzip.open(util.part_of(molecules), "wt", compresslevel=6) as mol:
@@ -444,9 +475,15 @@ def write(part, genomes, work, tables=()):
             sketch = os.path.join(d, SKETCH)
             if os.path.isfile(sketch):
                 sketches.append((acc, sketch))
+            g, job = genomes[acc], jobs.get(acc)
+            row = dict(stats or {}, accession=acc, fetched=g.get("fetched") or acc,
+                       genome_source=genome_source(g, job), genome_url=(job or {}).get("url") or "-",
+                       annotation_source=annotation_source(work, g, job),
+                       sketch="t" if os.path.isfile(sketch) else "f")
+            listed.append(row)
             if stats is None:
                 continue
-            described.append(dict(stats, accession=acc, sketch="t" if os.path.isfile(sketch) else "f"))
+            described.append(row)
             if os.path.isfile(os.path.join(d, ORGANELLE)):
                 with gzip.open(os.path.join(d, ORGANELLE), "rt") as fh:
                     for line in fh:
@@ -455,7 +492,7 @@ def write(part, genomes, work, tables=()):
                             line = f">{acc}|{line[1:]}"
                         mol.write(line)
     os.replace(util.part_of(molecules), molecules)
-    _gz_table(os.path.join(folder, "assembly.tsv.gz"), ASSEMBLY_COLUMNS, described)
+    _gz_table(os.path.join(folder, "assembly.tsv.gz"), ASSEMBLY_COLUMNS, listed)
     _gz_table(os.path.join(folder, "tetranucleotides.tsv.gz"), ("accession",) + tuple(CANONICAL),
               [dict(accession=r["accession"], **dict(zip(CANONICAL, r["tetranucleotides"]))) for r in described])
     if sketches:  # a zip of signatures sourmash reads as one collection (stored: each is gzipped)
@@ -464,5 +501,7 @@ def write(part, genomes, work, tables=()):
             for acc, sketch in sketches:
                 z.write(sketch, f"signatures/{acc}.sig.gz")
         os.replace(util.part_of(path), path)
-    return {"ncbi_rows": len(out), "assemblies_described": len(described), "sketches": len(sketches),
-            "organelle_molecules": n_molecules}
+    return {"ncbi_rows": len(out), "genomes": len(listed), "assemblies_described": len(described),
+            "sketches": len(sketches), "organelle_molecules": n_molecules,
+            "genome_sources": dict(collections.Counter(r["genome_source"] for r in listed)),
+            "annotation_sources": dict(collections.Counter(r["annotation_source"] for r in listed))}

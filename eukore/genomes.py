@@ -49,7 +49,7 @@ LEVEL = {"Complete Genome": 0, "Chromosome": 1, "Scaffold": 2, "Contig": 3}
 LOCI_COLUMNS = ("locus", "status", "contig", "contig_length", "start", "end", "strand", "length", "cds_length",
                 "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies", "query",
                 "protein_length", "window_class", "rescued",  # rescued: loci.py's rescue pass (since 2026-11-06)
-                "model")  # model: miniprot's or NCBI's annotation's gene model (loci.annotated, since 2026-11-06)
+                "model")  # model: miniprot's, or the annotation's source (loci.annotated, since 2026-11-06)
 
 
 def safe(name):
@@ -159,6 +159,7 @@ def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assemb
             lineage=list(ncbi.ancestors(ncbi.merged.get(sp, sp))), itsx=rrna.itsx_groups(ncbi, sp), rdna_unit=unit,
             flags=sorted(row.get("flags") or ()), others=[o["accession"] for o in others], path=path,
             level=row.get("level", ""), category=row.get("category", ""),
+            refseq_category=(refseq.get(row["accession"]) or row).get("refseq_category", ""),
             gencode=ncbi.code_of(int(row.get("taxid") or sp)), annotated=None if genes is None else genes > 0)
 
     reps = representatives(assemblies, ncbi, inside)
@@ -189,8 +190,131 @@ def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assemb
     return out
 
 
-FATES = ("chosen", "chosen, flagged", "model species", "no assembly (records)", "every assembly excluded",
-         "placeholder", "hybrid", "not a species", "not in the taxdump", "no download")
+MAMMALIA = 40674
+
+
+def toga2_jobs(ncbi, rows, job_map, inside=None, groups=("vertebrate_mammalian", "vertebrate_other")):
+    """TOGA2's assemblies outside NCBI's set (annotation.read_toga2: DNA Zoo's, Bat1K's, the Hiller lab's; since
+    2026-11-06) of the vertebrate species job_map has no genome of -> {accession TOGA2_<assembly>: job} (why "toga2"):
+    of a species' the one of the longest scaffold N50, its genome TOGA2's .2bit (fetch_genome), its gene models TOGA2's
+    (job["annotations"]). groups: NCBI's assembly groups wanted (a mammal's vertebrate_mammalian, else
+    vertebrate_other)."""
+    have = {int(j["species_taxid"]) for j in job_map.values()}
+    best = {}
+    for r in rows:
+        if r.get("genome", "-") == "-":
+            continue
+        sp = ncbi.species_of(ncbi.merged.get(int(r["species_taxid"]), int(r["species_taxid"])))
+        if sp in have or sp not in ncbi.parent or ncbi.rank.get(sp) != "species" or (inside and not inside(sp)):
+            continue
+        if ("vertebrate_mammalian" if MAMMALIA in ncbi.ancestors(sp) else "vertebrate_other") not in groups:
+            continue
+        if sp not in best or int(r["scaffold_n50"]) > int(best[sp]["scaffold_n50"]):
+            best[sp] = r
+    return {r["accession"]: toga2_job(ncbi, sp, r) for sp, r in sorted(best.items())}
+
+
+def toga2_job(ncbi, sp, r, others=()):
+    """A job of TOGA2's assembly r (annotation.read_toga2's row) of species sp."""
+    from . import rrna  # noqa: PLC0415
+    return dict(accession=r["accession"], fetch=r["accession"], url=r["genome"], size=None, species_taxid=sp, taxid=sp,
+                organism=r["organism"], why=["toga2"], lineage=list(ncbi.ancestors(sp)), itsx=rrna.itsx_groups(ncbi, sp),
+                rdna_unit="-", flags=[], others=list(others), path=None, level="", category="isolate",
+                gencode=ncbi.code_of(sp), annotated=False, annotations=[("toga2", r["annotation"])],
+                assembly_source=r["assembly_source"])
+
+
+TOGA2_BETTER = 2.0  # TOGA2's assembly takes the place of NCBI's chosen one at this many times its contig N50 or more,
+TOGA2_LENGTH = 0.9  # and at this share of its total length or more (not a part of the genome, however contiguous)
+
+
+def prefer_toga2(ncbi, rows, job_map, ncbi_stats, toga2_length):
+    """The NCBI genomes to replace by TOGA2's assemblies outside NCBI (since 2026-11-06) -> {NCBI accession: TOGA2
+    job}: a species' TOGA2 assembly of the longest contig N50 where it is TOGA2_BETTER times that of the NCBI genome
+    chosen for it and its total length TOGA2_LENGTH of that genome's or more (ncbi_stats(job): NCBI's assembly stats,
+    dict(contig_n50, total_length); toga2_length(row): the sum of its chrom.sizes; either None where not known: NCBI's
+    kept). A model species' genome stays. The swap gives up NCBI's contamination screens of the genome and its NCBI
+    gene models (TOGA2's come with it); the NCBI genome is listed among the species' others."""
+    by_species = {int(j["species_taxid"]): (a, j) for a, j in job_map.items()}
+    best = {}
+    for r in rows:
+        if r.get("genome", "-") == "-" or r.get("ncbi_accession", "-") != "-" or not r.get("contig_n50", "").isdigit():
+            continue
+        sp = ncbi.species_of(ncbi.merged.get(int(r["species_taxid"]), int(r["species_taxid"])))
+        acc, job = by_species.get(sp, (None, None))
+        if not job or job["why"] != ["ncbi"]:
+            continue
+        if sp not in best or int(r["contig_n50"]) > int(best[sp]["contig_n50"]):
+            best[sp] = r
+    out = {}
+    for sp, r in sorted(best.items()):
+        acc, job = by_species[sp]
+        theirs = ncbi_stats(job) or {}
+        if not theirs.get("contig_n50") or not theirs.get("total_length"):
+            continue
+        if int(r["contig_n50"]) < TOGA2_BETTER * theirs["contig_n50"]:
+            continue
+        length = toga2_length(r)
+        if length and length >= TOGA2_LENGTH * theirs["total_length"]:
+            out[acc] = toga2_job(ncbi, sp, r, [acc] + list(job.get("others", ())))
+    return out
+
+
+def stats_url(job):
+    """NCBI's assembly statistics beside a job's genome (its contig N50, its total length)."""
+    url = job.get("url") or ""
+    return url[:-len("_genomic.fna.gz")] + "_assembly_stats.txt" if url.endswith("_genomic.fna.gz") else None
+
+
+def assembly_stats(stats):
+    """NCBI's assembly statistics file -> dict(contig_n50, total_length) (None each where not given), or None."""
+    if not stats or not os.path.isfile(stats):
+        return None
+    out = dict(contig_n50=None, total_length=None)
+    with open(stats) as fh:
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if f[:4] == ["all"] * 4 and len(f) > 5 and f[5].isdigit() and f[4] in ("contig-N50", "total-length"):
+                out[f[4].replace("-N50", "_n50").replace("-", "_")] = int(f[5])
+    return out
+
+
+def chrom_sizes_url(row):
+    """TOGA2's chrom.sizes beside its genome (annotation.read_toga2's row)."""
+    return row["genome"].rsplit("/", 1)[0] + "/chrom.sizes" if row.get("genome", "-") != "-" else None
+
+
+def total_length(chrom_sizes):
+    """A chrom.sizes file (name, length) -> the lengths' sum, or None."""
+    if not chrom_sizes or not os.path.isfile(chrom_sizes):
+        return None
+    with open(chrom_sizes) as fh:
+        sizes = [line.split() for line in fh if line.strip()]
+    return sum(int(f[1]) for f in sizes if len(f) > 1 and f[1].isdigit()) or None
+
+
+def fetch_genome(job, path, **how):
+    """A job's genome into path (gzipped FASTA): NCBI's as it is, TOGA2's .2bit converted (twobit.py) -> "" if it
+    arrived, else why not (util.fetch_file's). how: util.fetch_file's scratch and checker."""
+    url = job["url"]
+    if not url.endswith(".2bit"):
+        return util.fetch_file(url, path, **how)
+    from . import twobit  # noqa: PLC0415
+    raw = path + ".2bit"
+    why = util.fetch_file(url, raw, gzip_check=False, **{k: v for k, v in how.items() if k in ("scratch", "times")})
+    if why:
+        return why
+    try:
+        twobit.to_fasta(raw, path)
+    except (OSError, ValueError, IndexError) as e:
+        return f"not a readable .2bit ({e})"
+    finally:
+        os.remove(raw)
+    return ""
+
+
+FATES = ("chosen", "chosen, flagged", "model species", "no assembly (records)", "TOGA2's genome",
+         "every assembly excluded", "placeholder", "hybrid", "not a species", "not in the taxdump", "no download")
 
 
 def fates(ncbi, assemblies, job_map, inside=None):
@@ -203,8 +327,8 @@ def fates(ncbi, assemblies, job_map, inside=None):
     for job in job_map.values():
         why = job["why"][0]
         out[int(job["species_taxid"])] = ("model species" if why == "model" else "no assembly (records)"
-                                          if why == "no_assembly" else "chosen, flagged" if job.get("flags")
-                                          else "chosen")
+                                          if why == "no_assembly" else "TOGA2's genome" if why == "toga2"
+                                          else "chosen, flagged" if job.get("flags") else "chosen")
     excluded = collections.defaultdict(list)
     for row in assemblies:
         sp = ncbi.species_of(row["species_taxid"])
@@ -389,7 +513,7 @@ def run(args):
         if settings.get("staged_only"):
             return acc, None, "not fetched yet"
         os.makedirs(settings["genomes"], exist_ok=True)
-        why = util.fetch_file(job["url"], path)
+        why = fetch_genome(job, path)
         if why:
             return acc, None, f"fetch failed: {why}"
     started = time.time()  # the run's own time, the fetch left out (benchmarks.py's runtime.tsv)
@@ -398,22 +522,22 @@ def run(args):
     os.makedirs(tmp)
     odb = odb_of(settings)
     queries = odb.queries(job["lineage"], settings["odb_lineages"])
-    gff, report = annotation_of(job, settings)
+    gff, report, source = annotation_of(job, settings)
     try:
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
                             settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), tmp,
                             settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings),
-                            annotation=(gff, report) if gff else None)
+                            annotation=(gff, report, source) if gff else None)
     except (OSError, RuntimeError) as e:
         shutil.rmtree(tmp, ignore_errors=True)
         return acc, None, f"locus calling failed: {e}"
     if got["failed"]:
         shutil.rmtree(tmp, ignore_errors=True)
         return acc, None, got["failed"]
-    if gff is not False:  # miniprot's models against NCBI's (annotation.py's benchmark; no rows: no annotation)
+    if gff is not False:  # miniprot's models against the annotation's (annotation.py's benchmark; no rows: none)
         annotation_mod.annotate(tmp, gff, report, {
             locus: dict(r["miniprot"], status=r["status"], contig=r["contig"], strand=r["strand"])
-            for locus, r in got["loci"].items() if r["status"] != "Missing"})
+            for locus, r in got["loci"].items() if r["status"] != "Missing"}, source=source)
     windows = os.path.join(tmp, "windows.fna.gz")
     with gzip.open(windows, "wt", compresslevel=6) as fh:
         fh.writelines(f">{n}\n{s}\n" for n, s in got["windows"].items())
@@ -466,11 +590,19 @@ def run(args):
                "bytes": os.path.getsize(path), "seconds": seconds, "threads": settings.get("threads", 1),
                "rescue": rescue_of(settings)["rescue_missing"],
                "rescued": sum(1 for r in got["loci"].values() if r.get("rescued")),
-               "annotated": bool(gff), "ncbi_models": sum(1 for r in got["loci"].values() if r.get("model") == "ncbi")}
+               "annotated": bool(gff), "annotation": source if gff else "-",
+               # the sources asked before the one taken (all, where none had one): none (better_annotation)
+               "annotation_none": [] if gff is False else annotation_mod.none_before(job, source if gff else None),
+               "annotated_models": sum(1 for r in got["loci"].values() if r.get("model", "miniprot") != "miniprot")}
     if own:
         summary["held_out"] = {"left_out": own, "seconds": round(time.time() - started - seconds, 1)}
     if not job.get("path"):  # the assembly's metadata while it is here (metadata.py); a failure the pass tries again
-        why = metadata_mod.describe(path, tmp, acc, job.get("fetch", acc), settings.get("sourmash"))
+        for name in (metadata_mod.STATS, metadata_mod.ORGANELLE, metadata_mod.SKETCH):  # a run again: its own kept
+            if os.path.isfile(os.path.join(folder, name)):
+                shutil.copyfile(os.path.join(folder, name), os.path.join(tmp, name))
+        want = metadata_mod.missing(tmp, settings.get("sourmash"))
+        why = metadata_mod.describe(path, tmp, acc, job.get("fetch", acc), settings.get("sourmash"), want) \
+            if want else None
         if why:
             summary["metadata_failed"] = why
     with open(os.path.join(tmp, "done.json"), "w", newline="\n") as fh:
@@ -485,22 +617,144 @@ def run(args):
 
 
 def annotation_of(job, settings):
-    """A genome's NCBI annotation for its run (annotation.py) -> (GFF path, assembly report path or None): its GFF
-    beside the genome (the fetch stage's), else fetched where the run may fetch; (None, None) where NCBI has none (a
-    404: annotation.tsv without rows); (False, None) where the genome has no annotation or it is not here yet (a
-    staged-only run: compared later, annotate_pass)."""
-    if not annotation_mod.gff_url(job):
-        return False, None
-    gff = annotation_mod.gff_file(settings["genomes"], job["accession"])
+    """A genome's annotation for its run (annotation.py) -> (GFF path, NCBI assembly report path or None, its source):
+    its GFF beside the genome (the fetch stage's), else fetched where the run may fetch; (None, None, "-") where no
+    source has one (annotation.tsv without rows); (False, None, "-") where the genome has none to try or it is not
+    here yet (a staged-only run: compared later, annotate_pass)."""
+    if not annotation_mod.wanted(job):
+        return False, None, "-"
+    gff, source = annotation_mod.found(settings["genomes"], job["accession"])
     report = annotation_mod.report_file(settings["genomes"], job["accession"])
-    if not os.path.isfile(gff):
+    if not gff:
         if settings.get("staged_only"):
-            return False, None
+            return False, None, "-"
         try:
-            gff = annotation_mod.fetch(job, settings["genomes"])
+            gff, source = annotation_mod.fetch(job, settings["genomes"], settings.get("veupathdb_key"))
         except OSError:
-            return False, None
-    return gff, report if os.path.isfile(report) else None
+            return False, None, "-"
+    return gff, report if os.path.isfile(report) else None, source or "-"
+
+
+def done_summary(work, accession):
+    """A done genome's done.json, or None."""
+    try:
+        with open(os.path.join(done_dir(work, accession), "done.json")) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def annotation_record(work, job):
+    """A done genome's gene models -> (the source its run took them from, SOURCES' or "-", {sources found to have
+    none}), or None where it is not done. A run before 2026-11-07 says only whether it took NCBI's (done.json's
+    `annotated`); an empty annotation.tsv beside it (NCBI's 404, or a GFF without coding sequences) is NCBI's none."""
+    summary = done_summary(work, job["accession"])
+    if summary is None:
+        return None
+    if "annotation" in summary:
+        return summary["annotation"], set(summary.get("annotation_none") or ())
+    table = os.path.join(done_dir(work, job["accession"]), annotation_mod.TABLE)
+    empty = os.path.isfile(table) and not read_rows(table)
+    if summary.get("annotated") and not (empty and not summary.get("ncbi_models")):
+        return "ncbi", set()
+    return "-", {"ncbi"} if empty and annotation_mod.gff_url(job) else set()
+
+
+def source_rank(source):
+    return annotation_mod.SOURCES.index(source) if source in annotation_mod.SOURCES else len(annotation_mod.SOURCES)
+
+
+def better_annotation(work, job):
+    """The source of gene models better than those a done genome's run took (since 2026-11-07) -> its name, or None: the
+    first of the job's annotation.candidates (NCBI's, then VEuPathDB's, Ensembl's, TOGA2's: annotation.assign's, by
+    the build's indexes) not found to have none, where it comes before the source taken. A genome run before an
+    index named its assembly, before a VEuPathDB key was given, or whose annotation was not fetched yet, is run again
+    with it (eukore_build.py)."""
+    got = annotation_record(work, job)
+    if got is None:
+        return None
+    used, none = got
+    for source, _url in annotation_mod.candidates(job):
+        if source not in none:
+            return source if source_rank(source) < source_rank(used) else None
+    return None
+
+
+def note_annotation_none(work, job, sources):
+    """Sources found to have no annotation of a done genome added to its done.json's `annotation_none` (the fetch
+    stage's, annotate_genome's), so that better_annotation does not ask them again."""
+    summary = done_summary(work, job["accession"])
+    if summary is None or not sources:
+        return
+    if "annotation" not in summary:  # a run before 2026-11-07: its record as annotation_record reads it
+        from_old = annotation_record(work, job)
+        summary["annotation"], summary["annotation_none"] = from_old[0], sorted(from_old[1])
+    summary["annotation_none"] = sorted(set(summary.get("annotation_none") or ()) | set(sources))
+    path = os.path.join(done_dir(work, job["accession"]), "done.json")
+    with open(util.part_of(path), "w", newline="\n") as fh:
+        json.dump(summary, fh, indent=1)
+    os.replace(util.part_of(path), path)
+
+
+def rerun_for_annotation(work, job, genomes_folder, may_fetch):
+    """Whether a done genome is to be run again for better gene models (better_annotation): its genome on disk and
+    the better annotation beside it, or one the run may fetch."""
+    better = better_annotation(work, job)
+    if not better or not os.path.isfile(job.get("path") or genome_file(genomes_folder, job["accession"])):
+        return False
+    if may_fetch:
+        return True
+    _path, source = annotation_mod.found(genomes_folder, job["accession"])
+    return source is not None and source_rank(source) < source_rank(annotation_record(work, job)[0])
+
+
+# --- genomes superseded: a species' genome another assembly took the place of ------------------------------------
+
+GENOME_SET = "genome_set.tsv"    # WORK/: each species' genome as the last plan chose it
+SUPERSEDED = "superseded.tsv"    # WORK/: the genomes another took the place of (old, new), kept till deleted
+
+
+def supersede(work, job_map):
+    """The plan's genomes against the last plan's (WORK/GENOME_SET; since 2026-11-07) -> [(old accession, new)] of the
+    species whose genome changed (a TOGA2 assembly in place of NCBI's; a newer NCBI assembly or version, after
+    --refresh), added to WORK/SUPERSEDED. Species outside this plan (a --species build) keep their row."""
+    path, chosen = os.path.join(work, GENOME_SET), {}
+    if os.path.isfile(path):
+        for f in read_rows(path):
+            if len(f) >= 2:
+                chosen[f[0]] = f[1]
+    now = {str(j["species_taxid"]): a for a, j in job_map.items()}
+    changed = [(chosen[sp], acc) for sp, acc in sorted(now.items()) if chosen.get(sp, acc) != acc]
+    chosen.update(now)
+    os.makedirs(work, exist_ok=True)
+    with open(util.part_of(path), "w", newline="\n") as fh:
+        fh.write("species_taxid\taccession\n" + "".join(f"{sp}\t{a}\n" for sp, a in sorted(chosen.items())))
+    os.replace(util.part_of(path), path)
+    if changed:
+        table = os.path.join(work, SUPERSEDED)
+        new = not os.path.isfile(table)
+        with open(table, "a", newline="\n") as fh:
+            fh.write("old\tnew\n" if new else "")
+            fh.writelines(f"{old}\t{acc}\n" for old, acc in changed)
+    return changed
+
+
+def drop_superseded(genomes_folder, work, job_map):
+    """The superseded genomes' files deleted (the genome, its annotation and assembly report), each once the genome
+    that took its place is done and it is not in the plan again -> [accessions deleted]. Its done folder stays."""
+    out = []
+    for f in read_rows(os.path.join(work, SUPERSEDED)):
+        old, new = f[0], f[1] if len(f) > 1 else None
+        if old in job_map or not new or not is_done(work, new):
+            continue
+        paths = [genome_file(genomes_folder, old), annotation_mod.report_file(genomes_folder, old)] + \
+            [annotation_mod.gff_file(genomes_folder, old, s) for s in annotation_mod.SOURCES]
+        if any(os.path.isfile(p) for p in paths):
+            for p in paths:
+                if os.path.isfile(p):
+                    os.remove(p)
+            out.append(old)
+    return out
 
 
 def rescue_of(settings):

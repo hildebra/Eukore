@@ -247,14 +247,44 @@ class RunTest(unittest.TestCase):
             job = dict(genomes.jobs(ncbi, gb)[YEAST], annotated=True)  # the summary: protein-coding genes
             self.assertTrue(annotation.gff_url(job).endswith("_genomic.gff.gz"))
             acc, summary, why = genomes.run((job, settings))
-            self.assertEqual((why, summary["annotated"], summary["ncbi_models"]), (None, True, 1))
+            self.assertEqual((why, summary["annotated"], summary["annotation"], summary["annotated_models"]),
+                             (None, True, "ncbi", 1))
             done = genomes.done_dir(work, YEAST)
             models = {r["locus"]: r["model"] for r in fx.read_tsv(os.path.join(done, "loci.tsv"))}
             self.assertEqual(models, {"1at2759": "ncbi", "2at2759": "miniprot", "3at2759": "-"})
             compared = {r["locus"]: r for r in fx.read_tsv(os.path.join(done, annotation.TABLE))}
-            self.assertEqual((compared["1at2759"]["exact_introns"], compared["2at2759"]["transcript"]), ("1", "-"))
+            self.assertEqual((compared["1at2759"]["exact_introns"], compared["2at2759"]["transcript"],
+                              compared["1at2759"]["source"]), ("1", "-", "ncbi"))
             self.assertFalse(os.path.isfile(ann))  # taken and compared: deleted
+            self.assertEqual(summary["annotation_none"], [])
+            self.assertIsNone(genomes.better_annotation(work, job))  # NCBI's taken: none better
             self.assertIsNone(annotation.gff_url(dict(job, annotated=False)))
+            # no NCBI annotation, Ensembl's (a GTF here: TOGA2's form) beside the genome: its models, `ensembl`
+            other = dict(job, annotated=False, annotations=[("ensembl", "https://x/genes.gff3.gz")])
+            ann = annotation.gff_file(genomes_dir, YEAST, "ensembl")
+            with gzip.open(ann, "wt") as fh:
+                fh.write(f'c1\tensembl\tCDS\t{a}\t{a + 179}\t.\t+\t0\tgene_id "g1"; transcript_id "t1";\n'
+                         f'c1\tensembl\tCDS\t{a + 480}\t{b}\t.\t+\t0\tgene_id "g1"; transcript_id "t1";\n')
+            # as if its run had found no NCBI models: Ensembl's are better, here, so it is run again (staged)
+            genomes.note_annotation_none(work, other, ["ncbi"])
+            with open(os.path.join(done, "done.json")) as fh:
+                record = json.load(fh)
+            with open(os.path.join(done, "done.json"), "w") as fh:
+                json.dump(dict(record, annotation="-"), fh)
+            self.assertEqual(genomes.better_annotation(work, other), "ensembl")
+            self.assertTrue(genomes.rerun_for_annotation(work, other, genomes_dir, False))
+            with open(os.path.join(done, metadata.STATS)) as fh:
+                measured = fh.read()
+            acc, summary, why = genomes.run((other, settings))
+            with open(os.path.join(done, metadata.STATS)) as fh:
+                self.assertEqual(fh.read(), measured)  # its metadata kept, not measured again
+            self.assertIsNone(genomes.better_annotation(work, other))
+            self.assertEqual((why, summary["annotation"], summary["annotated_models"]), (None, "ensembl", 1))
+            models = {r["locus"]: r["model"] for r in fx.read_tsv(os.path.join(done, "loci.tsv"))}
+            self.assertEqual(models["1at2759"], "ensembl")
+            compared = {r["locus"]: r for r in fx.read_tsv(os.path.join(done, annotation.TABLE))}
+            self.assertEqual((compared["1at2759"]["source"], compared["1at2759"]["transcript"]), ("ensembl", "t1"))
+            self.assertFalse(os.path.isfile(ann))
 
 
 class FcsTest(unittest.TestCase):
@@ -306,6 +336,101 @@ class QcTest(unittest.TestCase):
                              ("short", "long", "ok"))
             self.assertEqual(qc.lca(ncbi, [4932, 27291]), 4930)
             self.assertEqual(qc.depth(ncbi, 4932, 28985), 4)  # to the family
+
+
+class RecheckTest(unittest.TestCase):
+    """A rerun on genomes already done (since 2026-11-07): a done genome run again where better gene models than its
+    run took are there; a species' genome another assembly took the place of deleted once that one is done."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work, self.genomes = os.path.join(self.tmp.name, "work"), os.path.join(self.tmp.name, "genomes")
+        os.makedirs(self.genomes)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def done(self, acc, summary, table=None):
+        folder = genomes.done_dir(self.work, acc)
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "done.json"), "w") as fh:
+            json.dump(dict(summary, accession=acc), fh)
+        if table is not None:
+            with open(os.path.join(folder, annotation.TABLE), "w") as fh:
+                fh.write("\t".join(annotation.ANNOTATION_COLUMNS) + "\n" + "".join(table))
+
+    @staticmethod
+    def job(acc, others=(("ensembl", "https://ensembl.example/x.gff3.gz"),)):
+        return dict(accession=acc, fetch=acc, url=f"https://ftp.example/{acc}_x_genomic.fna.gz", annotated=None,
+                    annotations=list(others))
+
+    def test_better_gene_models(self):
+        a, j = "GCA_000000001.1", self.job("GCA_000000001.1")
+        self.assertIsNone(genomes.better_annotation(self.work, j))  # not done
+        # a run before 2026-11-07 without NCBI's models: NCBI never asked (no annotation.tsv), asked first
+        self.done(a, {"annotated": False})
+        self.assertEqual(genomes.annotation_record(self.work, j), ("-", set()))
+        self.assertEqual(genomes.better_annotation(self.work, j), "ncbi")
+        # NCBI's 404 (an empty annotation.tsv): Ensembl's, which an index names since
+        self.done(a, {"annotated": False}, table=[])
+        self.assertEqual(genomes.annotation_record(self.work, j), ("-", {"ncbi"}))
+        self.assertEqual(genomes.better_annotation(self.work, j), "ensembl")
+        # one with NCBI's models: none better
+        self.done(a, {"annotated": True, "ncbi_models": 3}, table=["x\n"])
+        self.assertEqual(genomes.annotation_record(self.work, j), ("ncbi", set()))
+        self.assertIsNone(genomes.better_annotation(self.work, j))
+        # a run with Ensembl's; VEuPathDB's (a key given since) comes first
+        self.done(a, {"annotation": "ensembl", "annotation_none": ["ncbi"]})
+        self.assertIsNone(genomes.better_annotation(self.work, j))
+        veu = self.job(a, (("veupathdb", "https://veupathdb.example/x.gff"), ("ensembl", "https://e.example/x")))
+        self.assertEqual(genomes.better_annotation(self.work, veu), "veupathdb")
+        # found to have none (the fetch stage's): not asked again; an old record carried over
+        genomes.note_annotation_none(self.work, veu, ["veupathdb"])
+        self.assertIsNone(genomes.better_annotation(self.work, veu))
+        self.done(a, {"annotated": False}, table=[])
+        genomes.note_annotation_none(self.work, j, ["ensembl"])
+        self.assertEqual(genomes.annotation_record(self.work, j), ("-", {"ncbi", "ensembl"}))
+        self.assertIsNone(genomes.better_annotation(self.work, j))
+        self.assertEqual(annotation.none_before(veu, "ensembl"), ["ncbi", "veupathdb"])
+        self.assertEqual(annotation.none_before(veu, None), ["ncbi", "veupathdb", "ensembl"])
+
+    def test_run_again_where_its_genome_and_annotation_are_here(self):
+        a, j = "GCA_000000002.1", self.job("GCA_000000002.1")
+        self.done(a, {"annotation": "-", "annotation_none": ["ncbi"]})
+        self.assertFalse(genomes.rerun_for_annotation(self.work, j, self.genomes, True))  # no genome here
+        with gzip.open(genomes.genome_file(self.genomes, a), "wt") as fh:
+            fh.write(">c1\nACGT\n")
+        self.assertTrue(genomes.rerun_for_annotation(self.work, j, self.genomes, True))  # the run fetches it
+        self.assertFalse(genomes.rerun_for_annotation(self.work, j, self.genomes, False))  # staged: not here yet
+        with gzip.open(annotation.gff_file(self.genomes, a, "ensembl"), "wt") as fh:
+            fh.write("c1\tx\tCDS\t1\t3\t.\t+\t0\tParent=t1\n")
+        self.assertTrue(genomes.rerun_for_annotation(self.work, j, self.genomes, False))
+
+    def test_a_superseded_genome_deleted_once_its_replacement_is_done(self):
+        old, new, other = "GCA_000000003.1", "TOGA2_HLtesSpe1", "GCA_000000004.1"
+        self.assertEqual(genomes.supersede(self.work, {old: dict(species_taxid=1), other: dict(species_taxid=2)}), [])
+        for acc in (old, other):
+            with gzip.open(genomes.genome_file(self.genomes, acc), "wt") as fh:
+                fh.write(">c1\nACGT\n")
+        with gzip.open(annotation.gff_file(self.genomes, old), "wt") as fh:
+            fh.write("#\n")
+        # TOGA2's in place of NCBI's; a --species plan without species 2 keeps its row
+        plan = {new: dict(species_taxid=1)}
+        self.assertEqual(genomes.supersede(self.work, plan), [(old, new)])
+        self.assertEqual(genomes.supersede(self.work, plan), [])  # said once
+        self.assertEqual(genomes.read_rows(os.path.join(self.work, genomes.GENOME_SET)), [["1", new], ["2", other]])
+        self.assertEqual(genomes.drop_superseded(self.genomes, self.work, plan), [])  # the new one not done yet
+        self.assertTrue(os.path.isfile(genomes.genome_file(self.genomes, old)))
+        self.done(new, {"annotation": "toga2"})
+        self.assertEqual(genomes.drop_superseded(self.genomes, self.work, plan), [old])
+        self.assertFalse(os.path.isfile(genomes.genome_file(self.genomes, old)))
+        self.assertFalse(os.path.isfile(annotation.gff_file(self.genomes, old)))
+        self.assertTrue(os.path.isfile(genomes.genome_file(self.genomes, other)))
+        self.assertEqual(genomes.drop_superseded(self.genomes, self.work, plan), [])
+        # chosen again (a swap undone): its file kept
+        with gzip.open(genomes.genome_file(self.genomes, old), "wt") as fh:
+            fh.write(">c1\nACGT\n")
+        self.assertEqual(genomes.drop_superseded(self.genomes, self.work, {old: dict(species_taxid=1)}), [])
 
 
 if __name__ == "__main__":

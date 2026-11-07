@@ -171,29 +171,53 @@ class PackageTest(unittest.TestCase):
             metadata.describe(path, folder, YEAST, YEAST_GCF, sourmash, {metadata.SKETCH})
             tables = [fx.assembly_table(os.path.join(tmp, "genbank_fungi.txt"), fx.GENBANK),
                       fx.assembly_table(os.path.join(tmp, "refseq_fungi.txt"), fx.REFSEQ)]
+            # the runs' gene models (done.json): the yeast's Ensembl's, the TOGA2 genome's TOGA2's
+            toga2, eukprot = "TOGA2_HLtesSpe1", "EUK_6253"
+            for acc, source in ((YEAST, "ensembl"), (toga2, "toga2"), (eukprot, "-")):
+                os.makedirs(genomes.done_dir(work, acc), exist_ok=True)
+                with open(os.path.join(genomes.done_dir(work, acc), "done.json"), "w") as fh:
+                    json.dump({"accession": acc, "annotation": source, "annotation_none": ["ncbi"]}, fh)
+            jobs = {YEAST: dict(accession=YEAST, fetch=YEAST_GCF, why=["ncbi"], url="https://ftp.example/y.fna.gz"),
+                    toga2: dict(accession=toga2, fetch=toga2, why=["toga2"], assembly_source="DNA Zoo",
+                                url="https://toga2.example/HLtesSpe1.2bit"),
+                    eukprot: dict(accession=eukprot, fetch=eukprot, why=["no_assembly"], url=None, path="x.fna")}
             collected = dict(genomes={
                 YEAST: dict(accession=YEAST, fetched=YEAST_GCF, species_taxid=4932, taxid=559292, organism="y",
                             source="ncbi", representative="t", loci=0),
                 OTHER: dict(accession=OTHER, fetched=OTHER, species_taxid=4932, taxid=4932, organism="y",
-                            source="assembly", representative="f", loci=0)},
-                copies={YEAST: {}}, features=[], copy_rows=[], taxids=set())
-            hook = lambda part, g: metadata.write(part, g, work, tables)  # noqa: E731
+                            source="assembly", representative="f", loci=0),
+                toga2: dict(accession=toga2, fetched=toga2, species_taxid=9606, taxid=9606, organism="h",
+                            source="toga2", representative="t", loci=0),  # not described: no stats.json
+                eukprot: dict(accession=eukprot, fetched=eukprot, species_taxid=6253, taxid=6253, organism="w",
+                              source="no_assembly", representative="t", loci=0)},
+                copies={YEAST: {}, toga2: {}, eukprot: {}}, features=[], copy_rows=[], taxids=set())
+            hook = lambda part, g: metadata.write(part, g, work, tables, jobs)  # noqa: E731
             out = package.write(os.path.join(tmp, "out", "Eukore_2026.11"), "2026.11", ncbi, collected, [],
                                 metadata=hook)
             self.assertIsNone(package.check(out, deep=True))
             with open(os.path.join(out, "manifest.json")) as fh:
                 counts = json.load(fh)["counts"]
-            self.assertEqual(counts["metadata"], {"ncbi_rows": 3, "assemblies_described": 1, "sketches": 1,
-                                                  "organelle_molecules": 1})
+            self.assertEqual(counts["metadata"], {
+                "ncbi_rows": 3, "genomes": 3, "assemblies_described": 1, "sketches": 1, "organelle_molecules": 1,
+                "genome_sources": {"EukProt": 1, "NCBI RefSeq": 1, "TOGA2 (DNA Zoo)": 1},
+                "annotation_sources": {"-": 1, "Ensembl": 1, "TOGA2": 1}})
             ncbi_rows = package.read_table(out, "metadata/ncbi.tsv.gz")
             self.assertEqual([(r["genome"], r["assembly_accession"], r["fetched"]) for r in ncbi_rows],
                              [(OTHER, OTHER, "t"), (YEAST, YEAST, "f"), (YEAST, YEAST_GCF, "t")])
             self.assertEqual(list(ncbi_rows[0])[:3], ["genome", "fetched", "assembly_accession"])
             self.assertEqual(ncbi_rows[2]["refseq_category"], "reference genome")
-            rows = package.read_table(out, "metadata/assembly.tsv.gz")
-            self.assertEqual((len(rows), list(rows[0])), (1, list(metadata.ASSEMBLY_COLUMNS)))
-            self.assertEqual((rows[0]["accession"], rows[0]["fetched"], rows[0]["n50"], rows[0]["sketch"]),
-                             (YEAST, YEAST_GCF, str(stats["n50"]), "t"))
+            rows = {r["accession"]: r for r in package.read_table(out, "metadata/assembly.tsv.gz")}
+            self.assertEqual((len(rows), list(rows[YEAST])), (3, list(metadata.ASSEMBLY_COLUMNS)))
+            y = rows[YEAST]
+            self.assertEqual((y["fetched"], y["genome_source"], y["genome_url"], y["annotation_source"], y["n50"],
+                              y["sketch"]),
+                             (YEAST_GCF, "NCBI RefSeq", "https://ftp.example/y.fna.gz", "Ensembl", str(stats["n50"]),
+                              "t"))
+            t = rows[toga2]  # where it came from, though not measured
+            self.assertEqual((t["genome_source"], t["genome_url"], t["annotation_source"], t["md5"], t["n50"]),
+                             ("TOGA2 (DNA Zoo)", "https://toga2.example/HLtesSpe1.2bit", "TOGA2", "-", "-"))
+            self.assertEqual((rows[eukprot]["genome_source"], rows[eukprot]["genome_url"]), ("EukProt", "-"))
+            self.assertEqual(metadata.genome_source(dict(accession="GCA_1.1", fetched="GCA_1.1")), "NCBI GenBank")
             tetra = package.read_table(out, "metadata/tetranucleotides.tsv.gz")
             self.assertEqual(len(tetra[0]), 137)
             self.assertEqual([int(tetra[0][k]) for k in metadata.CANONICAL], stats["tetranucleotides"])

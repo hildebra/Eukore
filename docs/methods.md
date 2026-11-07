@@ -30,6 +30,25 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
    Its RefSeq copy is fetched where it has one (RefSeq screens eukaryote genomes for contamination). A model species
    (`data/model_species.tsv`) takes its reference assembly. NCBI's placeholder species and interspecies hybrids
    ("A x B") are left out.
+
+   A vertebrate species NCBI has no assembly of takes TOGA2's (since 2026-11-06; TOGA2's `assemblies_and_species.tsv`:
+   DNA Zoo's, Bat1K's, the Hiller lab's), of its assemblies the one of the longest scaffold N50, as TOGA2 serves it
+   (a UCSC .2bit, read by `eukore/twobit.py`), with TOGA2's gene models: `genomes.tsv`'s `source` `toga2`, its
+   accession `TOGA2_<assembly>`. On 2026-11-06, 72 species (65 mammals; 27 of DNA Zoo's).
+
+   A TOGA2 assembly outside NCBI also takes the place of the NCBI genome chosen for its species (a RefSeq reference
+   genome too; never a model species') where it is far better: its contig N50 twice that genome's or more (NCBI's
+   assembly statistics) and its total length 90% of it or more (TOGA2's `chrom.sizes`: not a part of the genome,
+   however contiguous). The NCBI genome is listed among the species' other assemblies; NCBI's contamination screens
+   of it and its NCBI gene models are given up (TOGA2's models come instead). On 2026-11-06, 7 species: *Rhinopithecus
+   bieti*, *Hipposideros armiger*, *Neomonachus schauinslandi*, *Myocastor coypus*, *Mastomys natalensis*, *Pusa
+   sibirica*, *Alouatta macconnelli* (contig N50 2.5-3,800 times NCBI's); *Lyroderma lyra*'s, 77% of the length, not.
+
+   A build run again on genomes already done (since 2026-11-07) compares its plan with the last one
+   (`WORK/genome_set.tsv`): a species whose genome changed (TOGA2's in its place; after `--refresh`, NCBI's newer
+   assembly or version) gets the new one fetched and run, and the old file deleted once that one is done. A done
+   genome is run again where better gene models than its run took are there (the source order below), so that its
+   copies take them, not only the benchmark's comparison.
 2. **The calls** (`eukore/odb.py`, `eukore/loci.py`).
    - miniprot aligns, per locus, the 30 dataset proteins of the species nearest to the genome in NCBI's taxonomy (a
      species with paralogues gives several, so ~15-30 species) and
@@ -62,10 +81,22 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
      joined read out of frame after it (17 of 69 held-out *B. hominis* copies had an internal stop). The copy's coding
      sequence leaves them out (the alignment's CIGAR places them; `frameshift` features of the copy): its held-out
      copies concordant with OrthoDB's went from 21 to 24, its own-protein ones from 52 to 55.
-   - **NCBI's gene models** (since 2026-11-06). Where the genome has an annotation at NCBI (about 37% of fungal and
-     protist species, 11-29% of the other groups', RefSeq's or a submitter's), a copy takes the annotated transcript
-     sharing the most coding bases with miniprot's model where the locus' HMM confirms its translation (its best HMM,
-     at the cutoff) at 95% of miniprot's score or more (`model` ncbi in copies.tsv); else miniprot's model stays.
+   - **The genome's own gene models** (since 2026-11-06). Where the genome's assembly (that accession and version) has
+     an annotation, a copy takes the annotated transcript sharing the most coding bases with miniprot's model where
+     the locus' HMM confirms its translation (its best HMM, at the cutoff) at 95% of miniprot's score or more
+     (`model` in copies.tsv: its source); else miniprot's model stays. The annotation is the first there of:
+     - NCBI's (about 37% of fungal and protist species, 11-29% of the other groups', RefSeq's or a submitter's);
+     - VEuPathDB's, with a VEuPathDB user's API key (`--veupathdb_key`; its organism table: 817 genomes of protists,
+       fungi, vectors and hosts, curated): 71 species NCBI annotates none of. Its own sequence names (`Pf3D7_01_v3`)
+       are matched to the genome's by length, where one sequence alone has it;
+     - Ensembl's (its species.json, 2026-10: ~5,900 assemblies; Ensembl's own pipeline, BRAKER, Helixer, VEuPathDB's
+       and community annotations, the newest build): 2,037 species of NCBI's assemblies NCBI annotates none of,
+       mostly invertebrates (1,551; Darwin Tree of Life's, ERGA's), 230 plants, 196 vertebrates, 58 fungi, 2
+       protists;
+     - TOGA2's (Malovichko et al. 2026; 2,297 vertebrate assemblies, genes projected from a reference species'):
+       907 vertebrate species more.
+     Ensembl names a chromosome by its number, TOGA2 an accession without its version: NCBI's assembly report gives
+     the genome's names.
      Against NCBI's curated models miniprot's are exact (every intron) for 81% of *Drosophila*'s and *Arabidopsis*'
      BUSCOs, 38% of *C. elegans*' and 46% of *B. hominis*'; every curated model passed its HMM. Re-aligning doubtful
      models (other miniprot settings, GeneWise, exonerate on the gene's window) did not do better: it gained 2 exact

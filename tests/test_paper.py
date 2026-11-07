@@ -8,15 +8,17 @@ genomes chosen; the breadth table and the distance to BUSCO's dataset.
 """
 
 import gzip
+import json
 import os
 import random
+import struct
 import sys
 import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import annotation, benchmarks, genomes, labels, ncbi as ncbi_mod, reads, sources  # noqa: E402
+from eukore import annotation, benchmarks, genomes, labels, ncbi as ncbi_mod, reads, sources, twobit  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 YEAST, PARADOXUS, LACTIS = "GCA_000146045.2", "GCA_000000013.1", "GCA_000002515.1"
@@ -83,6 +85,143 @@ class AnnotationTest(unittest.TestCase):
             self.assertEqual(annotation.annotate(folder, None), 0)
             self.assertEqual(fx.read_tsv(os.path.join(folder, annotation.TABLE)), [])
 
+    def test_ensembl_and_toga2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Ensembl's index: the newest build, Ensembl's own on a tie; Prokka's (bacteria) and RefSeq's left out
+            builds = {"braker": {"2023_07": "B"}, "ensembl": {"2023_07": "E", "2021_01": "old"},
+                      "refseq": {"2026_01": "R"}}
+            species = {"species": {"Sp": {"assemblies": {
+                "GCA_1.1": {"genebuild_providers": {p: {d: {"paths": {"genebuild": {"files": {"annotations": {
+                    "genes.gff3.gz": f"GCA/{x}/genes.gff3.gz"}}}}} for d, x in ds.items()}
+                    for p, ds in builds.items()}},
+                "GCA_2.1": {"genebuild_providers": {"prokka": {"2024_01": {"paths": {"genebuild": {"files": {
+                    "annotations": {"genes.gff3.gz": "GCA/P/genes.gff3.gz"}}}}}}}}}}}}
+            path = os.path.join(tmp, "species.json")
+            with open(path, "w") as fh:
+                json.dump(species, fh)
+            self.assertEqual(annotation.ensembl_index(path),
+                             {"GCA_1.1": ("ensembl", "2023_07", f"{annotation.ENSEMBL_FTP}/GCA/E/genes.gff3.gz")})
+            # TOGA2's: the first reference of TOGA2_REFERENCES listing the assembly; none without an accession
+            table = os.path.join(tmp, "toga2.tsv")
+            with open(table, "w") as fh:
+                fh.write("Directory Name\tSpecies\tSpecies Taxonomy ID\tAssembly name\tNCBI accession\t"
+                         "Source of assembly\tscaffold N50 (bp)\n"
+                         "Bird__b__GCA_3.1\tAves b\t9\tHLb1\tGCA_3.1\tNCBI\t500\n"
+                         "Zoo__z__HL1\tMus z\t7\tHL1\t\tDNA Zoo Consortium\t900\n")
+            listings = {"reference_zebrafinch_X": ["Bird__b__GCA_3.1"], "reference_chicken_Y": ["Bird__b__GCA_3.1"],
+                        "reference_human_hg38": ["Zoo__z__HL1"]}
+            self.assertEqual(annotation.toga2_index(table, listings), {"GCA_3.1": (
+                "reference_chicken_Y",
+                f"{annotation.TOGA2_URL}/TOGA2/reference_chicken_Y/Bird__b__GCA_3.1/query_annotation.gtf.gz")})
+            rows = {r["accession"]: r for r in annotation.toga2_rows(table, listings, {"Mammalia": ["Zoo__z__HL1"]})}
+            self.assertEqual((rows["TOGA2_HL1"]["ncbi_accession"], rows["TOGA2_HL1"]["genome"],
+                              rows["TOGA2_HLb1"]["genome"]),
+                             ("-", f"{annotation.TOGA2_URL}/Genomes/Mammalia/Zoo__z__HL1/HL1.2bit", "-"))
+            # the index given to the jobs: by GenBank accession, or the RefSeq copy fetched
+            os.makedirs(os.path.join(tmp, annotation.INDEX_DIR))
+            with open(annotation.index_file(tmp), "w") as fh:
+                fh.write("accession\tsource\tbuild\turl\nGCA_3.1\ttoga2\tref\thttps://t\nGCA_3.1\tensembl\te\thttps://e\n")
+            jobs = {"GCA_3.1": dict(accession="GCA_3.1", url="https://x/GCA_3.1_a_genomic.fna.gz", annotated=False),
+                    "GCA_4.1": dict(accession="GCA_4.1", url="https://x/GCA_4.1_a_genomic.fna.gz")}
+            self.assertEqual(annotation.assign(jobs, annotation.read_index(tmp)), 1)
+            self.assertEqual(annotation.candidates(jobs["GCA_3.1"]), [("ensembl", "https://e"), ("toga2", "https://t")])
+            self.assertEqual(annotation.candidates(jobs["GCA_4.1"]), [("ncbi", "https://x/GCA_4.1_a_genomic.gff.gz")])
+            # names: Ensembl's chromosome `2`, TOGA2's accession without its version, a RefSeq copy's sequences
+            report = os.path.join(tmp, "report.txt")
+            with open(report, "w") as fh:
+                fh.write("# Sequence-Name\tSequence-Role\tAssigned-Molecule\tAssigned-Molecule-Location/Type\t"
+                         "GenBank-Accn\tRelationship\tRefSeq-Accn\n"
+                         "chr2\tassembled-molecule\t2\tChromosome\tCM2.1\t=\tNC_2.1\n"
+                         "u1\tunplaced-scaffold\tna\tna\tJA1.1\t<>\tna\n")
+            alias = annotation.aliases(report)
+            self.assertEqual((alias["2"], alias["CM2"], alias["NC_2.1"], alias["CM2.1"], alias["JA1"]),
+                             ("CM2.1", "CM2.1", "CM2.1", "NC_2.1", "JA1.1"))
+            gtf = os.path.join(tmp, "a.gtf.gz")
+            with gzip.open(gtf, "wt") as fh:
+                fh.write('CM2\tbed2gtf\tCDS\t101\t250\t.\t-\t2\tgene_id "G_a"; transcript_id "T#ABC#1";\n'
+                         '2\tensembl\tCDS\t101\t250\t.\t-\t0\tID=CDS:P1;Parent=transcript:T2;protein_id=P1\n')
+            on_genbank = annotation.read_cds(gtf, {"CM2.1": [(1, 1000)]}, alias)
+            self.assertEqual(sorted(on_genbank), ["T#ABC#1", "transcript:T2"])
+            self.assertEqual((on_genbank["T#ABC#1"]["gene"], on_genbank["T#ABC#1"]["phase"][(101, 250)]), ("G_a", 2))
+            on_refseq = annotation.read_cds(gtf, {"NC_2.1": [(1, 1000)]}, alias)  # two steps: 2 -> CM2.1 -> NC_2.1
+            self.assertEqual({t["contig"] for t in on_refseq.values()}, {"NC_2.1"})
+            # fetched in order: NCBI's 404, then a GFF without coding sequences, then one with them
+            genomes_dir = os.path.join(tmp, "genomes")
+            os.makedirs(genomes_dir)
+            served = {"https://n/GCA_5.1_a_genomic.gff.gz": None, "https://e5": "c1\tx\tregion\t1\t9\t.\t+\t.\tID=c1\n",
+                      "https://t5": 'c1\tx\tCDS\t1\t9\t.\t+\t0\ttranscript_id "t";\n'}
+
+            def fetch_file(url, dest, **_how):
+                if served.get(url) is None:
+                    return "not found"
+                with gzip.open(dest, "wt") as fh:
+                    fh.write(served[url])
+                return ""
+            job = dict(accession="GCA_5.1", url="https://n/GCA_5.1_a_genomic.fna.gz",
+                       annotations=[("ensembl", "https://e5"), ("toga2", "https://t5")])
+            real, annotation.util.fetch_file = annotation.util.fetch_file, fetch_file
+            try:
+                path, source = annotation.fetch(job, genomes_dir)
+            finally:
+                annotation.util.fetch_file = real
+            self.assertEqual((path, source), (annotation.gff_file(genomes_dir, "GCA_5.1", "toga2"), "toga2"))
+            self.assertFalse(os.path.isfile(annotation.gff_file(genomes_dir, "GCA_5.1", "ensembl")))
+            self.assertEqual(annotation.found(genomes_dir, "GCA_5.1"), (path, "toga2"))
+
+    def test_veupathdb(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # its organism table: the GFF's URL moved to the file service; a genome without an accession left out
+            table = os.path.join(tmp, "organisms.json")
+            with open(table, "w") as fh:
+                json.dump({"records": [
+                    {"attributes": {"genome_version": "GCA_6.1", "annotation_source": "VEuPathDB",
+                                    "annotation_version": "2024",
+                                    "URLgff": "http://PlasmoDB.org/common/downloads/Current_Release/P/gff/data/P.gff"}},
+                    {"attributes": {"genome_version": "2014-05-13", "URLgff": "http://x/common/downloads/y.gff"}}]}, fh)
+            self.assertEqual(annotation.veupathdb_index(table), {"GCA_6.1": (
+                "VEuPathDB 2024", "https://PlasmoDB.org/a/service/raw-files/Current_Release/P/gff/data/P.gff")})
+            # without an API key its annotations are not given to the jobs
+            index = {"GCA_6.1": [("veupathdb", "https://v/P.gff"), ("ensembl", "https://e")]}
+            jobs = {"GCA_6.1": dict(accession="GCA_6.1", url="https://n/GCA_6.1_a_genomic.fna.gz", annotated=False)}
+            annotation.assign(jobs, index)
+            self.assertEqual(annotation.candidates(jobs["GCA_6.1"]), [("ensembl", "https://e")])
+            annotation.assign(jobs, index, veupathdb=True)
+            self.assertEqual(annotation.candidates(jobs["GCA_6.1"])[0], ("veupathdb", "https://v/P.gff"))
+            # with it: asked for with the key as a bearer token, kept plain; its own sequence names matched by length
+            asked = {}
+
+            def fetch_file(url, dest, **how):
+                asked[url] = how
+                if not url.startswith("https://v/"):
+                    return "not found"
+                with open(dest, "w") as fh:
+                    fh.write("##gff-version 3\n##sequence-region Pf_01 1 5000\n##sequence-region Pf_02 1 7000\n"
+                             "Pf_01\tVEuPathDB\tCDS\t101\t400\t.\t+\t0\tID=c1;Parent=PF01_t1\n")
+                return ""
+            genomes_dir = os.path.join(tmp, "genomes")
+            os.makedirs(genomes_dir)
+            real, annotation.util.fetch_file = annotation.util.fetch_file, fetch_file
+            try:
+                path, source = annotation.fetch(jobs["GCA_6.1"], genomes_dir, "KEY")
+            finally:
+                annotation.util.fetch_file = real
+            self.assertEqual((path, source), (annotation.gff_file(genomes_dir, "GCA_6.1", "veupathdb"), "veupathdb"))
+            self.assertTrue(path.endswith(".veupathdb.gff"))
+            self.assertEqual((asked["https://v/P.gff"]["headers"], asked["https://v/P.gff"]["gzip_check"]),
+                             ({"Authorization": "Bearer KEY"}, False))
+            self.assertNotIn("headers", asked["https://n/GCA_6.1_a_assembly_report.txt"])  # the key to VEuPathDB alone
+            report = os.path.join(tmp, "report.txt")
+            with open(report, "w") as fh:
+                fh.write("# Sequence-Name\tSequence-Role\tAssigned-Molecule\tAssigned-Molecule-Location/Type\t"
+                         "GenBank-Accn\tRelationship\tRefSeq-Accn\tAssembly-Unit\tSequence-Length\n"
+                         "1\tassembled-molecule\t1\tChromosome\tLR1.1\t<>\tna\tPrimary Assembly\t5000\n"
+                         "2\tassembled-molecule\t2\tChromosome\tLR2.1\t<>\tna\tPrimary Assembly\t7000\n"
+                         "3\tassembled-molecule\t3\tChromosome\tLR3.1\t<>\tna\tPrimary Assembly\t7000\n")
+            alias = annotation.aliases(report, path)
+            self.assertEqual(alias["Pf_01"], "LR1.1")
+            self.assertNotIn("Pf_02", alias)  # two sequences of its length: not told apart
+            self.assertEqual(sorted(annotation.read_cds(path, {"LR1.1": [(1, 5000)]}, alias)), ["PF01_t1"])
+
 
 class FatesTest(unittest.TestCase):
     def test_what_became_of_each_species(self):
@@ -97,6 +236,82 @@ class FatesTest(unittest.TestCase):
                          ("chosen", "placeholder", "hybrid", "not a species", "every assembly excluded"))
         self.assertIn(fates[27291], ("chosen", "chosen, flagged"))
         self.assertTrue(set(fates.values()) <= set(genomes.FATES))
+
+    def test_toga2_genomes_of_species_ncbi_has_none_of(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            gb = sources.read_assemblies([fx.assembly_table(os.path.join(tmp, "genbank_fungi.txt"), fx.GENBANK)])
+            job_map = genomes.jobs(ncbi, gb)
+            row = dict(ncbi_accession="-", organism="Ascaris suum", scaffold_n50="10", reference="r",
+                       annotation="https://t/a.gtf.gz", genome="https://t/A1.2bit", assembly_source="DNA Zoo")
+            rows = [dict(row, accession="TOGA2_A1", species_taxid="6253"),
+                    dict(row, accession="TOGA2_A2", species_taxid="6253", scaffold_n50="99", genome="https://t/A2.2bit"),
+                    dict(row, accession="TOGA2_A3", species_taxid="6253", scaffold_n50="999", genome="-"),
+                    dict(row, accession="TOGA2_Y", species_taxid="4932")]  # NCBI has yeast's genome
+            got = genomes.toga2_jobs(ncbi, rows, job_map)
+            self.assertEqual(list(got), ["TOGA2_A2"])  # the longest scaffold N50 with a genome to fetch
+            job = got["TOGA2_A2"]
+            self.assertEqual((job["why"], job["url"], job["annotations"], job["annotated"]),
+                             (["toga2"], "https://t/A2.2bit", [("toga2", "https://t/a.gtf.gz")], False))
+            self.assertEqual(genomes.toga2_jobs(ncbi, rows, job_map, groups=("fungi",)), {})
+            self.assertEqual(genomes.fates(ncbi, gb, dict(job_map, **got))[6253], "TOGA2's genome")
+            # in place of NCBI's genome where its contig N50 is twice NCBI's or more and its length 90% of it or more
+            par = next(a for a, j in job_map.items() if j["species_taxid"] == 27291)
+            better = [dict(row, accession="TOGA2_P", species_taxid="27291", contig_n50="2000")]
+            ncbi_stats = dict(contig_n50=1000, total_length=10_000)
+            swaps = genomes.prefer_toga2(ncbi, better, job_map, lambda job: ncbi_stats, lambda r: 9_000)
+            self.assertEqual(list(swaps), [par])
+            self.assertEqual((swaps[par]["accession"], swaps[par]["why"], swaps[par]["others"][0]),
+                             ("TOGA2_P", ["toga2"], par))
+            for theirs, length in ((dict(ncbi_stats, contig_n50=1001), 9_000),  # under twice the contig N50
+                                   (ncbi_stats, 8_999),  # contiguous but short: a part of the genome
+                                   (None, 9_000), (ncbi_stats, None)):  # either not known: NCBI's kept
+                self.assertEqual(genomes.prefer_toga2(ncbi, better, job_map, lambda job: theirs, lambda r: length),
+                                 {})
+            stats = os.path.join(tmp, "stats.txt")
+            with open(stats, "w") as fh:
+                fh.write("# Assembly name: x\nall\tall\tall\tall\ttotal-length\t9000\n"
+                         "all\tall\tall\tall\tscaffold-N50\t900\nall\tall\tall\tall\tcontig-N50\t450\n")
+            self.assertEqual(genomes.assembly_stats(stats), dict(contig_n50=450, total_length=9000))
+            self.assertEqual(genomes.stats_url(dict(url="https://x/GCA_1.1_a_genomic.fna.gz")),
+                             "https://x/GCA_1.1_a_assembly_stats.txt")
+            sizes = os.path.join(tmp, "chrom.sizes")
+            with open(sizes, "w") as fh:
+                fh.write("c1\t700\nc2\t300\n")
+            self.assertEqual(genomes.total_length(sizes), 1000)
+            self.assertEqual(genomes.chrom_sizes_url(dict(genome="https://t/G/A/x.2bit")), "https://t/G/A/chrom.sizes")
+
+    def test_two_bit_genomes(self):
+        # a .2bit of two sequences (version 0, little-endian): N blocks and soft-masked blocks
+        seqs = [("chr1", "ACGTTGCAAC", [(2, 3)], [(6, 4)]), ("u2", "GGGTA", [], [])]
+        code = {"T": 0, "C": 1, "A": 2, "G": 3}
+        records = []
+        for name, s, ns, masks in seqs:
+            packed = bytearray()
+            padded = s + "T" * (-len(s) % 4)
+            for i in range(0, len(padded), 4):
+                b = 0
+                for c in padded[i:i + 4]:
+                    b = b << 2 | code[c]
+                packed.append(b)
+            rec = struct.pack("<II", len(s), len(ns)) + b"".join(struct.pack("<I", x[0]) for x in ns)
+            rec += b"".join(struct.pack("<I", x[1]) for x in ns) + struct.pack("<I", len(masks))
+            rec += b"".join(struct.pack("<I", x[0]) for x in masks) + b"".join(struct.pack("<I", x[1]) for x in masks)
+            records.append(rec + struct.pack("<I", 0) + bytes(packed))
+        head = struct.pack("<IIII", twobit.SIGNATURE, 0, len(seqs), 0)
+        index_size = sum(1 + len(n) + 4 for n, *_x in seqs)
+        offset, index = len(head) + index_size, b""
+        for (name, *_x), rec in zip(seqs, records):
+            index += bytes([len(name)]) + name.encode() + struct.pack("<I", offset)
+            offset += len(rec)
+        with tempfile.TemporaryDirectory() as tmp:
+            path, fasta = os.path.join(tmp, "g.2bit"), os.path.join(tmp, "g.fna.gz")
+            with open(path, "wb") as fh:
+                fh.write(head + index + b"".join(records))
+            self.assertEqual(list(twobit.records(path)), [("chr1", b"ACNNNGcaac"), ("u2", b"GGGTA")])
+            self.assertEqual(twobit.to_fasta(path, fasta), 15)
+            with gzip.open(fasta, "rt") as fh:
+                self.assertEqual(fh.read(), ">chr1\nACNNNGcaac\n>u2\nGGGTA\n")
 
 
 class ReadsTest(unittest.TestCase):

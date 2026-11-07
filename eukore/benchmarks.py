@@ -628,15 +628,16 @@ def paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside
             introns = sum(int(r["introns"]) for r in matched)
             summary["annotation"] = {
                 "genomes": len({r["accession"] for r in rows}), "copies": len(rows),
+                "sources": dict(collections.Counter(r.get("source", "ncbi") for r in rows)),
                 "on_an_annotated_gene": round(len(matched) / len(rows), 4),
                 "introns_exact": round(sum(int(r["exact_introns"]) for r in matched) / introns, 4) if introns else None,
                 "bases_recall": round(sum(int(r["shared_bases"]) for r in matched) /
                                       max(1, sum(int(r["ann_bases"]) for r in matched)), 4),
                 "bases_precision": round(sum(int(r["shared_bases"]) for r in matched) /
                                          max(1, sum(int(r["bases"]) for r in matched)), 4)}
-            log(f"benchmarks: {len(rows)} copies against NCBI's annotation ({summary['annotation']})")
+            log(f"benchmarks: {len(rows)} copies against their genome's annotation ({summary['annotation']})")
         else:
-            summary["left_out"]["annotation"] = "no genome compared with NCBI's annotation (annotation.py)"
+            summary["left_out"]["annotation"] = "no genome compared with its annotation (annotation.py)"
     write(out, "flags.tsv", FLAG_COLUMNS, [dict(supergroup=g, confidence=t, flags=f, copies=n)
                                            for (g, t, f), n in sorted(flags.items())])
     write(out, "rrna_regions.tsv", REGION_COLUMNS, region_rows(folder, species))

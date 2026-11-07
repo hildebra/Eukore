@@ -145,9 +145,11 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   Then it fetches each species' genome into `OUT/genomes` (its RefSeq copy where it has one). After 1, 2, 3, 5 and
   8 minutes, then every 10 (`--report_minutes`), it says the genomes fetched, failed and left, the Gb left, the download rate and the time
   left, estimated by the genomes' sizes; the process stage reports its genomes alike. Beside each genome it fetches
-  NCBI's gene models (a GFF: RefSeq's or a GenBank submitter's) and the assembly report, but for the genomes whose
-  assembly summary gives no protein-coding genes (a 404 or a GFF without coding sequences: no annotation); the process stage takes a BUSCO copy's model from it where the HMM confirms it
-  ([methods.md](methods.md)), compares miniprot's models with it (`annotation.tsv`) and deletes it.
+  its gene models and NCBI's assembly report: NCBI's GFF (RefSeq's or a GenBank submitter's; not asked for where the
+  assembly summary gives no protein-coding genes; a 404 or a GFF without coding sequences is none), else VEuPathDB's (with
+  `--veupathdb_key`), else Ensembl's, else TOGA2's (their indexes fetched once into `SRC/annotation_sources`); the process stage takes a BUSCO copy's
+  model from it where the HMM confirms it ([methods.md](methods.md)), compares miniprot's models with it
+  (`annotation.tsv`) and deletes it.
 - **process** calls each fetched genome's BUSCOs and extracts its rRNA into `WORK/done/<accession>/`, `-j` genomes at a
   time with `-t / -j` threads each. A genome not fetched yet is left for the next run. Then it takes the organelle
   genes (`WORK/organelle`).
@@ -184,6 +186,8 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
 | `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
+| `--refresh` | off | fetch again NCBI's assembly tables and quality reports and the annotation indexes: newer genomes and gene models taken, old genome files deleted once replaced ([Resuming and rebuilding](#resuming-and-rebuilding)) |
+| `--veupathdb_key KEY` | the environment's `VEUPATHDB_API_KEY`, else none | a VEuPathDB user's API key (its profile's Web Service Access), for VEuPathDB's gene models; it is sent to VEuPathDB alone and written nowhere |
 | `--fcs_gx_db PREFIX`, `--run_gx` | none, `run_gx` | FCS-GX's database (e.g. `/dev/shm/gxdb/all`) and runner |
 | `--ksgp_tax FILE` | KSGP 4.0, fetched | the KSGP release `species.tsv`'s KSGP lineages come from |
 | `--miniprot`, `--hmmsearch` | on the PATH | the tools, where not on the PATH |
@@ -199,9 +203,20 @@ Every stage is resumable: a rerun does only what is not done.
 - A genome searched for fewer BUSCOs than the build calls (a run before format 4, or one with `--loci`) is run again.
 - A fetch that stopped is taken up where it stopped. A source is downloaded again only where its version changed.
 - The published rRNA reads' annotation is kept in `WORK/published`.
+- A done genome is run again where better gene models than its run took are there (since 2026-11-07): the first of
+  NCBI's, VEuPathDB's, Ensembl's and TOGA2's that its sources' indexes name for its assembly and that was not found
+  to have none, where it comes before the one its run took (`done.json`'s `annotation` and `annotation_none`; a run
+  before 2026-11-07 took NCBI's or none). The fetch stage fetches that annotation (and the genome again, where the
+  prune deleted it); the process stage runs the genome again with it, its metadata kept. This catches a genome run
+  before an index named its assembly, before `--veupathdb_key` was given, or before its annotation was fetched.
+- A species whose genome changed since the last plan (`WORK/genome_set.tsv`: TOGA2's assembly in its place; NCBI's
+  newer assembly or version, after `--refresh`) gets the new one fetched and run; the old file (and its annotation)
+  is deleted once the new one is done (`WORK/superseded.tsv`), its done folder kept.
 
-To rebuild a package with newer NCBI tables, delete `WORK/sources/ncbi_assemblies` (and `taxdump.tar.gz`) and run the
-fetch stage again. Genomes already done are not run again.
+`--refresh` (with the fetch stage, or `all`) fetches again what chooses the genomes and their gene models: NCBI's
+assembly tables, its FCS-GX and ANI reports, and Ensembl's, VEuPathDB's and TOGA2's indexes (each old one kept where
+its download fails). The next plan then takes NCBI's newer assemblies, and the rules above fetch and run what changed.
+Without it, these sources stay as first fetched. For a newer taxonomy, delete `WORK/sources/taxdump.tar.gz` too.
 
 ### What a build leaves
 

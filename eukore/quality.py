@@ -32,13 +32,13 @@ def folder_of(src_dir):
     return os.path.join(src_dir, "ncbi_quality")
 
 
-def fetch(src_dir, download, log=print):
-    """NCBI's reports (FILES, ~70 MB) into src_dir/ncbi_quality, kept when there."""
+def fetch(src_dir, download, log=print, refresh=False):
+    """NCBI's reports (FILES, ~70 MB) into src_dir/ncbi_quality, kept when there unless refresh (fetched again)."""
     folder = folder_of(src_dir)
     os.makedirs(folder, exist_ok=True)
     for name in FILES:
         dest = os.path.join(folder, os.path.basename(name))
-        if not os.path.isfile(dest):
+        if refresh or not os.path.isfile(dest):
             log(f"NCBI: fetching {os.path.basename(name)}")
             download(f"{REPORTS}/{name}", dest)
 

@@ -59,15 +59,22 @@ def say(text):
 
 # --- sources -----------------------------------------------------------------------------------------------------
 
-def fetch_sources(src_dir, groups, ksgp_tax=None):
-    """Every source into src_dir (kept when there and whole)."""
+def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False):
+    """Every source into src_dir (kept when there and whole). refresh (--refresh): those that choose the genomes and
+    their gene models fetched again (NCBI's assembly tables, its FCS-GX and ANI reports, the annotation indexes; each
+    old one kept where its download fails), so that the plan takes NCBI's newer assemblies and annotations."""
     os.makedirs(os.path.join(src_dir, "ncbi_assemblies"), exist_ok=True)
     for group in groups:
         for kind, base in (("genbank", sources.ASSEMBLIES_URL), ("refseq", sources.REFSEQ_URL)):
             dest = os.path.join(src_dir, "ncbi_assemblies", f"{kind}_{group}.txt")
-            if not os.path.isfile(dest):
+            if refresh or not os.path.isfile(dest):
                 say(f"NCBI: fetching {kind}'s {group} assembly table")
-                sources.download(f"{base}/{group}/assembly_summary.txt", dest)
+                try:
+                    sources.download(f"{base}/{group}/assembly_summary.txt", dest)
+                except OSError as e:
+                    if not os.path.isfile(dest):
+                        raise
+                    say(f"WARNING: {kind}'s {group} assembly table not fetched again ({e}): the old one kept")
     taxdump = os.path.join(src_dir, "taxdump.tar.gz")
     if not os.path.isfile(taxdump):
         say("NCBI: fetching the taxdump")
@@ -78,8 +85,11 @@ def fetch_sources(src_dir, groups, ksgp_tax=None):
     # the optional sources each on its own: one that fails (a site moved, down) is said, the others still fetched
     # (until 2026-11-06 one failure stopped the stage, NCBI's quality reports then missing from the genome ranking)
     for what, fetch in (("RefSeq's organelle release", lambda: organelle_mod.fetch(src_dir, sources.download, say)),
-                        ("NCBI's FCS-GX and ANI reports", lambda: quality.fetch(src_dir, sources.download, say)),
+                        ("NCBI's FCS-GX and ANI reports",
+                         lambda: quality.fetch(src_dir, sources.download, say, refresh)),
                         ("PR2's and KSGP's taxonomies", lambda: labels.fetch(src_dir, sources.download, say, ksgp_tax)),
+                        ("Ensembl's, VEuPathDB's and TOGA2's annotation indexes",
+                         lambda: annotation.fetch_indexes(src_dir, sources.download, say, refresh)),
                         ("the read benchmark's background", lambda: reads_mod.fetch_background(
                             READ_BACKGROUND, os.path.join(src_dir, "read_background"), say)
                          if os.path.isfile(READ_BACKGROUND) else None)):
@@ -129,8 +139,39 @@ def plan(opts, src_dir, ncbi):
     no_assembly =genomes.no_assembly_genomes(NO_ASSEMBLY, os.path.join(opts.work, "no_assembly"), ncbi)
     job_map = genomes.jobs(ncbi, assemblies, refseq_rows, species.eukaryotes(species.read_table()), opts.inside,
                            no_assembly)
+    # TOGA2's genomes of the vertebrate species NCBI has none of (DNA Zoo's, Bat1K's), with their gene models, and in
+    # place of NCBI's where far more contiguous and as long
+    toga2 = annotation.read_toga2(src_dir)
+    job_map.update(genomes.toga2_jobs(ncbi, toga2, job_map, opts.inside, opts.groups))
+    sizes_dir = os.path.join(src_dir, annotation.INDEX_DIR, "assembly_sizes")
+
+    def kept(url, name):  # a small file of the genome comparison, kept in SRC (the fetch stage's: every stage the same)
+        path = os.path.join(sizes_dir, name)
+        if url and not os.path.isfile(path) and opts.stage in ("all", "fetch"):
+            os.makedirs(sizes_dir, exist_ok=True)
+            util.fetch_file(url, path, gzip_check=False)
+        return path
+    swaps = genomes.prefer_toga2(
+        ncbi, toga2, job_map, lambda j: genomes.assembly_stats(kept(genomes.stats_url(j), f"{j['fetch']}.stats.txt")),
+        lambda r: genomes.total_length(kept(genomes.chrom_sizes_url(r), f"{r['accession']}.chrom.sizes")))
+    for old, new in swaps.items():
+        del job_map[old]
+        job_map[new["accession"]] = new
+    if swaps:
+        say(f"TOGA2: {len(swaps)} species' genomes TOGA2's in place of NCBI's (contig N50 {genomes.TOGA2_BETTER:g} "
+            f"times or more, {genomes.TOGA2_LENGTH:.0%} of its length or more)")
     say(f"genome set: {len(job_map)} genomes ({dict(genomes.why_counts(job_map.values()))}); "
         f"{sum(j['size'] or 0 for j in job_map.values()) / 1e9:.0f} Gb")
+    # a species' genome another assembly takes the place of (TOGA2's; NCBI's newer, after --refresh): its file
+    # deleted once the new one is done (drop_superseded)
+    changed = genomes.supersede(opts.work, job_map)
+    if changed:
+        say(f"genome set: {len(changed)} species' genomes changed since the last plan (e.g. {changed[:3]}); the old "
+            "files are deleted once the new ones are done")
+    others = annotation.assign(job_map, annotation.read_index(src_dir), veupathdb=bool(opts.veupathdb_key))
+    say(f"gene models: {sum(1 for j in job_map.values() if annotation.gff_url(j)):,} genomes may have NCBI's, "
+        f"{others:,} VEuPathDB's, Ensembl's or TOGA2's (annotation.py"
+        f"{'' if opts.veupathdb_key else '; no VEuPathDB API key: none of its'})")
     return job_map, assemblies
 
 
@@ -170,6 +211,7 @@ def settings_of(opts, src_dir, ncbi, staged_only):
                 odb_lineages=odb_mod.species_lineages(odb, ncbi), odb_own=odb_mod.own_taxids(odb, ncbi), tiara=tiara,
                 rescue=not opts.no_rescue and bool(shutil.which("esl-translate")),
                 esl_translate=shutil.which("esl-translate"), sourmash=sourmash_of(opts),
+                veupathdb_key=opts.veupathdb_key,
                 rrna=functools.partial(rrna_hook, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"),
                                        threads=opts.threads_per_genome) if shutil.which("barrnap") else None)
 
@@ -202,6 +244,13 @@ def describe_pass(opts, job_map):
     return len(todo) - len(failed), len(failed)
 
 
+def drop_superseded(opts, job_map):
+    """The genome files another assembly took the place of, deleted once it is done (genomes.drop_superseded)."""
+    gone = genomes.drop_superseded(opts.genomes, opts.work, job_map)
+    if gone:
+        say(f"{len(gone)} superseded genomes deleted, their replacements done (e.g. {gone[:3]})")
+
+
 def run_one(item):
     """genomes.run in a worker, any error the genome's failure (until 2026-11-06 an error genomes.run did not expect,
     such as a FASTA header not UTF-8, stopped the pool and every other genome, on every rerun)."""
@@ -214,11 +263,17 @@ def run_one(item):
 def run_genomes(opts, job_map, settings):
     # a done genome of a BUSCO dataset species without its held-out calls (run before 2026-11-06) is run again where
     # its genome is still there: never fetched again for a benchmark, its OrthoDB benchmark then left without them
+    # and a done genome with better gene models than its run took (genomes.better_annotation: an index naming its
+    # assembly since, a VEuPathDB key given since, its annotation fetched since), its genome and that annotation here
+    # (since 2026-11-07: until then it kept miniprot's models, the annotation compared alone)
+    better = {a for a, j in job_map.items() if genomes.is_done(opts.work, a, settings["loci"])
+              and genomes.rerun_for_annotation(opts.work, j, opts.genomes, not settings["staged_only"])}
     todo = [(j, settings) for a, j in sorted(job_map.items()) if not genomes.is_done(opts.work, a, settings["loci"])
-            or (genomes.held_out_missing(opts.work, j, settings)
-                and os.path.isfile(j.get("path") or genomes.genome_file(opts.genomes, a)))]
-    say(f"genomes to run: {len(todo)} of {len(job_map)}" + ("" if settings["tiara"] else " (no tiara: windows not "
-                                                                                          "classified)"))
+            or a in better or (genomes.held_out_missing(opts.work, j, settings)
+                               and os.path.isfile(j.get("path") or genomes.genome_file(opts.genomes, a)))]
+    say(f"genomes to run: {len(todo)} of {len(job_map)}" + (f", {len(better)} of them again for better gene models"
+                                                            if better else "")
+        + ("" if settings["tiara"] else " (no tiara: windows not classified)"))
     waiting, failed = [], []
     for leftover in glob.glob(os.path.join(opts.work, "done", ".*.partial")):  # killed runs' (one build at a time)
         shutil.rmtree(leftover, ignore_errors=True)
@@ -324,16 +379,16 @@ def genome_rrna_records(opts, job_map, ncbi):
 
 
 def annotate_pass(opts, job_map, may_fetch):
-    """The done genomes with an NCBI annotation compared with it (annotation.py: its GFF beside the genome, from the
-    fetch stage, or fetched here where may_fetch), the GFF deleted after."""
+    """The done genomes with an annotation (NCBI's, Ensembl's or TOGA2's) compared with it (annotation.py: its GFF
+    beside the genome, from the fetch stage, or fetched here where may_fetch), the GFF deleted after."""
     todo = [j for _a, j in sorted(job_map.items()) if annotation.missing(opts.work, j)]
     if not todo:
         return
-    say(f"NCBI's annotation: {len(todo)} genomes' calls to compare")
+    say(f"gene models: {len(todo)} genomes' calls to compare with their annotation")
     compared, left, failed = 0, 0, []
     for j in todo:
         try:
-            n = annotation.annotate_genome(opts.work, j, opts.genomes, may_fetch)
+            n = annotation.annotate_genome(opts.work, j, opts.genomes, may_fetch, opts.veupathdb_key)
         except OSError as e:
             failed.append((j["accession"], str(e)[:100]))
             continue
@@ -481,6 +536,14 @@ def main(argv=None):
                                                           "(metadata/sketches.zip; default: sourmash on the PATH, else "
                                                           "none)")
     p.add_argument("--no_sketches", action="store_true", help="no sourmash sketches of the genomes")
+    p.add_argument("--refresh", action="store_true",
+                   help="fetch again what chooses the genomes and their gene models (NCBI's assembly tables, its "
+                        "FCS-GX and ANI reports, Ensembl's, VEuPathDB's and TOGA2's indexes): a species' newer or "
+                        "better genome is fetched and its old file deleted once the new one is done; a done genome "
+                        "with better gene models than its run took is run again")
+    p.add_argument("--veupathdb_key", default=os.environ.get(annotation.VEUPATHDB_KEY),
+                   help="a VEuPathDB user's API key (its profile's Web Service Access), for VEuPathDB's gene models "
+                        f"(default the environment's {annotation.VEUPATHDB_KEY}; without, none of its)")
     p.add_argument("--no_rescue", action="store_true", help="no rescue pass of the BUSCOs miniprot missed (loci.py: "
                                                             "their HMMs in the genome's six-frame ORFs place them)")
     p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives (protal's "
@@ -519,7 +582,7 @@ def main(argv=None):
     os.makedirs(opts.genomes, exist_ok=True)
     src_dir = os.path.join(opts.work, "sources")
     if opts.stage in ("all", "fetch"):
-        fetch_sources(src_dir, opts.groups, opts.ksgp_tax)
+        fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh)
     ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
     wanted = opts.wanted = clades(opts.species)
     opts.inside = inside_of(ncbi, wanted)
@@ -528,9 +591,17 @@ def main(argv=None):
     # 2026-11-06 `all` left them to the process stage's workers, --scratch and --downloads unused)
     if opts.stage in ("all", "fetch"):
         loci = loci_of(opts, src_dir)
+        # a done genome no longer here is fetched again where better gene models than its run took are there
+        # (genomes.better_annotation): the process stage runs it again with them
+        again = {a for a, j in job_map.items() if j["url"] and not j.get("path")
+                 and not os.path.isfile(genomes.genome_file(opts.genomes, a)) and genomes.is_done(opts.work, a, loci)
+                 and genomes.better_annotation(opts.work, j)}
+        if again:
+            say(f"{len(again):,} done genomes no longer here fetched again for better gene models (e.g. "
+                f"{sorted(again)[:3]})")
         todo = [j for a, j in sorted(job_map.items()) if j["url"] and not j.get("path")
                 and not os.path.isfile(genomes.genome_file(opts.genomes, a))
-                and not genomes.is_done(opts.work, a, loci)]
+                and (not genomes.is_done(opts.work, a, loci) or a in again)]
         downloads = max(1, opts.downloads)
         say(f"fetching {len(todo):,} genomes ({sum(j.get('size') or 0 for j in todo) / 1e9:,.1f} Gb) into "
             f"{opts.genomes}, {downloads} at a time by {util.CURL or 'urllib'}, checked by "
@@ -553,7 +624,7 @@ def main(argv=None):
 
         def fetch_genome(j):
             path, times = genomes.genome_file(opts.genomes, j["accession"]), collections.Counter()
-            why = util.fetch_file(j["url"], path, times=times, **how)
+            why = genomes.fetch_genome(j, path, times=times, **how)
             return j, why, 0 if why else os.path.getsize(path), times
 
         spent = collections.Counter()  # the downloads' seconds of transfer, check and copy (fetch_file's times)
@@ -568,17 +639,24 @@ def main(argv=None):
                           note=f"; {fetched / 1e9:,.1f} GB at {rate:,.1f} MB/s (a download's time: transfer "
                                f"{spent['transfer'] / busy:.0%} at {each:,.1f} MB/s, "
                                f"check {spent['check'] / busy:.0%}, copy {spent['copy'] / busy:.0%})")
-        # NCBI's own gene models (RefSeq's, a GenBank submitter's) beside the genomes, of all but those whose assembly
-        # summary gives no protein-coding genes, for the process stage's copies' models and their comparison
-        # (annotation.py)
-        todo = [j for a, j in sorted(job_map.items()) if annotation.gff_url(j)
-                and not os.path.isfile(annotation.gff_file(opts.genomes, a))
-                and not os.path.isfile(os.path.join(genomes.done_dir(opts.work, a), annotation.TABLE))]
-        say(f"fetching {len(todo):,} genomes' NCBI annotations into {opts.genomes}")
+        # the genomes' own gene models beside them, for the process stage's copies' models and their comparison
+        # (annotation.py): NCBI's (RefSeq's, a GenBank submitter's; not where the assembly summary gives no
+        # protein-coding genes), else Ensembl's, else TOGA2's
+        # (and a done genome's better one than its run took: genomes.better_annotation)
+        todo = [j for a, j in sorted(job_map.items()) if annotation.wanted(j)
+                and not annotation.found(opts.genomes, a)[0]
+                and (not os.path.isfile(os.path.join(genomes.done_dir(opts.work, a), annotation.TABLE))
+                     or genomes.better_annotation(opts.work, j))]
+        say(f"fetching {len(todo):,} genomes' annotations (the first of {', '.join(annotation.SOURCES)} that has one) "
+            f"into {opts.genomes}")
         progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1)
-        for done in at_a_time(functools.partial(annotation.fetch, genomes_folder=opts.genomes, **how), todo, downloads):
+        def get(j):
+            return j, annotation.fetch(j, opts.genomes, opts.veupathdb_key, **how)
+        for done in at_a_time(get, todo, downloads):
             try:
-                done.result()
+                j, (_path, source) = done.result()
+                # the sources asked before the one found (all where none had one): a done genome's not asked again
+                genomes.note_annotation_none(opts.work, j, annotation.none_before(j, source))
                 progress.step(1)
             except OSError as e:
                 progress.step(1, failed=True, note=f" ({e})")
@@ -603,6 +681,7 @@ def main(argv=None):
         settings = settings_of(opts, src_dir, ncbi, staged_only=opts.stage == "process")
         waiting, failed = run_genomes(opts, job_map, settings)
         describe_pass(opts, job_map)
+        drop_superseded(opts, job_map)
         organelle_genes(opts, src_dir, job_map, ncbi)
         annotate_pass(opts, job_map, may_fetch=opts.stage == "all")
         # a rerun mends a genome not fetched yet or a download that may come; not one NCBI no longer serves, nor a
@@ -675,6 +754,7 @@ def main(argv=None):
         tests = reads_mod.choose(ncbi, reps, opts.read_genomes) if opts.read_genomes and not opts.no_benchmarks else []
         with timed(stages, "assembly metadata"):
             describe_pass(opts, job_map)  # before the prune: measured while the genomes are there
+        drop_superseded(opts, job_map)
         rows_kept = genomes.prune(opts.genomes, opts.work, opts.keep_gb * 1e9, set(tests), firsts)
         kept = sum(s for _a, s, st in rows_kept if st != "deleted")
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB (--keep_gb {opts.keep_gb:g}), "
@@ -686,7 +766,7 @@ def main(argv=None):
             fates=genomes.fates(ncbi, assemblies, job_map, opts.inside if wanted is not None else None), tests=tests,
             references=references)
         meta = functools.partial(metadata_mod.write, work=opts.work, tables=tables(src_dir, "genbank", opts.groups)
-                                 + tables(src_dir, "refseq", opts.groups))
+                                 + tables(src_dir, "refseq", opts.groups), jobs=job_map)
         out = package.write(os.path.join(opts.out, f"Eukore_{opts.version}"), opts.version, ncbi, collected,
                             loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook,
                             metadata=meta)

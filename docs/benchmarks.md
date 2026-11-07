@@ -190,12 +190,13 @@ The build also collects what the paper's figures need (`docs/paper/plot_paper.py
 holds a trial's, with `index.md` captioning each and naming its tables):
 - **The genome set** (`selection.tsv`, `breadth.tsv`): what became of every NCBI taxon with an assembly, and the species
   per supergroup in NCBI, Eukore and another reference (`--read_compare`, EukDetect2's database).
-- **Gene models against NCBI's annotation** (`annotation.tsv`, `genes.tsv`): a truth set independent of BUSCO's dataset.
-  The fetch stage takes each genome's annotation (its GFF: RefSeq's or a submitter's; not asked for where the assembly
-  summary gives no protein-coding genes) and assembly report
+- **Gene models against the genome's own annotation** (`annotation.tsv`, `genes.tsv`): a truth set independent of
+  BUSCO's dataset. The fetch stage takes each genome's annotation (NCBI's GFF, RefSeq's or a submitter's, not asked
+  for where the assembly summary gives no protein-coding genes; else Ensembl's, else TOGA2's: `source`) and NCBI's
+  assembly report
   beside the genome; the process stage lays each call's miniprot model on it (`eukore/annotation.py`): the transcript
   sharing most coding bases, the exons and splice sites exact, the coding bases shared; then deletes them. (The copy
-  itself takes NCBI's model where its HMM confirms it, `model` ncbi; the table measures miniprot's.) `genes.tsv` gives each genome's distance to BUSCO's dataset
+  itself takes the annotation's model where its HMM confirms it, `model` its source; the table measures miniprot's.) `genes.tsv` gives each genome's distance to BUSCO's dataset
   (the x of Figure 1b) and its copies' intron bases (what an exon-only reference leaves out).
 - **Reads** (`reads.tsv`, `eukore/reads.py`): up to `--read_genomes` genomes per supergroup (those with the most
   congeners first), kept through the prune. Reads simulated from their markers' loci (introns and all) and from
