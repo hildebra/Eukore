@@ -185,6 +185,7 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 | [docs/FORMAT.md](docs/FORMAT.md) | the package format, file by file and column by column |
 | [docs/benchmarks.md](docs/benchmarks.md) | what each benchmark measures, how to run and draw them, the figures |
 | [docs/loci.md](docs/loci.md) | choosing BUSCOs for a use; the BUSCOs with prokaryote homologues |
+| [docs/read_depth.md](docs/read_depth.md) | rDNA and organelle copies by read depth (`tools/rdna_depth.py`, a prototype) |
 
 ## Repository layout
 
@@ -204,8 +205,10 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 - Version 0.12. The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
 - The organelle genes have been built in tests only; they have no checks across species and no confidence yet.
-- rDNA copy numbers are those of the assembly, a lower bound (arrays collapse). The intergenic spacer, 5S arrays away
-  from the unit and the 28S's introns are not taken.
+- `genomes.tsv`'s rDNA copy numbers are those of the assembly, a lower bound (arrays collapse);
+  `tools/rdna_depth.py` measures a genome's own from its reads, a prototype run on 10 genomes
+  ([docs/read_depth.md](docs/read_depth.md)). The intergenic spacer, 5S arrays away from the unit and the 28S's
+  introns are not taken.
 - Four BUSCOs have prokaryote homologues (archaeal ribosome biogenesis, cytochrome c oxidase assembly; see
   [docs/loci.md](docs/loci.md)); whether to replace them in protal's euk30 is open.
 

@@ -78,6 +78,7 @@ The species' genomes and their other assemblies:
 | `representative` | `t` for the species' genome |
 | `loci` | BUSCO genes called in it |
 | `rrna_18s`, `rdna_units`, `rdna_complete`, `rdna_contigs` | its 18S spans, rDNA units (from the 18S to the 28S), units with a whole 28S, and the contigs holding units, as `rrna/` found them in the assembly: copies in the assembly, a lower bound of the copies in the genome (an rDNA array is usually collapsed in an assembly); `-` where its rRNA was not searched |
+| `rdna_copies_reads`, `mt_copies_reads`, `pt_copies_reads` | optional (a package `tools/rdna_depth.py` has measured): rDNA units, mitochondrial and plastid genomes per haploid nuclear genome by its reads' depth (`depth.tsv`, rounded); `-` where not measured |
 | `local` | the genome's file in the build's kept genomes (`genomes/<accession>.fna.gz` beside the package), `-` where it is not kept |
 
 A species' genome is NCBI's best by Eukore's ranking: never one NCBI flags as contaminated, of an unverified source
@@ -288,6 +289,31 @@ why. A reader needs none of them.
 | `detection.tsv` | each test genome as a sample (its first `depth` reads from anywhere in it, 1,000, 5,000 and 20,000, and as many background reads), per reference and mode: the rank scored (`species` with its species in the reference, `genus` held out), whether the reference holds it (`in_reference`: the species; held out, another of its genus), the reads placed to its right taxon (`true_reads`), `detected` (3 reads or more, and 1% or more of the sample's reads placed at that rank) and the other taxa detected (`false_taxa`) |
 | `summary.json` | the headline figures |
 
+## depth.tsv (optional)
+Copy numbers by read depth, written into a package by `tools/rdna_depth.py table --into_package` ([read_depth.md](read_depth.md)); the manifest's `inputs.read_depth` names the tool, the date and the genomes measured. One row per
+representative genome it was asked for. A genome's sequencing reads (one ENA run, a sample of its reads) are mapped to
+its rDNA units, its single-copy BUSCOs and its species' organelle genes; a copy number is a depth over the
+single-copy BUSCOs' median depth. Both alleles of a diploid map to a single-copy gene: the numbers are per haploid
+nuclear genome. The assembly's own counts (rDNA units found in it) are a lower bound: an assembly collapses an rDNA
+array.
+
+| column | |
+|---|---|
+| `accession`, `species_taxid` | the genome |
+| `runs` | the ENA run its reads come from |
+| `run_source` | how the run was found: `manual` (Eukore's `data/depth_runs.tsv`), `biosample` (the assembly's BioSample's), `bioproject` (its BioProject's, of its taxid or species), `strain` (its species' at ENA with the assembly's strain, isolate, cultivar or ecotype), `none` |
+| `platform`, `preset` | the run's (`ILLUMINA`, `PACBIO_SMRT`, `OXFORD_NANOPORE`) and minimap2's preset (`sr`, `map-hifi`, `map-pb`, `map-ont`) |
+| `reads`, `read_length` | reads mapped from, and the mean length of those that aligned |
+| `rdna_units_ref`, `rdna_ref_source` | the rDNA units mapped to (`rrna/records.tsv`'s records, one per 18S type), from the genome itself (`genome`) or the species' published operons (`published`) |
+| `sc_loci`, `sc_depth`, `sc_spread` | the single-copy BUSCOs measured (Single, confidence not low, no assembly gap), the median of their mean depths, and their interquartile range over that median |
+| `rdna_depth` | the rDNA units' depths summed (each the median over its 18S, 5.8S and 28S) |
+| `rdna_copies_reads` | `rdna_depth` over `sc_depth`: rDNA units per haploid genome |
+| `rdna_18s_copies` | the same over the 18S alone |
+| `mt_genes`, `mt_copies_reads`; `pt_genes`, `pt_copies_reads` | the species' mitochondrial (plastid) records of `organelle/` measured, and the median of their depths over `sc_depth`: mitochondrial (plastid) genomes per haploid nuclear genome, in the tissue sequenced |
+| `flags` | `-`, or: `low_depth` (`sc_depth` under 3), `few_loci` (under 10), `spread` (`sc_spread` over 0.5), `uneven` (over a quarter of the BUSCOs under a fifth of their mean: reads of a few regions), `no_rdna_unit`, `no_single_copy`, `mt_at_rich`, `pt_at_rich` (the organelle's records 75% AT or more: short-read libraries cover them poorly, the number too low); `no_runs`, `not_measured`, `not_staged` for a genome without numbers |
+
+All values `-` where not measured. A number is one library's: libraries of one strain differed by up to 30% (README).
+
 ## genomes/ (beside the package, optional)
 The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz`, as NCBI serves them). `genomes.tsv`'s
 `local` column names them. A user simulating eukaryotes, or a host, takes them from here instead of downloading them.
@@ -312,3 +338,6 @@ The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz
   `benchmarks`, the build's measures of the package (a reader of format 4 needs neither). Since 2026-11-07, still
   format 4: `organelle/genes.tsv`'s mitochondrial `CYTB` and plastid `rbcL`, `matK` and `tufA`; `organelle/molecules.fna.gz`; `metadata/` and the
   manifest's `counts.metadata` (a reader of format 4 needs none of them).
+- 2026-11-06, no new format (optional, added to a built package): `depth.tsv`, `genomes.tsv`'s `rdna_copies_reads`,
+  `mt_copies_reads` and `pt_copies_reads`, the manifest's `inputs.read_depth` (`tools/rdna_depth.py`). A reader
+  takes a package with or without them.
