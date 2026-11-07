@@ -14,7 +14,7 @@ limits, masking, record cuts. Paths below are relative to the package folder, `E
 excluded, on the sequence as the package holds it, unless they are a contig's (1-based, inclusive).
 
 ## manifest.json
-`format` (5; a reader of 5 also takes 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, `0.13`), `built` (ISO time),
+`format` (5; a reader of 5 also takes 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, `0.2`), `built` (ISO time),
 `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
@@ -97,7 +97,7 @@ The species' genomes and their other assemblies:
 | `rdna_copies_reads`, `mt_copies_reads`, `pt_copies_reads` | optional (a package `tools/rdna_depth.py` has measured): rDNA units, mitochondrial and plastid genomes per haploid nuclear genome by its reads' depth (`depth.tsv`, rounded); `-` where not measured |
 | `local` | the genome's file in the build's kept genomes (`genomes/<accession>.fna.gz` beside the package), `-` where it is not kept |
 | `gencode` | NCBI's nuclear genetic code for its taxid, the table its BUSCO copies were called and are translated by (format 5) |
-| `duplicated_share`, `dup_identity_median`, `duplication` | of its BUSCOs called (Single or Duplicated) the share Duplicated; the median `dup_identity` of those; `haplotypes` (15% or more Duplicated, their copies 99.5% alike or more: an assembly holding both haplotypes of a diploid, or a recent hybrid), `wgd_or_polyploid` (15% or more Duplicated and less alike: a whole-genome duplication, a polyploid, an older hybrid), `low` (under 15%), `-` (under 20 BUSCOs called, or a genome run before 0.13). A heuristic: read it with the genome's size and the species' biology (format 5) |
+| `duplicated_share`, `dup_identity_median`, `duplication` | of its BUSCOs called (Single or Duplicated) the share Duplicated; the median `dup_identity` of those; `haplotypes` (15% or more Duplicated, their copies 99.5% alike or more: an assembly holding both haplotypes of a diploid, or a recent hybrid), `wgd_or_polyploid` (15% or more Duplicated and less alike: a whole-genome duplication, a polyploid, an older hybrid), `low` (under 15%), `-` (under 20 BUSCOs called, or a genome run before 0.2). A heuristic: read it with the genome's size and the species' biology (format 5) |
 | `introns`, `introns_per_kb_cds`, `median_intron_length` | its BUSCO copies' introns (`busco/introns.tsv`): their number, per kb of the copies' coding sequence, their median length (format 5) |
 | `gencode_check`, `gencode_codons`, `best_table` | its code checked against its BUSCO genes ([methods.md](methods.md)) on the codons nuclear codes are known to read otherwise (the stops TAA, TAG, TGA and CTG): `agrees`, `differs:<codon>><amino acid>,...` (NCBI's table reads them otherwise than the genes' conserved positions do), `undecided` (too few codons at conserved positions); of those four, the ones seen at 10 conserved positions or more (a stop at 5: under its own reading it is at none; a stop not seen is a stop; a CTG not seen is not judged: CTG-clade yeasts avoid it), `-` for none; the NCBI table that fits them best (NCBI's own where it fits as well; `-` where undecided). Every codon's evidence is `metadata/codons.tsv.gz` (format 5) |
 
@@ -154,7 +154,7 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 | `gaps` | runs of 10 Ns or more in the copy (assembly gaps: a misjoin's mark) |
 | `confidence`, `flags` | `high`, `medium` or `low`, and why (comma-separated, `-` for none; below) |
 | `internal_stops` | stop codons inside its protein by the genome's table (a pseudogene, a frameshift miniprot did not see, or a genetic code NCBI's table does not give: `genomes.tsv`'s `gencode_check`; format 5) |
-| `dup_identity` | a Duplicated copy's nearest other complete copy in the genome: the identity of their coding sequences (vsearch, %), `<50` where none is 50% identical; `-` for a Single or Fragmented copy, or a genome run before 0.13 (format 5) |
+| `dup_identity` | a Duplicated copy's nearest other complete copy in the genome: the identity of their coding sequences (vsearch, %), `<50` where none is 50% identical; `-` for a Single or Fragmented copy, or a genome run before 0.2 (format 5) |
 
 A copy is `low` where a check calls it another organism's: `own_species` (f), `fcs` (FCS-GX's EXCLUDE, TRIM or FIX),
 `window_prokaryote` (tiara's bacteria or archaea). It is `medium` where something may be wrong: `fragmented`,
@@ -422,7 +422,7 @@ The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz
   `benchmarks`, the build's measures of the package (a reader of format 4 needs neither). Since 2026-11-07, still
   format 4: `organelle/genes.tsv`'s mitochondrial `CYTB` and plastid `rbcL`, `matK` and `tufA`; `organelle/molecules.fna.gz`; `metadata/` and the
   manifest's `counts.metadata` (a reader of format 4 needs none of them).
-- 5 (2026-11-07, Eukore 0.13): `taxonomy/nodes.tsv`'s `mgcode` and `pgcode`; translations by every NCBI table
+- 5 (2026-11-07, Eukore 0.2): `taxonomy/nodes.tsv`'s `mgcode` and `pgcode`; translations by every NCBI table
   (until 5 the nuclear tables 1, 6, 10, 12, 15 and 26-31 alone; another read as the standard code); `busco/cds/`,
   `busco/proteins/`, `busco/introns.tsv`, `busco/intron_sites.tsv`, `metadata/codons.tsv.gz`; `busco/copies.tsv`'s
   `internal_stops` and `dup_identity`; `genomes.tsv`'s `gencode`, `duplicated_share`, `dup_identity_median`,

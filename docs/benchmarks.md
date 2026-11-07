@@ -126,6 +126,17 @@ Each genome's run (its BUSCO calls, windows, tiara, rRNA) in seconds against its
 
 ![Run time](benchmarks/figures/runtime.png)
 
+### Primer coverage (`primers.tsv`; since 2026-11-07, format 5)
+
+Per primer pair of `data/primer_pairs.tsv` and group, the species with a record the pair runs on and those with one
+it amplifies (`rrna/amplicons.tsv`, `organelle/amplicons.tsv`; the rule in [methods.md](methods.md)). `summary.json`'s
+`primers`: each pair's share over all species.
+
+### Barcode gap (`summary.json`'s `barcode_gap`; since 2026-11-07, format 5)
+
+From the package's `intraspecific/barcode_gap.tsv`: per marker (the BUSCOs together), the panel species measured and
+the share resolved (every assembly of the species nearer to each other than to any other species).
+
 ## The figures here
 
 The figures above are those of a trial build, not of Eukore: the seven clades of the 2026-11-05 trial (*Saccharomyces*,

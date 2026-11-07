@@ -192,7 +192,7 @@ So that a user (protal's build) has what it needs without computing it again:
 ## The copies' genetics (since 2026-11-07, format 5)
 
 - **Coding sequences and proteins.** Each copy's exons joined (miniprot's frameshift bases left out) and translated by
-  the genome's NCBI table (`eukore/gencode.py` holds every NCBI table; until 0.13 the nuclear ones alone):
+  the genome's NCBI table (`eukore/gencode.py` holds every NCBI table; until 0.2 the nuclear ones alone):
   `busco/cds/`, `busco/proteins/`. A stop inside a protein stays `*` and is counted (`internal_stops`).
 - **Places on the HMM.** hmmalign (HMMER) aligns each locus' proteins to BUSCO's HMM of it (`eukore/align.py`; cached
   under WORK/align/). A residue's match state is a position shared across species; the alignments are not shipped.
@@ -219,3 +219,70 @@ So that a user (protal's build) has what it needs without computing it again:
   kept by the run, and vsearch measures the nearest one's identity to the chosen copy (`dup_identity`). A genome with
   many duplicated BUSCOs whose copies are 99.5% alike holds both haplotypes of a diploid (or a recent hybrid); less
   alike, a whole-genome duplication or a polyploid (`genomes.tsv`'s `duplication`). The thresholds are a heuristic.
+
+## Organelle genes, format 5 (since 2026-11-07)
+
+- **More genes.** Mitochondrial COX3, nad1, nad5, atp6; plastid psbA, ycf1 and the trnH-psbA spacer (land plants'
+  barcode: its record runs from trnH-GUG across the spacer to 200 bases into psbA's 3' end, where the barcode's psbA
+  primer sits). The protein-coding genes are named by one table (`organelle.CDS_RULES`: a feature's /gene, else its
+  /product). GenBank locations are read whole, so a trans-spliced gene (a plant mitochondrion's nad1 and nad5:
+  exons on both strands, or out of order) is kept as its exons joined (until 0.2 it was left out).
+- **Exact exons in assemblies** (`--organelle_models miniprot`). miniprot aligns the 3 nearest RefSeq species'
+  proteins to the assembly's organelle molecules by the species' organelle code (`taxonomy/nodes.tsv`'s mgcode,
+  pgcode); where it aligns a gene whole its exons replace nhmmer's joined hits. `tools/organelle_models.py` measures
+  both against RefSeq's own exons (each sampled RefSeq record searched as an assembly, its own species' genes left out
+  of the queries); nhmmer stays the default until that measure says otherwise.
+- **Proteins and checks.** Each protein-coding gene's coding sequence translated by the organelle's code
+  (`organelle/proteins.faa.gz`; an internal stop is a NUMT, a pseudogene, RNA editing or a code NCBI does not give);
+  `qc.check` on each gene of each organelle across species (own-species, 99% collapses, length outliers); a tier
+  (`organelle.confidence`).
+
+## 18S variable regions and in-silico PCR (since 2026-11-07)
+
+- **Regions** (`eukore/regions.py`). Hadziavdic et al. 2014 give V1-V5 and V7-V9 on *S. cerevisiae*'s 18S (Z75578).
+  Infernal's cmalign aligns that 18S to Rfam's eukaryote SSU model (RF01960) once, which gives each region's model
+  positions, then every record's 18S (each distinct one once, cached): a region is the record's bases from its first
+  to its last model position. Checked: the yeast reference's regions come back exactly; *A. thaliana*'s V4 is 396
+  bases. An 18S over 4,000 bases (a misjoined unit) is not aligned; cmalign's matrices are capped at 2 GB per thread.
+  On the 7-clade trial, 1,327 distinct 18S took 36 CPU minutes (~1.6 CPU seconds each).
+- **Primers** (`eukore/primers.py`). Each pair of `data/primer_pairs.tsv` on each record it applies to (rRNA records;
+  an organelle gene, 12S and 16S on mitochondria): the best site of the forward primer, then of the reverse primer's
+  reverse complement after it, IUPAC-aware (a record's N matches nothing). It amplifies with 3 mismatches or fewer per
+  primer, none in its 3'-most 2 bases (ecoPCR's rule), and a product in the pair's length range. Every pair amplifies
+  its reference record (`data/primer_references.fna`, `tests/test_primers.py`); TAReuk's V4 falls on yeast's 18S where
+  Stoeck et al. 2010 place it (565-981). Choices made on the way: matK by the CBOL KIM primers (390F/1326R miss
+  *Arabidopsis* by 5 mismatches); psbA-trnH tested on tobacco (*Arabidopsis*' trnH holds a one-base indel under
+  trnHf_05); Folmer's COI on *Bombyx* (*Drosophila* and zebrafish mismatch LCO1490 by 4). On the trial ITS1F/ITS4
+  amplifies all 20 fungi and none of the 17 stramenopiles, NS1/NS4 39 of 41 species (`benchmarks/primers.tsv`).
+
+## Taxonomy, format 5 (since 2026-11-07)
+
+- **Supergroups** (`data/supergroups.tsv`, `eukore/groups.py`). Two levels from NCBI clades (the most specific
+  listed clade wins): the deep lineages of Burki et al. 2020 as EukProt v3 names them, and a finer group for call rates
+  and benchmarks (SAR split into Stramenopiles, Alveolata, Rhizaria and Telonemia). NCBI has no Obazoa, Archaeplastida
+  or Cryptista node: their clades are listed one by one. The build says where a listed taxid's name no longer matches
+  its taxdump's.
+- **Filled lineage.** An empty NCBI rank takes the next unranked clade below the rank above (a protist's Sar,
+  Stramenopiles, ...), shallowest first, else the name above with `_X` (PR2's way).
+- **References.** SILVA 138.2 (SSU Ref NR99: paths of any depth), UNITE 10.0 (all eukaryotes, with SH codes) and, given
+  by the user, MIDORI2 (COI; its records carry NCBI taxids, so a species is found by taxid) join PR2, EUKARYOME and
+  KSGP, by the same name match. `crossrefs.tsv`: Open Tree Taxonomy 3.7.3's taxon of each species found by its NCBI
+  taxid (no name matched), and the GBIF, WoRMS, IRMNG and Index Fungorum ids Open Tree gives it; UNITE's SH codes and,
+  given a BOLD data package, BOLD's BINs by name.
+- **Type material.** NCBI's `relation_to_type_material` of each genome (`genomes.tsv`, `species.tsv`); the genome
+  ranking does not use it.
+
+## The barcode gap and transcriptomes (since 2026-11-07)
+
+- **Panel** (`data/intraspecific_panel.tsv`, `eukore/intraspecific.py`). 40 well-sampled species (2 to 2,400
+  assemblies each); up to `--intraspecific` (3) further assemblies of each are run like the species' genome (no tiara,
+  no held-out calls), each of another BioSample, strain and isolate, unflagged first; their organelle molecules are
+  searched for every gene; their genome files are then deleted. For each marker (each BUSCO's coding sequence, the
+  18S, the ITS, each organelle gene) the identities within the species are set beside the species' genome's nearest
+  other species (a BUSCO's from its own check; the others by vsearch against every other species in the package).
+- **Transcriptomes** (`genomes.tsa_jobs`). ENA's list of INSDC's eukaryote TSA sets names their NCBI taxids
+  (NCBI's own lists do not); a species with no NCBI, model or TOGA2 genome takes its set of the most bases (not an
+  environmental sample), in place of EukDetect2's records. Its BUSCOs are called as in a genome; no rRNA, tiara or
+  annotation; its copies are `medium` at best (`transcript`: no introns, Duplicated its isoforms), `low` where the
+  own-species check calls them another clade's (cultures' food, cross-contamination). On ENA's list of 2026-11-07,
+  5,025 species without a genome have a transcriptome (341 Gb), most of them animals and plants, some 400 protists.

@@ -374,7 +374,7 @@ class QcTest(unittest.TestCase):
                          "wgd_or_polyploid")
         self.assertEqual(package.duplication_of(rows(95, ["99.9"] * 5))["duplication"], "low")
         self.assertEqual(package.duplication_of(rows(5, ["99.9"] * 5))["duplication"], "-")  # too few called
-        self.assertEqual(package.duplication_of(rows(60, ["-"] * 30))["duplication"], "-")  # run before 0.13
+        self.assertEqual(package.duplication_of(rows(60, ["-"] * 30))["duplication"], "-")  # run before 0.2
 
 
 class RecheckTest(unittest.TestCase):
