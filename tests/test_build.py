@@ -143,6 +143,37 @@ class ResumeTest(unittest.TestCase):
         self.assertEqual((acc, summary), ("GCA_1.1", None))
         self.assertTrue(why.startswith("UnicodeDecodeError"))
 
+    def test_a_scratch_that_cannot_be_made(self):
+        # a SLURM job's $SLURM_LOCAL_SCRATCH named, its folder not made (no local disk asked for): the fetch stage
+        # puts its .part files beside the genomes, the process stage stops at once (not after the planning's minutes)
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(eukore_build.scratch_problem(os.path.join(tmp, "job", "x")))
+            self.assertTrue(os.path.isdir(os.path.join(tmp, "job", "x")))
+            locked = os.path.join(tmp, "locked")
+            os.makedirs(locked)
+            os.chmod(locked, 0o500)
+            try:
+                if os.access(locked, os.W_OK):
+                    self.skipTest("root writes anywhere")
+                self.assertIn("Permission denied", eukore_build.scratch_problem(os.path.join(locked, "job", "x")))
+                self.assertIn("not writable", eukore_build.scratch_problem(locked))
+                args = ["--work", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"),
+                        "--scratch", os.path.join(locked, "job", "x")]
+                with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+                    eukore_build.main(args + ["--stage", "process"])
+                self.assertIn("--scratch", err.getvalue())
+                self.assertFalse(os.path.exists(os.path.join(tmp, "work")))  # stopped before any work
+                with mock.patch.object(eukore_build, "fetch_sources", side_effect=RuntimeError("fetched")), \
+                        contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(RuntimeError):
+                    eukore_build.main(args + ["--stage", "fetch"])
+                self.assertIn("WARNING: --scratch", out.getvalue())
+            finally:
+                os.chmod(locked, 0o700)
+
     def test_a_package_written_over_a_killed_runs_old(self):
         from eukore import package  # noqa: PLC0415
         with tempfile.TemporaryDirectory() as tmp:

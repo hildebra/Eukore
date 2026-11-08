@@ -799,6 +799,18 @@ def at_a_time(work, items, n):
         pool.shutdown(wait=True, cancel_futures=True)
 
 
+def scratch_problem(path):
+    """Why --scratch's folder can't be used (made where not there, then written in), or None. A SLURM job's
+    $SLURM_LOCAL_SCRATCH may be named where the job asked for no local disk, its folder then not made."""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        return f"{path}: {e.strerror} (a job's local scratch is there only where the job asks for it: --localscratch)"
+    if not os.access(path, os.W_OK | os.X_OK):
+        return f"{path}: not writable"
+    return None
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=f"Eukore {__version__}. " + __doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -907,6 +919,13 @@ def main(argv=None):
     unknown = set(opts.groups) - set(sources.ASSEMBLY_GROUPS)
     if unknown:
         p.error(f"--groups: {sorted(unknown)} (known: {', '.join(sources.ASSEMBLY_GROUPS)})")
+    if opts.scratch:  # checked now, not after the minutes of planning (since 2026-11-08)
+        why = scratch_problem(opts.scratch)
+        if why and opts.stage == "fetch":  # its .part files beside the genomes then, as without --scratch
+            say(f"WARNING: --scratch {why}: the .part files beside the genomes instead")
+            opts.scratch = None
+        elif why:  # the process stage's temporary files would load WORK's file system: stop
+            p.error(f"--scratch {why}")
     opts.jobs = opts.jobs or max(1, opts.threads // 4)
     opts.threads_per_genome = max(1, opts.threads // opts.jobs)
     opts.genomes = os.path.join(opts.out, "genomes")
