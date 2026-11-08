@@ -113,7 +113,10 @@ class ClaimTest(unittest.TestCase):
             with open(path, "w") as fh:
                 fh.write("some-other-node\t12345\n")
             self.assertIsNone(genomes.claim(work, acc))
-            old = time.time() - genomes.CLAIM_STALE - 10
+            beats = time.time() - 2 * genomes.CLAIM_BEAT  # a beat late (a slow file system): still held
+            os.utime(path, (beats, beats))
+            self.assertIsNone(genomes.claim(work, acc))
+            old = time.time() - 600  # a killed job's, its restart's first genome 10 minutes on: taken over
             os.utime(path, (old, old))
             self.assertEqual(genomes.claim(work, acc), path)
             # this host's claim of a process that ended: taken over

@@ -172,7 +172,8 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   miniprot). A genome not fetched yet is left for the next run; so is one whose annotation the fetch stage has not
   asked for yet (it fetches a genome's annotation before the genome itself). Several process runs may share one WORK,
   e.g. one per node (since 2026-11-08): each genome is claimed by the run that takes it (`WORK/done/.<accession>.claim`;
-  a claim of a node that died is taken over after 2 days), and each run then makes the passes below too. Then it
+  touched every minute, a claim of a killed job or a node that died is taken over after 5 minutes untouched, so a
+  restart runs the genomes its killed job held), and each run then makes the passes below too. Then it
   makes what a tool missing at a genome's run left out (tiara's classes, the rRNA: a backfill), takes the organelle
   genes (`WORK/organelle`; from the organelle molecules the metadata scan kept, not the genome again), and runs the
   intraspecific panel's further assemblies (their BUSCOs, rRNA and organelle genes; since 0.2.1 run in the same pool

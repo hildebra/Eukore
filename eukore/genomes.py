@@ -648,8 +648,11 @@ def fcs_of_copy(ranges, locus, contig, start, end):
 
 
 RUNNING_ELSEWHERE = "running elsewhere"  # another build's worker holds the genome (claim)
-CLAIM_STALE = 2 * 86400   # a claim of another host this old (its heartbeat stopped: a node that died) is taken over
-CLAIM_BEAT = 600          # seconds between a running genome's claim touches
+# a claim of another host untouched this long (its heartbeat stopped: a job killed, e.g. at its time limit, or a
+# node that died) is taken over: 5 beats, less than a restart's minutes of planning before its first genome (until
+# 2026-11-08 2 days, the killed job's genomes, its largest, skipped by its restart as run by another build)
+CLAIM_STALE = 300
+CLAIM_BEAT = 60           # seconds between a running genome's claim touches
 
 
 def claim_path(work, accession):
