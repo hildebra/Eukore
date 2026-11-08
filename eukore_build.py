@@ -28,6 +28,7 @@ import contextlib
 import datetime
 import functools
 import glob
+import hashlib
 import json
 import multiprocessing
 import os
@@ -51,6 +52,7 @@ PUBLISHED_BATCH = 250  # published reads a barrnap + ITSx run
 # that a rerun annotates them again
 PUBLISHED_REGIONS = "regions.3.tsv"
 READ_BACKGROUND = os.path.join(sources.DATA, "read_background.tsv")  # the read benchmark's bacteria and archaea
+FCS_THREADS = 4  # cores of each FCS-GX run (GX_NUM_CORES); -t / FCS_THREADS runs at once
 
 
 def say(text):
@@ -292,26 +294,67 @@ def run_genomes(opts, job_map, settings):
     # and a done genome with better gene models than its run took (genomes.better_annotation: an index naming its
     # assembly since, a VEuPathDB key given since, its annotation fetched since), its genome and that annotation here
     # (since 2026-11-07: until then it kept miniprot's models, the annotation compared alone)
+    # and (since 2026-11-08) a done genome run without the rescue pass where this run makes it (genomes.rescue_missing)
+    def here(a, j):
+        return os.path.isfile(j.get("path") or genomes.genome_file(opts.genomes, a))
     better = {a for a, j in job_map.items() if genomes.is_done(opts.work, a, settings["loci"])
               and genomes.rerun_for_annotation(opts.work, j, opts.genomes, not settings["staged_only"])}
-    todo = [(j, settings) for a, j in sorted(job_map.items()) if not genomes.is_done(opts.work, a, settings["loci"])
-            or a in better or (genomes.held_out_missing(opts.work, j, settings)
-                               and os.path.isfile(j.get("path") or genomes.genome_file(opts.genomes, a)))]
-    say(f"genomes to run: {len(todo)} of {len(job_map)}" + (f", {len(better)} of them again for better gene models"
-                                                            if better else "")
+    whole = {a for a, j in job_map.items() if not genomes.is_done(opts.work, a, settings["loci"])
+             or ((genomes.held_out_missing(opts.work, j, settings)
+                  or genomes.rescue_missing(opts.work, a, settings)) and here(a, j))}
+    # largest first (since 2026-11-08; until then by accession, a 30 Gb genome begun last kept the other workers
+    # idle for hours at the end): a genome's size, else its file's (TOGA2's have none in the plan)
+    def size(a, j):
+        path = j.get("path") or genomes.genome_file(opts.genomes, a)
+        return j.get("size") or (os.path.getsize(path) / placement.GZIP_BYTES_PER_BASE if os.path.isfile(path) else 0)
+    todo = [(j if a in whole else dict(j, rerun="annotation"), settings)
+            for a, j in sorted(job_map.items(), key=lambda kv: (-size(*kv), kv[0])) if a in whole or a in better]
+    say(f"genomes to run: {len(todo)} of {len(job_map)}" + (f", {len(better - whole)} of them again for better gene "
+                                                            "models" if better - whole else "")
         + ("" if settings["tiara"] else " (no tiara: windows not classified)"))
     waiting, failed = [], []
-    for leftover in glob.glob(os.path.join(opts.work, "done", ".*.partial")):  # killed runs' (one build at a time)
+    # killed runs' partial folders; not those of another build's genomes going on (their claims live)
+    for leftover in genomes.stale_partials(opts.work):
         shutil.rmtree(leftover, ignore_errors=True)
     # every --report_minutes: genomes left and the time left, by their sizes (a genome not fetched yet is no work)
-    progress = util.Progress("genomes run", [j.get("size") or 0 for j, _s in todo], say, opts.report_minutes * 60)
+    progress = util.Progress("genomes run", [size(j["accession"], j) for j, _s in todo], say,
+                             opts.report_minutes * 60)
+    elsewhere = 0
     with multiprocessing.Pool(max(1, opts.jobs)) as pool:
         for acc, _summary, why in pool.imap_unordered(run_one, todo):
-            if why:
+            skipped = why in ("not fetched yet", genomes.RUNNING_ELSEWHERE)
+            if why == genomes.RUNNING_ELSEWHERE:
+                elsewhere += 1
+            elif why:
                 (waiting if why == "not fetched yet" else failed).append((acc, why))
-            progress.step(job_map[acc].get("size") or 0, failed=bool(why) and why != "not fetched yet",
-                          skipped=why == "not fetched yet", note=f", {len(waiting):,} not fetched yet" if waiting else "")
+            progress.step(size(acc, job_map[acc]), failed=bool(why) and not skipped, skipped=skipped,
+                          note=(f", {len(waiting):,} not fetched yet" if waiting else "")
+                          + (f", {elsewhere:,} run by another build" if elsewhere else ""))
     return waiting, failed
+
+
+def backfill_pass(opts, job_map, settings):
+    """The done genomes' steps a tool missing at their run left out (genomes.backfill: tiara's classes, the rRNA),
+    made now the tool is here (since 2026-11-08: never)."""
+    todo = [(j, settings) for a, j in sorted(job_map.items()) if genomes.is_done(opts.work, a)
+            and genomes.backfill_needs(j, settings)]
+    if not todo:
+        return
+    say(f"backfill: {len(todo)} done genomes lack tiara's classes or their rRNA, made now")
+    made, failed = collections.Counter(), []
+    with multiprocessing.Pool(max(1, opts.jobs)) as pool:
+        for acc, steps, why in pool.imap_unordered(backfill_one, todo):
+            made.update(steps)
+            if why:
+                failed.append((acc, why))
+    say(f"  backfill: {dict(made)} made, {len(failed)} failed{' (e.g. ' + str(failed[:2]) + ')' if failed else ''}")
+
+
+def backfill_one(item):
+    try:
+        return genomes.backfill(item)
+    except Exception as e:  # noqa: BLE001
+        return item[0]["accession"], [], f"{type(e).__name__}: {e}"
 
 
 def published(opts, src_dir, ncbi):
@@ -340,6 +383,9 @@ def published(opts, src_dir, ncbi):
     os.makedirs(cache_dir, exist_ok=True)
     cache = os.path.join(cache_dir, PUBLISHED_REGIONS)
     known = read_regions(cache)
+    # a read is known where its line names it and (a line since 2026-11-08) its sequence's digest: a source's new
+    # release with a read changed under its name has it annotated again
+    known = {n: known[n] for n, s, *_ in reads if n in known and known[n][3] in (None, read_digest(s))}
     # by ITSx's profile sets, so that a batch's reads share theirs (an ITSx run per distinct set)
     todo = sorted(((n, s, rrna.itsx_groups(ncbi, t)) for n, s, t, *_ in reads if n not in known),
                   key=lambda r: (r[2], r[0]))
@@ -351,13 +397,14 @@ def published(opts, src_dir, ncbi):
         with multiprocessing.Pool(max(1, opts.threads)) as pool, open(cache, "a", newline="\n") as fh:
             if fh.tell() and not ends_in_newline(cache):  # a killed run's last line cut: the next starts anew
                 fh.write("\n")
+            digest = {n: read_digest(s) for n, s, _t in todo}
             for got in pool.imap_unordered(work, batches):
-                fh.writelines(f"{name}\t{regions}\t{complete}\t{strand}\n"
+                fh.writelines(f"{name}\t{regions}\t{complete}\t{strand}\t{digest[name]}\n"
                               for name, (regions, complete, strand) in got.items())
                 fh.flush()
-                known.update(got)
+                known.update({n: v + (digest[n],) for n, v in got.items()})
     for name, seq, taxid, source, how, accession in reads:
-        regions, complete, strand = known.get(name, ("-", "f", "+"))
+        regions, complete, strand, _digest = known.get(name, ("-", "f", "+", None))
         regions_list = rrna.parse_regions(regions)
         seq = rrna.revcomp(seq) if strand == "-" else seq  # the record on its unit's strand, as its regions
         out.append((name, seq, dict(kind="rDNA" if regions_list else "18S", accession=accession, source=source,
@@ -379,17 +426,22 @@ def ends_in_newline(path):
         return fh.read(1) == b"\n"
 
 
+def read_digest(seq):
+    """A published read's digest in the regions cache: its sequence's MD5, 12 hex digits."""
+    return hashlib.md5(seq.encode()).hexdigest()[:12]
+
+
 def read_regions(path):
-    """The published reads' regions cache -> {name: (regions text, lsu_complete t/f, strand)}; a line a killed run cut
-    (not 4 fields, or no line end) left out, so that its read is annotated again (until 2026-11-06 it stopped every
-    later run)."""
+    """The published reads' regions cache -> {name: (regions text, lsu_complete t/f, strand, its read's digest, or None
+    in a line before 2026-11-08)}; a line a killed run cut (not 4 or 5 fields, or no line end) left out, so that its
+    read is annotated again (until 2026-11-06 it stopped every later run)."""
     known = {}
     if os.path.isfile(path):
         with open(path) as fh:
             for line in fh:
                 f = line.rstrip("\n").split("\t")
-                if line.endswith("\n") and len(f) == 4 and f[3] in ("+", "-"):
-                    known[f[0]] = (f[1], f[2], f[3])
+                if line.endswith("\n") and len(f) in (4, 5) and f[3] in ("+", "-"):
+                    known[f[0]] = (f[1], f[2], f[3], f[4] if len(f) == 5 else None)
     return known
 
 
@@ -423,6 +475,14 @@ def annotate_pass(opts, job_map, may_fetch):
         f"{len(failed)} failed{' (e.g. ' + str(failed[:2]) + ')' if failed else ''}")
 
 
+def saved_molecules(opts, accession):
+    """The organelle molecules a done genome's metadata scan kept (metadata.ORGANELLE, written with its stats.json),
+    or None: the organelle pass reads them, not the genome again (since 2026-11-08)."""
+    folder = genomes.done_dir(opts.work, accession)
+    path = os.path.join(folder, metadata_mod.ORGANELLE)
+    return path if os.path.isfile(path) and os.path.isfile(os.path.join(folder, metadata_mod.STATS)) else None
+
+
 def organelle_genes(opts, src_dir, job_map, ncbi):
     """The organelle genes' sources (eukore/organelle.py): RefSeq's organelle genomes, parsed once, and each species'
     own assembly where RefSeq has neither of its organelles' records (barrnap, nhmmer) -> RefSeq's records chosen,
@@ -436,7 +496,8 @@ def organelle_genes(opts, src_dir, job_map, ncbi):
     if barrnap and nhmmer:
         organelle_mod.assembly_pass(folder, job_map, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
                                     barrnap, nhmmer, opts.jobs, opts.threads_per_genome, say,
-                                    shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None)
+                                    shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
+                                    saved_of=functools.partial(saved_molecules, opts))
     else:
         say("WARNING: no barrnap or nhmmer: the assemblies' organelle molecules not searched")
     return chosen
@@ -469,7 +530,7 @@ def intraspecific_pass(opts, src_dir, ncbi, extras, settings):
         organelle_mod.assembly_pass(folder, extras, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
                                     barrnap, nhmmer, opts.jobs, opts.threads_per_genome, say,
                                     shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
-                                    every=True)
+                                    every=True, saved_of=functools.partial(saved_molecules, opts))
     for acc in extras:
         path = genomes.genome_file(opts.genomes, acc)
         if genomes.is_done(opts.work, acc) and os.path.isfile(organelle_mod.assembly_file(folder, acc)) \
@@ -748,9 +809,30 @@ def main(argv=None):
             os.remove(leftover)
 
         def fetch_genome(j):
+            # its annotation first (since 2026-11-08), so that the process stage never runs a genome whose gene
+            # models are still to come (it ran them without, then again whole once they came)
+            fetch_annotation(j)
             path, times = genomes.genome_file(opts.genomes, j["accession"]), collections.Counter()
             why = genomes.fetch_genome(j, path, times=times, **how)
             return j, why, 0 if why else os.path.getsize(path), times
+
+        def fetch_annotation(j):
+            """A job's annotation beside its genome (annotation.fetch) -> (path, source); where none has one, a note
+            (annotation.note_none) and, for a done genome, the sources in its done.json. Raises OSError where one
+            did not arrive (a later run asks again)."""
+            acc = j["accession"]
+            if not annotation.wanted(j) or annotation.found(opts.genomes, acc)[0] \
+                    or annotation.none_noted(opts.genomes, j):
+                return annotation.found(opts.genomes, acc)
+            try:
+                path, source = annotation.fetch(j, opts.genomes, opts.veupathdb_key, **how)
+            except OSError:
+                return None, None
+            if path is None:
+                annotation.note_none(opts.genomes, acc, annotation.none_before(j, None))
+            # the sources asked before the one found (all where none had one): a done genome's not asked again
+            genomes.note_annotation_none(opts.work, j, annotation.none_before(j, source))
+            return path, source
 
         spent = collections.Counter()  # the downloads' seconds of transfer, check and copy (fetch_file's times)
         for done in at_a_time(fetch_genome, todo, downloads):
@@ -769,7 +851,7 @@ def main(argv=None):
         # protein-coding genes), else Ensembl's, else TOGA2's
         # (and a done genome's better one than its run took: genomes.better_annotation)
         todo = [j for a, j in sorted(job_map.items()) if annotation.wanted(j)
-                and not annotation.found(opts.genomes, a)[0]
+                and not annotation.found(opts.genomes, a)[0] and not annotation.none_noted(opts.genomes, j)
                 and (not os.path.isfile(os.path.join(genomes.done_dir(opts.work, a), annotation.TABLE))
                      or genomes.better_annotation(opts.work, j))]
         say(f"fetching {len(todo):,} genomes' annotations (the first of {', '.join(annotation.SOURCES)} that has one) "
@@ -779,7 +861,9 @@ def main(argv=None):
             return j, annotation.fetch(j, opts.genomes, opts.veupathdb_key, **how)
         for done in at_a_time(get, todo, downloads):
             try:
-                j, (_path, source) = done.result()
+                j, (path, source) = done.result()
+                if path is None:  # none has one: noted beside the genome for its run (annotation.none_noted)
+                    annotation.note_none(opts.genomes, j["accession"], annotation.none_before(j, None))
                 # the sources asked before the one found (all where none had one): a done genome's not asked again
                 genomes.note_annotation_none(opts.work, j, annotation.none_before(j, source))
                 progress.step(1)
@@ -805,6 +889,7 @@ def main(argv=None):
     if opts.stage in ("all", "process"):
         settings = settings_of(opts, src_dir, ncbi, staged_only=opts.stage == "process")
         waiting, failed = run_genomes(opts, job_map, settings)
+        backfill_pass(opts, job_map, settings)
         intraspecific_pass(opts, src_dir, ncbi, extras, settings)
         describe_pass(opts, job_map)
         drop_superseded(opts, job_map)
@@ -822,16 +907,22 @@ def main(argv=None):
                 "package without them")
             return 0 if opts.stage == "process" else 1
     stages = []  # the package stage's steps and their seconds (benchmarks' stages.tsv)
+    if opts.stage == "package":  # a tool missing at a genome's run, here now (`all`: the process stage's pass)
+        backfill_pass(opts, job_map, settings_of(opts, src_dir, ncbi, staged_only=True))
     if opts.stage in ("all", "package") and opts.fcs_gx_db:
         todo = [a for a in sorted(job_map) if genomes.is_done(opts.work, a)
                 and not os.path.isfile(os.path.join(genomes.done_dir(opts.work, a), "fcs.tsv"))]
-        say(f"FCS-GX: {len(todo)} genomes' windows to screen ({opts.fcs_gx_db})")
+        # several genomes at once, FCS_THREADS cores each (since 2026-11-08: one at a time on every thread, each
+        # run's ~13 Mb of windows mostly its start-up); the database in /dev/shm is mapped once for them all
+        at_once = max(1, min(len(todo), opts.threads // FCS_THREADS))
+        say(f"FCS-GX: {len(todo)} genomes' windows to screen ({opts.fcs_gx_db}), {at_once} at a time")
         failed = 0
         with timed(stages, "FCS-GX"):
-            for i, acc in enumerate(todo, 1):
-                got = genomes.fcs_screen(opts.work, acc, job_map[acc]["taxid"], opts.fcs_gx_db, opts.run_gx,
-                                         opts.threads)
-                failed += got is None
+            def screen(acc):
+                return genomes.fcs_screen(opts.work, acc, job_map[acc]["taxid"], opts.fcs_gx_db, opts.run_gx,
+                                          max(1, opts.threads // at_once))
+            for i, done in enumerate(at_a_time(screen, todo, at_once), 1):
+                failed += done.result() is None
                 if i % max(1, len(todo) // 20) == 0 or i == len(todo):
                     say(f"  {i}/{len(todo)} screened ({failed} failed)")
     if opts.stage in ("all", "package"):
@@ -858,7 +949,7 @@ def main(argv=None):
             if not hmmalign:
                 say("WARNING: no hmmalign: introns without their places in the genes, no genetic code check")
             hmm_of = odb_of(opts, src_dir).hmm
-            package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say)
+            package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say, opts.threads)
         with timed(stages, "rRNA records and their checks"):
             records = genome_rrna_records(opts, job_map, ncbi) + published(opts, src_dir, ncbi)
             records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say)

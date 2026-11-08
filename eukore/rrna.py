@@ -24,6 +24,8 @@ import re
 import subprocess
 import tempfile
 
+import numpy as np
+
 from . import util
 
 MOTIFS = ("GTGCCAGCAGCCGCGGTAA", "AAACTTAAAGGAATTGACGG", "GGTGGTGCATGGCCGTTCTTAGTT")  # 18S ~570, ~1,140, ~1,200
@@ -109,22 +111,106 @@ def contigs(path, nuclear=False):
         yield name, "".join(parts)
 
 
-def windows(seq):
-    """Merged [start, end) windows around the seeds in an upper-case sequence."""
-    sites = []
-    for seed in SEEDS:
-        before, after = (UP, DOWN) if seed in FORWARD else (DOWN, UP)
-        i = seq.find(seed)
-        while i >= 0:
-            sites.append((max(0, i - before), min(len(seq), i + after)))
-            i = seq.find(seed, i + 1)
+_CODE = np.full(256, 4, dtype=np.uint8)  # a base's 2 bits (either case); 4: not ACGT, no seed across it
+for _i, _b in enumerate(b"ACGT"):
+    _CODE[_b] = _CODE[_b + 32] = _i
+_SEED_KIND = None  # every 12-mer's code -> 0 no seed, 1 a forward seed, 2 a reverse one (built once a process)
+SEED_BATCH = 1 << 24  # bases scanned at a time
+
+
+def _seed_kinds():
+    global _SEED_KIND
+    if _SEED_KIND is None:
+        table = np.zeros(1 << (2 * SEED), dtype=np.uint8)
+        for s in SEEDS:
+            code = 0
+            for c in s:
+                code = code * 4 + "ACGT".index(c)
+            table[code] = 1 if s in FORWARD else 2
+        _SEED_KIND = table
+    return _SEED_KIND
+
+
+def seed_hits(data):
+    """The seeds in a stretch of bases (bytes, no line ends) -> (positions of their first base, kinds 1 forward, 2
+    reverse), of every 12-mer wholly inside it. One numpy pass (since 2026-11-08: a str.find per seed, 60 passes over
+    each contig, ~66 s a Gb)."""
+    c = _CODE[np.frombuffer(bytes(data), dtype=np.uint8)]
+    n = len(c) - SEED + 1
+    if n <= 0:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.uint8)
+    bits = (c & 3).astype(np.uint32)
+    k = bits[:n].copy()
+    for j in range(1, SEED):
+        k <<= 2
+        k |= bits[j:j + n]
+    bad = np.concatenate(([0], np.cumsum(c > 3, dtype=np.int64)))
+    kind = _seed_kinds()[k]
+    kind[bad[SEED:SEED + n] != bad[:n]] = 0
+    pos = np.nonzero(kind)[0]
+    return pos, kind[pos]
+
+
+def _spans_of(hits, length):
+    """Seed hits [(position, kind)] on a sequence of `length` -> merged [start, end) windows around them."""
+    sites = sorted((max(0, i - (UP if k == 1 else DOWN)), min(length, i + (DOWN if k == 1 else UP)))
+                   for i, k in ((int(p), int(k)) for p, k in hits))
     spans = []
-    for a, b in sorted(sites):
+    for a, b in sites:
         if spans and a <= spans[-1][1]:
             spans[-1][1] = max(spans[-1][1], b)
         else:
             spans.append([a, b])
     return spans
+
+
+def windows(seq):
+    """Merged [start, end) windows around the seeds in a sequence."""
+    pos, kind = seed_hits(seq.encode("ascii", "replace") if isinstance(seq, str) else seq)
+    return _spans_of(zip(pos.tolist(), kind.tolist()), len(seq))
+
+
+class SeedScan:
+    """The seeds of a genome's sequences fed in turn (start, feed, finish), scanned in batches of SEED_BATCH bases
+    across sequences (an N between two: no seed across them), so that a fragmented assembly's millions of contigs
+    are not millions of numpy calls -> finish(): {sequence: merged [start, end) windows}, and lengths {sequence: its
+    length}."""
+
+    def __init__(self):
+        self.buf, self.marks, self.hits, self.lengths = bytearray(), [], collections.defaultdict(list), {}
+        self.name = None
+
+    def start(self, name):
+        self.name = name
+        self.lengths[name] = 0
+        self.buf += b"N"
+        self.marks.append((len(self.buf), name, 0))
+
+    def feed(self, data):
+        self.buf += data
+        self.lengths[self.name] += len(data)
+        if len(self.buf) >= SEED_BATCH:
+            self._scan(keep=True)
+
+    def _scan(self, keep=False):
+        pos, kind = seed_hits(self.buf)
+        if len(pos):
+            at = np.array([m[0] for m in self.marks])
+            which = np.searchsorted(at, pos, side="right") - 1
+            for p, k, w in zip(pos.tolist(), kind.tolist(), which.tolist()):
+                start, name, offset = self.marks[w]
+                self.hits[name].append((offset + p - start, k))
+        if keep and self.name is not None:  # the current sequence's last bases: a seed may start in them
+            start, name, offset = self.marks[-1]
+            carry = min(SEED - 1, len(self.buf) - start)
+            self.buf = self.buf[len(self.buf) - carry:]
+            self.marks = [(0, name, self.lengths[name] - carry)]
+        else:
+            self.buf, self.marks = bytearray(), []
+
+    def finish(self):
+        self._scan()
+        return {n: _spans_of(h, self.lengths[n]) for n, h in self.hits.items()}, self.lengths
 
 
 ALIGNED = re.compile(r"aligned only (\d+) percent")
@@ -327,17 +413,30 @@ def extract_genome(path, barrnap, itsx=None, threads=1, itsx_sets="all"):
     -t for the genome's taxon (itsx_groups). Organelle molecules are left out: barrnap's eukaryote models call a
     mitochondrial SSU an 18S (Arabidopsis' BK010421.1, 2026-11-06), whose bacterial kind then takes bacterial reads;
     organelle.py takes their rRNA."""
-    seqs, origin, lengths = {}, {}, {}
+    from . import metadata, placement  # noqa: PLC0415
+    # two passes, neither holding a sequence whole (since 2026-11-08: each contig was held 2-3 times, a 5 Gb
+    # chromosome ~15 GB): the seeds (SeedScan, over igzip's output where there), then the windows' bases alone
+    scan, keep = SeedScan(), False
+    for title, data in metadata._pieces_of(path):  # noqa: SLF001 (the package's own FASTA reader)
+        if title is not None:
+            text = title.decode("utf-8", "replace")
+            keep = not NOT_NUCLEAR.search(text)
+            if keep:
+                scan.start((text.split() or [""])[0])
+        elif keep:
+            scan.feed(data.translate(None, b"\n\r \t"))
+    found, lengths = scan.finish()
+    spans = placement.read_spans(path, {n: [(a + 1, b) for a, b in w] for n, w in found.items()}) if found else {}
+    seqs, origin = {}, {}
     with tempfile.TemporaryDirectory() as tmp:
         win = os.path.join(tmp, "windows.fna")
         with open(win, "w") as fh:
-            for name, seq in contigs(path, nuclear=True):
-                seq = seq.upper()
-                lengths[name] = len(seq)
-                for a, b in windows(seq):
+            order = {n: i for i, n in enumerate(lengths)}
+            for name in sorted(found, key=order.get):
+                for a, b in found[name]:
                     wid = f"w{len(seqs)}"
-                    seqs[wid], origin[wid] = seq[a:b], (name, a)
-                    fh.write(f">{wid}\n{seq[a:b]}\n")
+                    seqs[wid], origin[wid] = spans[name][a:b].upper(), (name, a)
+                    fh.write(f">{wid}\n{seqs[wid]}\n")
         gff = barrnap_gff(barrnap, win, threads) if seqs else ""
     feats = parse_gff(gff)
     items = []

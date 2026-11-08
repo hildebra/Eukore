@@ -22,12 +22,17 @@ done, so that one killed goes on where it stopped.
 """
 
 import collections
+import concurrent.futures
+import contextlib
 import gzip
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
+import tempfile
+import threading
 import time
 
 from . import annotation as annotation_mod
@@ -561,14 +566,15 @@ def odb_of(settings):
 
 
 def tiara_classes(windows_fasta, tiara, threads=1, folder=None):
-    """Tiara's class of each window (eukarya, bacteria, archaea, organelle, unknown, ...) -> {window: class}."""
+    """Tiara's class of each window (eukarya, bacteria, archaea, organelle, unknown, ...) -> {window: class}; {} without
+    tiara or windows, None where tiara failed (since 2026-11-08: {}, the genome then done unclassified for good)."""
     if not tiara or not os.path.isfile(windows_fasta):
         return {}
     out_path = os.path.join(folder or os.path.dirname(windows_fasta), "tiara.tsv")
     run = subprocess.run([tiara, "-i", windows_fasta, "-o", out_path, "-t", str(max(1, threads)), "-m", "1000"],
                          capture_output=True, text=True, check=False)
     if run.returncode != 0 or not os.path.isfile(out_path):
-        return {}
+        return None
     out = {}
     with open(out_path) as fh:
         head = fh.readline().rstrip("\n").split("\t")
@@ -628,54 +634,204 @@ def fcs_of_copy(ranges, locus, contig, start, end):
     """The FCS-GX call over a copy (its contig span, 1-based): ACTION:division:taxon of the first range on its window
     overlapping it, or "-"."""
     for r in ranges:
-        name = r["window"].split("|")
-        if len(name) < 3 or name[0] != locus or name[1] != contig:
+        # locus|contig|w1-w2, the contig's name may hold | itself (a TSA's ENA|GKLH01011938|GKLH01011938.1: until
+        # 2026-11-08 no transcriptome's copy met its FCS-GX call)
+        head, _bar, span = r["window"].rpartition("|")
+        name, _bar, on = head.partition("|")
+        if name != locus or on != contig or "-" not in span:
             continue
-        w1 = int(name[2].split("-")[0])
+        w1 = int(span.split("-")[0])
         a, b = w1 + r["start"] - 1, w1 + r["end"] - 1
         if a <= int(end) and b >= int(start):
             return f"{r['action']}:{r['division']}:{r['top_taxon']}"
     return "-"
 
 
+RUNNING_ELSEWHERE = "running elsewhere"  # another build's worker holds the genome (claim)
+CLAIM_STALE = 2 * 86400   # a claim of another host this old (its heartbeat stopped: a node that died) is taken over
+CLAIM_BEAT = 600          # seconds between a running genome's claim touches
+
+
+def claim_path(work, accession):
+    return os.path.join(work, "done", f".{safe(accession)}.claim")
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
+
+
+def claim_live(path):
+    """Whether a genome's claim file is held: by a process alive on this host, or by another host's touched within
+    CLAIM_STALE (a run touches its claim every CLAIM_BEAT seconds)."""
+    try:
+        with open(path) as fh:
+            host, pid = fh.read().split()
+        age = time.time() - os.path.getmtime(path)
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):  # being written this instant, or damaged: held while young
+        try:
+            return time.time() - os.path.getmtime(path) < 60
+        except OSError:
+            return False
+    if host == socket.gethostname():
+        return _alive(int(pid))
+    return age < CLAIM_STALE
+
+
+def claim(work, accession):
+    """The genome claimed for this process (since 2026-11-08: two builds on one WORK, e.g. several nodes, never run the
+    same genome; until then nothing stopped them) -> the claim's path, or None where another holds it. A claim of a
+    dead process (claim_live) is taken over."""
+    path = claim_path(work, accession)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            if claim_live(path):
+                return None
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(path)
+            continue
+        with os.fdopen(fd, "w") as fh:
+            fh.write(f"{socket.gethostname()}\t{os.getpid()}\n")
+        return path
+    return None
+
+
+@contextlib.contextmanager
+def claimed(work, accession):
+    """A genome claimed while the block runs (yields its claim's path, or None where another holds it), its claim
+    touched every CLAIM_BEAT seconds and removed after."""
+    path = claim(work, accession)
+    if path is None:
+        yield None
+        return
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(CLAIM_BEAT):
+            with contextlib.suppress(OSError):
+                os.utime(path)
+    heart = threading.Thread(target=beat, daemon=True)
+    heart.start()
+    try:
+        yield path
+    finally:
+        stop.set()
+        heart.join()
+        with contextlib.suppress(OSError):
+            os.remove(path)
+
+
+def stale_partials(work):
+    """The killed runs' partial done folders under WORK/done (util.part_of's .<host>-<pid>.<accession>.partial), not
+    those of a run going on (since 2026-11-08: every one was deleted, another node's running genomes' too): a partial
+    is kept while a live claim (claim_live) names its genome."""
+    import glob  # noqa: PLC0415
+    live = []
+    for c in glob.glob(os.path.join(work, "done", ".*.claim")):
+        if claim_live(c):
+            live.append(os.path.basename(c)[1:-len(".claim")])
+    return [p for p in glob.glob(os.path.join(work, "done", ".*.partial"))
+            if not any(os.path.basename(p).endswith(f".{a}.partial") for a in live)]
+
+
 def run(args):
     """One genome (a job of jobs(), with settings): fetched into settings["genomes"] unless there (or settings
-    "staged_only": not fetched, left for a later run), its BUSCO genes called (loci.call with odb's queries for its
-    lineage), its rRNA extracted (settings["rrna"]: a function of (genome path, job, out folder) -> its summary),
-    the windows around its copies classified (settings["tiara"]), a dataset species' BUSCOs called again without its
-    own proteins (settings["odb_own"], HELD_OUT), its assembly's metadata measured (metadata.describe: stats.json,
-    organelle.fna.gz, and sketch.sig.gz by settings["sourmash"]), its results written into WORK/done/<accession>/
-    (copies.fna, loci.tsv, features.tsv, windows.fna.gz, then done.json) -> (accession, summary or None, why it is
-    not done or None)."""
+    "staged_only": not fetched, left for a later run), claimed (claim: another build's worker may hold it), its BUSCO
+    genes called (loci.call with odb's queries for its lineage), its rRNA extracted (settings["rrna"]: a function of
+    (genome path, job, out folder) -> its summary), the windows around its copies classified (settings["tiara"]), a
+    dataset species' BUSCOs called again without its own proteins (settings["odb_own"], HELD_OUT), its assembly's
+    metadata measured (metadata.describe: stats.json, organelle.fna.gz, and sketch.sig.gz by settings["sourmash"]),
+    its results written into WORK/done/<accession>/ (copies.fna, loci.tsv, features.tsv, windows.fna.gz, then
+    done.json) -> (accession, summary or None, why it is not done or None).
+    The rRNA and the metadata, which read the genome alone on one core each, run beside the locus calls (since
+    2026-11-08: after them, the job's other threads idle). A run again for better gene models alone (job["rerun"]
+    "annotation") keeps the done folder's rRNA and held-out calls, which do not depend on them."""
     job, settings = args
     acc = job["accession"]
-    folder = done_dir(settings["work"], acc)
     path = job.get("path") or genome_file(settings["genomes"], acc)
-    if not os.path.isfile(path):
-        if settings.get("staged_only"):
-            return acc, None, "not fetched yet"
-        os.makedirs(settings["genomes"], exist_ok=True)
-        why = fetch_genome(job, path)
-        if why:
-            return acc, None, f"fetch failed: {why}"
+    if not os.path.isfile(path) and settings.get("staged_only"):
+        return acc, None, "not fetched yet"
+    with claimed(settings["work"], acc) as held:
+        if held is None:
+            return acc, None, RUNNING_ELSEWHERE
+        if not os.path.isfile(path):
+            os.makedirs(settings["genomes"], exist_ok=True)
+            why = fetch_genome(job, path)
+            if why:
+                return acc, None, f"fetch failed: {why}"
+        folder = done_dir(settings["work"], acc)
+        tmp = util.part_of(folder)
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp)
+        side = concurrent.futures.ThreadPoolExecutor(2)
+        try:
+            got = _run(job, settings, path, folder, tmp, side)
+        except BaseException:
+            side.shutdown(wait=True, cancel_futures=True)
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        side.shutdown(wait=True, cancel_futures=True)
+        if got[2]:
+            shutil.rmtree(tmp, ignore_errors=True)
+            return got
+        if os.path.isdir(folder):
+            shutil.rmtree(folder)
+        os.replace(tmp, folder)
+        gff, report = got[3]
+        for used in (gff, report):  # annotation.none_file stays: a run again knows none has one
+            if used and os.path.isfile(used):  # compared and taken: annotation.tsv holds what the benchmark needs
+                os.remove(used)
+        return got[:3]
+
+
+def _run(job, settings, path, folder, tmp, side):
+    """genomes.run's work in its partial folder tmp, side: a pool of two threads (the rRNA and the metadata) ->
+    (accession, summary or None, why not or None, (GFF, report) taken)."""
+    acc = job["accession"]
     started = time.time()  # the run's own time, the fetch left out (benchmarks.py's runtime.tsv)
-    tmp = util.part_of(folder)
-    shutil.rmtree(tmp, ignore_errors=True)
-    os.makedirs(tmp)
+    before = done_summary(settings["work"], acc) if job.get("rerun") == "annotation" else None
     odb = odb_of(settings)
+    rrna_job = None
+    # records of a species without an assembly, a transcriptome (since 2026-11-07): no genome's rRNA
+    if settings.get("rrna") and not job.get("path") and job.get("kind") != "transcriptome":
+        kept = os.path.join(folder, "rrna.tsv")
+        if before is not None and os.path.isfile(kept):  # a run for its gene models alone: its rRNA as it was
+            from . import rrna as rrna_mod  # noqa: PLC0415
+            shutil.copyfile(kept, os.path.join(tmp, "rrna.tsv"))
+            rrna_job = rrna_mod.counts(rrna_mod.load(tmp))
+        else:
+            rrna_job = side.submit(settings["rrna"], path, job, tmp)
+    meta_job = None
+    if not job.get("path"):  # the assembly's metadata while it is here (metadata.py); a failure the pass tries again
+        for name in (metadata_mod.STATS, metadata_mod.ORGANELLE, metadata_mod.SKETCH):  # a run again: its own kept
+            if os.path.isfile(os.path.join(folder, name)):
+                shutil.copyfile(os.path.join(folder, name), os.path.join(tmp, name))
+        want = metadata_mod.missing(tmp, settings.get("sourmash"))
+        if want:
+            meta_job = side.submit(metadata_mod.describe, path, tmp, acc, job.get("fetch", acc),
+                                   settings.get("sourmash"), want)
     queries = odb.queries(job["lineage"], settings["odb_lineages"])
     gff, report, source = annotation_of(job, settings)
+    taken = (gff, report)
     try:
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
                             settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), tmp,
                             settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings),
                             annotation=(gff, report, source) if gff else None)
     except (OSError, RuntimeError) as e:
-        shutil.rmtree(tmp, ignore_errors=True)
-        return acc, None, f"locus calling failed: {e}"
+        return acc, None, f"locus calling failed: {e}", taken
     if got["failed"]:
-        shutil.rmtree(tmp, ignore_errors=True)
-        return acc, None, got["failed"]
+        return acc, None, got["failed"], taken
     if gff is not False:  # miniprot's models against the annotation's (annotation.py's benchmark; no rows: none)
         annotation_mod.annotate(tmp, gff, report, {
             locus: dict(r["miniprot"], status=r["status"], contig=r["contig"], strand=r["strand"])
@@ -683,16 +839,16 @@ def run(args):
     windows = os.path.join(tmp, "windows.fna.gz")
     with gzip.open(windows, "wt", compresslevel=6) as fh:
         fh.writelines(f">{n}\n{s}\n" for n, s in got["windows"].items())
-    classes = {}
-    if settings.get("tiara") and job.get("kind") != "transcriptome":  # a transcript's flanks are no window
-        plain = os.path.join(tmp, "windows.fna")
-        with open(plain, "w") as fh:
-            fh.writelines(f">{n}\n{s}\n" for n, s in got["windows"].items())
-        classes = tiara_classes(plain, settings["tiara"], settings.get("threads", 1), tmp)
-        os.remove(plain)
+    classes, tiara = {}, "-"
+    if job.get("kind") != "transcriptome":  # a transcript's flanks are no window
+        tiara = "none"
+        if settings.get("tiara"):
+            classes = classify(got["windows"], settings["tiara"], settings.get("threads", 1), tmp)
+            tiara = "failed" if classes is None else "done"
+            classes = classes or {}
     window_of = {n.split("|", 1)[0]: n for n in got["windows"]}
     dup = loci_mod.dup_identity(got["loci"], settings.get("vsearch"), settings.get("threads", 1), tmp)
-    taken = 0
+    taken_loci = 0
     with open(os.path.join(tmp, "copies.fna"), "w", newline="\n") as fa, \
             open(os.path.join(tmp, "loci.tsv"), "w", newline="\n") as tb, \
             open(os.path.join(tmp, "features.tsv"), "w", newline="\n") as ft:
@@ -703,7 +859,7 @@ def run(args):
             if r["status"] == "Missing":
                 tb.write("\t".join([locus, "Missing"] + ["-"] * (len(LOCI_COLUMNS) - 2)) + "\n")
                 continue
-            taken += 1
+            taken_loci += 1
             fa.write(f">{locus}\n{r['copy']}\n")
             exons = sum(1 for f in r["features"] if f[0] == "exon")
             tb.write("\t".join(map(str, [
@@ -713,22 +869,26 @@ def run(args):
                 len(r["protein"]), classes.get(window_of.get(locus, ""), "-"),
                 "t" if r.get("rescued") else "f", r.get("model", "miniprot"), dup.get(locus, "-")])) + "\n")
             ft.writelines(f"{locus}\t{k}\t{s}\t{e}\n" for k, s, e in r["features"])
-    rrna = None
-    # records of a species without an assembly, a transcriptome (since 2026-11-07): no genome's rRNA
-    if settings.get("rrna") and not job.get("path") and job.get("kind") != "transcriptome":
+    rrna = rrna_job
+    if isinstance(rrna_job, concurrent.futures.Future):
         try:
-            rrna = settings["rrna"](path, job, tmp)
+            rrna = rrna_job.result()
         except (OSError, ValueError, EOFError, RuntimeError) as e:  # RuntimeError: barrnap's, ITSx's
-            shutil.rmtree(tmp, ignore_errors=True)
-            return acc, None, f"rRNA extraction failed: {e}"
+            return acc, None, f"rRNA extraction failed: {e}", taken
     seconds = round(time.time() - started, 1)
     own = own_of(job, settings) if job.get("kind") != "transcriptome" else []
+    held = None
     if own:  # its species is in BUSCO's dataset: its BUSCOs called again without its own proteins (HELD_OUT)
-        why = held_out(path, job, settings, odb, own, tmp)
-        if why:
-            shutil.rmtree(tmp, ignore_errors=True)
-            return acc, None, why
-    summary = {"accession": acc, "fetched": job.get("fetch", acc), "why": job["why"], "loci": taken,
+        kept = os.path.join(folder, HELD_OUT)
+        if before is not None and before.get("held_out") and {r[0] for r in read_rows(kept)} == set(odb.loci):
+            shutil.copyfile(kept, os.path.join(tmp, HELD_OUT))  # a run for its gene models alone: as it was
+            held = before["held_out"]
+        else:
+            why = held_out(path, job, settings, odb, own, tmp)
+            if why:
+                return acc, None, why, taken
+            held = {"left_out": own, "seconds": round(time.time() - started - seconds, 1)}
+    summary = {"accession": acc, "fetched": job.get("fetch", acc), "why": job["why"], "loci": taken_loci,
                "searched": list(odb.loci),
                "status": dict(collections.Counter(r["status"] for r in got["loci"].values())), "rrna": rrna,
                "bytes": os.path.getsize(path), "seconds": seconds, "threads": settings.get("threads", 1),
@@ -737,27 +897,120 @@ def run(args):
                "annotated": bool(gff), "annotation": source if gff else "-",
                # the sources asked before the one taken (all, where none had one): none (better_annotation)
                "annotation_none": [] if gff is False else annotation_mod.none_before(job, source if gff else None),
-               "annotated_models": sum(1 for r in got["loci"].values() if r.get("model", "miniprot") != "miniprot")}
-    if own:
-        summary["held_out"] = {"left_out": own, "seconds": round(time.time() - started - seconds, 1)}
-    if not job.get("path"):  # the assembly's metadata while it is here (metadata.py); a failure the pass tries again
-        for name in (metadata_mod.STATS, metadata_mod.ORGANELLE, metadata_mod.SKETCH):  # a run again: its own kept
-            if os.path.isfile(os.path.join(folder, name)):
-                shutil.copyfile(os.path.join(folder, name), os.path.join(tmp, name))
-        want = metadata_mod.missing(tmp, settings.get("sourmash"))
-        why = metadata_mod.describe(path, tmp, acc, job.get("fetch", acc), settings.get("sourmash"), want) \
-            if want else None
+               "annotated_models": sum(1 for r in got["loci"].values() if r.get("model", "miniprot") != "miniprot"),
+               "tiara": tiara}  # done, failed (backfill tries again), none (no tiara), - (a transcriptome)
+    if held is not None:
+        summary["held_out"] = held
+    if meta_job is not None:
+        why = meta_job.result()
         if why:
             summary["metadata_failed"] = why
     with open(os.path.join(tmp, "done.json"), "w", newline="\n") as fh:
         json.dump(summary, fh, indent=1)
-    if os.path.isdir(folder):
-        shutil.rmtree(folder)
-    os.replace(tmp, folder)
-    for used in (gff, report):  # compared and taken: annotation.tsv holds what the benchmark needs
-        if used and os.path.isfile(used):
-            os.remove(used)
-    return acc, summary, None
+    return acc, summary, None, taken
+
+
+def classify(windows, tiara, threads, folder):
+    """Tiara's classes of a genome's windows {name: sequence} (tiara_classes) -> {window: class}, or None where it
+    failed."""
+    plain = os.path.join(folder, "windows.fna")
+    with open(plain, "w") as fh:
+        fh.writelines(f">{n}\n{s}\n" for n, s in windows.items())
+    try:
+        return tiara_classes(plain, tiara, threads, folder)
+    finally:
+        os.remove(plain)
+
+
+TIARA_COLUMN = LOCI_COLUMNS.index("window_class")
+
+
+def backfill(args):
+    """A done genome's steps that a tool missing at its run left out, made now the tool is here (since 2026-11-08; a
+    pool's task: (job, settings)) -> (accession, [steps made], why one failed or None):
+    - tiara's classes of its windows, where its run had no tiara or tiara failed (done.json's `tiara`; a run before
+      2026-11-08: its loci.tsv's window_class all `-`), into loci.tsv;
+    - its rRNA (settings["rrna"]), where its run had no barrnap (no rrna.tsv) and its genome is here.
+    Its done.json says what was made. A genome another build holds is left alone."""
+    job, settings = args
+    acc = job["accession"]
+    folder = done_dir(settings["work"], acc)
+    summary = done_summary(settings["work"], acc)
+    if summary is None:
+        return acc, [], None
+    todo = backfill_needs(job, settings, summary)
+    if not todo:
+        return acc, [], None
+    with claimed(settings["work"], acc) as held:
+        if held is None:
+            return acc, [], None
+        made, why = [], None
+        if "tiara" in todo:
+            with tempfile.TemporaryDirectory(dir=folder) as tmp:
+                with gzip.open(os.path.join(folder, "windows.fna.gz"), "rt") as fh:
+                    names = [line[1:].strip() for line in fh if line.startswith(">")]
+                windows = os.path.join(tmp, "windows.fna")
+                with gzip.open(os.path.join(folder, "windows.fna.gz"), "rb") as src, open(windows, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                classes = tiara_classes(windows, settings["tiara"], settings.get("threads", 1), tmp)
+            if classes is None:
+                why = "tiara failed"
+                summary["tiara"] = "failed"
+            else:
+                window_of = {n.split("|", 1)[0]: n for n in names}
+                table = os.path.join(folder, "loci.tsv")
+                with open(table) as fh:
+                    lines = fh.readlines()
+                with open(util.part_of(table), "w", newline="\n") as fh:
+                    fh.write(lines[0])
+                    for line in lines[1:]:
+                        f = line.rstrip("\n").split("\t")
+                        if f[1] != "Missing":
+                            f[TIARA_COLUMN] = classes.get(window_of.get(f[0], ""), "-")
+                        fh.write("\t".join(f) + "\n")
+                os.replace(util.part_of(table), table)
+                summary["tiara"] = "done"
+                made.append("tiara")
+        if "rrna" in todo:
+            path = genome_file(settings["genomes"], acc)
+            with tempfile.TemporaryDirectory(dir=folder) as tmp:
+                try:
+                    summary["rrna"] = settings["rrna"](path, job, tmp)
+                except (OSError, ValueError, EOFError, RuntimeError) as e:
+                    why = why or f"rRNA extraction failed: {e}"
+                else:
+                    os.replace(os.path.join(tmp, "rrna.tsv"), os.path.join(folder, "rrna.tsv"))
+                    made.append("rrna")
+        path = os.path.join(folder, "done.json")
+        with open(util.part_of(path), "w", newline="\n") as fh:
+            json.dump(summary, fh, indent=1)
+        os.replace(util.part_of(path), path)
+        return acc, made, why
+
+
+def backfill_needs(job, settings, summary=None):
+    """The steps backfill would make of a done genome now: tiara, rrna (backfill)."""
+    folder = done_dir(settings["work"], job["accession"])
+    summary = summary or done_summary(settings["work"], job["accession"]) or {}
+    out = []
+    if settings.get("tiara") and job.get("kind") != "transcriptome" \
+            and os.path.isfile(os.path.join(folder, "windows.fna.gz")) and summary.get("tiara") != "done":
+        called = [r for r in read_rows(os.path.join(folder, "loci.tsv")) if len(r) > TIARA_COLUMN and r[1] != "Missing"]
+        state = summary.get("tiara")
+        if called and (state in ("none", "failed") or (state is None and all(r[TIARA_COLUMN] == "-" for r in called))):
+            out.append("tiara")
+    if settings.get("rrna") and not job.get("path") and job.get("kind") != "transcriptome" \
+            and not os.path.isfile(os.path.join(folder, "rrna.tsv")) \
+            and os.path.isfile(genome_file(settings["genomes"], job["accession"])):
+        out.append("rrna")
+    return out
+
+
+def rescue_missing(work, accession, settings):
+    """Whether a done genome was run without the rescue pass (done.json's `rescue` false: --no_rescue, or no
+    esl-translate) where this run makes it: its run again (since 2026-11-08)."""
+    summary = done_summary(work, accession) or {}
+    return summary.get("rescue") is False and bool(rescue_of(settings)["rescue_missing"])
 
 
 def annotation_of(job, settings):
@@ -770,8 +1023,9 @@ def annotation_of(job, settings):
     gff, source = annotation_mod.found(settings["genomes"], job["accession"])
     report = annotation_mod.report_file(settings["genomes"], job["accession"])
     if not gff:
-        if settings.get("staged_only"):
-            return False, None, "-"
+        if settings.get("staged_only"):  # the fetch stage found none (its note), or it is still to come
+            none = annotation_mod.none_noted(settings["genomes"], job)
+            return (None, report if os.path.isfile(report) else None, "-") if none else (False, None, "-")
         try:
             gff, source = annotation_mod.fetch(job, settings["genomes"], settings.get("veupathdb_key"))
         except OSError:
@@ -891,7 +1145,8 @@ def drop_superseded(genomes_folder, work, job_map):
         old, new = f[0], f[1] if len(f) > 1 else None
         if old in job_map or not new or not is_done(work, new):
             continue
-        paths = [genome_file(genomes_folder, old), annotation_mod.report_file(genomes_folder, old)] + \
+        paths = [genome_file(genomes_folder, old), annotation_mod.report_file(genomes_folder, old),
+                 annotation_mod.none_file(genomes_folder, old)] + \
             [annotation_mod.gff_file(genomes_folder, old, s) for s in annotation_mod.SOURCES]
         if any(os.path.isfile(p) for p in paths):
             for p in paths:

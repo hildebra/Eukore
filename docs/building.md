@@ -97,7 +97,7 @@ python3 -m unittest discover -s tests -t tests      # ~80 tests with stand-in to
 | genomes, all six groups | 29,114 species, ~6.5 TB gzipped (21.6 Tb); fetched and pruned as the build goes |
 | transcriptomes (since 0.2) | ~5,000 species without a genome, 341 Gb of transcripts (ENA's TSA sets, 2026-11); `--no_tsa` skips them |
 | the intraspecific panel (since 0.2) | up to 3 further assemblies of 40 species (2 of the vertebrates, rice and maize): ~110, deleted once run |
-| memory | ~2 GB for a trial's package stage; per genome job, miniprot's on that genome (a few GB, more for the largest plant and animal genomes); cmalign up to 2 GB per thread for the 18S regions; the fetch stage ~2 GB (the taxonomy) plus, per download of a TOGA2 `.2bit` genome, its longest chromosome (~250 MB for a mammal's; until 2026-11-08 ~6 times that: 12 downloads at once killed a build on a 10 GB node) |
+| memory | the package stage: ~2 GB for a trial's; for all eukaryotes several GB more (the copies' rows, coding sequences, proteins and introns; since 2026-11-08 the copies whole and their features are read again from `WORK/done` as they are written, not held), measure on a first run; per genome job, miniprot's index on that genome (~7 bytes a base, in pieces of 4 Gb at most: a few GB, ~22 GB for a mammal's), the rest of the run holding only the copies' stretches (since 2026-11-08; until then a chromosome-level genome whole), so that `-j` is set by miniprot's need on the largest genomes, which run first; cmalign up to 2 GB per thread for the 18S regions; the fetch stage ~2 GB (the taxonomy) plus, per download of a TOGA2 `.2bit` genome, its longest chromosome (~250 MB for a mammal's; until 2026-11-08 ~6 times that: 12 downloads at once killed a build on a 10 GB node) |
 | network | the fetch stage alone |
 
 ## Usage
@@ -168,17 +168,25 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   model from it where the HMM confirms it ([methods.md](methods.md)), compares miniprot's models with it
   (`annotation.tsv`) and deletes it.
 - **process** calls each fetched genome's BUSCOs and extracts its rRNA into `WORK/done/<accession>/`, `-j` genomes at a
-  time with `-t / -j` threads each. A genome not fetched yet is left for the next run. Then it takes the organelle
-  genes (`WORK/organelle`), and runs the intraspecific panel's further assemblies (their BUSCOs, rRNA and organelle
-  genes), deleting their genome files once done.
+  time with `-t / -j` threads each, the largest first (since 2026-11-08; the rRNA and the assembly metadata run beside
+  miniprot). A genome not fetched yet is left for the next run; so is one whose annotation the fetch stage has not
+  asked for yet (it fetches a genome's annotation before the genome itself). Several process runs may share one WORK,
+  e.g. one per node (since 2026-11-08): each genome is claimed by the run that takes it (`WORK/done/.<accession>.claim`;
+  a claim of a node that died is taken over after 2 days), and each run then makes the passes below too. Then it
+  makes what a tool missing at a genome's run left out (tiara's classes, the rRNA: a backfill), takes the organelle
+  genes (`WORK/organelle`; from the organelle molecules the metadata scan kept, not the genome again), and runs the
+  intraspecific panel's further assemblies (their BUSCOs, rRNA and organelle genes), deleting their genome files once
+  done.
 - **package**, in turn:
-  - runs FCS-GX where asked;
+  - makes what a tool missing at a genome's run left out, as the process stage does (tiara given here: its classes);
+  - runs FCS-GX where asked (`-t / 4` genomes at once, 4 cores each);
   - checks the copies across species;
-  - since 0.2: aligns the copies' proteins to BUSCO's HMMs (hmmalign; cached in `WORK/align`), places their introns,
+  - since 0.2: aligns the copies' proteins to BUSCO's HMMs (hmmalign, `-t` loci at once; cached in `WORK/align`), places their introns,
     checks each genome's genetic code;
   - annotates the published rRNA reads (barrnap and ITSx over `-t` threads, 250 reads a batch);
   - runs the rRNA checks and the part screen;
-  - since 0.2: finds the 18S variable regions (cmalign; cached in `WORK/cmalign`) and runs the in-silico PCR;
+  - since 0.2: finds the 18S variable regions (cmalign; cached in `WORK/cmalign` batch by batch, an 18S cmalign
+    failed on tried again by the next run) and runs the in-silico PCR;
   - takes the organelle genes of any genome not searched yet, checks them across species (since 0.2);
   - since 0.2: measures the intraspecific panel's barcode gap;
   - names each species in PR2, EUKARYOME, KSGP and (since 0.2) SILVA, UNITE and MIDORI2, and finds its ids in Open
@@ -198,7 +206,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
-| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2, is in the manifest's `eukore`) |
+| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.1, is in the manifest's `eukore`) |
 | `-V` | | print Eukore's own version and exit |
 | `--keep_gb` | 1000 | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept) |
 | `-t`, `--threads` | 8 | threads in all |
@@ -229,6 +237,8 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 
 Every stage is resumable: a rerun does only what is not done.
 - A genome's results are in `WORK/done/<accession>/`. `done.json` is written last, so a killed job is redone whole.
+- A genome run without a tool (tiara, barrnap) gets that step once the tool is there; one run without the rescue
+  pass (`--no_rescue`, no `esl-translate`) is run again where it is made now (since 2026-11-08).
 - A genome searched for fewer BUSCOs than the build calls (a run before format 4, or one with `--loci`) is run again.
 - A fetch that stopped is taken up where it stopped. A source is downloaded again only where its version changed.
 - The published rRNA reads' annotation is kept in `WORK/published`.
@@ -236,7 +246,7 @@ Every stage is resumable: a rerun does only what is not done.
   NCBI's, VEuPathDB's, Ensembl's and TOGA2's that its sources' indexes name for its assembly and that was not found
   to have none, where it comes before the one its run took (`done.json`'s `annotation` and `annotation_none`; a run
   before 2026-11-07 took NCBI's or none). The fetch stage fetches that annotation (and the genome again, where the
-  prune deleted it); the process stage runs the genome again with it, its metadata kept. This catches a genome run
+  prune deleted it); the process stage runs the genome again with it, its metadata, rRNA and held-out calls kept. This catches a genome run
   before an index named its assembly, before `--veupathdb_key` was given, or before its annotation was fetched.
 - A species whose genome changed since the last plan (`WORK/genome_set.tsv`: TOGA2's assembly in its place; NCBI's
   newer assembly or version, after `--refresh`) gets the new one fetched and run; the old file (and its annotation)

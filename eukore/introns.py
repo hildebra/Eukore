@@ -84,22 +84,18 @@ def sites(rows):
 
 
 def annotate(collected, states, group_of=None):
-    """The package's introns (collected's copies and features; states {(accession, locus): match states}) ->
-    (intron rows (INTRON_COLUMNS), site rows (SITE_COLUMNS, and share_<group> with group_of {accession: group}), the
-    share columns, per genome {accession: dict(introns, introns_per_kb_cds, median_intron_length)})."""
-    feats = collections.defaultdict(list)
-    for f in collected["features"]:
-        feats[(f["accession"], f["locus"])].append((f["kind"], f["start"], f["end"]))
+    """The package's introns (collected's intron_rows: of_copy's of each copy, accession and locus set, made by
+    package.collect while it read the copies; states {(accession, locus): match states}) -> (intron rows
+    (INTRON_COLUMNS), site rows (SITE_COLUMNS, and share_<group> with group_of {accession: group}), the share columns,
+    per genome {accession: dict(introns, introns_per_kb_cds, median_intron_length)})."""
     rows, by_locus = [], collections.defaultdict(list)
-    for r in collected["copy_rows"]:
-        key = (r["accession"], r["locus"])
-        copy = collected["copies"].get(r["accession"], {}).get(r["locus"])
-        if not copy:
-            continue
-        for row in of_copy(copy, feats[key], states.get(key)):
-            row.update(accession=r["accession"], locus=r["locus"])
-            rows.append(row)
-            by_locus[r["locus"]].append(row)
+    for row in collected["intron_rows"]:
+        s = states.get((row["accession"], row["locus"]))
+        aa = row["aa_position"]
+        state = s[aa] if s and aa < len(s) else None  # of_copy's own rule
+        row["hmm_position"] = state if state is not None else "-"
+        rows.append(row)
+        by_locus[row["locus"]].append(row)
     aligned = collections.defaultdict(set)  # the genomes each locus was aligned in: a site's share is of them
     for acc, locus in states:
         aligned[locus].add(acc)

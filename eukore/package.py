@@ -11,6 +11,7 @@ import gzip
 import json
 import os
 import shutil
+import sys
 
 from . import gencode
 from . import qc
@@ -50,6 +51,10 @@ GAP_MIN = 10        # a run of Ns this long in a copy: an assembly gap (features
 EDGE = 1000         # a copy this close to its contig's end: maybe cut, or joined to another sequence
 FCS_FOREIGN = {"EXCLUDE", "TRIM", "FIX"}
 FOREIGN_WINDOW = {"bacteria", "archaea", "prokarya"}
+
+
+SHARED_VALUES = ("locus", "status", "strand", "cutoff", "copies", "exons", "query", "window_class", "rescued", "model",
+                 "dup_identity", "contig", "contig_length")  # copy rows' values that repeat: kept once (collect)
 
 
 def gap_runs(seq, min_run=GAP_MIN):
@@ -230,14 +235,16 @@ def done_copies(work, accession):
 
 
 def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None):
-    """What the package holds of the BUSCO genes -> dict(genomes {accession: row}, copies {accession: {locus: sequence}},
-    features [FEATURE_COLUMNS dicts], copy_rows [COPY_COLUMNS dicts], taxids). Each species' genome (its job) with
-    the copies its run called; the species' other assemblies listed (source "assembly", no copies); the copies'
-    checks across species (qc.check). kinds: {marker locus: clean or family} (markers.kinds): a genome's duplication
-    is read on its BUSCOs alone, a family marker's Duplicated is no flag."""
+    """What the package holds of the BUSCO genes -> dict(genomes {accession: row}, copy_rows [COPY_COLUMNS dicts],
+    taxids, cds and proteins {(accession, locus): sequence}, intron_rows (introns.of_copy's, accession and locus set),
+    work and done (the genomes whose copies and features write reads from WORK/done), copy_count). Each species'
+    genome (its job) with the copies its run called; the species' other assemblies listed (source "assembly", no
+    copies); the copies' checks across species (qc.check). kinds: {marker locus: clean or family} (markers.kinds): a
+    genome's duplication is read on its BUSCOs alone, a family marker's Duplicated is no flag."""
+    from . import introns as introns_mod  # noqa: PLC0415
     kinds = kinds or {}
     by_accession = {r["accession"]: r for r in assemblies}
-    genomes, copies, features, copy_rows = {}, {}, [], []
+    genomes, copy_rows, cds, intron_rows, done, count = {}, [], {}, [], [], 0
     from .genomes import is_done  # noqa: PLC0415
     for acc, job in sorted(job_map.items()):
         got = done_copies(work, acc)
@@ -264,15 +271,15 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                                 rdna_contigs=n["rDNA_contigs"])
             genomes[acc]["_rrna_copies"] = rrna_mod.element_counts(rrna_rows)  # copy_numbers.tsv's (no column)
         genomes[acc]["_organelle_molecules"] = organelle_molecules_of(done_dir(work, acc))
-        copies[acc] = got
+        # its copies and features read here and again by write, never all held (since 2026-11-08: every copy, introns
+        # and all, and every feature as a dict were, ~1 KB a feature: tens of GB for all eukaryotes)
+        done.append(acc)
+        count += len(got)
+        own = collections.defaultdict(list)  # this genome's features by locus
+        name = sys.intern(acc)
         for f in done_table(work, acc, "features.tsv"):
-            features.append(dict(accession=acc, locus=f["locus"], kind=f["kind"], start=int(f["start"]),
-                                 end=int(f["end"])))
-        gap_of = {}
-        for locus, seq in got.items():
-            runs = gap_runs(seq)
-            gap_of[locus] = len(runs)
-            features.extend(dict(accession=acc, locus=locus, kind="gap", start=a, end=b) for a, b in runs)
+            own[f["locus"]].append((f["kind"], int(f["start"]), int(f["end"])))
+        gap_of = {locus: len(gap_runs(seq)) for locus, seq in got.items()}
         fcs = [dict(f, start=int(f["start"]), end=int(f["end"])) for f in done_table(work, acc, "fcs.tsv")]
         screened = os.path.isfile(os.path.join(done_dir(work, acc), "fcs.tsv"))
         searched = done_table(work, acc, "loci.tsv")
@@ -281,9 +288,17 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             if r["status"] != "Missing":
                 edge = min(int(r["start"]) - 1, int(r["contig_length"]) - int(r["end"])) \
                     if str(r.get("contig_length", "")).isdigit() and str(r.get("start", "")).isdigit() else "-"
-                copy_rows.append(dict(r, accession=acc, fcs=fcs_of_copy(fcs, r["locus"], r["contig"], r["start"],
-                                                                         r["end"]) if screened else "-",
-                                      contig_edge=edge, gaps=gap_of.get(r["locus"], 0)))
+                row = dict(r, accession=name, fcs=fcs_of_copy(fcs, r["locus"], r["contig"], r["start"],
+                                                               r["end"]) if screened else "-",
+                           contig_edge=edge, gaps=gap_of.get(r["locus"], 0))
+                for k in SHARED_VALUES:  # a few values, many rows: one string each
+                    if isinstance(row.get(k), str):
+                        row[k] = sys.intern(row[k])
+                copy_rows.append(row)
+                cds[(name, row["locus"])] = qc.spliced(got.get(r["locus"], ""), own[r["locus"]])
+                if got.get(r["locus"]):  # its introns (introns.py), their HMM places set by genetics
+                    intron_rows.extend(dict(i, accession=name, locus=row["locus"])
+                                       for i in introns_mod.of_copy(got[r["locus"]], own[r["locus"]]))
         for other in job.get("others", ()):
             o = by_accession.get(other)
             if o and other not in genomes:
@@ -294,11 +309,6 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                                       flags=",".join(o.get("flags") or ()) or "-", ftp=o["ftp"], source="assembly",
                                       type_material=type_material_of(o),
                                       representative="f", loci=0)
-    exons = collections.defaultdict(list)
-    for f in features:
-        exons[(f["accession"], f["locus"])].append((f["kind"], f["start"], f["end"]))
-    cds = {(r["accession"], r["locus"]): qc.spliced(copies[r["accession"]][r["locus"]],
-                                                     exons[(r["accession"], r["locus"])]) for r in copy_rows}
     checks = qc.check(cds, {a: g["species_taxid"] for a, g in genomes.items()}, ncbi, vsearch, threads,
                       {(r["accession"], r["locus"]): int(r["protein_length"]) for r in copy_rows})
     proteins = {}
@@ -319,16 +329,26 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         if g["representative"] == "t" and g.get("source") != "tsa":  # a transcriptome's isoforms are no duplication
             g.update(duplication_of(by_genome.get(acc, [])))
     taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"}
-    return dict(genomes=genomes, copies=copies, features=features, copy_rows=copy_rows, taxids=taxids, cds=cds,
-                proteins=proteins)
+    return dict(genomes=genomes, copy_rows=copy_rows, taxids=taxids, cds=cds, proteins=proteins,
+                intron_rows=intron_rows, work=work, done=done, copy_count=count)
 
 
-def genetics(collected, ncbi, hmm_of, hmmalign="hmmalign", work=None, log=print):
-    """The copies' proteins placed on their HMMs (align.py), their introns (introns.py) and each genome's genetic code
-    checked (codecheck.py; since 2026-11-07) -> collected, with `introns`, `intron_sites`, `intron_site_columns` and
-    `codons` and the genomes' rows completed; without hmmalign, introns without their places and no code check."""
+def genome_features(work, accession, copies=None):
+    """A done genome's features (features.tsv, and its copies' assembly gaps: gap_runs) as features.tsv rows
+    (FEATURE_COLUMNS), in the package's order (locus, start, kind). copies: done_copies' (read where not given)."""
+    copies = done_copies(work, accession) if copies is None else copies
+    rows = [(f["locus"], int(f["start"]), f["kind"], int(f["end"])) for f in done_table(work, accession, "features.tsv")]
+    rows += [(locus, a, "gap", b) for locus, seq in copies.items() for a, b in gap_runs(seq)]
+    return [dict(accession=accession, locus=lo, kind=k, start=s, end=e) for lo, s, k, e in sorted(rows)]
+
+
+def genetics(collected, ncbi, hmm_of, hmmalign="hmmalign", work=None, log=print, threads=1):
+    """The copies' proteins placed on their HMMs (align.py, `threads` loci at once), their introns (introns.py) and
+    each genome's genetic code checked (codecheck.py; since 2026-11-07) -> collected, with `introns`, `intron_sites`,
+    `intron_site_columns` and `codons` and the genomes' rows completed; without hmmalign, introns without their places
+    and no code check."""
     from . import align as align_mod, codecheck, groups, introns as introns_mod  # noqa: PLC0415
-    states = align_mod.align(collected, hmm_of, hmmalign, work, log) if hmmalign else {}
+    states = align_mod.align(collected, hmm_of, hmmalign, work, log, threads) if hmmalign else {}
     group_of = {a: groups.group_of(ncbi, int(g["species_taxid"])) for a, g in collected["genomes"].items()
                 if g["representative"] == "t"}
     rows, site_rows, site_columns, per_genome = introns_mod.annotate(collected, states, group_of)
@@ -404,25 +424,47 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
         rows_of_loci, call_columns = loci_rows([i for i in loci if set_of[i["locus"]] == s], collected, ncbi)
         _tsv(os.path.join(part, s, "loci.tsv"), LOCI_COLUMNS + tuple(call_columns), rows_of_loci)
     order = {item["locus"]: i for i, item in enumerate(loci)}
-    copies = collected["copies"]
-    cds, proteins = collected.get("cds", {}), collected.get("proteins", {})
+    by_locus = {"cds": collections.defaultdict(dict), "proteins": collections.defaultdict(dict)}
+    for sub in by_locus:  # once, not a pass over every copy per locus (until 2026-11-08)
+        for (a, lo), s in collected.get(sub, {}).items():
+            by_locus[sub][lo][a] = s
     for item in loci:
         locus = item["locus"]
-        # each copy whole; its coding sequence (exons joined, frameshifts' bases out); its protein (since 2026-11-07)
-        for sub, ext, seqs in (("copies", "fna", {a: c.get(locus) for a, c in copies.items()}),
-                               ("cds", "fna", {a: s for (a, lo), s in cds.items() if lo == locus}),
-                               ("proteins", "faa", {a: s for (a, lo), s in proteins.items() if lo == locus})):
+        # each copy's coding sequence (exons joined, frameshifts' bases out); its protein (since 2026-11-07)
+        for sub, ext, seqs in (("cds", "fna", by_locus["cds"].get(locus, {})),
+                               ("proteins", "faa", by_locus["proteins"].get(locus, {}))):
             with gzip.open(os.path.join(part, set_of[locus], sub, f"{locus}.{ext}.gz"), "wt", compresslevel=6) as fh:
                 fh.writelines(f">{acc}\n{seqs[acc].upper()}\n" for acc in sorted(seqs) if seqs[acc])
+    # each copy whole and the features: read again from each done genome in turn into every locus' file at once
+    # (since 2026-11-08: all held in memory from collect on)
+    copy_files = {item["locus"]: gzip.open(os.path.join(part, set_of[item["locus"]], "copies",
+                                                        f"{item['locus']}.fna.gz"), "wt", compresslevel=6)
+                  for item in loci}
+    feature_files = {s: open(util.part_of(os.path.join(part, s, "features.tsv")), "w", newline="\n") for s in sets}
+    try:
+        for fh in feature_files.values():
+            fh.write("\t".join(FEATURE_COLUMNS) + "\n")
+        for acc in sorted(collected.get("done", ())):
+            got = done_copies(collected["work"], acc)
+            for locus, seq in got.items():
+                if locus in copy_files and seq:
+                    copy_files[locus].write(f">{acc}\n{seq.upper()}\n")
+            for f in genome_features(collected["work"], acc, got):
+                s = set_of.get(f["locus"], "busco")
+                if s in feature_files:
+                    feature_files[s].write("\t".join(str(f[c]) for c in FEATURE_COLUMNS) + "\n")
+    finally:
+        for fh in list(copy_files.values()) + list(feature_files.values()):
+            fh.close()
+    for s in sets:
+        path = os.path.join(part, s, "features.tsv")
+        os.replace(util.part_of(path), path)
 
     def of_set(rows, s):
         return [r for r in rows if set_of.get(r["locus"], "busco") == s]
     for s in sets:
         _tsv(os.path.join(part, s, "copies.tsv"), COPY_COLUMNS,
              sorted(of_set(collected["copy_rows"], s), key=lambda r: (r["accession"], order.get(r["locus"], 1 << 20))))
-        _tsv(os.path.join(part, s, "features.tsv"), FEATURE_COLUMNS,
-             sorted(of_set(collected["features"], s), key=lambda f: (f["accession"], f["locus"], int(f["start"]),
-                                                                     f["kind"])))
     if "introns" in collected:  # package.genetics (since 2026-11-07)
         from . import codecheck, introns as introns_mod  # noqa: PLC0415
         for s in sets:
@@ -499,7 +541,7 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                 "inputs": inputs,
                 "counts": {"species": sum(1 for r in rows if r["representative"] != "-"),
                            "species_rrna_only": sum(1 for r in rows if r["representative"] == "-"),
-                           "genomes": len(genomes), "copies": sum(len(c) for c in copies.values()),
+                           "genomes": len(genomes), "copies": collected.get("copy_count", 0),
                            "copy_status": dict(statuses), "rrna_records": sum(n_records.values()),
                            "organelle_genes": {k: dict(collections.Counter(row["gene"] for _n, _s, row in organelle
                                                                            if row["organelle"] == k))

@@ -6,7 +6,6 @@ position or after to the last at its last position or before (inserts between in
 record holds bases within SLACK positions of both its ends. The alignments are cached by sequence under WORK/cmalign/.
 """
 
-import gzip
 import hashlib
 import os
 import subprocess
@@ -69,23 +68,26 @@ def _cmalign(cm, seqs, names, cmalign_bin, threads, tmp):
         return {n: align_mod.states_of(row, rf) for n, row in rows.items()}, None
 
 
-def cmalign(cm, seqs, cmalign_bin="cmalign", threads=1, tmp=None, log=None):
+def cmalign(cm, seqs, cmalign_bin="cmalign", threads=1, tmp=None, log=None, each=None):
     """seqs {name: sequence} aligned to the CM -> {name: [the model position of each base, or None in an insert]}. A
     sequence over MAX_SSU is left out; a batch cmalign fails on (one sequence over its matrix limit) is aligned one
-    sequence at a time, those that fail left out (said)."""
+    sequence at a time, those that fail left out (said). each: a function given each batch's alignments as they come
+    (run's cache)."""
     out, failed = {}, []
     names = sorted(n for n in seqs if len(seqs[n]) <= MAX_SSU)
     for i in range(0, len(names), BATCH):
         got, why = _cmalign(cm, seqs, names[i:i + BATCH], cmalign_bin, threads, tmp)
         if got is None:
+            got = {}
             for n in names[i:i + BATCH]:
                 one, why = _cmalign(cm, seqs, [n], cmalign_bin, threads, tmp)
                 if one is None:
                     failed.append((n, why))
                 else:
-                    out.update(one)
-        else:
-            out.update(got)
+                    got.update(one)
+        out.update(got)
+        if each:
+            each(got)
     long_ones = len(seqs) - len(names)
     if log and (failed or long_ones):
         log(f"  cmalign: {long_ones} 18S over {MAX_SSU} bases and {len(failed)} it could not align left out"
@@ -118,6 +120,12 @@ def locate(states, cols):
     return out
 
 
+def _ends_in_newline(path):
+    with open(path, "rb") as fh:
+        fh.seek(-1, os.SEEK_END)
+        return fh.read(1) == b"\n"
+
+
 def ssu_of(seq, row):
     """A record's 18S and where it starts on the record, or None (no 18S found in it)."""
     if row.get("kind") == "18S":
@@ -132,13 +140,18 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
     """Every record's 18S variable regions (records [(name, sequence, row)]) -> rows (REGION_COLUMNS). Each distinct 18S
     is aligned once (cached under WORK/cmalign/)."""
     regions = read_regions()
-    cache_path = os.path.join(work, "cmalign", f"ssu.{util.md5(cm)[:10]}.tsv.gz") if work else None
+    # the cache: a line per 18S, added after each cmalign batch (since 2026-11-08: written once all were aligned, so
+    # that a killed run kept none; and an 18S cmalign failed on was cached as one without regions, never aligned
+    # again: now left out, tried again by the next run); .gz: a run's before 2026-11-08, written whole
+    cache_path = os.path.join(work, "cmalign", f"ssu.{util.md5(cm)[:10]}.tsv") if work else None
     cache = {}
-    if cache_path and os.path.isfile(cache_path):
-        with gzip.open(cache_path, "rt") as fh:
-            for line in fh:
-                key, text = line.rstrip("\n").split("\t")
-                cache[key] = text
+    for path in (cache_path + ".gz", cache_path) if cache_path else ():
+        if os.path.isfile(path):
+            with util.open_text(path) as fh:
+                for line in fh:
+                    f = line.rstrip("\n").split("\t")
+                    if line.endswith("\n") and len(f) == 2:  # a line a killed run cut: aligned again
+                        cache[f[0]] = f[1]
     ref = cmalign(cm, {"reference": reference()}, cmalign_bin, threads, work)["reference"]
     cols = columns(ref, regions)
     ssu = {}
@@ -149,15 +162,27 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
     todo = {key: s for s, _o, key in ssu.values() if key not in cache}
     if todo:
         log(f"18S variable regions: {len(todo)} distinct 18S to align (cmalign)")
-        aligned = cmalign(cm, todo, cmalign_bin, threads, work, log)
-        for key in todo:
-            found = locate(aligned.get(key, []), cols)
-            cache[key] = ",".join(f"{n}:{a}-{b}:{'t' if c else 'f'}" for n, (a, b, c) in found.items()) or "-"
+        out = None
         if cache_path:
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            with gzip.open(util.part_of(cache_path), "wt") as fh:
-                fh.writelines(f"{k}\t{v}\n" for k, v in sorted(cache.items()))
-            os.replace(util.part_of(cache_path), cache_path)
+            cut = os.path.isfile(cache_path) and os.path.getsize(cache_path) and not _ends_in_newline(cache_path)
+            out = open(cache_path, "a", newline="\n")
+            if cut:
+                out.write("\n")
+
+        def keep(aligned):
+            got = {key: ",".join(f"{n}:{a}-{b}:{'t' if c else 'f'}" for n, (a, b, c) in
+                                 locate(states, cols).items()) or "-" for key, states in aligned.items()}
+            cache.update(got)
+            if out:
+                out.writelines(f"{k}\t{v}\n" for k, v in sorted(got.items()))
+                out.flush()
+        try:
+            keep({key: [] for key, s in todo.items() if len(s) > MAX_SSU})  # never aligned: none, for good
+            cmalign(cm, todo, cmalign_bin, threads, work, log, each=keep)
+        finally:
+            if out:
+                out.close()
     out = []
     for name, (_s, offset, key) in sorted(ssu.items()):
         for part in cache.get(key, "-").split(","):

@@ -476,6 +476,20 @@ def choose(rows, ncbi):
 
 # --- a species' own assembly ----------------------------------------------------------------------------------------
 
+def saved_molecules(path):
+    """The organelle molecules metadata.describe kept of a genome (WORK/done/<accession>/organelle.fna.gz: >name
+    organelle) -> [(name, organelle, sequence)], as organelle_molecules finds them in the genome."""
+    out = []
+    with util.open_text(path) as fh:
+        for line in fh:
+            if line.startswith(">"):
+                f = line[1:].split()
+                out.append([f[0] if f else "", f[1] if len(f) > 1 else "mitochondrion", []])
+            elif out:
+                out[-1][2].append(line.strip())
+    return [(n, k, "".join(p).upper()) for n, k, p in out]
+
+
 def organelle_molecules(path):
     """A genome's organelle molecules (TITLE in their FASTA titles) -> [(name, organelle, sequence)]."""
     out, cur = [], None
@@ -707,6 +721,7 @@ def assembly_rows(path):
 
 
 MODELS = ("nhmmer", "miniprot")  # the assembly pass' protein-coding gene models: nhmmer's hits alone, or with miniprot's
+SAVED = "organelle.fna.gz"  # metadata.ORGANELLE: a genome's organelle molecules its scan kept
 
 
 def with_miniprot(found, models):
@@ -732,8 +747,8 @@ def run_assembly(args):
     models of the protein-coding genes nhmmer found in several hits (with_miniprot)."""
     acc, path, out, animal, queries, barrnap, nhmmer, threads, *more = args
     proteins, codes, miniprot = more if more else ({}, {}, None)
-    try:
-        molecules = organelle_molecules(path)
+    try:  # the molecules metadata.describe kept (since 2026-11-08), else the genome read again
+        molecules = saved_molecules(path) if os.path.basename(path) == SAVED else organelle_molecules(path)
         rows = []
         for organelle, kingdom in (("mitochondrion", "mito" if animal else "bac"), ("plastid", "bac")):
             if organelle not in queries:  # RefSeq's record taken, or none to hold
@@ -767,19 +782,21 @@ def organelles_of(ncbi, taxid):
 
 
 def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer, workers=1, threads=1, log=print,
-                  miniprot=None, every=False):
+                  miniprot=None, every=False, saved_of=None):
     """The organelle genes of each species' assembly where RefSeq has not every organelle's record it can hold
     (chosen; organelles_of: until 2026-11-06 every animal and fungus was searched for a plastid, ~10,000 genomes), its
-    genome on disk (genome_of(accession) -> path) and not done yet -> how many were run, failed. Only the organelles
-    RefSeq lacks are searched; with miniprot (since 2026-11-07) its protein-coding genes' exons are miniprot's, by
-    the species' organelle code (an assembly searched with the other models is searched again)."""
+    organelle molecules there (saved_of(accession) -> the molecules metadata.describe kept, WORK/done/<accession>/
+    organelle.fna.gz, or None: since 2026-11-08, so that a genome is not read again, nor needed on disk; else
+    genome_of(accession) -> its genome) and not done yet -> how many were run, failed. Only the organelles RefSeq lacks
+    are searched; with miniprot (since 2026-11-07) its protein-coding genes' exons are miniprot's, by the species'
+    organelle code (an assembly searched with the other models is searched again)."""
     nearest = Nearest(chosen, ncbi)
     models = "miniprot" if miniprot else "nhmmer"
     todo = []
     for acc, job in sorted(job_map.items()):
         sp = int(job["species_taxid"])
         out = assembly_file(work_folder, acc)
-        path = genome_of(acc)
+        path = (saved_of(acc) if saved_of else None) or genome_of(acc)
         need = [k for k in organelles_of(ncbi, sp) if every or (sp, k) not in chosen]  # every: the panel's extras
         if job.get("path") or not need or not os.path.isfile(path):
             continue

@@ -99,6 +99,29 @@ def gff_file(genomes_folder, accession, source="ncbi"):
                         if source == "veupathdb" else f"{accession}.{source}.gff.gz")
 
 
+def none_file(genomes_folder, accession):
+    """The fetch stage's note beside a genome that none of its sources has an annotation of it (since 2026-11-08), so
+    that its run (genomes.annotation_of) knows the annotation was asked for, not still to come."""
+    return os.path.join(genomes_folder, f"{accession}.annotation_none")
+
+
+def none_noted(genomes_folder, job):
+    """Whether the fetch stage noted that none of a job's sources (candidates; one added since, e.g. a VEuPathDB key
+    given, is not noted) has its annotation."""
+    path = none_file(genomes_folder, job["accession"])
+    if not os.path.isfile(path):
+        return False
+    with open(path) as fh:
+        noted = {line.strip() for line in fh}
+    return {s for s, _url in candidates(job)} <= noted
+
+
+def note_none(genomes_folder, accession, sources):
+    with open(util.part_of(none_file(genomes_folder, accession)), "w", newline="\n") as fh:
+        fh.write("".join(f"{s}\n" for s in sources))
+    os.replace(util.part_of(none_file(genomes_folder, accession)), none_file(genomes_folder, accession))
+
+
 def found(genomes_folder, accession):
     """The annotation beside a genome (the fetch stage's) -> (path, source), or (None, None)."""
     for source in SOURCES:

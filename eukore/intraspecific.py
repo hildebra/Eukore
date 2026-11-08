@@ -91,8 +91,11 @@ def collect(work, extras, organelle_folder):
 
 
 def _pairs(query, db, vsearch, threads=1, maxaccepts=0):
-    """vsearch of query {name: seq} against db {name: seq} -> [(query, target, identity)]."""
-    if not query or not db or not vsearch:
+    """vsearch of query {name: seq} against db {name: seq} -> [(query, target, identity)], or None where vsearch
+    failed (since 2026-11-08: [], every pair then read as under MIN_ID and the gap called unresolved)."""
+    if not vsearch:
+        return None
+    if not query or not db:
         return []
     with tempfile.TemporaryDirectory() as tmp:
         q, d, out = (os.path.join(tmp, n) for n in ("q.fna", "d.fna", "hits.tsv"))
@@ -104,7 +107,7 @@ def _pairs(query, db, vsearch, threads=1, maxaccepts=0):
                               "--userout", out, "--userfields", "query+target+id", "--threads", str(max(1, threads)),
                               "--quiet"], capture_output=True, text=True, check=False)
         if run.returncode != 0 or not os.path.isfile(out):
-            return []
+            return None
         with open(out) as fh:
             return [(f[0], f[1], float(f[2])) for f in (line.rstrip("\n").split("\t") for line in fh) if len(f) >= 3]
 
@@ -129,7 +132,7 @@ def barcode_gap(panel_species, rep_markers, extra_markers, species_of, inter, ot
         query = {name: s for name, s in by_marker.get(marker, {}).items()
                  if name.split("|")[1] == panel_species.get(int(name.split("|")[0]))}
         best = {}
-        for q, t, ident in _pairs(query, db, vsearch, threads, maxaccepts=64):
+        for q, t, ident in _pairs(query, db, vsearch, threads, maxaccepts=64) or ():  # failed: not known
             if q.split("|")[0] != t.split("|")[0]:
                 best[q] = max(best.get(q, 0.0), ident)
         for name in query:
@@ -137,7 +140,10 @@ def barcode_gap(panel_species, rep_markers, extra_markers, species_of, inter, ot
     out = []
     for marker, seqs in sorted(by_marker.items()):
         hits = collections.defaultdict(dict)
-        for q, t, ident in _pairs(seqs, seqs, vsearch, threads):
+        pairs = _pairs(seqs, seqs, vsearch, threads)
+        if pairs is None:  # vsearch failed on this marker: no gap measured
+            continue
+        for q, t, ident in pairs:
             if q != t and q.split("|")[0] == t.split("|")[0]:
                 key = tuple(sorted((q, t)))
                 hits[q.split("|")[0]][key] = max(hits[q.split("|")[0]].get(key, 0.0), ident)

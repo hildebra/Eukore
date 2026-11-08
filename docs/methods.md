@@ -150,9 +150,10 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
 - **Else its own assembly's organelle molecules**, those NCBI's FASTA titles name a mitochondrion, chloroplast, plastid
   or apicoplast. nhmmer finds each gene, queried with that gene of the 3 nearest RefSeq species (its exons joined);
   barrnap the rRNA nhmmer misses (`--kingdom mito` in animals' mitochondria, `bac` elsewhere). This runs after the
-  genomes in the process stage, and again in the package stage before the prune, on the genomes still on disk. An
-  assembly searched before a gene of its organelles was added (its `WORK/organelle/assembly/` file's `#searched`
-  line, none before 2026-11-07) is searched again where its genome is still on disk.
+  genomes in the process stage, and again in the package stage before the prune, on the organelle molecules the
+  metadata scan kept (`WORK/done/<accession>/organelle.fna.gz`; since 2026-11-08, else the genome where still on
+  disk). An assembly searched before a gene of its organelles was added (its `WORK/organelle/assembly/` file's
+  `#searched` line, none before 2026-11-07) is searched again.
 
 A gene is kept whole, introns and all (fungi's and plants' COX1 hold group I and II introns). Checked on real genomes
 (2026-11-05): human's mitochondrion (queried with the chimpanzee's) gave its 12S, 16S and COX1 within 6 bases of

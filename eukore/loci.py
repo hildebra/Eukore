@@ -431,7 +431,8 @@ def rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads,
     by_contig = collections.defaultdict(list)
     for locus, (contig, start, end, _p) in places.items():
         by_contig[contig].append((locus, start, end))
-    contigs = placement.read_contigs(genome_path, set(by_contig))
+    contigs = placement.read_spans(genome_path, {c: [(s - RESCUE_FLANK, e + RESCUE_FLANK) for _l, s, e in w]
+                                                 for c, w in by_contig.items()})
     target = os.path.join(work, "rescue.fna")
     starts = {}  # window -> (locus, contig, its first base on the contig)
     with open(target, "w") as fh:
@@ -479,20 +480,30 @@ def frameshift_features(exons, shifts):
     return out
 
 
-def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hmm_db, table):
+def annotated_transcripts(chosen, annotation):
+    """The annotation's transcripts sharing coding bases with the calls' spans (annotation_mod.read_cds), chosen:
+    {locus: alignment}; annotation: (its GFF, NCBI's assembly report or None, its source)."""
+    from . import annotation as annotation_mod  # noqa: PLC0415
+    gff, report = (tuple(annotation) + (None,))[:2]
+    spans = collections.defaultdict(list)
+    for a in chosen.values():
+        spans[a["contig"]].append((a["start"], a["end"]))
+    return annotation_mod.read_cds(gff, spans, annotation_mod.aliases(report, gff))
+
+
+def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hmm_db, table, transcripts=None):
     """Step 6: the genome's own annotated gene model (annotation: (its GFF, NCBI's assembly report or None, its
     source)) in place of a call's, where the GFF holds a transcript on the call's contig and strand sharing coding
     bases with it (the most: annotation_mod.best_transcript) whose translation the locus' own HMM confirms (its best
     HMM, at the cutoff) at ANNOTATION_SHARE of the call's HMM score or more. chosen: {locus: alignment} -> the same, an
     annotated model with model=the source (annotation.SOURCES'), the transcript, and miniprot's model kept as
-    miniprot=dict(start, end, exons) (annotation.py's benchmark compares that). The annotation's exons are its CDS: its 5' piece's phase left out (a partial gene)."""
+    miniprot=dict(start, end, exons) (annotation.py's benchmark compares that). The annotation's exons are its CDS: its 5' piece's phase left out (a partial gene).
+    transcripts: annotated_transcripts' (read here where not given)."""
     from . import annotation as annotation_mod  # noqa: PLC0415
     from .benchmarks import translate  # noqa: PLC0415 (benchmarks imports this module's users)
-    gff, report, source = (tuple(annotation) + ("ncbi",))[:3]
-    spans = collections.defaultdict(list)
-    for a in chosen.values():
-        spans[a["contig"]].append((a["start"], a["end"]))
-    transcripts = annotation_mod.read_cds(gff, spans, annotation_mod.aliases(report, gff))
+    source = (tuple(annotation) + ("ncbi",) * 3)[2]
+    if transcripts is None:
+        transcripts = annotated_transcripts(chosen, annotation)
     models, proteins = {}, {}
     for locus, a in chosen.items():
         name = annotation_mod.best_transcript(a, transcripts)
@@ -547,7 +558,6 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
                 and shutil.which(translate)):
             confirmed.update(rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads, table,
                                     hmm_db, work, translate))
-        contigs = placement.read_contigs(genome_path, {r["contig"] for rs in confirmed.values() for r in rs})
         chosen, statuses = {}, {}
         for locus in odb.loci:
             rs = confirmed.get(locus, [])
@@ -556,8 +566,19 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
                 chosen[locus] = max(complete or rs, key=lambda r: (r["hmm_score"], r["score"]))
                 statuses[locus] = ("Single" if len(complete) == 1 else "Duplicated" if complete else "Fragmented",
                                    [r for r in complete if r is not chosen[locus]])
-        if annotation and annotation[0] and chosen:
-            chosen = annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hmm_db, table)
+        transcripts = annotated_transcripts(chosen, annotation) if annotation and annotation[0] and chosen else None
+        # the genome's bases read: each copy's and its other copies' spans, the annotated models', WINDOW each side
+        # (since 2026-11-08 these alone: every contig with a call was held whole, a chromosome-level genome whole)
+        need = collections.defaultdict(list)
+        for locus, best in chosen.items():
+            for r in [best] + statuses[locus][1]:
+                need[r["contig"]].append((r["start"] - WINDOW, r["end"] + WINDOW))
+        for t in (transcripts or {}).values():
+            need[t["contig"]].append((t["cds"][0][0] - WINDOW, max(b for _a, b in t["cds"]) + WINDOW))
+        contigs = placement.read_spans(genome_path, need)
+        if transcripts is not None:
+            chosen = annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hmm_db, table,
+                               transcripts)
     loci, windows = {}, {}
     for locus in odb.loci:
         if locus not in chosen:

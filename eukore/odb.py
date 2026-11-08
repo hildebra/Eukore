@@ -198,9 +198,13 @@ class Odb:
         return path
 
     def digest(self):
-        """A short digest of the loci and decoys (an hmm_db's name: a new locus makes a new one)."""
+        """A short digest of the loci and decoys, their profiles' content too (an hmm_db's name: a new locus, or a
+        profile changed under its name, makes a new one; until 2026-11-08 by their names alone, so that a rebuilt
+        marker set or a newer BUSCO dataset kept the old profiles beside the new cutoffs)."""
         import hashlib  # noqa: PLC0415
-        return hashlib.md5(",".join(self.loci + [os.path.basename(d) for d in self.decoys]).encode()).hexdigest()[:10]
+        files = [self.hmm[locus] for locus in self.loci] + self.decoys
+        return hashlib.md5(",".join(self.loci + [os.path.basename(d) for d in self.decoys] +
+                                    [util.md5(p) for p in files]).encode()).hexdigest()[:10]
 
     def queries(self, lineage, lineages, nearest=NEAREST, leave_out=()):
         """A genome's queries -> {query name: protein}: per locus its `nearest` proteins of the species closest to it

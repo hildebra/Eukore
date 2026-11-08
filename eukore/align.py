@@ -73,19 +73,24 @@ def _states(path):
     return {n: states_of(row, rf) for n, row in rows.items()}
 
 
-def align(collected, hmm_of, hmmalign="hmmalign", work=None, log=print):
+def align(collected, hmm_of, hmmalign="hmmalign", work=None, log=print, threads=1):
     """Every locus' proteins of the package (collected["proteins"] {(accession, locus): protein}) on their HMMs
-    (hmm_of {locus: path}) -> {(accession, locus): [match state or None per residue]}."""
+    (hmm_of {locus: path}), `threads` loci at once (hmmalign is single-threaded: since 2026-11-08; until then one
+    locus at a time, ~7 h for all eukaryotes) -> {(accession, locus): [match state or None per residue]}."""
+    import concurrent.futures  # noqa: PLC0415
     by_locus = {}
     for (acc, locus), p in collected.get("proteins", {}).items():
         by_locus.setdefault(locus, {})[acc] = p
     cache = os.path.join(work, "align") if work else None
     out, failed = {}, []
-    for locus, proteins in sorted(by_locus.items()):
-        got = align_locus(hmm_of.get(locus), proteins, hmmalign, cache, work)
-        if not got:
-            failed.append(locus)
-        out.update({(acc, locus): s for acc, s in got.items()})
+    with concurrent.futures.ThreadPoolExecutor(max(1, threads)) as pool:
+        jobs = {locus: pool.submit(align_locus, hmm_of.get(locus), proteins, hmmalign, cache, work)
+                for locus, proteins in sorted(by_locus.items())}
+        for locus, job in jobs.items():
+            got = job.result()
+            if not got:
+                failed.append(locus)
+            out.update({(acc, locus): s for acc, s in got.items()})
     if failed:
         log(f"WARNING: hmmalign placed no proteins of {len(failed)} BUSCOs (e.g. {failed[:3]}): no intron places, "
             "no genetic code check on them")

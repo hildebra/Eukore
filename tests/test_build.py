@@ -126,10 +126,13 @@ class ResumeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache = os.path.join(tmp, "regions.tsv")
             with open(cache, "w", newline="\n") as fh:
-                fh.write("EUK_1\t18S:0-1800\tt\t+\nEUK_2\t18S:0-1800,ITS1:1800-2\tf\t-\nEUK_3\t18S:1-")
-            self.assertEqual(eukore_build.read_regions(cache), {"EUK_1": ("18S:0-1800", "t", "+"),
-                                                                "EUK_2": ("18S:0-1800,ITS1:1800-2", "f", "-")})
+                fh.write("EUK_1\t18S:0-1800\tt\t+\nEUK_2\t18S:0-1800,ITS1:1800-2\tf\t-\tabc123abc123\nEUK_3\t18S:1-")
+            # a line before 2026-11-08 has no digest of its read; a later one has (a changed read: annotated again)
+            self.assertEqual(eukore_build.read_regions(cache), {"EUK_1": ("18S:0-1800", "t", "+", None),
+                                                                "EUK_2": ("18S:0-1800,ITS1:1800-2", "f", "-",
+                                                                          "abc123abc123")})
             self.assertFalse(eukore_build.ends_in_newline(cache))
+            self.assertEqual(eukore_build.read_digest("ACGT"), "f1f8f4bf413b")
 
     def test_a_genomes_unexpected_error_is_its_failure(self):
         import eukore_build  # noqa: PLC0415
