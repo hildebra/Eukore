@@ -134,6 +134,17 @@ class ResumeTest(unittest.TestCase):
             self.assertFalse(eukore_build.ends_in_newline(cache))
             self.assertEqual(eukore_build.read_digest("ACGT"), "f1f8f4bf413b")
 
+    def test_no_genome_deleted_without_keep_gb(self):
+        # since 2026-11-08 deleting genome files is asked for (--keep_gb): a superseded assembly's kept without it
+        import types  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        for keep_gb, calls in ((None, 0), (1000.0, 1)):
+            opts = types.SimpleNamespace(keep_gb=keep_gb, genomes="OUT/genomes", work="WORK")
+            with mock.patch.object(eukore_build.genomes, "drop_superseded", return_value=[]) as drop:
+                eukore_build.drop_superseded(opts, {})
+            self.assertEqual(drop.call_count, calls)
+
     def test_a_genomes_unexpected_error_is_its_failure(self):
         import eukore_build  # noqa: PLC0415
         from unittest import mock  # noqa: PLC0415

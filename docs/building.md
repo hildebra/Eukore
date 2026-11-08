@@ -206,7 +206,8 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
     Tree's taxonomy (`crossrefs.tsv`);
   - describes each done genome still on disk that lacks its metadata (`eukore/metadata.py`: a genome done before
     2026-11-07), as the process stage does after its runs;
-  - prunes `OUT/genomes` to `--keep_gb` (the model species first, then the smallest);
+  - prunes `OUT/genomes` to `--keep_gb` where given (the model species first, then the smallest); without it, no
+    genome file is deleted (since 2026-11-08);
   - writes `OUT/Eukore_<version>/`, with its benchmarks ([benchmarks.md](benchmarks.md)).
 
 ### Options
@@ -221,7 +222,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
 | `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.1, is in the manifest's `eukore`) |
 | `-V` | | print Eukore's own version and exit |
-| `--keep_gb` | 1000 | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept) |
+| `--keep_gb` | none: no genome deleted | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept); with it, a superseded assembly's and the intraspecific panel's genome files are deleted once done too (until 2026-11-08 the default was 1000) |
 | `-t`, `--threads` | 8 | threads in all |
 | `-j`, `--jobs` | threads / 4 | genomes at a time at most, `-t / -j` threads each; fewer where `--memory_gb` holds fewer, each then with more threads (since 0.2.1) |
 | `--memory_gb` | SLURM's allocation, else the cgroup's limit, else the node's memory available; 85% of it | the process stage's memory: a genome is begun where its run's estimate (~7.5 bytes a base, of 4 Gb at most, and 3 GB) fits in what the running ones leave, the largest first, a smaller one in the room a larger one does not fit (since 0.2.1; until then `-j` at once whatever their sizes) |

@@ -372,8 +372,8 @@ name a mitochondrion, chloroplast, plastid or apicoplast).
 
 ## metadata/
 What the build measured of each species' genome (the assembly file it read: `genomes.tsv`'s `fetched`) while the file
-was on disk, and NCBI's own summaries of the genomes (since 2026-11-07). The build deletes most genomes after
-(`--keep_gb`): these stand for them. A genome done by a build before 2026-11-07 is described where its file was still
+was on disk, and NCBI's own summaries of the genomes (since 2026-11-07). A build given `--keep_gb` deletes most
+genomes after: these stand for them. A genome done by a build before 2026-11-07 is described where its file was still
 there; one without a row was not.
 
 - `assembly.tsv.gz`: one row per species' genome (`representative` `t` of `genomes.tsv`): where it and its gene models
@@ -495,7 +495,8 @@ array.
 All values `-` where not measured. A number is one library's: libraries of one strain differed by up to 30% (README).
 
 ## genomes/ (beside the package, optional)
-The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz`, as NCBI serves them). `genomes.tsv`'s
+The eukaryote genomes the build kept, up to its `--keep_gb` where given, else all (`<accession>.fna.gz`, as NCBI serves
+them). `genomes.tsv`'s
 `local` column names them. A user simulating eukaryotes, or a host, takes them from here instead of downloading them.
 
 ## Changes

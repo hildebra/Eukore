@@ -16,8 +16,8 @@ Stages:
   (mitochondrial and plastid rRNA, mitochondrial COX1) of RefSeq's organelle genomes, and of the assemblies' own
   organelle molecules where RefSeq has none (WORK/organelle);
 - package: the copies' checks across species, the published rRNA reads' regions (WORK/published), the organelle genes
-  of any assembly not searched yet, OUT/genomes cut back to --keep_gb (genomes.prune: the model species' and the
-  smallest kept first), then OUT/Eukore_<version>/.
+  of any assembly not searched yet, OUT/genomes cut back to --keep_gb where given (genomes.prune: the model species'
+  and the smallest kept first; without it no genome file is deleted), then OUT/Eukore_<version>/.
 `all` runs them in turn. Every stage is resumable: a rerun does only what is not done.
 """
 
@@ -180,11 +180,11 @@ def plan(opts, src_dir, ncbi):
     say(f"genome set: {len(job_map)} genomes ({dict(genomes.why_counts(job_map.values()))}); "
         f"{sum(j['size'] or 0 for j in job_map.values()) / 1e9:.0f} Gb")
     # a species' genome another assembly takes the place of (TOGA2's; NCBI's newer, after --refresh): its file
-    # deleted once the new one is done (drop_superseded)
+    # deleted once the new one is done, with --keep_gb (drop_superseded)
     changed = genomes.supersede(opts.work, job_map)
     if changed:
         say(f"genome set: {len(changed)} species' genomes changed since the last plan (e.g. {changed[:3]}); the old "
-            "files are deleted once the new ones are done")
+            "files are deleted once the new ones are done" + ("" if opts.keep_gb is not None else " (with --keep_gb)"))
     others = annotation.assign(job_map, annotation.read_index(src_dir), veupathdb=bool(opts.veupathdb_key))
     say(f"gene models: {sum(1 for j in job_map.values() if annotation.gff_url(j)):,} genomes may have NCBI's, "
         f"{others:,} VEuPathDB's, Ensembl's or TOGA2's (annotation.py"
@@ -281,7 +281,10 @@ def describe_pass(opts, job_map):
 
 
 def drop_superseded(opts, job_map):
-    """The genome files another assembly took the place of, deleted once it is done (genomes.drop_superseded)."""
+    """The genome files another assembly took the place of, deleted once it is done (genomes.drop_superseded); kept
+    without --keep_gb."""
+    if opts.keep_gb is None:
+        return
     gone = genomes.drop_superseded(opts.genomes, opts.work, job_map)
     if gone:
         say(f"{len(gone)} superseded genomes deleted, their replacements done (e.g. {gone[:3]})")
@@ -667,7 +670,7 @@ def intraspecific_pass(opts, src_dir, ncbi, extras):
                                     shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
                                     every=True, saved_of=functools.partial(saved_molecules, opts),
                                     progress=functools.partial(progress_of, opts, unit="", scale=1))
-    for acc in extras:
+    for acc in extras if opts.keep_gb is not None else ():  # without --keep_gb, kept
         path = genomes.genome_file(opts.genomes, acc)
         if genomes.is_done(opts.work, acc) and os.path.isfile(organelle_mod.assembly_file(folder, acc)) \
                 and os.path.isfile(path):
@@ -822,10 +825,11 @@ def main(argv=None):
     p.add_argument("--groups", default=",".join(sources.ASSEMBLY_GROUPS),
                    help=f"NCBI's assembly groups whose species the package holds (default all: "
                         f"{','.join(sources.ASSEMBLY_GROUPS)}; e.g. fungi,protozoa first)")
-    p.add_argument("--keep_gb", type=float, default=1000.0,
+    p.add_argument("--keep_gb", type=float,
                    help="the genomes kept in OUT/genomes by the package stage, GB, cut back to it before the package "
-                        "is written (so that genomes.tsv says which are kept; default 1000; the build may hold more "
-                        "while it works)")
+                        "is written (so that genomes.tsv says which are kept; the build may hold more while it "
+                        "works); with it, a superseded assembly's and the intraspecific panel's genome files are "
+                        "deleted once done too (default: no genome file deleted; until 2026-11-08 1000)")
     p.add_argument("--loci", help="call only these BUSCOs (a file, one per line or a loci table's first column; "
                                   "default: every BUSCO of the dataset)")
     p.add_argument("--species", help="a partial build (a trial run): only the species inside these NCBI taxids' clades, "
@@ -1179,10 +1183,13 @@ def main(argv=None):
         with timed(stages, "assembly metadata"):
             describe_pass(opts, job_map)  # before the prune: measured while the genomes are there
         drop_superseded(opts, job_map)
-        rows_kept = genomes.prune(opts.genomes, opts.work, opts.keep_gb * 1e9, set(tests), firsts)
+        # without --keep_gb, every genome kept (since 2026-11-08; the manifest written all the same)
+        rows_kept = genomes.prune(opts.genomes, opts.work, float("inf") if opts.keep_gb is None else opts.keep_gb * 1e9,
+                                  set(tests), firsts)
         kept = sum(s for _a, s, st in rows_kept if st != "deleted")
-        say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB (--keep_gb {opts.keep_gb:g}), "
-            f"{sum(st == 'deleted' for *_x, st in rows_kept)} deleted")
+        say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB ("
+            + ("no --keep_gb: none deleted)" if opts.keep_gb is None else
+               f"--keep_gb {opts.keep_gb:g}), {sum(st == 'deleted' for *_x, st in rows_kept)} deleted"))
         with timed(stages, "reference labels"):
             references = labels.references(src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say,
                                            opts.midori2)
