@@ -878,7 +878,7 @@ def main(argv=None):
     p.add_argument("--memory_gb", type=float,
                    help="the process stage's memory, GB: a genome is begun where its run's estimate (~7.5 bytes a "
                         "base of up to 4 Gb, and 3 GB) fits in what the running ones leave (default: SLURM's "
-                        f"allocation, else the cgroup's limit, else the node's memory available; {MEMORY_SHARE:.0%} "
+                        f"allocation, else the cgroup's limit, else the node's memory available; {MEMORY_SHARE:.0%}% "
                         "of it)")
     p.add_argument("--downloads", type=int, default=8,
                    help="the fetch stage's genomes and annotations downloaded at a time (default 8), by curl where on "
