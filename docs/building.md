@@ -97,7 +97,7 @@ python3 -m unittest discover -s tests -t tests      # ~80 tests with stand-in to
 | genomes, all six groups | 29,114 species, ~6.5 TB gzipped (21.6 Tb); fetched and pruned as the build goes |
 | transcriptomes (since 0.2) | ~5,000 species without a genome, 341 Gb of transcripts (ENA's TSA sets, 2026-11); `--no_tsa` skips them |
 | the intraspecific panel (since 0.2) | up to 3 further assemblies of 40 species (2 of the vertebrates, rice and maize): ~110, deleted once run |
-| memory | ~2 GB for a trial's package stage; per genome job, miniprot's on that genome (a few GB, more for the largest plant and animal genomes); cmalign up to 2 GB per thread for the 18S regions |
+| memory | ~2 GB for a trial's package stage; per genome job, miniprot's on that genome (a few GB, more for the largest plant and animal genomes); cmalign up to 2 GB per thread for the 18S regions; the fetch stage ~2 GB (the taxonomy) plus, per download of a TOGA2 `.2bit` genome, its longest chromosome (~250 MB for a mammal's; until 2026-11-08 ~6 times that: 12 downloads at once killed a build on a 10 GB node) |
 | network | the fetch stage alone |
 
 ## Usage

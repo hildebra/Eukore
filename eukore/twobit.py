@@ -4,6 +4,10 @@ The format (kent's twoBit.h): a header (signature 0x1A412743 in the file's byte 
 count, a reserved word), an index (per sequence its name's length, its name and its record's offset: 4 bytes, 8 in
 version 1), and per sequence its length, its N blocks (starts, sizes), its lower-case (soft-masked) blocks, a reserved
 word and its bases, four a byte (T, C, A, G as 0-3, the first base in the high bits).
+
+Memory: a sequence is held once (its bytearray), unpacked and written out in pieces, ~1.1 bytes a base at the peak; until
+2026-11-08 a bytes copy, a list of its lines and the joined record made it ~5.8, and the fetch stage converts
+--downloads genomes at once: 12 mammalian chromosomes' ~17 GB killed a build on a 10 GB node.
 """
 
 import gzip
@@ -13,12 +17,14 @@ import struct
 SIGNATURE = 0x1A412743
 BASES = b"TCAG"
 LINE = 80
+PIECE = 1 << 22  # bases unpacked at a time (a multiple of 4)
 # a byte's four bases, one table per place in the byte
 PLANES = [bytes(BASES[(b >> shift) & 3] for b in range(256)) for shift in (6, 4, 2, 0)]
 
 
 def records(path):
-    """A .2bit file -> [(name, sequence bytes)], one at a time: N blocks as N, masked blocks in lower case."""
+    """A .2bit file -> [(name, sequence bytearray)], one at a time: N blocks as N, masked blocks in lower case. The
+    bytearray is the one copy of the sequence (no bytes copy), let go of before the next record's is made."""
     with open(path, "rb") as fh:
         head = fh.read(16)
         for order in "<>":
@@ -42,26 +48,35 @@ def records(path):
             m_starts = struct.unpack(f"{order}{masks}I", fh.read(4 * masks))
             m_sizes = struct.unpack(f"{order}{masks}I", fh.read(4 * masks))
             fh.read(4)
-            packed = fh.read((size + 3) // 4)
-            seq = bytearray(4 * len(packed))
-            for i, plane in enumerate(PLANES):
-                seq[i::4] = packed.translate(plane)
-            del seq[size:]
+            seq = bytearray(4 * ((size + 3) // 4))
+            for at in range(0, len(seq), PIECE):  # the packed bases read and unpacked a piece at a time: no copy
+                packed = fh.read(min(PIECE, len(seq) - at) // 4)
+                for i, plane in enumerate(PLANES):
+                    seq[at + i:at + 4 * len(packed):4] = packed.translate(plane)
+            del packed, seq[size:]
             for s, n in zip(n_starts, n_sizes):
                 seq[s:s + n] = b"N" * n
             for s, n in zip(m_starts, m_sizes):
                 seq[s:s + n] = seq[s:s + n].lower()
-            yield name, bytes(seq)
+            yield name, seq
+            del seq
 
 
-def to_fasta(path, dest):
-    """A .2bit file as dest (gzipped FASTA, LINE bases a line), written whole or not at all -> its bases."""
+def to_fasta(path, dest, chunk=LINE * 16384):
+    """A .2bit file as dest (gzipped FASTA, LINE bases a line), written whole or not at all -> its bases. chunk: the
+    bases lined and written at a time (a multiple of LINE), the sequence itself never copied."""
     total = 0
     part = dest + ".part"
     with gzip.open(part, "wb", compresslevel=6) as out:
         for name, seq in records(path):
             out.write(b">" + name.encode() + b"\n")
-            out.write(b"\n".join(seq[i:i + LINE] for i in range(0, len(seq), LINE)) + b"\n")
+            view = memoryview(seq)
+            for i in range(0, len(seq), chunk):
+                block = view[i:i + chunk]
+                out.write(b"\n".join(block[j:j + LINE] for j in range(0, len(block), LINE)) + b"\n")
+                block.release()
+            view.release()
             total += len(seq)
+            del seq  # before the next record's sequence is made: one in memory at a time
     os.replace(part, dest)
     return total
