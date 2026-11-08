@@ -71,6 +71,16 @@ class PrimerTest(unittest.TestCase):
         self.assertTrue(primers.runs_on(by["MiFish-U"], dict(gene="SSU", organelle="mitochondrion"), "organelle"))
         self.assertFalse(primers.runs_on(by["MiFish-U"], dict(gene="SSU", organelle="plastid"), "organelle"))
 
+    def test_records_in_a_pool_as_on_one_core(self):
+        # run's pool (since 2026-11-08): the rows of one core's run, in the records' order
+        from unittest import mock  # noqa: PLC0415
+        yeast = references()["Sc_18S"]
+        records = [(f"r{i}", yeast[i % 50:], dict(kind="18S")) for i in range(7)]
+        alone = primers.run(records, "rrna")
+        with mock.patch.object(primers, "CHUNK", 2):
+            self.assertEqual(primers.run(records, "rrna", threads=3), alone)
+        self.assertEqual(len({r["record"] for r in alone}), 7)
+
 
 if __name__ == "__main__":
     unittest.main()

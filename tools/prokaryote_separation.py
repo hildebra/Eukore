@@ -13,12 +13,10 @@ import argparse
 import collections
 import glob
 import os
-import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukore import package, placement, qc, rrna  # noqa: E402
+from eukore import package, placement, qc, rrna, util  # noqa: E402
 
 MIN_ID = 0.5
 
@@ -81,24 +79,13 @@ def main(argv=None):
         if not euk:
             print(f"{locus}\t{len(prok) // 2}\t-\t-\tno eukaryote copies in the package")
             continue
-        hits = []
-        with tempfile.TemporaryDirectory() as tmp:
-            q, db, out = (os.path.join(tmp, f) for f in ("q.fna", "db.fna", "hits.tsv"))
-            with open(q, "w") as fh:
-                fh.writelines(f">{n}\n{s}\n" for n, s in prok.items() if s)
-            with open(db, "w") as fh:
-                fh.writelines(f">{n}\n{s}\n" for n, s in euk.items() if s)
-            subprocess.run([opts.vsearch, "--usearch_global", q, "--db", db, "--id", str(MIN_ID), "--iddef", "2",
-                            "--maxaccepts", "4", "--maxrejects", "256", "--userout", out, "--userfields",
-                            "query+target+id", "--threads", str(opts.threads), "--quiet"], check=True)
-            with open(out) as fh:
-                hits = [line.rstrip("\n").split("\t") for line in fh]
+        hits = util.vsearch_global(opts.vsearch, prok, euk, MIN_ID, opts.threads, 4, 256)
         by_region = collections.defaultdict(float)
         best = (0.0, "-")
         for qn, tn, ident in hits:
             region = qn.rsplit("|rc", 1)[0]
-            by_region[region] = max(by_region[region], float(ident))
-            best = max(best, (float(ident), f"{region} ~ {tn}"))
+            by_region[region] = max(by_region[region], ident)
+            best = max(best, (ident, f"{region} ~ {tn}"))
         n = len({k.rsplit("|rc", 1)[0] for k in prok})
         print(f"{locus}\t{n}\t{len(by_region)}\t{best[0]:.1f}" if hits else f"{locus}\t{n}\t0\t<{MIN_ID * 100:.0f}",
               f"\t{best[1]}" if hits else "\t-", sep="")

@@ -35,6 +35,7 @@ from . import labels, package, qc, rrna, util
 from . import odb as odb_mod
 from .benchmarks import rows_of as benchmarks_rows  # a package table's rows, streamed
 from .genomes import genome_file
+from .placement import contig_lengths
 from .rrna import revcomp
 
 READ_LEN = 150
@@ -187,21 +188,6 @@ def marker_spans(folder, accessions):
         if r.get("accession") in wanted and r.get("start", "-").isdigit():
             spans[r["accession"]].append((r["contig"], int(r["start"]), int(r["end"])))
     return spans
-
-
-def contig_lengths(path):
-    out, name, n = [], None, 0
-    with util.open_text(path) as fh:
-        for line in fh:
-            if line.startswith(">"):
-                if name is not None:
-                    out.append((name, n))
-                name, n = (line[1:].split() or [""])[0], 0
-            else:
-                n += len(line.strip())
-    if name is not None:
-        out.append((name, n))
-    return out
 
 
 def simulate(genome, spans, rng, n_genome=GENOME_READS):

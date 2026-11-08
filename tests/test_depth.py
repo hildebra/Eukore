@@ -168,6 +168,44 @@ class ReferenceTest(unittest.TestCase):
                 {"accession": "G", "locus": "f", "status": "Single"}]  # format 3: no confidence
         self.assertEqual(dp.single_copies(rows, "G"), ["a", "f"])
 
+    def test_many_genomes_targets_in_one_pass_as_each_alone(self):
+        # references (since 2026-11-08: tools/rdna_depth.py measure read the package again for each genome)
+        regions = "18S:0-1800,ITS1:1800-2100,5.8S:2100-2260,ITS2:2260-2500,28S:2500-6000"
+        with tempfile.TemporaryDirectory() as pkg:
+            for sub in ("rrna", "busco/copies", "organelle"):
+                os.makedirs(os.path.join(pkg, sub))
+            with open(os.path.join(pkg, "rrna", "records.tsv"), "w") as fh:
+                fh.write("record\tkind\taccession\tspecies_taxid\ttype\tconfidence\tlsu_complete\tlength\tregions\n")
+                fh.write(f"G1_u\trDNA\tG1\t4932\t1\thigh\tt\t7000\t{regions}\n")  # G1's own
+                fh.write(f"P_u\trDNA\t-\t28985\t1\thigh\tt\t7000\t{regions}\n")  # G2's species' published
+            with gzip.open(os.path.join(pkg, "rrna", "records.fna.gz"), "wt") as fh:
+                fh.write(">G1_u\nAAAA\n>P_u\nCCCC\n")
+            with open(os.path.join(pkg, "busco", "copies.tsv"), "w") as fh:
+                fh.write("accession\tlocus\tstatus\nG1\tL1\tSingle\nG2\tL1\tSingle\nG2\tL2\tDuplicated\n")
+            with gzip.open(os.path.join(pkg, "busco", "copies", "L1.fna.gz"), "wt") as fh:
+                fh.write(">G1\nGGGG\n>G2\nTTTT\n")
+            with open(os.path.join(pkg, "organelle", "genes.tsv"), "w") as fh:
+                fh.write("record\torganelle\tspecies_taxid\tpartial\nM2\tmitochondrion\t28985\tf\n")
+            with gzip.open(os.path.join(pkg, "organelle", "genes.fna.gz"), "wt") as fh:
+                fh.write(">M2\nACGT\n")
+            both = dp.references(pkg, [("G1", 4932), ("G2", 28985)])
+            self.assertEqual(both, {"G1": dp.reference(pkg, "G1", 4932), "G2": dp.reference(pkg, "G2", 28985)})
+            self.assertEqual(set(both["G1"][0]), {"rdna|G1_u", "busco|L1"})
+            self.assertEqual(set(both["G2"][0]), {"rdna|P_u", "busco|L1", "mitochondrion|M2"})
+
+    def test_a_lookup_not_answered_is_not_kept(self):
+        # ENA down: get_text raises (until 2026-11-08 "", kept as "no run" for good); a server's 404 is its answer
+        import urllib.error  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with mock.patch.object(dp.time, "sleep"), \
+                mock.patch.object(dp.urllib.request, "urlopen", side_effect=urllib.error.URLError("timed out")):
+            with self.assertRaises(OSError):
+                dp.get_text("https://www.ebi.ac.uk/ena/portal/api/filereport?accession=SAMN1")
+        missing = urllib.error.HTTPError("u", 404, "Not Found", None, None)
+        with mock.patch.object(dp.urllib.request, "urlopen", side_effect=missing):
+            self.assertEqual(dp.get_text("https://www.ebi.ac.uk/ena/portal/api/filereport?accession=X"), "")
+        self.assertIsNone(dp.first_file(""))  # a curated run without files: none (until 2026-11-08 an IndexError)
+
 
 class ReadsTest(unittest.TestCase):
     def test_the_first_reads_of_a_stream(self):

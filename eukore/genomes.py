@@ -446,8 +446,10 @@ def fetch_genome(job, path, **how):
     if not url.endswith(".2bit"):
         return util.fetch_file(url, path, **how)
     from . import twobit  # noqa: PLC0415
-    raw = path + ".2bit"
-    why = util.fetch_file(url, raw, gzip_check=False, **{k: v for k, v in how.items() if k in ("scratch", "times")})
+    # the .2bit in --scratch where given (since 2026-11-08: beside the genome, a killed conversion's left there for
+    # good; the fetch stage now deletes leftovers of a day)
+    raw = os.path.join(how.get("scratch") or os.path.dirname(path), os.path.basename(path) + ".2bit")
+    why = util.fetch_file(url, raw, gzip_check=False, **{k: v for k, v in how.items() if k == "times"})
     if why:
         return why
     try:
@@ -550,6 +552,18 @@ def is_done(work, accession, loci=None):
         return os.path.isfile(os.path.join(done_dir(work, accession), "done.json"))
     got = searched(work, accession)
     return got is not None and set(loci) <= got
+
+
+DONE_ELSEWHERE = "done by another build"  # finished by another build on the WORK since this build's plan (done_stamp)
+
+
+def done_stamp(work, accession):
+    """A genome's done.json's modification time (ns), or None where it is not done: what a plan saw, so that its run
+    leaves a genome another build finished meanwhile alone (genomes.run)."""
+    try:
+        return os.stat(os.path.join(done_dir(work, accession), "done.json")).st_mtime_ns
+    except OSError:
+        return None
 
 
 _ODB = {}
@@ -767,6 +781,10 @@ def run(args):
     with claimed(settings["work"], acc) as held:
         if held is None:
             return acc, None, RUNNING_ELSEWHERE
+        # another build finished it since this one's plan noted its done.json (since 2026-11-08: run again whole,
+        # that build's done folder replaced)
+        if "done_stamp" in job and done_stamp(settings["work"], acc) != job["done_stamp"]:
+            return acc, None, DONE_ELSEWHERE
         if not os.path.isfile(path):
             os.makedirs(settings["genomes"], exist_ok=True)
             why = fetch_genome(job, path)

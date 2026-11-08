@@ -131,7 +131,7 @@ class ResumeTest(unittest.TestCase):
             self.assertEqual(eukore_build.read_regions(cache), {"EUK_1": ("18S:0-1800", "t", "+", None),
                                                                 "EUK_2": ("18S:0-1800,ITS1:1800-2", "f", "-",
                                                                           "abc123abc123")})
-            self.assertFalse(eukore_build.ends_in_newline(cache))
+            self.assertFalse(eukore_build.util.ends_in_newline(cache))
             self.assertEqual(eukore_build.read_digest("ACGT"), "f1f8f4bf413b")
 
     def test_no_genome_deleted_without_keep_gb(self):
@@ -153,6 +153,13 @@ class ResumeTest(unittest.TestCase):
             acc, summary, why = eukore_build.run_one(({"accession": "GCA_1.1"}, {}))
         self.assertEqual((acc, summary), ("GCA_1.1", None))
         self.assertTrue(why.startswith("UnicodeDecodeError"))
+        # a batch of published reads barrnap fails on, a GFF comparison's unexpected error: theirs, not the stage's
+        with mock.patch.object(eukore_build.rrna, "published_regions", side_effect=RuntimeError("barrnap failed")):
+            self.assertEqual(eukore_build._annotate_batch([("EUK_1", "ACGT", "all")], "barrnap"),
+                             ({}, "RuntimeError: barrnap failed"))
+        with mock.patch.object(eukore_build.annotation, "annotate_genome", side_effect=ValueError("bad GFF")):
+            self.assertEqual(eukore_build.annotate_one("w", "g", False, None, {"accession": "GCA_1.1"}),
+                             ("GCA_1.1", None, "ValueError: bad GFF"))
 
     def test_a_scratch_that_cannot_be_made(self):
         # a SLURM job's $SLURM_LOCAL_SCRATCH named, its folder not made (no local disk asked for): the fetch stage
@@ -200,6 +207,25 @@ class ResumeTest(unittest.TestCase):
             self.assertEqual(package.put_in_place(part, out), out)
             self.assertEqual(os.listdir(out), ["manifest.json"])
             self.assertEqual(sorted(os.listdir(tmp)), ["Eukore_2026.11"])
+
+    def test_only_ended_runs_partials_are_leftovers(self):
+        # a package stage going on keeps its unfinished package: this host's of a live process, another host's
+        # touched lately; a killed run's (its process gone, or another host's untouched for days) is a leftover
+        import socket  # noqa: PLC0415
+        import time  # noqa: PLC0415
+        from eukore import util  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            host = socket.gethostname()
+            names = {"live": f".{host}-{os.getpid()}.Eukore_2026.11.partial",
+                     "dead": f".{host}-999999999.Eukore_2026.11.partial",
+                     "other": ".node-b-12.Eukore_2026.11.partial", "old": ".node-c-12.Eukore_2026.11.partial",
+                     "another": f".{host}-999999999.Eukore_2026.12.partial"}
+            for name in names.values():
+                os.makedirs(os.path.join(tmp, name))
+            old = time.time() - util.PARTIAL_STALE - 60
+            os.utime(os.path.join(tmp, names["old"]), (old, old))
+            self.assertEqual(sorted(util.dead_partials(tmp, "Eukore_2026.11")),
+                             sorted(os.path.join(tmp, names[k]) for k in ("dead", "old")))
 
     def test_itsx_failures_are_seen(self):
         # ITSx with --cpu over 1 exits 0 when HMMER fails on a missing profile set: the build sees it, before any work
@@ -298,6 +324,53 @@ class PartialTest(unittest.TestCase):
             self.assertEqual([inside(t) for t in (559292, 4932, "5476", 28985, None, "-")],
                              [True, True, True, False, False, False])
             self.assertTrue(eukore_build.inside_of(ncbi, None)(28985))
+
+
+class RerunTest(unittest.TestCase):
+    def test_which_genomes_are_run_again(self):
+        # genomes_to_run (2026-11-08): each condition alone, on done folders as their runs left them
+        import json  # noqa: PLC0415
+        import types  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from eukore import genomes  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            opts = types.SimpleNamespace(work=os.path.join(tmp, "work"), genomes=os.path.join(tmp, "genomes"))
+            os.makedirs(opts.genomes)
+            loci = ["1at2759", "2at2759"]
+            settings = dict(loci=loci, staged_only=True, odb_own={7: [7]}, rescue=True, esl_translate="esl-translate")
+            ncbi_url = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/x/GCA_6.1_asm_genomic.fna.gz"
+
+            def done(acc, here=True, **summary):
+                os.makedirs(genomes.done_dir(opts.work, acc))
+                with open(os.path.join(genomes.done_dir(opts.work, acc), "done.json"), "w") as fh:
+                    json.dump(dict(dict(searched=loci, rescue=True, annotation="-", annotation_none=[]), **summary), fh)
+                if here:
+                    open(genomes.genome_file(opts.genomes, acc), "w").close()
+            jobs = {a: dict(accession=a, species_taxid=1, url="") for a in ("new", "done", "short", "held_out",
+                                                                             "held_out_gone", "rescue", "annotation")}
+            done("done")
+            done("short", searched=loci[:1])  # searched for fewer loci than called now
+            jobs["held_out"]["species_taxid"] = jobs["held_out_gone"]["species_taxid"] = 7  # a dataset species
+            done("held_out")
+            done("held_out_gone", here=False)  # its genome no longer here: not fetched again for the benchmark
+            done("rescue", rescue=False)  # run without the rescue pass, which this run makes
+            jobs["annotation"]["url"] = ncbi_url  # NCBI's gene models beside it now: run again for them alone
+            done("annotation")
+            open(os.path.join(opts.genomes, "annotation.gff.gz"), "w").close()
+            todo, again = eukore_build.genomes_to_run(opts, jobs, settings)
+            got = {j["accession"]: j.get("rerun", "whole") for j, _s in todo}
+            self.assertEqual(got, {"new": "whole", "short": "whole", "held_out": "whole", "rescue": "whole",
+                                   "annotation": "annotation"})
+            self.assertEqual(again, 1)
+            # each with its done.json as the plan saw it: a genome another build finished meanwhile is left alone
+            stamps = {j["accession"]: j["done_stamp"] for j, _s in todo}
+            self.assertIsNone(stamps["new"])
+            self.assertEqual(stamps["short"], genomes.done_stamp(opts.work, "short"))
+            done("new")
+            new = next(j for j, _s in todo if j["accession"] == "new")
+            run = dict(settings, work=opts.work, genomes=opts.genomes)
+            self.assertEqual(genomes.run((new, run)), ("new", None, genomes.DONE_ELSEWHERE))
+            self.assertFalse(os.path.isfile(genomes.claim_path(opts.work, "new")))  # its claim released
 
 
 if __name__ == "__main__":

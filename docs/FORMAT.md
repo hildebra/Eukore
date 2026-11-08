@@ -46,7 +46,7 @@ measured on a panel of species ([Changes](#changes)).
 | [`benchmarks/`](#benchmarks-optional) | the build's measures of the package | |
 
 ## manifest.json
-`format` (5; a reader of 5 also takes 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, e.g. `0.2.1`), `built` (ISO time),
+`format` (5; a reader of 5 also takes 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, e.g. `0.2.2`), `built` (ISO time),
 `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
@@ -174,7 +174,7 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 | `locus` | the BUSCO (an OrthoDB eukaryota id, `<group>at2759`) |
 | `name` | OrthoDB's name of it |
 | `cutoff`, `hmm_length` | BUSCO's score cutoff, the length of its HMM |
-| `species` | species with a genome in the package |
+| `species` | species with a genome in the package searched for the locus (since 0.2.2: a genome run before a marker was added counts for it nowhere, not as one without it) |
 | `called`, `duplicated`, `fragmented` | species whose genome holds it complete (Single or Duplicated); of them Duplicated; species with a fragment alone |
 | `call_rate` | `called` over `species` |
 | `call_<group>` | the call rate within each group of the package's species (`species.tsv`'s `group`: Vertebrata, Metazoa, Fungi, Viridiplantae, Stramenopiles, Alveolata, Rhizaria, ...; until format 4 `call_<supergroup>` of its eleven supergroups, SAR one of them) |

@@ -8,6 +8,7 @@ none in its 3'-most THREE_PRIME bases, and the product (primers included) is wit
 mismatch counts are given so that a user applies a rule of its own.
 """
 
+import functools
 import os
 
 import numpy as np
@@ -99,11 +100,29 @@ def runs_on(pair, row, kind):
     return row.get("organelle") == "mitochondrion" if row.get("gene") in ("SSU", "LSU") else True
 
 
-def run(records, kind, primers=None, pairs=None):
+CHUNK = 2000  # records a task of run's pool
+
+
+def run(records, kind, primers=None, pairs=None, threads=1):
     """Every pair on every record it runs on (records [(name, sequence, row)]; kind "rrna" or "organelle") -> rows
-    (AMPLICON_COLUMNS) of the pairs whose forward primer fits the record (a pair's every record: none left out)."""
+    (AMPLICON_COLUMNS) of the pairs whose forward primer fits the record (a pair's every record: none left out), in
+    the records' order. threads: processes, CHUNK records a task (since 2026-11-08: one core, ~3-8 ms a record, hours
+    for a million records)."""
     if primers is None or pairs is None:
         primers, pairs = load()
+    # a record's row: what runs_on reads of it alone (the tasks' records are pickled)
+    slim = [(name, seq, {"gene": row.get("gene"), "organelle": row.get("organelle")}) for name, seq, row in records]
+    task = functools.partial(_run_records, kind=kind, primers=primers, pairs=pairs)
+    if threads <= 1 or len(slim) <= CHUNK:
+        return task(slim)
+    out = []
+    with util.process_pool(threads) as pool:
+        for rows in pool.map(task, [slim[i:i + CHUNK] for i in range(0, len(slim), CHUNK)]):
+            out += rows
+    return out
+
+
+def _run_records(records, kind, primers, pairs):
     out = []
     for name, seq, row in records:
         for pair in pairs:
@@ -112,10 +131,3 @@ def run(records, kind, primers=None, pairs=None):
                 if got:
                     out.append(dict(got, record=name))
     return out
-
-
-def write(path, rows):
-    with open(util.part_of(path), "w", newline="\n") as fh:
-        fh.write("\t".join(AMPLICON_COLUMNS) + "\n")
-        fh.writelines("\t".join(str(r.get(c, "-")) for c in AMPLICON_COLUMNS) + "\n" for r in rows)
-    os.replace(util.part_of(path), path)

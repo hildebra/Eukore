@@ -47,13 +47,17 @@ def read_zstd(path):
 # --- Eukore's own helpers (since 2026-11-05; self-contained: nothing imported from protal's scripts/) ---------------
 
 import collections  # noqa: E402
+import concurrent.futures  # noqa: E402
+import contextlib  # noqa: E402
 import datetime  # noqa: E402
+import glob  # noqa: E402
 import hashlib  # noqa: E402
-import multiprocessing  # noqa: E402
+import itertools  # noqa: E402
 import os  # noqa: E402
 import socket  # noqa: E402
 import time  # noqa: E402
 import urllib.error  # noqa: E402
+import urllib.parse  # noqa: E402
 import urllib.request  # noqa: E402
 import http.client  # noqa: E402
 import zlib  # noqa: E402
@@ -73,6 +77,46 @@ def part_of(path):
     it."""
     folder, name = os.path.split(path)
     return os.path.join(folder, f".{socket.gethostname()}-{os.getpid()}.{name}.partial")
+
+
+PARTIAL_STALE = 2 * 86400  # another host's partial untouched this long is a dead run's (dead_partials)
+
+
+def dead_partials(folder, name):
+    """The partials (part_of's .<host>-<pid>.<name>.partial) in folder of runs that ended: this host's whose process is
+    gone, another host's untouched for PARTIAL_STALE (since 2026-11-08: a run deleted every one, another build's going
+    on too) -> their paths."""
+    out, host = [], socket.gethostname()
+    for path in glob.glob(os.path.join(glob.escape(folder), f".*.{glob.escape(name)}.partial")):
+        their_host, _dash, pid = os.path.basename(path)[1:-len(f".{name}.partial")].rpartition("-")
+        if their_host == host and pid.isdigit():
+            if not pid_alive(int(pid)):
+                out.append(path)
+            continue
+        try:
+            if time.time() - os.path.getmtime(path) >= PARTIAL_STALE:
+                out.append(path)
+        except OSError:  # gone meanwhile
+            pass
+    return out
+
+
+def pid_alive(pid):
+    """Whether a process of this host is alive (another user's too)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def ends_in_newline(path):
+    """Whether a file's last byte is a line end (a cache a killed run appended to: its last line cut where not)."""
+    with open(path, "rb") as fh:
+        fh.seek(-1, os.SEEK_END)
+        return fh.read(1) == b"\n"
 
 
 def md5(path):
@@ -130,6 +174,22 @@ def gzip_whole(path, tool=None):
             pass
 
 
+class KeepAuthorization(urllib.request.HTTPRedirectHandler):
+    """urllib's redirects, a request's Authorization (an API key) dropped where one leaves its host or https (since
+    2026-11-08: urllib passes every header on, to whatever host a server redirects to)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            old, to = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(new.full_url)
+            if to.scheme != "https" or (to.hostname or "").lower() != (old.hostname or "").lower():
+                new.remove_header("Authorization")
+        return new
+
+
+OPENER = urllib.request.build_opener(KeepAuthorization)
+
+
 def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=None, times=None, headers=None):
     """Downloads url to dest (by curl where there, else urllib): "" if it arrived whole (the length it announced, and, a
     gzip file, gzip reads it to its end), else why not. A missing file ("not found") or another refusal (HTTP 4xx but
@@ -156,7 +216,7 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
                 curl_get(url, part)
             else:
                 request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
-                with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as fh:
+                with OPENER.open(request, timeout=60) as response, open(part, "wb") as fh:
                     expected = response.headers.get("Content-Length")
                     shutil.copyfileobj(response, fh, 1 << 20)
             times["transfer"] += time.monotonic() - started
@@ -181,6 +241,7 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
             times["bytes"] += size
             return ""
         except urllib.error.HTTPError as e:
+            e.close()  # its response (urllib's; a ResourceWarning where left open)
             if e.code == 404:
                 why = "not found"  # its .part (curl's: the error page) removed below
                 break
@@ -281,16 +342,68 @@ class Progress:
         return text
 
 
-def reported(results, progress, note=lambda: "", poll=60):
-    """A pool's imap_unordered results as they come, its progress said on time between them too (Progress.tick, its
-    note from note()), polled every poll seconds."""
+def vsearch_global(vsearch, queries, db, ident, threads=1, accepts=32, rejects=256, options=(), tmp=None):
+    """vsearch --usearch_global (--iddef 2) of queries {name: sequence} against db {name: sequence} (the same dict:
+    one file for both), sequences of ident or more (a share), at most `accepts` hits a query after `rejects` misses (0:
+    no limit), with further options (e.g. --self), its files in a folder in tmp (default TMPDIR) -> [(query, target,
+    identity %)]; raises OSError where vsearch failed. The one vsearch search of qc.py, screen.py, intraspecific.py
+    and tools/ (since 2026-11-08)."""
+    import tempfile  # noqa: PLC0415
+    with tempfile.TemporaryDirectory(dir=tmp) as work:
+        q, d, out = (os.path.join(work, n) for n in ("q.fna", "db.fna", "hits.tsv"))
+        for path, seqs in ((q, queries),) + (() if db is queries else ((d, db),)):
+            with open(path, "w") as fh:
+                fh.writelines(f">{n}\n{s}\n" for n, s in seqs.items() if s)
+        run = subprocess.run([vsearch, "--usearch_global", q, "--db", q if db is queries else d, "--id", str(ident),
+                              "--iddef", "2", "--maxaccepts", str(accepts), "--maxrejects", str(rejects), *options,
+                              "--userout", out, "--userfields", "query+target+id", "--threads", str(max(1, threads)),
+                              "--quiet"], capture_output=True, text=True, check=False)
+        if run.returncode != 0 or not os.path.isfile(out):
+            raise OSError(f"vsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+        with open(out) as fh:
+            return [(f[0], f[1], float(f[2])) for f in (line.rstrip("\n").split("\t") for line in fh) if len(f) >= 3]
+
+
+@contextlib.contextmanager
+def process_pool(workers):
+    """A pool of `workers` processes (concurrent.futures'; since 2026-11-08). A worker that dies (killed by the OOM
+    killer or SLURM, a crash in a C library) breaks the pool: the build stops (SystemExit), a rerun goes on; until then
+    multiprocessing.Pool lost its task and the build waited for it forever. On any other error or a stop (Ctrl-C) the
+    workers are ended, not waited for."""
+    pool = concurrent.futures.ProcessPoolExecutor(max(1, workers))
+    pool.size = max(1, workers)
+    try:
+        yield pool
+    except concurrent.futures.BrokenExecutor as e:
+        _end_workers(pool)
+        raise SystemExit(f"a worker process died ({e}): killed for memory? Rerun to go on; work done is kept") from e
+    except BaseException:
+        _end_workers(pool)
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+def _end_workers(pool):
+    for process in list((getattr(pool, "_processes", None) or {}).values()):
+        process.terminate()
+
+
+def unordered(pool, task, items, progress=None, note=lambda: "", poll=60):
+    """task(item) of each item in a process_pool -> the results as they finish, at most twice the pool's workers
+    submitted at a time; progress said on time between them too (Progress.tick, its note from note()), every poll
+    seconds where none finished."""
+    items, running = iter(items), set()
     while True:
-        try:
-            yield results.next(timeout=poll)
-        except StopIteration:
+        running |= {pool.submit(task, item) for item in itertools.islice(items, max(0, 2 * pool.size - len(running)))}
+        if not running:
             return
-        except multiprocessing.TimeoutError:
+        done, running = concurrent.futures.wait(running, timeout=poll,
+                                                return_when=concurrent.futures.FIRST_COMPLETED)
+        if not done and progress is not None:
             progress.tick(note())
+        for future in done:
+            yield future.result()
 
 
 def memory_budget(environ=None, proc="/proc", cgroup="/sys/fs/cgroup"):

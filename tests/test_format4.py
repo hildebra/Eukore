@@ -170,6 +170,20 @@ class CopyTest(unittest.TestCase):
         self.assertEqual(package.copy_confidence(dict(base, rescued="f")), ("high", "-"))
         self.assertEqual(package.gap_runs("ACGT" + "N" * 10 + "AC" + "N" * 9 + "A"), [(4, 14)])
 
+    def test_call_rates_of_the_genomes_searched(self):
+        # a marker added after one genome's run: that genome counts for it nowhere (until 2026-11-08 as not calling
+        # it, its call rate halved)
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+        genomes = {"G1": dict(representative="t", species_taxid=4932, _searched={"busco1", "marker1"}),
+                   "G2": dict(representative="t", species_taxid=28985, _searched={"busco1"})}
+        rows = [dict(accession=a, locus=lo, status="Single", length="100", cds_length="90", protein_length="30")
+                for a, lo in (("G1", "busco1"), ("G2", "busco1"), ("G1", "marker1"))]
+        got, columns = package.loci_rows([dict(locus="busco1"), dict(locus="marker1")],
+                                         dict(genomes=genomes, copy_rows=rows), ncbi)
+        self.assertEqual([(r["species"], r["called"], r["call_rate"]) for r in got], [(2, 2, "1.000"), (1, 1, "1.000")])
+        self.assertEqual({r[columns[0]] for r in got}, {"1.000"})
+
 
 if __name__ == "__main__":
     unittest.main()

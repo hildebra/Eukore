@@ -139,9 +139,23 @@ def compare(cds, table, references):
     protein = translate(cds, table)
     mine = kmers(protein)
     recall, precision, length = max((shared(kmers(p), mine), shared(mine, kmers(p)), len(p)) for _t, p in references)
+    return recall, precision, length, len(protein.rstrip("*")), verdict(recall, precision)
+
+
+def verdict(recall, precision):
+    """A call's verdict from its k-mer recall and precision against its reference protein (the one rule of compare,
+    marker_rows and tools/validate_markers.py)."""
     low = min(recall, precision)
-    verdict = "concordant" if low >= CONCORDANT else "similar" if low >= SIMILAR else "discordant"
-    return recall, precision, length, len(protein.rstrip("*")), verdict
+    return "concordant" if low >= CONCORDANT else "similar" if low >= SIMILAR else "discordant"
+
+
+def best_match(protein, refs):
+    """A protein against reference proteins {name: protein} -> (the name of the one sharing the most k-mers both ways,
+    recall, precision against it)."""
+    got = kmers(protein)
+    best = max(refs, key=lambda a: shared(kmers(refs[a]), got) + shared(got, kmers(refs[a])))
+    ref = kmers(refs[best])
+    return best, shared(ref, got), shared(got, ref)
 
 
 def place_of(call, held):
@@ -342,14 +356,9 @@ def marker_rows(folder, ncbi, marker_folder):
                 out.append(dict(marker=marker, accession=acc, species_taxid=sp, status="Missing", reference="-",
                                 recall="-", precision="-", verdict="missed"))
                 continue
-            got = kmers(proteins[acc])
-            best = max(mine, key=lambda a: shared(kmers(mine[a]), got) + shared(got, kmers(mine[a])))
-            ref = kmers(mine[best])
-            recall, precision = shared(ref, got), shared(got, ref)
-            verdict = ("concordant" if min(recall, precision) >= CONCORDANT else
-                       "similar" if min(recall, precision) >= SIMILAR else "discordant")
+            best, recall, precision = best_match(proteins[acc], mine)
             out.append(dict(marker=marker, accession=acc, species_taxid=sp, status=call["status"], reference=best,
-                            recall=f"{recall:.3f}", precision=f"{precision:.3f}", verdict=verdict))
+                            recall=f"{recall:.3f}", precision=f"{precision:.3f}", verdict=verdict(recall, precision)))
     return out
 
 

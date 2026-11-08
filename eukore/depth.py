@@ -31,6 +31,7 @@ Both alleles of a diploid map to its single-copy genes, so a copy number is per 
 covered less by PCR-amplified libraries: an estimate is a lower bound there too, but much the nearer one.
 """
 
+import collections
 import gzip
 import io
 import json
@@ -38,10 +39,12 @@ import os
 import re
 import statistics
 import subprocess
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
-from eukore import util
+from eukore import odb, rrna, util
 
 ENA_SEARCH = "https://www.ebi.ac.uk/ena/portal/api/search"
 ENA_FILEREPORT = "https://www.ebi.ac.uk/ena/portal/api/filereport"
@@ -87,32 +90,15 @@ def read_dicts(path):
 
 
 def fasta(path, keep=None):
-    """A FASTA (plain or compressed) -> {name: sequence}, only `keep`'s names where given."""
-    out, name, parts = {}, None, []
+    """A FASTA (plain or gzipped; odb.read_fasta) -> {name: sequence}, only `keep`'s names where given."""
     if not os.path.isfile(path):
-        return out
-    with util.open_text(path) as fh:
-        for line in fh:
-            if line.startswith(">"):
-                if name is not None and (keep is None or name in keep):
-                    out[name] = "".join(parts)
-                name, parts = line[1:].split()[0], []
-            else:
-                parts.append(line.strip())
-    if name is not None and (keep is None or name in keep):
-        out[name] = "".join(parts)
-    return out
+        return {}
+    return {name: seq for name, seq in odb.read_fasta(path) if keep is None or name in keep}
 
 
 def regions_of(text):
-    """records.tsv's `regions` -> [(name, start, end)]."""
-    out = []
-    for part in text.split(","):
-        if ":" in part and "-" in part:
-            name, span = part.split(":", 1)
-            a, b = span.split("-")
-            out.append((name, int(a), int(b)))
-    return out
+    """records.tsv's `regions` -> [(name, start, end)] (rrna.parse_regions', [] for none)."""
+    return rrna.parse_regions(text) or []
 
 
 def rdna_units(records, accession, species_taxid):
@@ -163,47 +149,93 @@ def busco_folder(package):
 def reference(package, accession, species_taxid):
     """The targets of a genome -> ({target: sequence}, {target: (kind, [(start, end) measured])}, info): kind `rdna`,
     `busco`, `mitochondrion` or `plastid`; names `<kind>|<record or locus>`."""
-    seqs, meta = {}, {}
-    records = read_dicts(os.path.join(package, "rrna", "records.tsv"))
-    units, unit_source = rdna_units(records, accession, species_taxid)
-    unit_seqs = fasta(os.path.join(package, "rrna", "records.fna.gz"), {r["record"] for r in units})
-    for row in units:
-        if row["record"] in unit_seqs:
-            name = f"rdna|{row['record']}"
-            seqs[name] = unit_seqs[row["record"]]
-            meta[name] = ("rdna", [(a, b) for n, a, b in regions_of(row["regions"]) if n in GENE_REGIONS],
-                          [(a, b) for n, a, b in regions_of(row["regions"]) if n == "18S"])
+    return references(package, [(accession, species_taxid)])[accession]
+
+
+def references(package, wanted):
+    """reference() of several genomes ([(accession, species taxid)]) in one pass over the package's tables and FASTA
+    files (since 2026-11-08: a pass for each genome, minutes each: months for every genome) -> {accession: (seqs,
+    meta, info)}."""
+    wanted = [(a, str(sp)) for a, sp in wanted]
+    accessions, species = {a for a, _sp in wanted}, {sp for _a, sp in wanted}
+    # the rDNA records of these genomes and species alone (rdna_units reads its own among them)
+    records = [r for r in read_dicts(os.path.join(package, "rrna", "records.tsv"))
+               if r["kind"] == "rDNA" and (r["accession"] in accessions or r["species_taxid"] in species)]
+    by_acc, by_sp = collections.defaultdict(list), collections.defaultdict(list)
+    for r in records:
+        by_acc[r["accession"]].append(r)
+        by_sp[r["species_taxid"]].append(r)
+    units = {a: rdna_units(by_acc[a] + by_sp[sp], a, sp) for a, sp in wanted}
+    unit_seqs = fasta(os.path.join(package, "rrna", "records.fna.gz"),
+                      {r["record"] for rows, _source in units.values() for r in rows})
+    loci = {}
     folder = busco_folder(package)
     if folder:
-        for locus in single_copies(read_dicts(os.path.join(folder, "copies.tsv")), accession):
-            seq = fasta(os.path.join(folder, "copies", f"{locus}.fna.gz"), {accession}).get(accession)
+        copies = collections.defaultdict(list)
+        for row in read_dicts(os.path.join(folder, "copies.tsv")):
+            if row["accession"] in accessions:
+                copies[row["accession"]].append(row)
+        loci = {a: single_copies(copies[a], a) for a in accessions}
+    by_locus = collections.defaultdict(set)
+    for a, ls in loci.items():
+        for locus in ls:
+            by_locus[locus].add(a)
+    copy_seqs = {locus: fasta(os.path.join(folder, "copies", f"{locus}.fna.gz"), accs)
+                 for locus, accs in by_locus.items()}
+    genes = collections.defaultdict(list)
+    for r in read_dicts(os.path.join(package, "organelle", "genes.tsv")):
+        if r["species_taxid"] in species:
+            genes[r["species_taxid"]].append(r)
+    gene_seqs = fasta(os.path.join(package, "organelle", "genes.fna.gz"),
+                      {r["record"] for rows in genes.values() for r in rows})
+    out = {}
+    for accession, sp in wanted:
+        seqs, meta = {}, {}
+        rows, unit_source = units[accession]
+        for row in rows:
+            if row["record"] in unit_seqs:
+                name = f"rdna|{row['record']}"
+                seqs[name] = unit_seqs[row["record"]]
+                meta[name] = ("rdna", [(a, b) for n, a, b in regions_of(row["regions"]) if n in GENE_REGIONS],
+                              [(a, b) for n, a, b in regions_of(row["regions"]) if n == "18S"])
+        for locus in loci.get(accession, ()):
+            seq = copy_seqs[locus].get(accession)
             if seq:
                 name = f"busco|{locus}"
                 seqs[name] = seq
                 meta[name] = ("busco", [(0, len(seq))], [])
-    genes = [r for r in read_dicts(os.path.join(package, "organelle", "genes.tsv"))
-             if r["species_taxid"] == str(species_taxid)]
-    gene_seqs = fasta(os.path.join(package, "organelle", "genes.fna.gz"), {r["record"] for r in genes})
-    for row in genes:
-        if row["record"] in gene_seqs and row.get("partial") != "t":
-            name = f"{row['organelle']}|{row['record']}"
-            seqs[name] = gene_seqs[row["record"]]
-            meta[name] = (row["organelle"], [(0, len(seqs[name]))], [])
-    return seqs, meta, {"rdna_units_ref": ",".join(r["record"] for r in units) or "-", "rdna_ref_source": unit_source}
+        for row in genes[sp]:
+            if row["record"] in gene_seqs and row.get("partial") != "t":
+                name = f"{row['organelle']}|{row['record']}"
+                seqs[name] = gene_seqs[row["record"]]
+                meta[name] = (row["organelle"], [(0, len(seqs[name]))], [])
+        out[accession] = (seqs, meta, {"rdna_units_ref": ",".join(r["record"] for r in rows) or "-",
+                                       "rdna_ref_source": unit_source})
+    return out
 
 
 # --- finding and staging the reads --------------------------------------------------------------------------------
 
 def get_text(url, attempts=3):
-    """A URL's text (ENA's and NCBI's APIs); "" where it fails."""
-    for _ in range(attempts):
+    """A URL's text (ENA's and NCBI's APIs); "" where the server refuses it (HTTP 4xx but 429: no such record). Raises
+    OSError where it was not answered (a timeout, 429, 5xx): find_runs' answer is then not kept, a rerun asks again
+    (until 2026-11-08 "" too, kept as "no run" for good)."""
+    why = None
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(5 * attempt)
         try:
             request = urllib.request.Request(url, headers={"User-Agent": util.USER_AGENT})
             with urllib.request.urlopen(request, timeout=120) as response:
                 return response.read().decode()
-        except OSError:
-            continue
-    return ""
+        except urllib.error.HTTPError as e:
+            e.close()
+            if 400 <= e.code < 500 and e.code != 429:  # the server's answer: no such record
+                return ""
+            why = e
+        except OSError as e:
+            why = e
+    raise OSError(f"{url}: {why}")
 
 
 def parse_tsv(text):
@@ -303,8 +335,11 @@ def find_runs(genome, curated, get=get_text):
 
 
 def first_file(fastq_ftp):
-    """A run's file to read: read 1 of a pair (`_1.fastq.gz`), else its one file -> https URL."""
-    files = [f for f in fastq_ftp.split(";") if f]
+    """A run's file to read: read 1 of a pair (`_1.fastq.gz`), else its one file -> https URL, or None where it has
+    none (a curated run without files; until 2026-11-08 an IndexError that stopped the stage)."""
+    files = [f for f in (fastq_ftp or "").split(";") if f]
+    if not files:
+        return None
     one = next((f for f in files if f.endswith("_1.fastq.gz")), files[0])
     return one if one.startswith(("http://", "https://")) else "https://" + one
 
@@ -478,10 +513,11 @@ def estimate(target_depth, meta):
     return out
 
 
-def measure(package, genome, reads, preset, minimap2="minimap2", threads=1, folder=None):
-    """A genome's copy numbers from its staged reads -> (estimate dict, [(target, kind, length, depth)])."""
+def measure(package, genome, reads, preset, minimap2="minimap2", threads=1, folder=None, targets=None):
+    """A genome's copy numbers from its staged reads -> (estimate dict, [(target, kind, length, depth)]). targets: its
+    reference()'s, where read already (references(): several genomes' in one pass)."""
     accession, species_taxid = genome["accession"], genome["species_taxid"]
-    seqs, meta, info = reference(package, accession, species_taxid)
+    seqs, meta, info = targets or reference(package, accession, species_taxid)
     folder = folder or os.path.dirname(reads)
     ref = os.path.join(folder, f"{accession}.ref.fna")
     with open(ref, "w") as fh:

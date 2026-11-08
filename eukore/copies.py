@@ -6,7 +6,9 @@ introns' middles and masking soft-masked runs; Eukore fits nothing (its callers 
 database build does that fitting.
 """
 
-COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
+# IUPAC's codes too, either case (since 2026-11-08 one table for the copies and rrna.py: the copies' left an R, Y,
+# K, M, B, V, D or H of a minus-strand copy uncomplemented)
+COMPLEMENT = str.maketrans("ACGTNRYKMBVDHSWacgtnrykmbvdhsw", "TGCANYRMKVBHDSWtgcanyrmkvbhdsw")
 
 
 def revcomp(seq):

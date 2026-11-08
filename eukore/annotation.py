@@ -50,6 +50,19 @@ VEUPATHDB_ORGANISMS = ("https://veupathdb.org/veupathdb/service/record-types/org
                        "standard?reportConfig=%7B%22attributes%22%3A%5B%22genome_version%22%2C%22URLgff%22%2C"
                        "%22annotation_source%22%2C%22annotation_version%22%5D%7D")
 VEUPATHDB_KEY = "VEUPATHDB_API_KEY"  # the environment variable eukore_build.py --veupathdb_key defaults to
+# VEuPathDB's sites: the only hosts its API key is sent to (since 2026-11-08: to any URL its organism table named)
+VEUPATHDB_HOSTS = ("veupathdb.org", "amoebadb.org", "cryptodb.org", "fungidb.org", "giardiadb.org", "hostdb.org",
+                   "microsporidiadb.org", "piroplasmadb.org", "plasmodb.org", "toxodb.org", "trichdb.org",
+                   "tritrypdb.org", "vectorbase.org", "orthomcl.org")
+
+
+def veupathdb_host(url):
+    """Whether a URL is VEuPathDB's own over https (a VEuPathDB user's API key may be sent to it)."""
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and any(host == h or host.endswith("." + h) for h in VEUPATHDB_HOSTS)
+
+
 ENSEMBL_FTP = "https://ftp.ebi.ac.uk/pub/ensemblorganisms"
 ENSEMBL_SKIP = {"prokka", "refseq", "genbank"}  # bacteria's; NCBI's own (the ncbi source)
 TOGA2_URL = "https://genome.senckenberg.de/download/TOGA2"
@@ -209,13 +222,6 @@ def toga2_rows(assemblies_tsv, listings, classes=None):
                 genome=f"{TOGA2_URL}/Genomes/{cls[folder]}/{folder}/{name}.2bit" if folder in cls else "-",
                 assembly_source=r.get("Source of assembly", "-") or "-"))
     return out
-
-
-def toga2_index(assemblies_tsv, listings):
-    """TOGA2's annotations of NCBI's assemblies (toga2_rows) -> {assembly accession: (reference folder, URL of its
-    query_annotation.gtf.gz)}."""
-    return {r["ncbi_accession"]: (r["reference"], r["annotation"])
-            for r in toga2_rows(assemblies_tsv, listings) if r["ncbi_accession"] != "-"}
 
 
 TOGA2_COLUMNS = ("accession", "ncbi_accession", "species_taxid", "organism", "scaffold_n50", "contig_n50", "reference",
@@ -530,7 +536,7 @@ def fetch(job, genomes_folder, veupathdb_key=None, **how):
     for source, url in candidates(job):
         path = gff_file(genomes_folder, job["accession"], source)
         if source == "veupathdb":
-            if not veupathdb_key:
+            if not veupathdb_key or not veupathdb_host(url):  # the key to VEuPathDB alone, over https
                 continue
             why = util.fetch_file(url, path, gzip_check=False, headers={"Authorization": f"Bearer {veupathdb_key}"},
                                   **{k: v for k, v in how.items() if k == "scratch"})

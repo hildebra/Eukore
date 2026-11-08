@@ -405,11 +405,8 @@ def ncbi_rows(paths, wanted):
 
 
 def _gz_table(path, columns, rows):
-    with gzip.open(util.part_of(path), "wt", compresslevel=6, newline="\n") as fh:
-        fh.write("\t".join(columns) + "\n")
-        for r in rows:
-            fh.write("\t".join("-" if r.get(c) in (None, "") else str(r[c]) for c in columns) + "\n")
-    os.replace(util.part_of(path), path)
+    from .package import write_gz  # noqa: PLC0415 (the package's gzipped tables, one writer)
+    write_gz(path, columns, rows)
 
 
 ANNOTATION_NAMES = {"veupathdb": "VEuPathDB", "ensembl": "Ensembl", "toga2": "TOGA2"}
