@@ -782,7 +782,7 @@ def organelles_of(ncbi, taxid):
 
 
 def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer, workers=1, threads=1, log=print,
-                  miniprot=None, every=False, saved_of=None):
+                  miniprot=None, every=False, saved_of=None, progress=None):
     """The organelle genes of each species' assembly where RefSeq has not every organelle's record it can hold
     (chosen; organelles_of: until 2026-11-06 every animal and fungus was searched for a plastid, ~10,000 genomes), its
     organelle molecules there (saved_of(accession) -> the molecules metadata.describe kept, WORK/done/<accession>/
@@ -811,13 +811,17 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
         return 0, 0
     log(f"organelle genes: {len(todo)} assemblies to search")
     failed = 0
+    # progress(what, weights) -> its util.Progress (the build's: every --report_minutes, with the resources used;
+    # until 2026-11-08 at each 5% of the assemblies)
+    progress = (progress or (lambda what, w: util.Progress(what, w, log, unit="", scale=1)))(
+        "assemblies searched", [1] * len(todo))
     with multiprocessing.Pool(max(1, workers)) as pool:
-        for i, (acc, _n, why) in enumerate(pool.imap_unordered(run_assembly, todo), 1):
+        for acc, _n, why in util.reported(pool.imap_unordered(run_assembly, todo), progress,
+                                          lambda: f", {min(max(1, workers), progress.n - progress.done)} running"):
             if why:
                 failed += 1
                 log(f"  {acc}: organelle genes failed: {why}")
-            if i % max(1, len(todo) // 20) == 0 or i == len(todo):
-                log(f"  {i}/{len(todo)} assemblies searched ({failed} failed)")
+            progress.step(1, failed=bool(why))
     return len(todo), failed
 
 

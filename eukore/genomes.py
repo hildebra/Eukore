@@ -773,13 +773,25 @@ def run(args):
         tmp = util.part_of(folder)
         shutil.rmtree(tmp, ignore_errors=True)
         os.makedirs(tmp)
+        # the run's temporary files (miniprot's pieces of a large genome, the rescue's ORFs, tiara's and vsearch's
+        # files) and a copy of the genome, read there by every step, in settings["scratch"] where given (--scratch: a
+        # node's local disk; since 2026-11-08: all in WORK, the genome read from OUT some six times), else in tmp
+        scratch = scratch_dir(settings, acc) or tmp
         side = concurrent.futures.ThreadPoolExecutor(2)
         try:
-            got = _run(job, settings, path, folder, tmp, side)
+            if scratch != tmp and not job.get("path"):
+                local = os.path.join(scratch, os.path.basename(path))
+                shutil.copyfile(path, local)
+            else:
+                local = path
+            got = _run(job, settings, local, folder, tmp, side, scratch)
         except BaseException:
             side.shutdown(wait=True, cancel_futures=True)
             shutil.rmtree(tmp, ignore_errors=True)
             raise
+        finally:
+            if scratch != tmp:
+                shutil.rmtree(scratch, ignore_errors=True)
         side.shutdown(wait=True, cancel_futures=True)
         if got[2]:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -794,9 +806,32 @@ def run(args):
         return got[:3]
 
 
-def _run(job, settings, path, folder, tmp, side):
-    """genomes.run's work in its partial folder tmp, side: a pool of two threads (the rRNA and the metadata) ->
-    (accession, summary or None, why not or None, (GFF, report) taken)."""
+SCRATCH_PREFIX = ".eukore-"
+
+
+def scratch_dir(settings, accession):
+    """A genome run's own folder in settings["scratch"] (--scratch), or None."""
+    if not settings.get("scratch"):
+        return None
+    os.makedirs(settings["scratch"], exist_ok=True)
+    return tempfile.mkdtemp(prefix=f"{SCRATCH_PREFIX}{safe(accession)}-", dir=settings["scratch"])
+
+
+def stale_scratch(work, scratch):
+    """The killed runs' folders in scratch (scratch_dir's), not those of a run going on (its claim live)."""
+    import glob  # noqa: PLC0415
+    out = []
+    for path in glob.glob(os.path.join(scratch, SCRATCH_PREFIX + "*")):
+        acc = os.path.basename(path)[len(SCRATCH_PREFIX):].rpartition("-")[0]
+        if not claim_live(claim_path(work, acc)):
+            out.append(path)
+    return out
+
+
+def _run(job, settings, path, folder, tmp, side, scratch=None):
+    """genomes.run's work in its partial folder tmp, side: a pool of two threads (the rRNA and the metadata), its
+    temporary files in scratch (default tmp) -> (accession, summary or None, why not or None, (GFF, report) taken)."""
+    scratch = scratch or tmp
     acc = job["accession"]
     started = time.time()  # the run's own time, the fetch left out (benchmarks.py's runtime.tsv)
     before = done_summary(settings["work"], acc) if job.get("rerun") == "annotation" else None
@@ -825,7 +860,7 @@ def _run(job, settings, path, folder, tmp, side):
     taken = (gff, report)
     try:
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
-                            settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), tmp,
+                            settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), scratch,
                             settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings),
                             annotation=(gff, report, source) if gff else None)
     except (OSError, RuntimeError) as e:
@@ -843,11 +878,11 @@ def _run(job, settings, path, folder, tmp, side):
     if job.get("kind") != "transcriptome":  # a transcript's flanks are no window
         tiara = "none"
         if settings.get("tiara"):
-            classes = classify(got["windows"], settings["tiara"], settings.get("threads", 1), tmp)
+            classes = classify(got["windows"], settings["tiara"], settings.get("threads", 1), scratch)
             tiara = "failed" if classes is None else "done"
             classes = classes or {}
     window_of = {n.split("|", 1)[0]: n for n in got["windows"]}
-    dup = loci_mod.dup_identity(got["loci"], settings.get("vsearch"), settings.get("threads", 1), tmp)
+    dup = loci_mod.dup_identity(got["loci"], settings.get("vsearch"), settings.get("threads", 1), scratch)
     taken_loci = 0
     with open(os.path.join(tmp, "copies.fna"), "w", newline="\n") as fa, \
             open(os.path.join(tmp, "loci.tsv"), "w", newline="\n") as tb, \
@@ -884,7 +919,7 @@ def _run(job, settings, path, folder, tmp, side):
             shutil.copyfile(kept, os.path.join(tmp, HELD_OUT))  # a run for its gene models alone: as it was
             held = before["held_out"]
         else:
-            why = held_out(path, job, settings, odb, own, tmp)
+            why = held_out(path, job, settings, odb, own, tmp, scratch)
             if why:
                 return acc, None, why, taken
             held = {"left_out": own, "seconds": round(time.time() - started - seconds, 1)}
@@ -1174,7 +1209,7 @@ def held_out_missing(work, job, settings):
                                                                            HELD_OUT))
 
 
-def held_out(path, job, settings, odb, own, folder):
+def held_out(path, job, settings, odb, own, folder, scratch=None):
     """A dataset species' genome's BUSCOs called again with its own proteins (own: their dataset taxids) left out of
     the queries, into folder/HELD_OUT (HELD_OUT_COLUMNS; cds: the call's coding sequence): the OrthoDB benchmark
     compares these with OrthoDB's gene models, which the build's own calls were queried with, and their places with
@@ -1183,7 +1218,7 @@ def held_out(path, job, settings, odb, own, folder):
     queries = odb.queries(job["lineage"], settings["odb_lineages"], leave_out=own)
     try:
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
-                            settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), folder,
+                            settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), scratch or folder,
                             settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings))
     except (OSError, RuntimeError) as e:
         return f"held-out locus calling failed: {e}"

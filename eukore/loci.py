@@ -31,10 +31,12 @@ user masks as it sees fit.
 """
 
 import collections
+import concurrent.futures
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from . import copies as copies_mod
@@ -193,29 +195,98 @@ def regions(alignments, lengths):
     return out
 
 
+def hmm_shards(hmm_path, n):
+    """hmm_path's models in n files (every n-th model each; fewer where it holds fewer models), made once beside it
+    (each whole or not there: several runs may make them at once) -> their paths; [hmm_path] for n of 1."""
+    if n <= 1:
+        return [hmm_path]
+    models, cur = [], []
+    with open(hmm_path) as fh:
+        for line in fh:
+            cur.append(line)
+            if line.startswith("//"):  # a model's last line
+                models.append("".join(cur).rstrip("\n") + "\n")
+                cur = []
+    n = min(n, len(models))
+    if n <= 1:
+        return [hmm_path]
+    paths = [f"{hmm_path}.{k + 1}of{n}" for k in range(n)]
+    for k, path in enumerate(paths):
+        if os.path.isfile(path) and os.path.getmtime(path) >= os.path.getmtime(hmm_path):
+            continue
+        part = f"{path}.{os.getpid()}.partial"
+        with open(part, "w") as fh:
+            fh.writelines(models[k::n])
+        os.replace(part, path)
+    return paths
+
+
+def hmmsearch_runs(hmm_path, target, out_prefix, threads=1, binary="hmmsearch", options=()):
+    """hmmsearch of target against hmm_path's models, in `threads` runs of a share of the models each at once (since
+    2026-11-08: one run on every thread kept one core busy, its hmmsearch's reading of the models and the targets
+    the work; 4 runs of a quarter: 8.0 s -> 2.6 s for Drosophila's 664 candidates). A model's scores and E-values
+    do not depend on the other models (the targets are the same: Z, domZ), so that the hits are those of one run
+    -> the runs' --domtblout files (out_prefix.<k>)."""
+    shards = hmm_shards(hmm_path, threads)
+    cpu = max(1, threads // len(shards))
+
+    def one(k):
+        dom = f"{out_prefix}.{k}"
+        run = subprocess.run([binary, "--cpu", str(cpu), "--noali", "-o", os.devnull, *options, "--domtblout", dom,
+                              shards[k], target], capture_output=True, text=True, check=False)
+        if run.returncode != 0:
+            raise RuntimeError(f"hmmsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+        return dom
+    if len(shards) == 1:
+        return [one(0)]
+    with concurrent.futures.ThreadPoolExecutor(len(shards)) as pool:
+        doms = list(pool.map(one, range(len(shards))))
+    # in one run's order (by model, as in hmm_path; a model's lines as its run gave them), so that ties go as before
+    order = model_order(hmm_path)
+    lines = sorted(domtbl_lines(doms), key=lambda line: order.get(line.split(None, 4)[3], len(order)))
+    with open(out_prefix, "w") as fh:
+        fh.writelines(lines)
+    return [out_prefix]
+
+
+_ORDER = {}
+
+
+def model_order(hmm_path):
+    """{model name: its place in hmm_path} (read once per file and its time)."""
+    key = (hmm_path, os.path.getmtime(hmm_path))
+    if key not in _ORDER:
+        with open(hmm_path) as fh:
+            names = [line.split()[1] for line in fh if line.startswith("NAME ")]
+        if len(_ORDER) > 8:
+            _ORDER.clear()
+        _ORDER[key] = {name: i for i, name in enumerate(names)}
+    return _ORDER[key]
+
+
+def domtbl_lines(paths):
+    """The hit lines of --domtblout files."""
+    for path in paths:
+        with open(path) as fh:
+            yield from (line for line in fh if not line.startswith("#"))
+
+
 def hmmsearch(proteins, hmm_db, binary="hmmsearch", threads=1, tmp=None):
     """Each protein's scores against the HMMs -> {protein: {hmm: (bit score, HMM coverage)}}; HMM coverage: the union
     of its domains' hmm_from..hmm_to over the HMM's length."""
     if not proteins:
         return {}
     with tempfile.TemporaryDirectory(dir=tmp) as work:
-        faa, dom = os.path.join(work, "c.faa"), os.path.join(work, "dom.tsv")
+        faa = os.path.join(work, "c.faa")
         with open(faa, "w") as fh:
             fh.writelines(f">{n}\n{s.replace('*', 'X')}\n" for n, s in proteins.items() if s)
-        run = subprocess.run([binary, "--cpu", str(max(1, threads)), "--noali", "-o", os.devnull, "--domtblout", dom,
-                              hmm_db, faa], capture_output=True, text=True, check=False)
-        if run.returncode != 0:
-            raise RuntimeError(f"hmmsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
         score, spans, qlen = {}, collections.defaultdict(list), {}
-        with open(dom) as fh:
-            for line in fh:
-                if line.startswith("#"):
-                    continue
-                f = line.split()
-                target, query, length, full = f[0], f[3], int(f[5]), float(f[7])
-                score[(target, query)] = full
-                qlen[query] = length
-                spans[(target, query)].append((int(f[15]), int(f[16])))
+        for line in domtbl_lines(hmmsearch_runs(hmm_db, faa, os.path.join(work, "dom"), threads, binary)):
+            f = line.split()
+            target, query, length, full = f[0], f[3], int(f[5]), float(f[7])
+            score[(target, query)] = full
+            qlen[query] = length
+            spans[(target, query)].append((int(f[15]), int(f[16])))
     out = collections.defaultdict(dict)
     for key, s in score.items():
         covered = set()
@@ -325,25 +396,96 @@ def orf_pieces(seq, a, b):
     return out
 
 
-def split_orfs(lines, out):
-    """esl-translate's FASTA (lines) written to out as orf_pieces' pieces, each on one line: >name.k source=..
-    coords=.. length=.."""
-    def flush(header, seq):
-        name, _, desc = header[1:].partition(" ")
-        kv = dict(x.split("=", 1) for x in desc.split() if "=" in x)
-        a, b = (int(v) for v in kv["coords"].split(".."))
-        out.writelines(f">{name}.{k} source={kv['source']} coords={x}..{y} length={len(p)}\n{p}\n"
-                       for k, (p, x, y) in enumerate(orf_pieces("".join(seq), a, b)))
-    header, seq = None, []
-    for line in lines:
-        if line.startswith(">"):
-            if header:
-                flush(header, seq)
-            header, seq = line.strip(), []
-        else:
-            seq.append(line.strip())
-    if header:
-        flush(header, seq)
+def _records(lines, block=1 << 24):
+    """A FASTA's records (header, its lines joined) from a stream (read in blocks) or an iterable of lines."""
+    blocks = iter(lambda: lines.read(block), "") if hasattr(lines, "read") else ["".join(lines)]
+    rest = ""
+    for got in blocks:
+        text = rest + got
+        cut = text.rfind("\n>")
+        if cut < 0:
+            rest = text
+            continue
+        rest = text[cut + 1:]
+        for rec in text[:cut].split("\n>"):
+            yield rec
+    if rest.strip():
+        yield from rest.split("\n>")
+
+
+def _field(desc, key):
+    i = desc.find(key)
+    if i < 0:
+        return None
+    j = desc.find(" ", i)
+    return desc[i + len(key):j if j >= 0 else None]
+
+
+def split_orfs(lines, out, prefix=""):
+    """esl-translate's FASTA (lines: a stream or its lines) written to out as orf_pieces' pieces, each on one line:
+    >{prefix}name.k source=.. coords=.. length=.. (since 2026-11-08 read in blocks, an ORF without an assembly gap
+    written as it is)."""
+    gap, write = "X" * GAP_X, out.write
+    for rec in _records(lines):
+        header, _, body = rec.partition("\n")
+        name, _, desc = header.lstrip(">").strip().partition(" ")
+        name = prefix + name
+        if not name:
+            continue
+        seq = body.replace("\n", "").replace(" ", "").replace("\r", "")
+        source, coords = _field(desc, "source="), _field(desc, "coords=")
+        a, b = (int(v) for v in coords.split(".."))
+        if gap not in seq:  # one piece, the ORF itself (orf_pieces')
+            n = len(seq)
+            if ORF_MIN <= n <= HMMSEARCH_MAX:
+                write(f">{name}.0 source={source} coords={a}..{a + (3 * n - 1 if a <= b else 1 - 3 * n)} "
+                      f"length={n}\n{seq}\n")
+            continue
+        for k, (p, x, y) in enumerate(orf_pieces(seq, a, b)):
+            write(f">{name}.{k} source={source} coords={x}..{y} length={len(p)}\n{p}\n")
+
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SPLIT = ("import sys; sys.path.insert(0, sys.argv[1]); from eukore.loci import split_orfs; "
+         "split_orfs(sys.stdin, sys.stdout, sys.argv[2])")
+
+
+def orf_file(genome, orfs, table, threads, work, translate="esl-translate"):
+    """A genome's six-frame ORFs (esl-translate, split_orfs) into orfs, in `threads` pieces of its contigs at once,
+    each esl-translate's and its split's own processes (since 2026-11-08: one esl-translate, its ORFs split by this
+    process on one core, 11.6 s for Drosophila's 4.6 million), joined in the genome's order: the ORFs and their
+    order those of one run, their names each piece's (p<k>.)."""
+    pieces = [genome]
+    if threads > 1:
+        folder = os.path.join(work, "orf_pieces")
+        os.makedirs(folder, exist_ok=True)
+        pieces = placement.chunks(genome, folder, max(1, placement.genome_bases(genome) / threads))
+    outs = [f"{orfs}.{k}" for k in range(len(pieces))]
+
+    def one(k):
+        err = f"{outs[k]}.err"
+        with open(outs[k], "w") as fh, open(err, "w") as eh:
+            tr = subprocess.Popen([translate, "-l", str(ORF_MIN), "-c", str(table or 1), pieces[k]],
+                                  stdout=subprocess.PIPE, stderr=eh)
+            split = subprocess.Popen([sys.executable, "-c", SPLIT, HERE, f"p{k}."], stdin=tr.stdout, stdout=fh,
+                                     stderr=eh)
+            tr.stdout.close()
+            split.wait()
+            tr.wait()
+        if tr.returncode or split.returncode:
+            with open(err) as eh:
+                raise RuntimeError(f"esl-translate failed (exit {tr.returncode}, its split's {split.returncode}): "
+                                   f"{eh.read().strip()[-200:]}")
+        os.remove(err)
+        if pieces[k] != genome:
+            os.remove(pieces[k])
+    with concurrent.futures.ThreadPoolExecutor(len(pieces)) as pool:
+        list(pool.map(one, range(len(pieces))))
+    with open(orfs, "wb") as fh:
+        for path in outs:
+            with open(path, "rb") as part:
+                shutil.copyfileobj(part, fh, 1 << 24)
+            os.remove(path)
 
 
 def orf_hits(target, loci_, odb, table, hmmsearch_bin, threads, work, translate="esl-translate"):
@@ -358,29 +500,14 @@ def orf_hits(target, loci_, odb, table, hmmsearch_bin, threads, work, translate=
     hits = collections.defaultdict(list)
     for i, part in enumerate(placement.chunks(target, work)):
         orfs, dom = os.path.join(work, f"orfs{i}.faa"), os.path.join(work, f"orfs{i}.dom")
-        err = os.path.join(work, "translate.err")
-        with open(orfs, "w") as fh, open(err, "w") as eh:
-            run = subprocess.Popen([translate, "-l", str(ORF_MIN), "-c", str(table or 1), part],
-                                   stdout=subprocess.PIPE, stderr=eh, text=True)
-            split_orfs(run.stdout, fh)
-            run.stdout.close()
-        if run.wait() != 0:
-            with open(err) as eh:
-                raise RuntimeError(f"esl-translate failed (exit {run.returncode}): {eh.read().strip()[-200:]}")
-        run = subprocess.run([hmmsearch_bin, "--cpu", str(max(1, threads)), "--noali", "-o", os.devnull, "--domE",
-                              str(RESCUE_DOM_E), "--domtblout", dom, hmm, orfs], capture_output=True, text=True,
-                             check=False)
-        if run.returncode != 0:
-            raise RuntimeError(f"hmmsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+        orf_file(part, orfs, table, threads, work, translate)
         found = collections.defaultdict(list)  # ORF -> [(locus, score, hmm_from, hmm_to, env_from, env_to)]
-        with open(dom) as fh:
-            for line in fh:
-                if line.startswith("#"):
-                    continue
-                f = line.split()
-                locus = odb.locus_of_hmm.get(f[3], f[3])
-                if locus in wanted and float(f[12]) <= RESCUE_DOM_E:
-                    found[f[0]].append((locus, float(f[13]), int(f[15]), int(f[16]), int(f[19]), int(f[20])))
+        for line in domtbl_lines(hmmsearch_runs(hmm, orfs, dom, threads, hmmsearch_bin,
+                                                ["--domE", str(RESCUE_DOM_E)])):
+            f = line.split()
+            locus = odb.locus_of_hmm.get(f[3], f[3])
+            if locus in wanted and float(f[12]) <= RESCUE_DOM_E:
+                found[f[0]].append((locus, float(f[13]), int(f[15]), int(f[16]), int(f[19]), int(f[20])))
         with open(orfs) as fh:  # the hit ORFs' places and sequences alone (a large genome's ORFs are many)
             lines = iter(fh)
             for line in lines:

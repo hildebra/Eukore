@@ -22,6 +22,7 @@ Stages:
 """
 
 import argparse
+import bisect
 import collections
 import concurrent.futures
 import contextlib
@@ -32,8 +33,10 @@ import hashlib
 import json
 import multiprocessing
 import os
+import queue
 import shutil
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -239,7 +242,7 @@ def settings_of(opts, src_dir, ncbi, staged_only):
                 odb_lineages=odb_mod.species_lineages(odb, ncbi), odb_own=odb_mod.own_taxids(odb, ncbi), tiara=tiara,
                 rescue=not opts.no_rescue and bool(shutil.which("esl-translate")),
                 esl_translate=shutil.which("esl-translate"), sourmash=sourmash_of(opts),
-                veupathdb_key=opts.veupathdb_key, vsearch=shutil.which("vsearch"),
+                veupathdb_key=opts.veupathdb_key, vsearch=shutil.which("vsearch"), scratch=opts.scratch,
                 rrna=functools.partial(rrna_hook, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"),
                                        threads=opts.threads_per_genome) if shutil.which("barrnap") else None)
 
@@ -263,12 +266,17 @@ def describe_pass(opts, job_map):
         return 0, 0
     say(f"assembly metadata: {len(todo)} genomes to describe" + ("" if sourmash else " (no sourmash: no sketches)"))
     failed = []
-    with multiprocessing.Pool(max(1, opts.jobs)) as pool:
-        for i, (acc, why) in enumerate(pool.imap_unordered(metadata_mod.describe_task, todo), 1):
+    # every --report_minutes (until 2026-11-08 at each 5% of the genomes: hours apart, or minutes)
+    progress = progress_of(opts, "genomes described", [job_map[t[0]].get("size") or 0 for t in todo])
+    # a genome's scan on one core and its sketch (sourmash) on another: -t / 2 at once (until 2026-11-08 -j, -t / 4)
+    workers = max(1, opts.threads // (2 if sourmash else 1))
+    with multiprocessing.Pool(workers) as pool:
+        for acc, why in util.reported(pool.imap_unordered(metadata_mod.describe_task, todo), progress,
+                                      lambda: running(opts, progress, workers)):
             if why:
                 failed.append((acc, why))
-            if i % max(1, len(todo) // 20) == 0 or i == len(todo):
-                say(f"  {i}/{len(todo)} described ({len(failed)} failed{', e.g. ' + str(failed[0]) if failed else ''})")
+            progress.step(job_map[acc].get("size") or 0, failed=bool(why),
+                          note=f" (e.g. {failed[0]})" if failed else "")
     return len(todo) - len(failed), len(failed)
 
 
@@ -288,7 +296,14 @@ def run_one(item):
         return item[0]["accession"], None, f"{type(e).__name__}: {e}"
 
 
-def run_genomes(opts, job_map, settings):
+def genome_size(opts, job):
+    """A genome's bases: its plan's size, else its file's (TOGA2's have none in the plan), else 0."""
+    path = job.get("path") or genomes.genome_file(opts.genomes, job["accession"])
+    return job.get("size") or (os.path.getsize(path) / placement.GZIP_BYTES_PER_BASE if os.path.isfile(path) else 0)
+
+
+def genomes_to_run(opts, job_map, settings):
+    """The jobs of job_map to run, each with its settings -> ([(job, settings)], how many again for gene models)."""
     # a done genome of a BUSCO dataset species without its held-out calls (run before 2026-11-06) is run again where
     # its genome is still there: never fetched again for a benchmark, its OrthoDB benchmark then left without them
     # and a done genome with better gene models than its run took (genomes.better_annotation: an index naming its
@@ -302,35 +317,137 @@ def run_genomes(opts, job_map, settings):
     whole = {a for a, j in job_map.items() if not genomes.is_done(opts.work, a, settings["loci"])
              or ((genomes.held_out_missing(opts.work, j, settings)
                   or genomes.rescue_missing(opts.work, a, settings)) and here(a, j))}
+    return [(j if a in whole else dict(j, rerun="annotation"), settings) for a, j in sorted(job_map.items())
+            if a in whole or a in better], len(better - whole)
+
+
+def panel_settings(settings):
+    """The intraspecific panel's further assemblies' settings: their BUSCOs and rRNA alone (no tiara, no held-out)."""
+    return dict(settings, tiara=None, odb_own={})
+
+
+def run_genomes(opts, job_map, settings, extras=None):
+    """Every genome of job_map to run, and of extras (the intraspecific panel's further assemblies, panel_settings: in
+    the same pool since 2026-11-08, until then a pool of their own after it, each pool's last genomes leaving the
+    cores idle), run by schedule -> job_map's genomes (waiting: not fetched yet, failed: [(accession, why)])."""
+    todo, again = genomes_to_run(opts, job_map, settings)
+    panel = genomes_to_run(opts, extras, panel_settings(settings))[0] if extras else []
     # largest first (since 2026-11-08; until then by accession, a 30 Gb genome begun last kept the other workers
-    # idle for hours at the end): a genome's size, else its file's (TOGA2's have none in the plan)
-    def size(a, j):
-        path = j.get("path") or genomes.genome_file(opts.genomes, a)
-        return j.get("size") or (os.path.getsize(path) / placement.GZIP_BYTES_PER_BASE if os.path.isfile(path) else 0)
-    todo = [(j if a in whole else dict(j, rerun="annotation"), settings)
-            for a, j in sorted(job_map.items(), key=lambda kv: (-size(*kv), kv[0])) if a in whole or a in better]
-    say(f"genomes to run: {len(todo)} of {len(job_map)}" + (f", {len(better - whole)} of them again for better gene "
-                                                            "models" if better - whole else "")
+    # idle for hours at the end)
+    sizes = {j["accession"]: genome_size(opts, j) for j, _s in todo + panel}
+    todo = sorted(todo + panel, key=lambda it: (-sizes[it[0]["accession"]], it[0]["accession"]))
+    say(f"genomes to run: {len(todo) - len(panel)} of {len(job_map)}"
+        + (f", {again} of them again for better gene models" if again else "")
+        + (f", and {len(panel)} of the intraspecific panel's further assemblies" if panel else "")
         + ("" if settings["tiara"] else " (no tiara: windows not classified)"))
     waiting, failed = [], []
     # killed runs' partial folders; not those of another build's genomes going on (their claims live)
-    for leftover in genomes.stale_partials(opts.work):
+    for leftover in genomes.stale_partials(opts.work) + (genomes.stale_scratch(opts.work, opts.scratch)
+                                                          if opts.scratch else []):
         shutil.rmtree(leftover, ignore_errors=True)
-    # every --report_minutes: genomes left and the time left, by their sizes (a genome not fetched yet is no work)
-    progress = util.Progress("genomes run", [size(j["accession"], j) for j, _s in todo], say,
-                             opts.report_minutes * 60)
+    # every --report_minutes, whether a genome finished or not: genomes left and the time left, by their sizes (a
+    # genome not fetched yet is no work), and the cores, memory and disk used (progress_of)
+    progress = progress_of(opts, "genomes run", [sizes[j["accession"]] for j, _s in todo])
     elsewhere = 0
-    with multiprocessing.Pool(max(1, opts.jobs)) as pool:
-        for acc, _summary, why in pool.imap_unordered(run_one, todo):
-            skipped = why in ("not fetched yet", genomes.RUNNING_ELSEWHERE)
-            if why == genomes.RUNNING_ELSEWHERE:
-                elsewhere += 1
-            elif why:
-                (waiting if why == "not fetched yet" else failed).append((acc, why))
-            progress.step(size(acc, job_map[acc]), failed=bool(why) and not skipped, skipped=skipped,
-                          note=(f", {len(waiting):,} not fetched yet" if waiting else "")
-                          + (f", {elsewhere:,} run by another build" if elsewhere else ""))
+
+    def note():
+        return (f", {len(waiting):,} not fetched yet" if waiting else "") \
+            + (f", {elsewhere:,} run by another build" if elsewhere else "")
+    for acc, _summary, why in schedule(opts, todo, sizes, progress, note):
+        skipped = why in ("not fetched yet", genomes.RUNNING_ELSEWHERE)
+        if why == genomes.RUNNING_ELSEWHERE:
+            elsewhere += 1
+        elif why and acc in job_map:  # the panel's: a later run tries again, the package goes on without
+            (waiting if why == "not fetched yet" else failed).append((acc, why))
+        progress.step(sizes[acc], failed=bool(why) and not skipped, skipped=skipped, note=note())
     return waiting, failed
+
+
+MINIPROT_BYTES_PER_BASE = 7.5  # miniprot's index: ~22 GB for a 3 Gb genome (in placement.CHUNK_BASES pieces at most)
+RUN_MEMORY = 3e9               # a genome run's other memory: its worker, tiara's model, the rRNA and metadata scans
+MAX_GENOME_THREADS = 32        # a genome's threads at most (miniprot's index is made on one)
+MEMORY_SHARE = 0.85            # of the memory found (SLURM's, the cgroup's, the node's): the estimates' room
+
+
+def run_memory(bases):
+    """A genome run's memory (bytes), estimated from its bases."""
+    return MINIPROT_BYTES_PER_BASE * min(bases, placement.CHUNK_BASES) + RUN_MEMORY
+
+
+def genome_threads(opts, memory):
+    """A genome's threads: -t / -j, more for a genome whose memory takes a larger share of --memory_gb than -t / -j
+    of -t (so that the cores the memory leaves are its: a node of 120 cores and 200 GB runs ~6 genomes of 3 Gb at
+    once, ~20 threads each, not 30 at 4 each, ~700 GB)."""
+    base = opts.threads_per_genome
+    if not opts.memory:
+        return base
+    return max(base, min(MAX_GENOME_THREADS, opts.threads, round(opts.threads * memory / opts.memory)))
+
+
+def schedule(opts, todo, sizes, progress, note, poll=60):
+    """genomes.run of each (job, settings) in todo (largest first), at most -j at once, each begun when its memory
+    (run_memory) fits in what --memory_gb leaves and -t / -j threads are free (since 2026-11-08: -j at once whatever
+    their sizes, a node's memory over-run by its largest genomes) -> (accession, summary, why) as they finish. A
+    genome whose memory does not fit lets a smaller one that does go first; one larger than --memory_gb runs alone.
+    Its threads: genome_threads, at most those free. Progress is said on time between them (progress.tick, note())."""
+    budget, cores, base = opts.memory, opts.threads, min(opts.threads_per_genome, opts.threads)
+    # the genomes to begin, largest first, and their memory as negatives (ascending: bisect finds the first that fits
+    # in what is free, not a scan of some 30,000 at each genome's end)
+    pending = sorted(todo, key=lambda it: -run_memory(sizes[it[0]["accession"]]))
+    negative = [-run_memory(sizes[it[0]["accession"]]) for it in pending]
+    running, said = {}, set()
+    finished = queue.Queue()
+
+    def begin(item, memory, threads):
+        job, settings = item
+        settings = dict(settings, threads=threads,
+                        rrna=functools.partial(settings["rrna"], threads=threads) if settings.get("rrna") else None)
+        running[job["accession"]] = (memory, threads)
+        def failed(e, acc=job["accession"]):  # the task not run (e.g. not pickled): the genome's failure
+            finished.put((acc, None, f"{type(e).__name__}: {e}"))
+        pool.apply_async(run_one, ((job, settings),), callback=finished.put, error_callback=failed)
+
+    with multiprocessing.Pool(max(1, opts.jobs)) as pool:
+        while pending or running:
+            free_threads = cores - sum(t for _m, t in running.values())
+            free_memory = budget - sum(m for m, _t in running.values()) if budget else None
+            while pending and (not running or (len(running) < opts.jobs and free_threads >= base)):
+                # the largest that fits (the first, where nothing runs or no memory is known)
+                i = bisect.bisect_left(negative, -free_memory) if running and budget else 0
+                if i == len(pending):
+                    break
+                item, memory = pending.pop(i), -negative.pop(i)
+                threads = max(1, min(genome_threads(opts, memory), free_threads if running else cores))
+                if budget and memory > budget and "over" not in said:
+                    said.add("over")
+                    say(f"WARNING: {item[0]['accession']}'s run takes ~{util.size_text(memory)}, more than "
+                        f"--memory_gb {budget / 1e9:,.0f}: run alone")
+                begin(item, memory, threads)
+                free_threads -= threads
+                free_memory = free_memory - memory if budget else None
+            try:
+                got = finished.get(timeout=poll)
+            except queue.Empty:
+                busy = sum(t for _m, t in running.values())
+                progress.tick(note() + f", {len(running)} running on {busy} threads"
+                              + (f", ~{util.size_text(sum(m for m, _t in running.values()))} of "
+                                 f"{util.size_text(budget)} memory estimated" if budget else ""))
+                continue
+            running.pop(got[0], None)
+            yield got
+
+
+def progress_of(opts, what, weights, unit="Gb", scale=1e9):
+    """A pass's progress (util.Progress): said every --report_minutes (its first at 1, 2, 3, 5 and 8 minutes in), each
+    report with the cores, memory and disk the build uses (opts.usage; since 2026-11-08)."""
+    every = opts.report_minutes * 60
+    return util.Progress(what, weights, say, every, unit, scale, early=[s for s in util.REPORT_EARLY if s < every],
+                         usage=opts.usage.line)
+
+
+def running(opts, progress, workers=None):
+    """', 4 running': a pool's items under way (at most its workers, default -j)."""
+    return f", {min(max(1, workers or opts.jobs), progress.n - progress.done):,} running"
 
 
 def backfill_pass(opts, job_map, settings):
@@ -342,11 +459,14 @@ def backfill_pass(opts, job_map, settings):
         return
     say(f"backfill: {len(todo)} done genomes lack tiara's classes or their rRNA, made now")
     made, failed = collections.Counter(), []
+    progress = progress_of(opts, "genomes backfilled", [1] * len(todo), "", 1)
     with multiprocessing.Pool(max(1, opts.jobs)) as pool:
-        for acc, steps, why in pool.imap_unordered(backfill_one, todo):
+        for acc, steps, why in util.reported(pool.imap_unordered(backfill_one, todo), progress,
+                                             lambda: running(opts, progress)):
             made.update(steps)
             if why:
                 failed.append((acc, why))
+            progress.step(1, failed=bool(why))
     say(f"  backfill: {dict(made)} made, {len(failed)} failed{' (e.g. ' + str(failed[:2]) + ')' if failed else ''}")
 
 
@@ -456,6 +576,14 @@ def genome_rrna_records(opts, job_map, ncbi):
     return out
 
 
+def annotate_one(work, genomes_folder, may_fetch, veupathdb_key, job):
+    """annotation.annotate_genome in a worker -> (accession, copies compared or None, why it failed or None)."""
+    try:
+        return job["accession"], annotation.annotate_genome(work, job, genomes_folder, may_fetch, veupathdb_key), None
+    except OSError as e:
+        return job["accession"], None, str(e)[:100]
+
+
 def annotate_pass(opts, job_map, may_fetch):
     """The done genomes with an annotation (NCBI's, Ensembl's or TOGA2's) compared with it (annotation.py: its GFF
     beside the genome, from the fetch stage, or fetched here where may_fetch), the GFF deleted after."""
@@ -464,13 +592,17 @@ def annotate_pass(opts, job_map, may_fetch):
         return
     say(f"gene models: {len(todo)} genomes' calls to compare with their annotation")
     compared, left, failed = 0, 0, []
-    for j in todo:
-        try:
-            n = annotation.annotate_genome(opts.work, j, opts.genomes, may_fetch, opts.veupathdb_key)
-        except OSError as e:
-            failed.append((j["accession"], str(e)[:100]))
-            continue
-        compared, left = compared + (n is not None), left + (n is None)
+    progress = progress_of(opts, "genomes compared", [1] * len(todo), "", 1)
+    # -j at once, a GFF read on one core each (until 2026-11-08 one at a time, in this process)
+    task = functools.partial(annotate_one, opts.work, opts.genomes, may_fetch, opts.veupathdb_key)
+    with multiprocessing.Pool(max(1, opts.jobs)) as pool:
+        for acc, n, why in util.reported(pool.imap_unordered(task, todo), progress, lambda: running(opts, progress)):
+            if why:
+                failed.append((acc, why))
+                progress.step(1, failed=True)
+                continue
+            compared, left = compared + (n is not None), left + (n is None)
+            progress.step(1)
     say(f"  {compared} genomes compared, {left} without their annotation fetched yet (--stage fetch), "
         f"{len(failed)} failed{' (e.g. ' + str(failed[:2]) + ')' if failed else ''}")
 
@@ -494,10 +626,13 @@ def organelle_genes(opts, src_dir, job_map, ncbi):
             "alone, and no COX1 among them")
     barrnap, nhmmer = shutil.which("barrnap"), shutil.which("nhmmer")
     if barrnap and nhmmer:
+        # an assembly a task on one core (its organelle molecules, small: barrnap, nhmmer and miniprot on them), -t at
+        # once (until 2026-11-08 -j at once, -t / -j threads each, mostly idle)
         organelle_mod.assembly_pass(folder, job_map, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
-                                    barrnap, nhmmer, opts.jobs, opts.threads_per_genome, say,
+                                    barrnap, nhmmer, opts.threads, 1, say,
                                     shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
-                                    saved_of=functools.partial(saved_molecules, opts))
+                                    saved_of=functools.partial(saved_molecules, opts),
+                                    progress=functools.partial(progress_of, opts, unit="", scale=1))
     else:
         say("WARNING: no barrnap or nhmmer: the assemblies' organelle molecules not searched")
     return chosen
@@ -517,20 +652,21 @@ def extras_of(opts, src_dir, ncbi, job_map, assemblies):
     return extras
 
 
-def intraspecific_pass(opts, src_dir, ncbi, extras, settings):
-    """The panel's further assemblies run (their BUSCOs and rRNA; no tiara, no held-out calls), their organelle
-    molecules searched for every organelle gene, then their genome files deleted: only their results are kept."""
+def intraspecific_pass(opts, src_dir, ncbi, extras):
+    """The panel's further assemblies, run (their BUSCOs and rRNA; no tiara, no held-out calls: panel_settings) with
+    the plan's genomes by run_genomes: their organelle molecules searched for every organelle gene, then their genome
+    files deleted: only their results are kept."""
     if not extras:
         return
-    run_genomes(opts, extras, dict(settings, tiara=None, odb_own={}))
     folder = os.path.join(opts.work, "organelle")
     chosen = organelle_mod.choose(organelle_mod.refseq_genes(src_dir, folder, ncbi, say), ncbi)
     barrnap, nhmmer = shutil.which("barrnap"), shutil.which("nhmmer")
     if barrnap and nhmmer:
         organelle_mod.assembly_pass(folder, extras, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
-                                    barrnap, nhmmer, opts.jobs, opts.threads_per_genome, say,
+                                    barrnap, nhmmer, opts.threads, 1, say,
                                     shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
-                                    every=True, saved_of=functools.partial(saved_molecules, opts))
+                                    every=True, saved_of=functools.partial(saved_molecules, opts),
+                                    progress=functools.partial(progress_of, opts, unit="", scale=1))
     for acc in extras:
         path = genomes.genome_file(opts.genomes, acc)
         if genomes.is_done(opts.work, acc) and os.path.isfile(organelle_mod.assembly_file(folder, acc)) \
@@ -736,16 +872,27 @@ def main(argv=None):
     p.add_argument("--no_benchmarks", action="store_true", help="write the package without its benchmarks/ "
                                                                   "(eukore/benchmarks.py; docs/benchmarks.md)")
     p.add_argument("-t", "--threads", type=int, default=8)
-    p.add_argument("-j", "--jobs", type=int, default=None, help="genomes at a time (default threads / 4)")
+    p.add_argument("-j", "--jobs", type=int, default=None,
+                   help="genomes at a time at most (default threads / 4; fewer where --memory_gb holds fewer, each "
+                        "then with more threads)")
+    p.add_argument("--memory_gb", type=float,
+                   help="the process stage's memory, GB: a genome is begun where its run's estimate (~7.5 bytes a "
+                        "base of up to 4 Gb, and 3 GB) fits in what the running ones leave (default: SLURM's "
+                        f"allocation, else the cgroup's limit, else the node's memory available; {MEMORY_SHARE:.0%} "
+                        "of it)")
     p.add_argument("--downloads", type=int, default=8,
                    help="the fetch stage's genomes and annotations downloaded at a time (default 8), by curl where on "
                         "the PATH (one NCBI connection: ~30-40 MB/s by curl, ~10 by Python's urllib)")
-    p.add_argument("--scratch", help="the fetch stage's unfinished downloads (.part files) and their gzip checks, e.g. "
-                                     "a node's local disk or a scratch file system without backups; each file is "
-                                     "copied into OUT/genomes once whole (default: beside it)")
+    p.add_argument("--scratch", help="a node's local disk (or a scratch file system without backups) for temporary "
+                                     "files: the fetch stage's unfinished downloads (.part files) and their gzip "
+                                     "checks, each file copied into OUT/genomes once whole; the process stage's (each "
+                                     "genome run's copy of its genome, miniprot's pieces of a large one, the rescue's "
+                                     "ORFs, up to ~3 times a genome's size each; and TMPDIR's, barrnap's and ITSx's), "
+                                     "only the results written to WORK (default: beside them, and TMPDIR)")
     p.add_argument("--report_minutes", type=float, default=util.REPORT_EVERY / 60,
-                   help="minutes between progress reports of the genomes' downloads and runs: genomes left, time left "
-                        "(default 10)")
+                   help="minutes between progress reports of the genomes' downloads and the process stage's passes: "
+                        "items left, time left and, in the process stage, the cores, memory and disk used (default "
+                        "10; the first reports at 1, 2, 3, 5 and 8 minutes)")
     opts = p.parse_args(argv)
     opts.groups = [g for g in opts.groups.split(",") if g]
     compare = []
@@ -765,6 +912,14 @@ def main(argv=None):
     opts.genomes = os.path.join(opts.out, "genomes")
     os.makedirs(opts.work, exist_ok=True)
     os.makedirs(opts.genomes, exist_ok=True)
+    # the resources the build uses, said with the process stage's progress (since 2026-11-08)
+    opts.usage = util.Usage([("WORK", opts.work), ("OUT", opts.genomes)], opts.threads)
+    # the process stage's memory (since 2026-11-08): genomes begun while their estimates fit (schedule)
+    memory, whence = (opts.memory_gb * 1e9, "--memory_gb") if opts.memory_gb else util.memory_budget()
+    opts.memory = memory * (1 if opts.memory_gb else MEMORY_SHARE) if memory else None
+    if opts.stage in ("all", "process"):
+        say(f"memory: {util.size_text(opts.memory)} for the genomes' runs ({whence})" if opts.memory else
+            "memory: not known (--memory_gb): the genomes run -j at once whatever their sizes")
     src_dir = os.path.join(opts.work, "sources")
     if opts.stage in ("all", "fetch"):
         fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh, opts.threads)
@@ -888,13 +1043,20 @@ def main(argv=None):
         say("WARNING: no esl-translate (hmmer's easel tools): no rescue pass of the BUSCOs miniprot missed")
     if opts.stage in ("all", "process"):
         settings = settings_of(opts, src_dir, ncbi, staged_only=opts.stage == "process")
-        waiting, failed = run_genomes(opts, job_map, settings)
+        if opts.scratch:  # the tools' and Python's temporary files there too (the workers inherit it)
+            os.makedirs(opts.scratch, exist_ok=True)
+            os.environ["TMPDIR"] = tempfile.tempdir = os.path.abspath(opts.scratch)
+        began = time.time()
+        say(f"process stage: {opts.jobs} genomes at a time, {opts.threads_per_genome} threads each, progress every "
+            f"{opts.report_minutes:g} minutes" + opts.usage.line())
+        waiting, failed = run_genomes(opts, job_map, settings, extras)
         backfill_pass(opts, job_map, settings)
-        intraspecific_pass(opts, src_dir, ncbi, extras, settings)
+        intraspecific_pass(opts, src_dir, ncbi, extras)
         describe_pass(opts, job_map)
         drop_superseded(opts, job_map)
         organelle_genes(opts, src_dir, job_map, ncbi)
         annotate_pass(opts, job_map, may_fetch=opts.stage == "all")
+        say(f"process stage: took {util.duration(time.time() - began)}" + opts.usage.line())
         # a rerun mends a genome not fetched yet or a download that may come; not one NCBI no longer serves, nor a
         # call that failed (it fails again): `all` packages without those (until 2026-11-06 it waited for them forever)
         retry = waiting + [(a, w) for a, w in failed if w.startswith("fetch failed: ") and not placement.given_up(

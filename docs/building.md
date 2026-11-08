@@ -97,7 +97,7 @@ python3 -m unittest discover -s tests -t tests      # ~80 tests with stand-in to
 | genomes, all six groups | 29,114 species, ~6.5 TB gzipped (21.6 Tb); fetched and pruned as the build goes |
 | transcriptomes (since 0.2) | ~5,000 species without a genome, 341 Gb of transcripts (ENA's TSA sets, 2026-11); `--no_tsa` skips them |
 | the intraspecific panel (since 0.2) | up to 3 further assemblies of 40 species (2 of the vertebrates, rice and maize): ~110, deleted once run |
-| memory | the package stage: ~2 GB for a trial's; for all eukaryotes several GB more (the copies' rows, coding sequences, proteins and introns; since 2026-11-08 the copies whole and their features are read again from `WORK/done` as they are written, not held), measure on a first run; per genome job, miniprot's index on that genome (~7 bytes a base, in pieces of 4 Gb at most: a few GB, ~22 GB for a mammal's), the rest of the run holding only the copies' stretches (since 2026-11-08; until then a chromosome-level genome whole), so that `-j` is set by miniprot's need on the largest genomes, which run first; cmalign up to 2 GB per thread for the 18S regions; the fetch stage ~2 GB (the taxonomy) plus, per download of a TOGA2 `.2bit` genome, its longest chromosome (~250 MB for a mammal's; until 2026-11-08 ~6 times that: 12 downloads at once killed a build on a 10 GB node) |
+| memory | the package stage: ~2 GB for a trial's; for all eukaryotes several GB more (the copies' rows, coding sequences, proteins and introns; since 2026-11-08 the copies whole and their features are read again from `WORK/done` as they are written, not held), measure on a first run; per genome job, miniprot's index on that genome (~7 bytes a base, in pieces of 4 Gb at most: a few GB, ~22 GB for a mammal's), the rest of the run holding only the copies' stretches (since 2026-11-08; until then a chromosome-level genome whole), ~3 GB besides; the process stage begins each genome where its estimate fits in `--memory_gb` (since 0.2.1), so that a node of 200 GB runs ~6 mammals at once, ~20 threads each, and dozens of fungi (simulated on the 29,114 species' genome sizes with 80 cores: 384–512 GB keeps the cores busy, 256 GB takes 8–18% longer, 200 GB 13–28%, 128 GB 25–57%: two thirds of the bases are in the 7,088 genomes over 1 Gb, whose memory then sets how many run); cmalign up to 2 GB per thread for the 18S regions; the fetch stage ~2 GB (the taxonomy) plus, per download of a TOGA2 `.2bit` genome, its longest chromosome (~250 MB for a mammal's; until 2026-11-08 ~6 times that: 12 downloads at once killed a build on a 10 GB node) |
 | network | the fetch stage alone |
 
 ## Usage
@@ -175,8 +175,20 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   a claim of a node that died is taken over after 2 days), and each run then makes the passes below too. Then it
   makes what a tool missing at a genome's run left out (tiara's classes, the rRNA: a backfill), takes the organelle
   genes (`WORK/organelle`; from the organelle molecules the metadata scan kept, not the genome again), and runs the
-  intraspecific panel's further assemblies (their BUSCOs, rRNA and organelle genes), deleting their genome files once
-  done.
+  intraspecific panel's further assemblies (their BUSCOs, rRNA and organelle genes; since 0.2.1 run in the same pool
+  as the plan's genomes), deleting their genome files once done. Since 0.2.1 the genomes are begun as their memory fits
+  (`--memory_gb`; a genome taking a larger share of it than `-t / -j` threads of `-t` gets that share of the threads,
+  up to 32), each genome's hmmsearch runs are split by model over its threads, the rescue's six-frame ORFs are made in
+  as many pieces at once, and the organelle and metadata passes run a genome a core. Each of these passes reports on
+  the same clock as the fetch stage (after 1, 2, 3, 5 and 8 minutes, then every
+  `--report_minutes`), whether or not an item finished meanwhile (since 0.2.1). Each report gives the items done,
+  failed, running and left, the time so far and the time left, and the resources the build uses: the cores its
+  processes kept busy since the last report (out of `-t`), their resident memory and its peak, the node's free memory
+  and load, and the free disk of WORK and OUT. The stage's first and last lines give the same, the last with its time:
+
+  ```
+  [14:02:11]   12/3,410 genomes run (0 failed), 3,398 left (1,204.5 Gb); 2h 00m so far, ~3d 04h left (until ~2026-11-11 18:30), 8 running; 30.2 cores busy (of 32), 84.1 GB resident (peak 120.3 GB); node: 300.0 GB of 512.0 GB free, load 31.5; disk free: WORK, OUT 2.1 TB
+  ```
 - **package**, in turn:
   - makes what a tool missing at a genome's run left out, as the process stage does (tiara given here: its classes);
   - runs FCS-GX where asked (`-t / 4` genomes at once, 4 cores each);
@@ -210,10 +222,11 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `-V` | | print Eukore's own version and exit |
 | `--keep_gb` | 1000 | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept) |
 | `-t`, `--threads` | 8 | threads in all |
-| `-j`, `--jobs` | threads / 4 | genomes at a time |
+| `-j`, `--jobs` | threads / 4 | genomes at a time at most, `-t / -j` threads each; fewer where `--memory_gb` holds fewer, each then with more threads (since 0.2.1) |
+| `--memory_gb` | SLURM's allocation, else the cgroup's limit, else the node's memory available; 85% of it | the process stage's memory: a genome is begun where its run's estimate (~7.5 bytes a base, of 4 Gb at most, and 3 GB) fits in what the running ones leave, the largest first, a smaller one in the room a larger one does not fit (since 0.2.1; until then `-j` at once whatever their sizes) |
 | `--downloads` | 8 | the fetch stage's genomes and annotations downloaded at a time, by `curl` where it is on the PATH (one NCBI connection: ~30–40 MB/s by curl, ~10 by Python's urllib); their gzip checks run in one process of their own, a second core, by ISA-L's `igzip` where it is on the PATH (conda-forge's `isa-l`; ~3.5x Python's), else `pigz`, else Python |
-| `--scratch DIR` | beside `OUT/genomes` | the fetch stage's unfinished downloads (`.part` files) and their gzip checks, e.g. a node's local disk or a scratch file system without backups; each file is copied into `OUT/genomes` once whole |
-| `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and runs (genomes left, time left) |
+| `--scratch DIR` | beside `OUT/genomes`; `TMPDIR` | a node's local disk (or a scratch file system without backups) for temporary files: the fetch stage's unfinished downloads (`.part` files) and their gzip checks, each file copied into `OUT/genomes` once whole; since 0.2.1 the process stage's too: each genome run's copy of its genome (read there by every step, not from `OUT` some six times), miniprot's pieces of a genome over 4 Gb, the rescue's ORFs, tiara's and vsearch's files, and `TMPDIR`'s (barrnap's, ITSx's); only the results are written to `WORK`. Room: up to ~3 times a genome's size per genome running (a few GB; ~10–20 GB for a mammal's, ~45 GB for a 30 Gb genome's pieces) |
+| `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and the process stage's passes (items left, time left; in the process stage the cores, memory and disk used) |
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
 | `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |

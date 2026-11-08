@@ -49,6 +49,7 @@ def read_zstd(path):
 import collections  # noqa: E402
 import datetime  # noqa: E402
 import hashlib  # noqa: E402
+import multiprocessing  # noqa: E402
 import os  # noqa: E402
 import socket  # noqa: E402
 import time  # noqa: E402
@@ -217,17 +218,36 @@ class Progress:
     failed and left, the work left, the time so far, the time left and when it should end. weights: each item's share
     of the work (a genome's size), so that the time left follows the work left, not the count of items; an item
     without one weighs the median. early: seconds in of the first reports (REPORT_EARLY), `every` seconds apart after
-    the last of them. clock: time.time (a test's own)."""
+    the last of them. clock: time.time (a test's own). usage: a function whose text ends each report (Usage.line: the
+    cores, memory and disk the build uses; since 2026-11-08). unit "": no work left said, the items left alone."""
 
-    def __init__(self, what, weights, say, every=REPORT_EVERY, unit="Gb", scale=1e9, clock=time.time, early=()):
+    def __init__(self, what, weights, say, every=REPORT_EVERY, unit="Gb", scale=1e9, clock=time.time, early=(),
+                 usage=None):
         known = sorted(w for w in weights if w)
         self.typical = typical = known[len(known) // 2] if known else 1
         self.weights = [w or typical for w in weights]
         self.what, self.say, self.every, self.unit, self.scale, self.clock = what, say, every, unit, scale, clock
+        self.usage = usage
         self.total = sum(self.weights)
         self.n, self.done, self.failed, self.skipped, self.worked = len(self.weights), 0, 0, 0, 0.0
         self.started = self.last = clock()
         self.early = sorted(early)
+
+    def _due(self, now):
+        return now - self.started >= self.early[0] if self.early else now - self.last >= self.every
+
+    def _report(self, now, note):
+        self.last = now
+        while self.early and now - self.started >= self.early[0]:
+            self.early.pop(0)
+        self.say(self.line(now) + note + (self.usage() if self.usage else ""))
+
+    def tick(self, note=""):
+        """No item finished, but a report is due (since 2026-11-08: none came until one finished, hours in where the
+        largest genomes run first): said with note (e.g. how many are running)."""
+        now = self.clock()
+        if self._due(now) and self.done < self.n:
+            self._report(now, note)
 
     def step(self, weight, failed=False, skipped=False, note=""):
         """One item finished (weight: its own; skipped: no work done, e.g. a genome not fetched yet, its work out of
@@ -241,12 +261,8 @@ class Progress:
         else:
             self.worked += weight
         now = self.clock()
-        due = now - self.started >= self.early[0] if self.early else now - self.last >= self.every
-        if due or self.done == self.n:
-            self.last = now
-            while self.early and now - self.started >= self.early[0]:
-                self.early.pop(0)
-            self.say(self.line(now) + note)
+        if self._due(now) or self.done == self.n:
+            self._report(now, note)
 
     def line(self, now=None):
         now = self.clock() if now is None else now
@@ -254,9 +270,148 @@ class Progress:
         text = f"  {self.done:,}/{self.n:,} {self.what} ({self.failed:,} failed), {left_n:,} left"
         if not left_n:
             return text + f"; took {duration(elapsed)}"
-        text += f" ({max(0.0, self.total - self.worked) / self.scale:,.1f} {self.unit})"
+        if self.unit:
+            text += f" ({max(0.0, self.total - self.worked) / self.scale:,.1f} {self.unit})"
         if self.worked and elapsed > 0:
             left = max(0.0, self.total - self.worked) / (self.worked / elapsed)
             end = datetime.datetime.fromtimestamp(now + left)
             text += f"; {duration(elapsed)} so far, ~{duration(left)} left (until ~{end:%Y-%m-%d %H:%M})"
+        else:
+            text += f"; {duration(elapsed)} so far"
         return text
+
+
+def reported(results, progress, note=lambda: "", poll=60):
+    """A pool's imap_unordered results as they come, its progress said on time between them too (Progress.tick, its
+    note from note()), polled every poll seconds."""
+    while True:
+        try:
+            yield results.next(timeout=poll)
+        except StopIteration:
+            return
+        except multiprocessing.TimeoutError:
+            progress.tick(note())
+
+
+def memory_budget(environ=None, proc="/proc", cgroup="/sys/fs/cgroup"):
+    """The memory this build may use (bytes) and where that came from -> (bytes, what) or (None, None): SLURM's
+    allocation (SLURM_MEM_PER_NODE, or SLURM_MEM_PER_CPU times the cores; MB as SLURM counts them, MiB), else the
+    cgroup's limit (v2's memory.max, v1's memory.limit_in_bytes), else the node's memory available; never more than
+    the node has available."""
+    env = os.environ if environ is None else environ
+    got, what = None, None
+    try:
+        if env.get("SLURM_MEM_PER_NODE", "").isdigit() and int(env["SLURM_MEM_PER_NODE"]):
+            got, what = int(env["SLURM_MEM_PER_NODE"]) * 2 ** 20, "SLURM_MEM_PER_NODE"
+        elif env.get("SLURM_MEM_PER_CPU", "").isdigit():
+            cpus = int(env.get("SLURM_CPUS_ON_NODE") or env.get("SLURM_CPUS_PER_TASK") or 1)
+            got, what = int(env["SLURM_MEM_PER_CPU"]) * 2 ** 20 * cpus, "SLURM_MEM_PER_CPU"
+    except ValueError:
+        pass
+    if got is None:
+        for name in ("memory.max", "memory/memory.limit_in_bytes"):
+            try:
+                with open(os.path.join(cgroup, name)) as fh:
+                    text = fh.read().strip()
+            except OSError:
+                continue
+            if text.isdigit() and int(text) < 2 ** 60:  # v1's "none" is a huge number
+                got, what = int(text), "the cgroup's limit"
+                break
+    try:
+        with open(os.path.join(proc, "meminfo")) as fh:
+            info = {line.split(":")[0]: int(line.split()[1]) * 1024 for line in fh if line.strip()}
+        available = info["MemAvailable"]
+    except (OSError, KeyError, ValueError, IndexError):
+        available = None
+    if available and (got is None or available < got):
+        got, what = available, "the node's memory available"
+    return got, what
+
+
+def size_text(n):
+    """Bytes as a person reads them: 512 MB, 84.1 GB, 2.1 TB."""
+    for unit, scale in (("TB", 1e12), ("GB", 1e9)):
+        if n >= scale:
+            return f"{n / scale:,.1f} {unit}"
+    return f"{n / 1e6:,.0f} MB"
+
+
+class Usage:
+    """The node's resources the build uses, for the progress reports (since 2026-11-08): the cores its processes kept
+    busy since the last report (the CPU seconds of this process and every process under it, those ended included, over
+    the wall's), their memory (resident, summed: pages they share counted in each) and its peak over the reports, the
+    node's memory available and its load, and the free space of folders [(label, path)] (one line for those on one
+    file system). From Linux's /proc; elsewhere the disk alone. cores: the build's own (-t)."""
+
+    def __init__(self, folders=(), cores=None, clock=time.time, proc="/proc"):
+        self.folders, self.cores, self.clock, self.proc = list(folders), cores, clock, proc
+        self.peak = 0
+        self.last = (clock(), self.tree()[0])
+
+    def tree(self):
+        """(CPU seconds, resident bytes) of this process and its descendants, or (None, None) without /proc."""
+        try:
+            pids = [int(e) for e in os.listdir(self.proc) if e.isdigit()]
+        except OSError:
+            return None, None
+        children, stat = collections.defaultdict(list), {}
+        for pid in pids:
+            try:
+                with open(os.path.join(self.proc, str(pid), "stat")) as fh:
+                    text = fh.read()
+            except OSError:  # ended meanwhile
+                continue
+            f = text[text.rfind(")") + 2:].split()  # field 3 on (the name may hold spaces and brackets)
+            children[int(f[1])].append(pid)
+            stat[pid] = (sum(int(x) for x in f[11:15]), int(f[21]))  # utime stime cutime cstime; rss (pages)
+        cpu = rss = 0
+        todo = [os.getpid()]
+        while todo:
+            pid = todo.pop()
+            if pid in stat:
+                cpu, rss = cpu + stat[pid][0], rss + stat[pid][1]
+            todo += children.get(pid, [])
+        return cpu / os.sysconf("SC_CLK_TCK"), rss * os.sysconf("SC_PAGE_SIZE")
+
+    def node(self):
+        """(memory available, memory in all) of the node, bytes, or None."""
+        try:
+            with open(os.path.join(self.proc, "meminfo")) as fh:
+                info = {line.split(":")[0]: int(line.split()[1]) * 1024 for line in fh if line.strip()}
+            return info["MemAvailable"], info["MemTotal"]
+        except (OSError, KeyError, ValueError, IndexError):
+            return None
+
+    def disk(self):
+        seen = {}
+        for label, path in self.folders:
+            try:
+                dev, free = os.stat(path).st_dev, shutil.disk_usage(path).free
+            except OSError:
+                continue
+            seen.setdefault(dev, [[], free])[0].append(label)
+        return [(", ".join(labels), free) for labels, free in seen.values()]
+
+    def line(self):
+        """'; 30.2 cores busy (of 32), 84.1 GB resident (peak 120.3 GB); node: 300.0 GB of 512.0 GB free, load 31.5;
+        disk free: WORK 2.1 TB, OUT 10.0 TB'."""
+        now = self.clock()
+        cpu, rss = self.tree()
+        parts = []
+        if cpu is not None:
+            then, cpu_then = self.last
+            self.last = (now, cpu)
+            self.peak = max(self.peak, rss)
+            busy = max(0.0, cpu - (cpu_then or 0)) / max(1e-9, now - then)
+            parts.append(f"{busy:,.1f} cores busy" + (f" (of {self.cores})" if self.cores else "")
+                         + f", {size_text(rss)} resident (peak {size_text(self.peak)})")
+        node = self.node()
+        if node:
+            load = os.getloadavg()[0] if hasattr(os, "getloadavg") else None
+            parts.append(f"node: {size_text(node[0])} of {size_text(node[1])} free"
+                         + (f", load {load:,.1f}" if load is not None else ""))
+        disk = self.disk()
+        if disk:
+            parts.append("disk free: " + ", ".join(f"{label} {size_text(free)}" for label, free in disk))
+        return "".join("; " + p for p in parts)

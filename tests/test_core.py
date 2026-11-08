@@ -6,6 +6,7 @@ rRNA's).
     python3 -m unittest discover -s tests -t tests
 """
 
+import multiprocessing
 import os
 import sys
 import tempfile
@@ -213,6 +214,67 @@ class ProgressTest(unittest.TestCase):
             if len(said) > n:
                 at.append(now[0])
         self.assertEqual(at, [60, 120, 180, 300, 480, 1080, 1680])
+
+    def test_reports_while_nothing_finishes_with_the_resources(self):
+        # a pool whose first result comes 25 minutes in: reports at 10 and 20 minutes all the same, each with usage
+        now, said = [0.0], []
+        p = util.Progress("genomes run", [3e9, 1e9], said.append, every=600, clock=lambda: now[0],
+                          usage=lambda: "; 4.0 cores busy")
+
+        class Results:  # imap_unordered's iterator: next(timeout) raises TimeoutError until a result is there
+            def __init__(self):
+                self.left = ["a", "b"]
+
+            def next(self, timeout):
+                now[0] += timeout
+                if not self.left:
+                    raise StopIteration
+                if now[0] < 1500 and self.left == ["a", "b"]:
+                    raise multiprocessing.TimeoutError
+                return self.left.pop(0)
+        got = []
+        for item in util.reported(Results(), p, lambda: ", 2 running"):
+            got.append(item)
+            p.step(3e9 if item == "a" else 1e9)
+        self.assertEqual(got, ["a", "b"])
+        self.assertEqual(said[0], "  0/2 genomes run (0 failed), 2 left (4.0 Gb); 10m 00s so far, 2 running; 4.0 cores "
+                                  "busy")
+        self.assertTrue(said[1].startswith("  0/2 genomes run (0 failed), 2 left (4.0 Gb); 20m 00s so far"))
+        self.assertTrue(said[-1].startswith("  2/2 genomes run (0 failed), 0 left; took"))
+        # no unit: the items left alone
+        q = util.Progress("genomes compared", [1, 1], said.append, every=0, unit="", scale=1, clock=lambda: now[0])
+        q.step(1)
+        self.assertRegex(said[-1], r"^  1/2 genomes compared \(0 failed\), 1 left; ")
+
+    def test_usage_of_the_process_tree(self):
+        tick, page = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE")
+        me = os.getpid()
+        with tempfile.TemporaryDirectory() as proc:
+            def stat(pid, ppid, cpu, pages, name="python"):
+                os.makedirs(os.path.join(proc, str(pid)), exist_ok=True)
+                fields = (["S", str(ppid)] + ["0"] * 9 + [str(cpu), "0", "0", "0"] + ["0"] * 6 + [str(pages)]
+                          + ["0"] * 20)
+                with open(os.path.join(proc, str(pid), "stat"), "w") as fh:
+                    fh.write(f"{pid} ({name}) {' '.join(fields)}\n")
+            stat(me, 1, 10 * tick, 1000)
+            stat(me + 1, me, 5 * tick, 500, name="mini prot) (x")  # a child; a name with spaces and brackets
+            stat(me + 2, me + 1, 5 * tick, 500)  # a grandchild
+            stat(me + 3, 1, 999 * tick, 99999)  # another user's
+            with open(os.path.join(proc, "meminfo"), "w") as fh:
+                fh.write("MemTotal:       1000000 kB\nMemFree:  10 kB\nMemAvailable:    250000 kB\n")
+            now = [0.0]
+            u = util.Usage([("WORK", proc), ("OUT", proc)], cores=8, clock=lambda: now[0], proc=proc)
+            self.assertEqual(u.tree(), (20.0, 2000 * page))
+            stat(me, 1, 40 * tick, 1000)  # 30 CPU seconds more in 10 s: 3 cores
+            now[0] = 10.0
+            line = u.line()
+            self.assertIn("; 3.0 cores busy (of 8), ", line)
+            self.assertIn(f"resident (peak {util.size_text(2000 * page)})", line)
+            self.assertIn("; node: 256 MB of 1.0 GB free", line)
+            self.assertIn("; disk free: WORK, OUT ", line)  # one file system: one figure
+        self.assertEqual([util.size_text(n) for n in (5e8, 8.41e10, 2.1e12)], ["500 MB", "84.1 GB", "2.1 TB"])
+        # no /proc: the disk alone
+        self.assertEqual(util.Usage(proc="/no/such/proc").line(), "")
 
 
 if __name__ == "__main__":
