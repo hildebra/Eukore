@@ -68,6 +68,7 @@ Eukore_2026.11/
 ├── species.tsv              one row per species: supergroup, group, NCBI and six references' lineages
 ├── crossrefs.tsv            each species' ids: Open Tree, GBIF, WoRMS, IRMNG, UNITE SH, BOLD BIN
 ├── genomes.tsv              the species' genomes: accession, quality flags, rRNA copies, genetic code, duplication
+├── copy_numbers.tsv.gz      each genome's copies of every locus, rRNA gene and unit, organelle molecule and gene
 ├── taxonomy/                NCBI's taxonomy, cut to the package (nodes with nuclear and organelle codes, names)
 ├── busco/                   loci.tsv (call rates per BUSCO), copies.tsv (calls, checks, confidence),
 │                            features.tsv, introns.tsv, intron_sites.tsv, copies/, cds/, proteins/<locus>.*.gz
@@ -103,6 +104,7 @@ What you may want, where it is in a package, and where it is described. The file
 | a genome's genetic code and its check | `genomes.tsv`; `metadata/codons.tsv.gz` | `gencode`, `gencode_check`, `best_table` | [FORMAT: genomes.tsv](docs/FORMAT.md#genomestsv) |
 | organelle genetic codes | `taxonomy/nodes.tsv` | `mgcode`, `pgcode` | [FORMAT: taxonomy/](docs/FORMAT.md#taxonomy) |
 | haplotypes in an assembly, a whole-genome duplication | `genomes.tsv`; `busco/copies.tsv` | `duplication`, `dup_identity_median`; `dup_identity` | [FORMAT: genomes.tsv](docs/FORMAT.md#genomestsv) |
+| a genome's copy numbers: each locus, rRNA gene and unit, organelle molecule and gene (by reads where measured) | `copy_numbers.tsv.gz` | `set`, `element`, `copies`, `partial`, `basis` | [FORMAT: copy_numbers.tsv.gz](docs/FORMAT.md#copy_numberstsvgz-format-5) |
 | how far a marker varies within a species | `intraspecific/barcode_gap.tsv` | `intra_min`, `inter_max`, `gap`, `resolved` | [FORMAT: intraspecific/](docs/FORMAT.md#intraspecific-format-5) |
 | **Taxonomy and names** | | | |
 | a species' supergroup (Obazoa, TSAR, ...) and group | `species.tsv` | `supergroup`, `group` | [FORMAT: species.tsv](docs/FORMAT.md#speciestsv), `data/supergroups.tsv` |

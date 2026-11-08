@@ -111,6 +111,78 @@ def type_material_of(row):
     return "-" if value == "na" else value
 
 
+COPY_NUMBER_COLUMNS = ("accession", "species_taxid", "set", "element", "copies", "partial", "basis")
+COPY_NUMBERS = "copy_numbers.tsv.gz"
+
+
+def write_gz(path, columns, rows):
+    """A gzipped TSV table (- for an empty value)."""
+    with gzip.open(util.part_of(path), "wt", compresslevel=6, newline="\n") as fh:
+        fh.write("\t".join(columns) + "\n")
+        fh.writelines("\t".join("-" if r.get(c) in (None, "") else str(r[c]) for c in columns) + "\n" for r in rows)
+    os.replace(util.part_of(path), path)
+
+
+def read_gz(path):
+    """A gzipped TSV table -> [row dicts]."""
+    with gzip.open(path, "rt") as fh:
+        head = fh.readline().rstrip("\n").split("\t")
+        return [dict(zip(head, line.rstrip("\n").split("\t"))) for line in fh if line.strip()]
+
+
+def organelle_molecules_of(folder):
+    """A done genome's organelle molecules in its assembly (metadata.describe's stats.json) -> {mitochondrion: n,
+    plastid: n}, {} where not measured."""
+    from .metadata import STATS  # noqa: PLC0415
+    try:
+        with open(os.path.join(folder, STATS)) as fh:
+            stats = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return {k: int(stats[f"{k}_molecules"]) for k in ("mitochondrion", "plastid")
+            if str(stats.get(f"{k}_molecules", "")).isdigit()}
+
+
+def copy_numbers(genomes, copy_rows, loci, set_of, organelle=()):
+    """copy_numbers.tsv.gz's rows (since 2026-11-08): per species' genome and element, its copies and partial copies
+    in the assembly. set busco or markers: each locus searched (complete copies; a Fragmented one 0 and 1 partial; a
+    Missing one 0 and 0); rrna: rrna.element_counts's; mitochondrion and plastid: the molecules its FASTA titles name an
+    organelle, and the organelle genes found on them (organelle/genes.tsv's of source assembly: their copies on the
+    molecules, a plastid's inverted repeat 2). basis: assembly, or transcripts for a transcriptome (TSA: its copies are
+    isoforms, not genes). tools/rdna_depth.py adds rows of basis reads. genomes: collect's (their _searched,
+    _rrna_copies, _organelle_molecules)."""
+    by = collections.defaultdict(dict)
+    for r in copy_rows:
+        by[r["accession"]][r["locus"]] = r
+    genes = collections.defaultdict(list)
+    for _n, _s, row in organelle or ():
+        if row.get("source") == "assembly" and row.get("accession") not in (None, "-"):
+            genes[row["accession"]].append(row)
+    out = []
+    for acc, g in sorted(genomes.items()):
+        if g.get("representative") != "t" or g.get("source") == "no_assembly":  # EukDetect2's records: no genome
+            continue
+        base = dict(accession=acc, species_taxid=g["species_taxid"],
+                    basis="transcripts" if g.get("source") == "tsa" else "assembly")
+        for item in loci:
+            locus = item["locus"]
+            if locus not in g.get("_searched", ()):  # a genome run before the locus was (a marker): not 0, not known
+                continue
+            r = by[acc].get(locus)
+            status = r["status"] if r else "Missing"
+            out.append(dict(base, set=set_of.get(locus, "busco"), element=locus,
+                            copies=int(r["copies"]) if status in ("Single", "Duplicated") else 0,
+                            partial=int(status == "Fragmented")))
+        for element, (n, partial) in (g.get("_rrna_copies") or {}).items():
+            out.append(dict(base, set="rrna", element=element, copies=n, partial=partial))
+        for kind, n in (g.get("_organelle_molecules") or {}).items():
+            out.append(dict(base, set=kind, element="molecules", copies=n, partial=0))
+        for row in sorted(genes[acc], key=lambda r: (r["organelle"], r["gene"])):
+            out.append(dict(base, set=row["organelle"], element=row["gene"], copies=int(row.get("copies") or 1),
+                            partial=int(row.get("partial") in (True, "t"))))
+    return out
+
+
 def duplication_of(rows):
     """A genome's duplicated BUSCOs (its copies.tsv rows; since 2026-11-07) -> dict(duplicated_share (of those called
     Single or Duplicated), dup_identity_median (the Duplicated ones' dup_identity, "<50" read as 50), duplication):
@@ -186,9 +258,12 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         from . import rrna as rrna_mod  # noqa: PLC0415
         from .genomes import done_dir, fcs_of_copy  # noqa: PLC0415
         if os.path.isfile(os.path.join(done_dir(work, acc), "rrna.tsv")):
-            n = rrna_mod.counts(rrna_mod.load(done_dir(work, acc)))
+            rrna_rows = rrna_mod.load(done_dir(work, acc))
+            n = rrna_mod.counts(rrna_rows)
             genomes[acc].update(rrna_18s=n["18S"], rdna_units=n["rDNA"], rdna_complete=n["rDNA_complete"],
                                 rdna_contigs=n["rDNA_contigs"])
+            genomes[acc]["_rrna_copies"] = rrna_mod.element_counts(rrna_rows)  # copy_numbers.tsv's (no column)
+        genomes[acc]["_organelle_molecules"] = organelle_molecules_of(done_dir(work, acc))
         copies[acc] = got
         for f in done_table(work, acc, "features.tsv"):
             features.append(dict(accession=acc, locus=f["locus"], kind=f["kind"], start=int(f["start"]),
@@ -200,7 +275,9 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             features.extend(dict(accession=acc, locus=locus, kind="gap", start=a, end=b) for a, b in runs)
         fcs = [dict(f, start=int(f["start"]), end=int(f["end"])) for f in done_table(work, acc, "fcs.tsv")]
         screened = os.path.isfile(os.path.join(done_dir(work, acc), "fcs.tsv"))
-        for r in done_table(work, acc, "loci.tsv"):
+        searched = done_table(work, acc, "loci.tsv")
+        genomes[acc]["_searched"] = {r["locus"] for r in searched}  # Missing ones too: copy_numbers.tsv's zeros
+        for r in searched:
             if r["status"] != "Missing":
                 edge = min(int(r["start"]) - 1, int(r["contig_length"]) - int(r["end"])) \
                     if str(r.get("contig_length", "")).isdigit() and str(r.get("start", "")).isdigit() else "-"
@@ -372,6 +449,9 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
     organelle = organelle or []
     organelle_mod.write_genes(os.path.join(part, "organelle"), organelle)
     n_organelle = collections.Counter(int(row["species_taxid"]) for _n, _s, row in organelle)
+    # every species' genome's copy numbers of its loci, rRNA and organelles in one table (since 2026-11-08)
+    copy_number_rows = copy_numbers(genomes, collected["copy_rows"], loci, set_of, organelle)
+    write_gz(os.path.join(part, COPY_NUMBERS), COPY_NUMBER_COLUMNS, copy_number_rows)
     for rel, columns, table_rows in tables:
         os.makedirs(os.path.dirname(os.path.join(part, rel)) or part, exist_ok=True)
         _tsv(os.path.join(part, rel), columns, table_rows)
@@ -425,6 +505,7 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                                                                            if row["organelle"] == k))
                                                for k in organelle_mod.KINDS},
                            "species_organelle_genes": len(n_organelle), "taxa": taxa,
+                           "copy_numbers": dict(collections.Counter(r["set"] for r in copy_number_rows)),
                            "busco_loci": sum(1 for s in set_of.values() if s == "busco"),
                            "marker_loci": sum(1 for s in set_of.values() if s == "markers"),
                            "copy_confidence": dict(collections.Counter(r["confidence"] for r in collected["copy_rows"]

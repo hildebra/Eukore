@@ -629,6 +629,31 @@ def counts(rows):
             "rDNA_contigs": len({r["contig"] for r in units})}
 
 
+COPY_ELEMENTS = ("rDNA_unit", "18S", "5.8S", "28S", "5S")
+
+
+def element_counts(rows):
+    """A genome's rRNA as copy_numbers.tsv counts it (since 2026-11-08) -> {element: (copies, partial)}: rDNA units
+    (partial: without a whole 28S), 18S (its spans of MIN_LEN or more, in units or alone, and partial: a unit's 18S
+    shorter, at a contig's end: 22 of 1,851 units on the trial of 2026-11-07), the units' 5.8S, 28S (partial: not
+    whole) and 5S (an inline 5S alone: 5S arrays elsewhere are not extracted). Copies in the assembly, a lower bound
+    (arrays collapse)."""
+    units = [r for r in rows if r["kind"] == "rDNA"]
+    names = [collections.Counter(n for n, _a, _b in (r.get("regions") or ())) for r in units]
+    spans = collections.defaultdict(list)
+    for r in rows:
+        if r["kind"] == "18S":
+            spans[(r.get("contig"), r.get("strand"))].append((r.get("start", 0), r.get("end", 0)))
+    short = sum(1 for u, n in zip(units, names) if n["18S"] and not any(
+        a <= u.get("end", 0) and u.get("start", 0) <= b for a, b in spans[(u.get("contig"), u.get("strand"))]))
+    return {"rDNA_unit": (len(units), sum(1 for r in units if not r["lsu_complete"])),
+            "18S": (sum(r["kind"] == "18S" for r in rows) + short, short),
+            "5.8S": (sum(n["5.8S"] for n in names), 0),
+            "28S": (sum(n["28S"] for n in names),
+                    sum(n["28S"] for r, n in zip(units, names) if not r["lsu_complete"])),
+            "5S": (sum(n["5S"] for n in names), 0)}
+
+
 def load(folder):
     """A genome's saved extraction -> extract_genome's rows ([] where there is none; contig_length and introns None
     in one saved before format 4)."""

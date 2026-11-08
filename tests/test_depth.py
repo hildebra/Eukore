@@ -316,7 +316,17 @@ class EndToEndTest(unittest.TestCase):
         self.assertAlmostEqual(got["rdna_copies_reads"], self.UNITS, delta=self.UNITS * 0.1)
         self.assertAlmostEqual(got["rdna_18s_copies"], self.UNITS, delta=self.UNITS * 0.1)
         self.assertAlmostEqual(got["mt_copies_reads"], self.MITO, delta=self.MITO * 0.1)
+        from eukore import package as package_mod  # noqa: PLC0415
+        copies = os.path.join(self.pkg, package_mod.COPY_NUMBERS)  # a format-5 package's copy numbers (2026-11-08)
+        package_mod.write_gz(copies, package_mod.COPY_NUMBER_COLUMNS, [dict(
+            accession="GCA_9.1", species_taxid=4932, set="rrna", element="rDNA_unit", copies=1, partial=0,
+            basis="assembly")])
         rdna_depth.main(["table", "--into_package"] + args)
+        cn = {(r["set"], r["element"], r["basis"]): r["copies"] for r in package_mod.read_gz(copies)}
+        self.assertEqual(cn[("rrna", "rDNA_unit", "assembly")], "1")  # the assembly's kept, the reads' added
+        self.assertAlmostEqual(float(cn[("rrna", "rDNA_unit", "reads")]), self.UNITS, delta=self.UNITS * 0.1)
+        self.assertIn(("mitochondrion", "genome", "reads"), cn)
+        self.assertNotIn(("plastid", "genome", "reads"), cn)  # not measured
         rows = dp.read_dicts(os.path.join(self.pkg, "genomes.tsv"))
         self.assertEqual(list(rows[0])[-4:], ["rdna_copies_reads", "mt_copies_reads", "pt_copies_reads", "local"])
         self.assertAlmostEqual(int(rows[0]["rdna_copies_reads"]), self.UNITS, delta=self.UNITS * 0.1)
@@ -327,6 +337,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(manifest["inputs"]["read_depth"]["measured"], 1)
         rdna_depth.main(["table", "--into_package"] + args)  # again: the columns replaced, not added twice
         self.assertEqual(len(dp.read_dicts(os.path.join(self.pkg, "genomes.tsv"))[0]), 10)
+        self.assertEqual(len(package_mod.read_gz(copies)), len(cn))  # the reads' rows replaced, not added twice
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ import sys
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
-from eukore import depth, util  # noqa: E402
+from eukore import depth, package as package_mod, util  # noqa: E402
 
 CURATED = os.path.join(HERE, "data", "depth_runs.tsv")
 
@@ -153,6 +153,18 @@ def row_of(genome, work):
 GENOME_COLUMNS = ("rdna_copies_reads", "mt_copies_reads", "pt_copies_reads")
 
 
+READS_ELEMENTS = (("rrna", "rDNA_unit", "rdna_copies_reads"), ("rrna", "18S", "rdna_18s_copies"),
+                  ("mitochondrion", "genome", "mt_copies_reads"), ("plastid", "genome", "pt_copies_reads"))
+
+
+def reads_rows(rows):
+    """depth.tsv's rows -> copy_numbers.tsv.gz's of basis reads: rDNA units and 18S, mitochondrial and plastid genomes
+    per haploid nuclear genome (partial -: not known), where measured."""
+    return [dict(accession=r["accession"], species_taxid=r["species_taxid"], set=s, element=e, copies=r[c],
+                 partial="-", basis="reads")
+            for r in rows for s, e, c in READS_ELEMENTS if r.get(c, "-") not in ("-", "")]
+
+
 def into_package(package, rows):
     """depth.tsv written into the package, genomes.tsv given GENOME_COLUMNS, and the manifest's files and
     inputs.read_depth updated."""
@@ -178,10 +190,16 @@ def into_package(package, rows):
     with open(part, "w", newline="\n") as fh:
         fh.write("\n".join(out) + "\n")
     os.replace(part, path)
+    written = ["genomes.tsv", "depth.tsv"]
+    copies = os.path.join(package, package_mod.COPY_NUMBERS)
+    if os.path.isfile(copies):  # since 2026-11-08: its rows of basis reads, replaced
+        kept = [r for r in package_mod.read_gz(copies) if r["basis"] != "reads"]
+        package_mod.write_gz(copies, package_mod.COPY_NUMBER_COLUMNS, kept + reads_rows(rows))
+        written.append(package_mod.COPY_NUMBERS)
     manifest_path = os.path.join(package, "manifest.json")
     with open(manifest_path) as fh:
         manifest = json.load(fh)
-    for rel in ("genomes.tsv", "depth.tsv"):
+    for rel in written:
         full = os.path.join(package, rel)
         manifest["files"][rel] = [os.path.getsize(full), util.md5(full)]
     manifest["inputs"]["read_depth"] = {
@@ -203,7 +221,8 @@ def table(args):
     print(f"{out}: {len(rows)} genomes, {sum(1 for r in rows if r['rdna_copies_reads'] != '-')} measured")
     if args.into_package:
         into_package(args.package, rows)
-        print(f"{args.package}: depth.tsv, genomes.tsv's {', '.join(GENOME_COLUMNS)}, manifest updated")
+        print(f"{args.package}: depth.tsv, genomes.tsv's {', '.join(GENOME_COLUMNS)}, "
+              f"{package_mod.COPY_NUMBERS}'s rows of basis reads (where the package has it), manifest updated")
 
 
 def main(argv=None):

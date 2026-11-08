@@ -131,6 +131,41 @@ class SetTest(unittest.TestCase):
 
 
 class RunTest(unittest.TestCase):
+    def test_copy_numbers(self):
+        genomes_ = {"G1": dict(representative="t", species_taxid=1, source="ncbi", _searched={"A", "B"},
+                               _rrna_copies={"rDNA_unit": (3, 1), "18S": (4, 0)}, _organelle_molecules={"plastid": 1}),
+                    "T1": dict(representative="t", species_taxid=2, source="tsa", _searched={"A"}),
+                    "E1": dict(representative="t", species_taxid=3, source="no_assembly", _searched={"A"}),
+                    "G2": dict(representative="f", species_taxid=1, source="assembly")}
+        copy_rows = [dict(accession="G1", locus="A", status="Duplicated", copies="3"),
+                     dict(accession="G1", locus="B", status="Fragmented", copies="0"),
+                     dict(accession="T1", locus="A", status="Duplicated", copies="2")]
+        organelle = [("x", "ACGT", dict(source="assembly", accession="G1", organelle="plastid", gene="rbcL", copies=1,
+                                        partial=False)),
+                     ("y", "ACGT", dict(source="refseq", accession="-", organelle="plastid", gene="psbA", copies=2,
+                                        partial=False))]
+        loci = [dict(locus="A"), dict(locus="B"), dict(locus="M1")]  # M1: a marker none was searched for
+        got = {(r["accession"], r["set"], r["element"]): (r["copies"], r["partial"], r["basis"])
+               for r in package.copy_numbers(genomes_, copy_rows, loci, {"A": "busco", "B": "busco", "M1": "markers"},
+                                             organelle)}
+        self.assertEqual(got, {("G1", "busco", "A"): (3, 0, "assembly"), ("G1", "busco", "B"): (0, 1, "assembly"),
+                               ("G1", "rrna", "rDNA_unit"): (3, 1, "assembly"), ("G1", "rrna", "18S"): (4, 0, "assembly"),
+                               ("G1", "plastid", "molecules"): (1, 0, "assembly"),
+                               ("G1", "plastid", "rbcL"): (1, 0, "assembly"),  # RefSeq's psbA: not the genome's
+                               ("T1", "busco", "A"): (2, 0, "transcripts")})  # isoforms; EukDetect2's records: none
+        from eukore import rrna as rrna_mod  # noqa: PLC0415
+        c = dict(contig="c1", strand="+")
+        rows = [dict(c, kind="18S", start=1, end=1800), dict(c, kind="18S", start=20001, end=21800),
+                dict(c, kind="18S", start=50001, end=51800),  # an 18S alone
+                dict(c, kind="rDNA", lsu_complete=True, start=1, end=6120, regions=[
+                    ("18S", 0, 1800), ("5.8S", 2000, 2160), ("28S", 2300, 5600), ("5S", 6000, 6120)]),
+                dict(c, kind="rDNA", lsu_complete=False, start=20001, end=24000, regions=[
+                    ("18S", 0, 1800), ("5.8S", 2000, 2160), ("28S", 2300, 4000)]),
+                dict(c, kind="rDNA", lsu_complete=True, start=90001, end=95000, regions=[  # its 18S under MIN_LEN
+                    ("18S", 0, 700), ("5.8S", 900, 1060), ("28S", 1200, 4500)])]
+        self.assertEqual(rrna_mod.element_counts(rows), {"rDNA_unit": (3, 1), "18S": (4, 1), "5.8S": (3, 0),
+                                                         "28S": (3, 1), "5S": (1, 0)})
+
     def test_a_genome_into_the_package(self):
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
@@ -228,6 +263,15 @@ class RunTest(unittest.TestCase):
             self.assertEqual((manifest["format"], manifest["counts"]["species"], manifest["counts"]["copies"],
                               manifest["counts"]["busco_loci"]), (package.FORMAT, 2, 4, 3))
             self.assertEqual(manifest["inputs"]["references"]["PR2"]["species"], 1)
+            # every genome's copy numbers in one table (since 2026-11-08): its BUSCOs, Missing ones 0; its organelle
+            # molecules (none in the stand-in genome); no rRNA searched: no rRNA rows
+            cn = {(r["accession"], r["set"], r["element"]): r
+                  for r in package.read_gz(os.path.join(out, package.COPY_NUMBERS))}
+            self.assertEqual([cn[(YEAST, "busco", l)]["copies"] for l in fx.LOCI], ["2", "1", "0"])
+            self.assertEqual((cn[(YEAST, "mitochondrion", "molecules")]["copies"], cn[(YEAST, "busco", "1at2759")]["basis"]),
+                             ("0", "assembly"))
+            self.assertNotIn((YEAST, "rrna", "18S"), cn)
+            self.assertEqual(manifest["counts"]["copy_numbers"], {"busco": 6, "mitochondrion": 2, "plastid": 2})
             # each BUSCO's calls over the package's species: two fungi, 1at2759 and 2at2759 called in both
             got = {r["locus"]: r for r in package.read_table(out, "busco/loci.tsv")}
             self.assertEqual([got[l]["called"] for l in fx.LOCI], ["2", "2", "0"])

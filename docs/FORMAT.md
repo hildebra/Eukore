@@ -27,6 +27,7 @@ measured on a panel of species ([Changes](#changes)).
 | [`species.tsv`](#speciestsv) | one row per species: its genome, supergroup and group, NCBI lineage (and filled), lineages in PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2, type material | 4, more in 5 |
 | [`crossrefs.tsv`](#crossrefstsv-format-5) | each species' ids in Open Tree, GBIF, WoRMS, IRMNG, Index Fungorum, UNITE (SH), BOLD (BIN) | 5 |
 | [`genomes.tsv`](#genomestsv) | each genome: accession, flags, rRNA copies, genetic code and its check, duplication, introns, type material | 4, more in 5 |
+| [`copy_numbers.tsv.gz`](#copy_numberstsvgz-format-5) | each genome's copies of every BUSCO and marker locus, rRNA gene and unit, organelle molecule and gene; by reads where measured | 5 |
 | [`busco/loci.tsv`](#busco) | each BUSCO's call rate, overall and per group | 4 |
 | [`busco/copies/`, `cds/`, `proteins/`](#busco) | each BUSCO's copies whole (introns and all), their coding sequences, their proteins | cds, proteins: 5 |
 | [`busco/copies.tsv`](#busco) | each copy's call, checks, confidence, internal stops, duplicated copies' identity | 4, more in 5 |
@@ -144,6 +145,25 @@ one, or a metagenome's, only without better (`FCS-GX: contaminated`: 1% or more 
 another eukaryote's sequence; `ANI: inconclusive`); then a RefSeq reference, then a representative genome; then the
 better assembly level, one FCS-GX finds no contaminant in, the fewer contigs per megabase, the newer. FCS-GX's summary
 is the fetched assembly's (its RefSeq copy where it has one).
+
+## copy_numbers.tsv.gz (format 5)
+Since 2026-11-08: every species' genome's copy numbers in one long table, a row per genome and element, for a reader
+to pivot into a genome-by-element matrix. The same counts are in the files each element's own folder holds; this
+table puts them side by side, with the zeros (a locus searched and not found).
+
+| column | |
+|---|---|
+| `accession`, `species_taxid` | the genome (`genomes.tsv`'s; a species' genome only, not EukDetect2's records) |
+| `set` | `busco`, `markers`, `rrna`, `mitochondrion`, `plastid` |
+| `element` | a BUSCO or marker locus (each one the genome was searched for: a genome run before a locus was has no row of it); `rDNA_unit`, `18S`, `5.8S`, `28S`, `5S`; `molecules` (the assembly's sequences its FASTA titles name that organelle), an organelle gene (`organelle/genes.tsv`'s `gene`, of source `assembly`: found on the genome's own molecules); `genome` (by reads) |
+| `copies` | basis `assembly`: a locus' complete copies (`copies.tsv`'s `copies`; 0 for a Fragmented or Missing one), the rRNA's (rDNA units; 18S spans alone or in units, and a unit's 18S shorter than an 18S span, at a contig's end, as partial; the units' 5.8S, 28S and inline 5S: 5S arrays apart from the units are not extracted), the organelle molecules, an organelle gene's copies on them (a plastid's inverted repeat: 2); basis `reads`: copies per haploid nuclear genome (`depth.tsv`'s `rdna_copies_reads`, `rdna_18s_copies`, `mt_copies_reads`, `pt_copies_reads`) |
+| `partial` | a Fragmented locus' fragment (1), rDNA units and 28S without a whole 28S, a partial organelle gene; `-` by reads |
+| `basis` | `assembly`; `transcripts` for a transcriptome (TSA: a locus' copies are its isoforms, not genes); `reads` (rows `tools/rdna_depth.py table --into_package` adds and replaces) |
+
+Copies in an assembly are a lower bound of the genome's: an rDNA array collapses to a few units, haplotypes may be
+collapsed or kept (`genomes.tsv`'s `duplication`), and a family marker's copies (actin, H3, ...) are those nearly as
+alike to its queries as the best (miniprot's alignments of 95% of a query's best score, 10 of each): its gene
+family's near members, not all of them. The manifest's `counts.copy_numbers` gives its rows per set.
 
 ## busco/
 Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) called in every species' genome.
@@ -450,7 +470,7 @@ why. A reader needs none of them.
 | `summary.json` | the headline figures |
 
 ## depth.tsv (optional)
-Copy numbers by read depth, written into a package by `tools/rdna_depth.py table --into_package` ([read_depth.md](read_depth.md)); the manifest's `inputs.read_depth` names the tool, the date and the genomes measured. One row per
+Copy numbers by read depth, written into a package by `tools/rdna_depth.py table --into_package` ([read_depth.md](read_depth.md)); the manifest's `inputs.read_depth` names the tool, the date and the genomes measured. Since 2026-11-08 the tool also writes them into `copy_numbers.tsv.gz` (basis `reads`) where the package has it. One row per
 representative genome it was asked for. A genome's sequencing reads (one ENA run, a sample of its reads) are mapped to
 its rDNA units, its single-copy BUSCOs and its species' organelle genes; a copy number is a depth over the
 single-copy BUSCOs' median depth. Both alleles of a diploid map to a single-copy gene: the numbers are per haploid
@@ -513,6 +533,8 @@ The eukaryote genomes the build kept, up to its `--keep_gb` (`<accession>.fna.gz
   `type_material`; `genomes.tsv`'s `type_material`; `crossrefs.tsv`; `intraspecific/` (the barcode gap); species of source
   `tsa` (a transcriptome; `copies.tsv`'s flag `transcript`). A reader that chose loci by format 4's `call_<supergroup>`
   (protal's euk30 choice) reads `call_<group>`.
+  Since 2026-11-08, still format 5: `copy_numbers.tsv.gz` (every genome's copy numbers of its loci, rRNA and
+  organelles in one table; the manifest's `counts.copy_numbers`), and `inputs.markers` and `inputs.tsa`.
 - 2026-11-06, no new format (optional, added to a built package): `depth.tsv`, `genomes.tsv`'s `rdna_copies_reads`,
   `mt_copies_reads` and `pt_copies_reads`, the manifest's `inputs.read_depth` (`tools/rdna_depth.py`). A reader
   takes a package with or without them.
