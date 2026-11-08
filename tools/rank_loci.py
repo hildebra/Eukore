@@ -44,7 +44,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukore import groups, ncbi as ncbi_mod, odb as odb_mod  # noqa: E402
+from eukore import groups, ncbi as ncbi_mod, odb as odb_mod, util  # noqa: E402
 
 MIN_GROUP = 5
 MIN_PANEL = 3      # a supergroup of the eukaryote panel counts with this many genomes
@@ -136,10 +136,11 @@ def cached(folder, name, make):
         with open(path) as fh:
             return json.load(fh)
     got = make()
-    if path:
+    if path:  # whole or not at all (until 2026-11-08 written in place: a killed run's cut JSON stopped the next)
         os.makedirs(folder, exist_ok=True)
-        with open(path, "w") as fh:
+        with open(util.part_of(path), "w") as fh:
             json.dump(got, fh)
+        os.replace(util.part_of(path), path)
     return got
 
 
@@ -161,20 +162,13 @@ def main(argv=None):
     p.add_argument("--cache", help="a folder for the slow parts (conservation, EukDetect2's shares), reused by a rerun")
     opts = p.parse_args(argv)
     ncbi = ncbi_mod.Ncbi(opts.taxdump)
-    with open(os.path.join(opts.odb, "scores_cutoff")) as fh:
-        loci = [line.split()[0] for line in fh if line.strip()]
+    loci = odb_mod.all_loci(opts.odb)
     odb = odb_mod.Odb(opts.odb, loci)
     species = odb.species()
     group = {t: supergroup(ncbi, t) for t in species}
     sizes = collections.Counter(group.values())
     print(f"{len(species)} dataset species: {dict(sizes.most_common())}", flush=True)
-    names = {}
-    links = os.path.join(opts.odb, "links_to_ODB12.txt")
-    if os.path.isfile(links):
-        with open(links) as fh:
-            for line in fh:
-                f = line.rstrip("\n").split("\t")
-                names[f[0]] = f[1] if len(f) > 1 else "?"
+    names = odb_mod.names_of(opts.odb)
     cons = cached(opts.cache, "conservation.json", lambda: conservation(opts.odb, loci, opts.hmmsearch, opts.threads))
     shares = cached(opts.cache, "eukdetect2_shares.json",
                     lambda: eukdetect2_shares(opts.eukdetect2)) if opts.eukdetect2 else {}

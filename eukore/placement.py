@@ -116,25 +116,45 @@ def genome_bases(path):
     return os.path.getsize(path) / (GZIP_BYTES_PER_BASE if path.endswith(".gz") else 1)
 
 
+def contig_lengths(path):
+    """A FASTA's sequences (gzipped or plain) -> [(name, bases)] in its order."""
+    out, name, n = [], None, 0
+    with (gzip.open(path, "rt") if path.endswith(".gz") else open(path)) as fh:
+        for line in fh:
+            if line.startswith(">"):
+                if name is not None:
+                    out.append((name, n))
+                name, n = (line[1:].split() or [""])[0], 0
+            else:
+                n += len(line.strip())
+    if name is not None:
+        out.append((name, n))
+    return out
+
+
 def chunks(genome_path, folder, max_bases=None):
     """A genome as miniprot takes it: itself, or where it is over max_bases (CHUNK_BASES: a 3 Gb genome's index takes
-    ~22 GB, a lungfish's 40 Gb ~300) its contigs in pieces of max_bases at most, plain FASTA in folder (a contig longer
-    than that alone in its own) -> [paths]."""
+    ~22 GB, a lungfish's 40 Gb ~300) its contigs in order in pieces of max_bases at most, plain FASTA in folder (a
+    contig longer than that alone in its own) -> [paths]. A piece is closed before a contig that would take it past
+    max_bases (its length from a first pass; until 2026-11-08 a piece took a whole further contig past it: chromosomes
+    of 3 Gb made pieces of 6, ~45 GB of index where the build reserved ~33)."""
     max_bases = max_bases or CHUNK_BASES
     if genome_bases(genome_path) <= max_bases:
         return [genome_path]
+    lengths = iter(contig_lengths(genome_path))
     paths, out, held = [], None, 0
     with (gzip.open(genome_path, "rt") if genome_path.endswith(".gz") else open(genome_path)) as fh:
         for line in fh:
             if line.startswith(">"):
-                if out is None or held >= max_bases:
+                n = next(lengths)[1]
+                if out is None or (held and held + n > max_bases):
                     if out:
                         out.close()
                     paths.append(os.path.join(folder, f"piece{len(paths)}.fna"))
                     out, held = open(paths[-1], "w"), 0
-            else:
-                held += len(line) - 1
-            out.write(line)
+                held += n
+            if out is not None:  # (bases before any title: none of a contig)
+                out.write(line)
     if out:
         out.close()
     return paths

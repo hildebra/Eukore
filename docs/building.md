@@ -172,7 +172,11 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
   miniprot). A genome not fetched yet is left for the next run; so is one whose annotation the fetch stage has not
   asked for yet (it fetches a genome's annotation before the genome itself). Several process runs may share one WORK,
   e.g. one per node (since 2026-11-08): each genome is claimed by the run that takes it (`WORK/done/.<accession>.claim`;
-  a claim of a node that died is taken over after 2 days), and each run then makes the passes below too. Then it
+  a claim of a node that died is taken over after 2 days), a genome another run finished after this one planned is
+  left alone (since 0.2.2: run again), and each run then makes the passes below too. A worker process that dies (the
+  OOM killer, a crash) stops the stage with a message; a rerun goes on (since 0.2.2: the stage waited for it forever).
+  A genome over 4 Gb is aligned in pieces of 4 Gb at most, a chromosome over that alone (since 0.2.2: a piece took
+  one more whole chromosome past it, over the memory the scheduler reserved). Then it
   makes what a tool missing at a genome's run left out (tiara's classes, the rRNA: a backfill), takes the organelle
   genes (`WORK/organelle`; from the organelle molecules the metadata scan kept, not the genome again), and runs the
   intraspecific panel's further assemblies (their BUSCOs, rRNA and organelle genes; since 0.2.1 run in the same pool
@@ -218,7 +222,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
-| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.1, is in the manifest's `eukore`) |
+| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.2, is in the manifest's `eukore`) |
 | `-V` | | print Eukore's own version and exit |
 | `--keep_gb` | 1000 | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept) |
 | `-t`, `--threads` | 8 | threads in all |
@@ -237,7 +241,7 @@ them. `--stage all` (the default) runs the three in turn on one machine with int
 | `--midori2` | none | a MIDORI2 RAW FASTA whose lineages `species.tsv` gives (its URLs change with each release: download it yourself) |
 | `--bold_tsv` | none | a BOLD data package's TSV (`bin_uri`, `species`): its BINs in `crossrefs.tsv` (BOLD's bulk data needs a login) |
 | `--refresh` | off | fetch again NCBI's assembly tables and quality reports and the annotation indexes: newer genomes and gene models taken, old genome files deleted once replaced ([Resuming and rebuilding](#resuming-and-rebuilding)) |
-| `--veupathdb_key KEY` | the environment's `VEUPATHDB_API_KEY`, else none | a VEuPathDB user's API key (its profile's Web Service Access), for VEuPathDB's gene models; it is sent to VEuPathDB alone and written nowhere |
+| `--veupathdb_key KEY` | the environment's `VEUPATHDB_API_KEY`, else none | a VEuPathDB user's API key (its profile's Web Service Access), for VEuPathDB's gene models; it is sent to VEuPathDB's sites alone, over https (since 0.2.2 a redirect elsewhere drops it), and written nowhere; the environment variable keeps it off the command line, which every user of the node can see |
 | `--fcs_gx_db PREFIX`, `--run_gx` | none, `run_gx` | FCS-GX's database (e.g. `/dev/shm/gxdb/all`) and runner |
 | `--ksgp_tax FILE` | KSGP 4.0, fetched | the KSGP release `species.tsv`'s KSGP lineages come from |
 | `--miniprot`, `--hmmsearch` | on the PATH | the tools, where not on the PATH |

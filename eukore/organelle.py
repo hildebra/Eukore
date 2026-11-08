@@ -20,7 +20,6 @@ I and II introns), on its strand; one across a circular genome's origin is joine
 import collections
 import gzip
 import hashlib
-import multiprocessing
 import os
 import re
 import subprocess
@@ -307,12 +306,6 @@ def name_of(organelle, gene, animal=False, plant=False):
     if organelle == "mitochondrion" and plant and gene in ("SSU", "LSU"):
         return "18S" if gene == "SSU" else "26S"
     return NAMES.get((organelle, gene, animal and organelle == "mitochondrion"), gene)
-
-
-def is_cox1(quals):
-    gene = {v.lower() for n, v in quals if n == "gene"}
-    product = " ".join(v.lower() for n, v in quals if n == "product")
-    return bool(gene & COX1_GENES or COX1_PRODUCT.search(product))
 
 
 def cds_gene(quals, organelle):
@@ -815,9 +808,9 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
     # until 2026-11-08 at each 5% of the assemblies)
     progress = (progress or (lambda what, w: util.Progress(what, w, log, unit="", scale=1)))(
         "assemblies searched", [1] * len(todo))
-    with multiprocessing.Pool(max(1, workers)) as pool:
-        for acc, _n, why in util.reported(pool.imap_unordered(run_assembly, todo), progress,
-                                          lambda: f", {min(max(1, workers), progress.n - progress.done)} running"):
+    with util.process_pool(workers) as pool:  # a worker that dies stops the build, not a wait forever
+        for acc, _n, why in util.unordered(pool, run_assembly, todo, progress,
+                                           lambda: f", {min(max(1, workers), progress.n - progress.done)} running"):
             if why:
                 failed += 1
                 log(f"  {acc}: organelle genes failed: {why}")

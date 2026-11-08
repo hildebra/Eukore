@@ -19,8 +19,6 @@ import collections
 import gzip
 import os
 import statistics
-import subprocess
-import tempfile
 
 from . import organelle as organelle_mod
 from . import package, qc, rrna, util
@@ -97,19 +95,10 @@ def _pairs(query, db, vsearch, threads=1, maxaccepts=0):
         return None
     if not query or not db:
         return []
-    with tempfile.TemporaryDirectory() as tmp:
-        q, d, out = (os.path.join(tmp, n) for n in ("q.fna", "d.fna", "hits.tsv"))
-        for path, seqs in ((q, query), (d, db)):
-            with open(path, "w") as fh:
-                fh.writelines(f">{n}\n{s}\n" for n, s in seqs.items() if s)
-        run = subprocess.run([vsearch, "--usearch_global", q, "--db", d, "--id", str(MIN_ID), "--iddef", "2",
-                              "--maxaccepts", str(maxaccepts), "--maxrejects", "0" if not maxaccepts else "256",
-                              "--userout", out, "--userfields", "query+target+id", "--threads", str(max(1, threads)),
-                              "--quiet"], capture_output=True, text=True, check=False)
-        if run.returncode != 0 or not os.path.isfile(out):
-            return None
-        with open(out) as fh:
-            return [(f[0], f[1], float(f[2])) for f in (line.rstrip("\n").split("\t") for line in fh) if len(f) >= 3]
+    try:
+        return util.vsearch_global(vsearch, query, db, MIN_ID, threads, maxaccepts, 256 if maxaccepts else 0)
+    except OSError:
+        return None
 
 
 def barcode_gap(panel_species, rep_markers, extra_markers, species_of, inter, others, ncbi, vsearch, threads=1,

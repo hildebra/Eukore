@@ -50,6 +50,11 @@ class WholeTest(unittest.TestCase):
             self.assertEqual(rev["copy"][a:b], ec.revcomp(contig[a1 - 1:b1]))
             self.assertEqual((a, b), (n - (b1 - s + 1), n - (a1 - s)))
 
+    def test_ambiguity_codes_complemented(self):
+        # an assembly's IUPAC codes on a minus-strand copy (until 2026-11-08 an R stayed R, not Y)
+        self.assertEqual(ec.revcomp("ARYKMBVDHSWN"), "NWSDHBVKMRYT")
+        self.assertEqual(ec.revcomp("acgr"), "ycgt")
+
 
 if __name__ == "__main__":
     unittest.main()

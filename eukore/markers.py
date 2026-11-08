@@ -38,6 +38,7 @@ import gzip
 import hashlib
 import json
 import os
+import shutil
 import statistics
 import subprocess
 import tarfile
@@ -85,11 +86,6 @@ def ready(src_dir, table=TABLE):
     except (OSError, ValueError):
         return None
     return folder if state.get("table_md5") == util.md5(table) else None
-
-
-def all_loci(folder):
-    with open(os.path.join(folder, "scores_cutoff")) as fh:
-        return [line.split()[0] for line in fh if line.strip()]
 
 
 def ko_list(path):
@@ -526,8 +522,9 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
         key = hashlib.md5((fh.read() + "\n".join(sorted(rows))).encode()).hexdigest()[:10]
     scores = score({a: r["sequence"] for a, r in rows.items()}, db, hmmsearch, threads,
                    os.path.join(folder, f"scores.{key}.tsv.gz"))
-    for sub in ("hmms", "decoys"):
-        os.makedirs(os.path.join(folder, sub), exist_ok=True)
+    for sub in ("hmms", "decoys"):  # this table's alone (since 2026-11-08: a decoy dropped from it kept competing)
+        shutil.rmtree(os.path.join(folder, sub), ignore_errors=True)
+        os.makedirs(os.path.join(folder, sub))
     from . import loci as loci_mod  # noqa: PLC0415
     species_of = functools.lru_cache(maxsize=None)(lambda t: ncbi.species_of(int(t)))
     depth = Depth(ncbi)
@@ -602,11 +599,12 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
 
 def fetch(src_dir, download=None, log=print, hmmsearch="hmmsearch", threads=1):
     """The marker dataset, built where it is not built from this table yet (the fetch stage's) -> its folder; a build
-    that fails is an OSError (the fetch stage goes on without it)."""
+    that fails is an OSError (the fetch stage goes on without it), whatever failed (since 2026-11-08: an NCBI reply
+    without its count, or of bad XML, stopped the fetch stage and every source after this one)."""
     try:
         return ready(src_dir) or build(src_dir, TABLE, hmmsearch, threads, log, download)
-    except (ValueError, subprocess.CalledProcessError, tarfile.TarError) as e:
-        raise OSError(f"marker set not built: {e}") from e
+    except Exception as e:  # noqa: BLE001
+        raise OSError(f"marker set not built: {type(e).__name__}: {e}") from e
 
 
 def state_of(folder):
@@ -632,9 +630,3 @@ def kinds(folder):
         return {}
     with open(os.path.join(folder, STATE)) as fh:
         return {locus: m.get("kind", "clean") for locus, m in json.load(fh).get("markers", {}).items()}
-
-
-def digest(folder):
-    """A short digest of a marker dataset (its state), for caches named by what they hold."""
-    with open(os.path.join(folder, STATE), "rb") as fh:
-        return hashlib.md5(fh.read()).hexdigest()[:10]

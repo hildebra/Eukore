@@ -182,7 +182,9 @@ class CmalignCacheTest(unittest.TestCase):
             tool = fx.tool(tmp, "cmalign", CMALIGN)
             rows = regions.run(records, cm, tool, 1, work, log=lambda *_: None)
             self.assertEqual({r["record"] for r in rows}, {"r1"})
-            cache = os.path.join(work, "cmalign", f"ssu.{regions.util.md5(cm)[:10]}.tsv")
+            import glob  # noqa: PLC0415
+            from unittest import mock  # noqa: PLC0415
+            [cache] = glob.glob(os.path.join(work, "cmalign", "ssu.*.tsv"))  # this process' own
             with open(cache) as fh:
                 self.assertEqual(len(fh.readlines()), 1)  # r2's failure not cached
             fixed = fx.tool(tmp, "cmalign2", CMALIGN.replace("if grep -q NNNN $last; then exit 1; fi", ""))
@@ -190,6 +192,16 @@ class CmalignCacheTest(unittest.TestCase):
             self.assertEqual({r["record"] for r in rows}, {"r1", "r2"})  # aligned now
             with open(cache) as fh:
                 self.assertEqual(len(fh.readlines()), 2)
+            # what the regions depend on changed (here SLACK; the regions table, the reference): a cache of its own
+            with mock.patch.object(regions, "SLACK", regions.SLACK + 1):
+                regions.run(records, cm, fixed, 1, work, log=lambda *_: None)
+            self.assertEqual(len(glob.glob(os.path.join(work, "cmalign", "ssu.*.tsv"))), 2)
+            # a model cmalign cannot align the reference to: no regions, a warning, the package goes on
+            said = []
+            broken = fx.tool(tmp, "cmalign3", "#!/bin/sh\nexit 1\n")
+            self.assertEqual(regions.run(records, cm, broken, 1, work, log=said.append), [])
+            self.assertIn("could not align the yeast 18S reference", said[0])
+            self.assertFalse(regions.is_cm(cm))
 
 
 class SmallTest(unittest.TestCase):

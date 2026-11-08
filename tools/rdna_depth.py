@@ -68,14 +68,19 @@ def stage_one(genome, work, curated, target_depth, max_reads):
         with open(p["runs"]) as fh:
             found = json.load(fh)
     else:
-        found = depth.find_runs(genome, curated)
+        try:
+            found = depth.find_runs(genome, curated)
+        except OSError as e:  # ENA or NCBI did not answer: nothing kept, a rerun asks again
+            return f"{acc}: run not looked up ({e}); a rerun asks again"
         write_json(p["runs"], found)
     run = found["run"]
     if run is None:
         return f"{acc}: no run ({found['how']})"
     size = int(genome["genome_size"]) if genome.get("genome_size", "").isdigit() else 0
     max_bases = int(target_depth * size) if size else 10 ** 12
-    url = depth.first_file(run["fastq_ftp"])
+    url = depth.first_file(run.get("fastq_ftp"))
+    if url is None:
+        return f"{acc}: {run['run_accession']} has no FASTQ file at ENA"
     spots = int(run["read_count"]) if run.get("read_count", "").isdigit() else 0
     try:
         reads, bases, every = depth.stream_reads(url, p["reads"], max_reads, max_bases, spots=spots)
@@ -100,18 +105,24 @@ def stage(args):
             print(line, flush=True)
 
 
+REFERENCE_BATCH = 1000  # genomes whose targets are read in one pass over the package (depth.references)
+
+
 def measure(args):
     genomes = genomes_of(args.package, args.accessions, args.species, True)
     os.makedirs(os.path.join(args.work, "depth"), exist_ok=True)
-    for genome in genomes:
+    todo = [g for g in genomes if not os.path.isfile(paths(args.work, g["accession"])["depth"])
+            and os.path.isfile(paths(args.work, g["accession"])["staged"])]
+    for i, genome in enumerate(todo):
+        if i % REFERENCE_BATCH == 0:  # (since 2026-11-08: the whole package read again for each genome)
+            batch = todo[i:i + REFERENCE_BATCH]
+            targets = depth.references(args.package, [(g["accession"], g["species_taxid"]) for g in batch])
         acc = genome["accession"]
         p = paths(args.work, acc)
-        if os.path.isfile(p["depth"]) or not os.path.isfile(p["staged"]):
-            continue
         with open(p["staged"]) as fh:
             staged = json.load(fh)
         result, rows = depth.measure(args.package, genome, p["reads"], staged["preset"], args.minimap2,
-                                     args.threads, os.path.join(args.work, "depth"))
+                                     args.threads, os.path.join(args.work, "depth"), targets[acc])
         result.update({k: staged[k] for k in ("run", "how", "platform", "preset", "reads", "bases")})
         part = util.part_of(p["targets"])
         with open(part, "w", newline="\n") as fh:

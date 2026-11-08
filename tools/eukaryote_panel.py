@@ -125,8 +125,7 @@ def main(argv=None):
     with open(os.path.join(opts.out, "panel.tsv"), "w", newline="\n") as fh:
         fh.write("accession\tgroup\tclass\torder\tspecies_taxid\torganism\tsize\n")
         fh.writelines(f"{r['accession']}\t{g}\t{c}\t{o}\t{sp}\t{r['organism']}\t{r['size']}\n" for g, c, o, sp, r in items)
-    with open(os.path.join(opts.odb, "scores_cutoff")) as fh:
-        all_loci = [line.split()[0] for line in fh if line.strip()]
+    all_loci = odb_mod.all_loci(opts.odb)
     odb = odb_mod.Odb(opts.odb, all_loci)
     settings = dict(out=opts.out, odb=opts.odb, loci=all_loci, threads=opts.threads, keep=opts.keep,
                     odb_lineages=odb_mod.species_lineages(odb, ncbi),

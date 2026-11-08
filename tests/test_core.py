@@ -6,16 +6,29 @@ rRNA's).
     python3 -m unittest discover -s tests -t tests
 """
 
-import multiprocessing
 import os
+import signal
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 from eukore import ncbi, rrna, sources, species, util  # noqa: E402
 import fixtures as fx  # noqa: E402
+
+
+def _slow(x):  # a pool's task (util.unordered)
+    time.sleep(0.2)
+    return 2 * x
+
+
+def _killed(x):  # a pool's task whose worker is killed, as by the OOM killer
+    if x == 2:
+        os.kill(os.getpid(), signal.SIGKILL)
+    time.sleep(0.2)
+    return x
 
 
 class CoreTest(unittest.TestCase):
@@ -67,16 +80,13 @@ class CoreTest(unittest.TestCase):
 
     def test_the_genome_rrna_reads_nuclear_molecules_only(self):
         # Arabidopsis' assembly holds its mitochondrion and chloroplast, whose SSU barrnap calls an 18S (2026-11-06)
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "g.fna")
-            with open(path, "w") as fh:
-                fh.write(">CP002684.1 Arabidopsis thaliana chromosome 1 sequence\nACGT\nAC\n"
-                         ">BK010421.1 TPA_asm: Arabidopsis thaliana ecotype Col-0 mitochondrion, complete genome\nGGGG\n"
-                         ">AP000423.1 Arabidopsis thaliana chloroplast DNA, complete genome\nTTTT\n"
-                         ">x1 Plasmodium falciparum apicoplast\nCCCC\n>CP002685.1 chromosome 2\nAAAA\n"
-                         ">CP000881.1 Guillardia theta nucleomorph chromosome 1\nGGCC\n")
-            self.assertEqual(list(rrna.contigs(path, nuclear=True)), [("CP002684.1", "ACGTAC"), ("CP002685.1", "AAAA")])
-            self.assertEqual(len(list(rrna.contigs(path))), 6)
+        # (extract_genome's title test; until 2026-11-08 through rrna.contigs, which nothing else read)
+        titles = ["CP002684.1 Arabidopsis thaliana chromosome 1 sequence",
+                  "BK010421.1 TPA_asm: Arabidopsis thaliana ecotype Col-0 mitochondrion, complete genome",
+                  "AP000423.1 Arabidopsis thaliana chloroplast DNA, complete genome",
+                  "x1 Plasmodium falciparum apicoplast", "CP002685.1 chromosome 2",
+                  "CP000881.1 Guillardia theta nucleomorph chromosome 1"]
+        self.assertEqual([t.split()[0] for t in titles if not rrna.NOT_NUCLEAR.search(t)], ["CP002684.1", "CP002685.1"])
 
     def test_lineages_agree_by_taxid(self):
         # two homonym genera of two kingdoms (Morus the plant, the bird) share a name, not a taxon
@@ -157,6 +167,24 @@ class FetchTest(unittest.TestCase):
             util.STOP.clear()
         self.assertEqual((len(tries), why), (1, "OSError: curl exit 2: interrupted"))
 
+    def test_an_api_key_stays_on_its_host(self):
+        # a redirect elsewhere, or off https, drops the request's Authorization (urllib's own passes it on); VEuPathDB's
+        # key goes to its sites alone
+        import urllib.request  # noqa: PLC0415
+        from eukore import annotation  # noqa: PLC0415
+        handler = util.KeepAuthorization()
+
+        def redirected(to):
+            req = urllib.request.Request("https://plasmodb.org/a/service/raw-files/x.gff",
+                                         headers={"Authorization": "Bearer secret"})
+            return handler.redirect_request(req, None, 302, "Found", {}, to).has_header("Authorization")
+        self.assertTrue(redirected("https://plasmodb.org/elsewhere/x.gff"))
+        self.assertFalse(redirected("https://cdn.example.com/x.gff"))
+        self.assertFalse(redirected("http://plasmodb.org/x.gff"))
+        self.assertTrue(annotation.veupathdb_host("https://toxodb.org/a/service/raw-files/x.gff"))
+        self.assertFalse(annotation.veupathdb_host("http://toxodb.org/x.gff"))
+        self.assertFalse(annotation.veupathdb_host("https://toxodb.org.example.com/x.gff"))
+
     def test_gzip_checks(self):
         # igzip's, pigz's (where there) and Python's checks: a whole file passes, one cut short or not gzip fails
         import gzip, shutil  # noqa: E401, PLC0415
@@ -221,22 +249,11 @@ class ProgressTest(unittest.TestCase):
         p = util.Progress("genomes run", [3e9, 1e9], said.append, every=600, clock=lambda: now[0],
                           usage=lambda: "; 4.0 cores busy")
 
-        class Results:  # imap_unordered's iterator: next(timeout) raises TimeoutError until a result is there
-            def __init__(self):
-                self.left = ["a", "b"]
-
-            def next(self, timeout):
-                now[0] += timeout
-                if not self.left:
-                    raise StopIteration
-                if now[0] < 1500 and self.left == ["a", "b"]:
-                    raise multiprocessing.TimeoutError
-                return self.left.pop(0)
-        got = []
-        for item in util.reported(Results(), p, lambda: ", 2 running"):
-            got.append(item)
-            p.step(3e9 if item == "a" else 1e9)
-        self.assertEqual(got, ["a", "b"])
+        for minute in range(1, 26):  # util.unordered ticks at each poll where nothing finished
+            now[0] = 60.0 * minute
+            p.tick(", 2 running")
+        p.step(3e9)
+        p.step(1e9)
         self.assertEqual(said[0], "  0/2 genomes run (0 failed), 2 left (4.0 Gb); 10m 00s so far, 2 running; 4.0 cores "
                                   "busy")
         self.assertTrue(said[1].startswith("  0/2 genomes run (0 failed), 2 left (4.0 Gb); 20m 00s so far"))
@@ -245,6 +262,21 @@ class ProgressTest(unittest.TestCase):
         q = util.Progress("genomes compared", [1, 1], said.append, every=0, unit="", scale=1, clock=lambda: now[0])
         q.step(1)
         self.assertRegex(said[-1], r"^  1/2 genomes compared \(0 failed\), 1 left; ")
+
+    def test_a_pool_ticks_while_it_waits_and_stops_where_a_worker_dies(self):
+        ticks = []
+
+        class Ticks:
+            def tick(self, note=""):
+                ticks.append(note)
+        with util.process_pool(2) as pool:
+            got = sorted(util.unordered(pool, _slow, [3, 1, 2, 4, 5], Ticks(), lambda: ", 2 running", poll=0.05))
+        self.assertEqual(got, [2, 4, 6, 8, 10])
+        self.assertTrue(ticks and ticks[0] == ", 2 running")
+        # a worker killed (the OOM killer): the build stops, where multiprocessing.Pool waited for it forever
+        with self.assertRaises(SystemExit):
+            with util.process_pool(2) as pool:
+                list(util.unordered(pool, _killed, [1, 2, 3], poll=0.05))
 
     def test_usage_of_the_process_tree(self):
         tick, page = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE")

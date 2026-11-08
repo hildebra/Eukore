@@ -16,28 +16,18 @@ records (fetched by the user with efetch, as below), the organelle genes cut by 
 """
 
 import argparse
-import gzip
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import organelle  # noqa: E402
+from eukore import odb, organelle  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(HERE), "data")
 
 
 def fasta(path):
-    out, name = {}, None
-    opener = gzip.open if path.endswith(".gz") else open
-    with opener(path, "rt") as fh:
-        for line in fh:
-            if line.startswith(">"):
-                name = line[1:].split()[0]
-                out[name] = []
-            elif name:
-                out[name].append(line.strip())
-    return {n: "".join(p).upper() for n, p in out.items()}
+    return {name: seq.upper() for name, seq in odb.read_fasta(path)}
 
 
 def genes(path, kind, animal=False):

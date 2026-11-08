@@ -627,7 +627,7 @@ def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hm
     miniprot=dict(start, end, exons) (annotation.py's benchmark compares that). The annotation's exons are its CDS: its 5' piece's phase left out (a partial gene).
     transcripts: annotated_transcripts' (read here where not given)."""
     from . import annotation as annotation_mod  # noqa: PLC0415
-    from .benchmarks import translate  # noqa: PLC0415 (benchmarks imports this module's users)
+    from .gencode import translate  # noqa: PLC0415 (until 2026-11-08 through benchmarks' alias: a worker loaded it)
     source = (tuple(annotation) + ("ncbi",) * 3)[2]
     if transcripts is None:
         transcripts = annotated_transcripts(chosen, annotation)

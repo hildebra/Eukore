@@ -131,9 +131,10 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(organelle.rrna_gene("rrn5 5s ribosomal rna"), "5S")
         self.assertEqual(organelle.rrna_gene("l-rrna 16s ribosomal rna", False), "LSU")
         self.assertIsNone(organelle.rrna_gene("4.5s ribosomal rna"))
-        self.assertTrue(organelle.is_cox1([("product", "cytochrome c oxidase subunit I")]))
-        self.assertFalse(organelle.is_cox1([("product", "cytochrome c oxidase subunit II")]))
-        self.assertTrue(organelle.is_cox1([("gene", "COI")]))
+        self.assertEqual(organelle.cds_gene([("product", "cytochrome c oxidase subunit I")], "mitochondrion"), "COX1")
+        self.assertNotEqual(organelle.cds_gene([("product", "cytochrome c oxidase subunit II")], "mitochondrion"),
+                            "COX1")
+        self.assertEqual(organelle.cds_gene([("gene", "COI")], "mitochondrion"), "COX1")
         self.assertEqual(organelle.cds_gene([("gene", "rbcL")], "plastid"), "rbcL")
         self.assertEqual(organelle.cds_gene([("product", "RuBisCO large subunit")], "plastid"), "rbcL")
         self.assertEqual(organelle.cds_gene([("gene", "matK"), ("product", "maturase K")], "plastid"), "matK")

@@ -362,19 +362,23 @@ def genetics(collected, ncbi, hmm_of, hmmalign="hmmalign", work=None, log=print,
 
 def loci_rows(loci, collected, ncbi):
     """busco/loci.tsv's rows: each BUSCO (loci: dicts of locus, name, cutoff, hmm_length) with how the package's
-    species hold it: species with a genome, called (Single or Duplicated), duplicated, fragmented, the call rate over
-    all and per supergroup (groups.GROUPS), the median copy, coding and protein lengths."""
+    species hold it: species with a genome searched for it, called (Single or Duplicated), duplicated, fragmented, the
+    call rate over all and per supergroup (groups.GROUPS), the median copy, coding and protein lengths. A genome run
+    before a locus was (a marker added later: collect's _searched) counts for it nowhere (until 2026-11-08 as one not
+    calling it: its call rates too low)."""
     from . import groups  # noqa: PLC0415
     genomes = collected["genomes"]
     reps = {a: g for a, g in genomes.items() if g.get("representative") == "t"}
     group = {a: groups.group_of(ncbi, g["species_taxid"]) for a, g in reps.items()}
-    sizes = collections.Counter(group.values())
+    names = sorted(set(group.values()))
     by_locus = collections.defaultdict(list)
     for r in collected["copy_rows"]:
         if r["accession"] in reps:
             by_locus[r["locus"]].append(r)
     out = []
     for item in loci:
+        searched = [a for a, g in reps.items() if g.get("_searched") is None or item["locus"] in g["_searched"]]
+        sizes = collections.Counter(group[a] for a in searched)
         rs = by_locus.get(item["locus"], [])
         called = [r for r in rs if r["status"] in ("Single", "Duplicated")]
         per_group = collections.Counter(group[r["accession"]] for r in called)
@@ -382,15 +386,15 @@ def loci_rows(loci, collected, ncbi):
         def median(key):
             values = sorted(int(r[key]) for r in called if str(r.get(key, "")).isdigit())
             return values[len(values) // 2] if values else 0
-        row = dict(item, species=len(reps), called=len(called),
+        row = dict(item, species=len(searched), called=len(called),
                    duplicated=sum(r["status"] == "Duplicated" for r in rs),
                    fragmented=sum(r["status"] == "Fragmented" for r in rs),
-                   call_rate=f"{len(called) / max(len(reps), 1):.3f}", median_length=median("length"),
+                   call_rate=f"{len(called) / max(len(searched), 1):.3f}", median_length=median("length"),
                    median_cds_length=median("cds_length"), median_protein_length=median("protein_length"))
-        for name in sorted(sizes):
-            row[f"call_{name}"] = f"{per_group[name] / sizes[name]:.3f}"
+        for name in names:
+            row[f"call_{name}"] = f"{per_group[name] / max(sizes[name], 1):.3f}"
         out.append(row)
-    return out, [f"call_{name}" for name in sorted(sizes)]
+    return out, [f"call_{name}" for name in names]
 
 
 def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None, organelle=None,

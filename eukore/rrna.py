@@ -27,6 +27,7 @@ import tempfile
 import numpy as np
 
 from . import util
+from .copies import revcomp  # IUPAC's codes too (the copies' and the records' one table)
 
 MOTIFS = ("GTGCCAGCAGCCGCGGTAA", "AAACTTAAAGGAATTGACGG", "GGTGGTGCATGGCCGTTCTTAGTT")  # 18S ~570, ~1,140, ~1,200
 SEED = 12
@@ -40,7 +41,6 @@ SAME_TYPE = 0.99
 NEAR = 0.5
 FOREIGN_ID = 97.0
 PREFIX = 1000       # a published read's first bases: its 18S, for the own-species pool
-COMPLEMENT = str.maketrans("ACGTNRYKMBVDHSW", "TGCANYRMKVBHDSW")  # IUPAC's too: a published read's
 ITSX_FIELD = re.compile(r"(SSU|ITS1|5\.8S|ITS2|LSU): (\d+)-(\d+)")
 # ITSx 1.1.3 without both of the 5.8S's ends still writes ITS1 and ITS2, their inner borders guessed (an ITS2 45
 # bases after the 5.8S start where it found no end: Arabidopsis with set T, Blastocystis, 2026-11-06)
@@ -52,11 +52,6 @@ GAP_MIN = 10        # a run of Ns this long: an assembly gap (or a read's)
 EDGE = 1000         # a genome's record this close to its contig's end: maybe cut, or joined to another sequence
 MAX_AMBIGUOUS = 0.005
 HOMOPOLYMER = 36
-
-
-def revcomp(seq):
-    return seq.translate(COMPLEMENT)[::-1]
-
 
 SEEDS = sorted({s[i:i + SEED] for m in MOTIFS for s in (m, revcomp(m)) for i in range(len(m) - SEED + 1)})
 FORWARD = {m[i:i + SEED] for m in MOTIFS for i in range(len(m) - SEED + 1)}
@@ -92,23 +87,6 @@ ORGANELLE_TITLE = re.compile(r"\b(mitochondrion|chloroplast|plastid|apicoplast)\
 # not the nucleus either: a cryptophyte's or chlorarachniophyte's nucleomorph (Guillardia theta, Bigelowiella natans),
 # the endosymbiont's red or green algal nucleus with rDNA operons of its own (until 2026-11-06 labelled the host's)
 NOT_NUCLEAR = re.compile(r"\b(mitochondrion|chloroplast|plastid|apicoplast|nucleomorph)\b", re.IGNORECASE)
-
-
-def contigs(path, nuclear=False):
-    """A FASTA's (name, sequence); nuclear: without the organelle molecules and nucleomorphs (NOT_NUCLEAR in their
-    titles)."""
-    name, parts, keep = None, [], True
-    with util.open_text(path) as fh:
-        for line in fh:
-            if line.startswith(">"):
-                if name is not None and keep:
-                    yield name, "".join(parts)
-                name, parts = (line[1:].split() or [""])[0], []
-                keep = not (nuclear and NOT_NUCLEAR.search(line))
-            elif keep:
-                parts.append(line.strip())
-    if name is not None and keep:
-        yield name, "".join(parts)
 
 
 _CODE = np.full(256, 4, dtype=np.uint8)  # a base's 2 bits (either case); 4: not ACGT, no seed across it
@@ -544,11 +522,18 @@ def eukaryome_taxid(label, index, ncbi):
 # --- checks ------------------------------------------------------------------------------------------------------
 
 def homopolymer(seq):
-    return max((len(m.group(0)) for m in re.finditer(r"(.)\1*", seq)), default=0)
+    """A sequence's longest run of one character (by numpy since 2026-11-08: ~40x a regex's, ~0.08 s a Mb, minutes
+    on one core over every record)."""
+    if not seq:
+        return 0
+    a = np.frombuffer(seq.encode("ascii", "replace"), dtype=np.uint8)
+    edges = np.concatenate(([0], np.flatnonzero(a[1:] != a[:-1]) + 1, [len(a)]))
+    return int(np.diff(edges).max())
 
 
 def ambiguous(seq):
-    return sum(1 for c in seq if c not in "ACGT") / max(1, len(seq))
+    """A sequence's share of characters other than ACGT."""
+    return (len(seq) - sum(seq.count(c) for c in "ACGT")) / max(1, len(seq))
 
 
 def identity(a, b):

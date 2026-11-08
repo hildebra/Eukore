@@ -27,14 +27,9 @@ COLUMNS = ("accession", "species_taxid", "organism", "marker", "kind", "queries"
 
 
 def verdict(protein, refs):
-    got = benchmarks.kmers(protein)
-    best = max(refs, key=lambda a: benchmarks.shared(benchmarks.kmers(refs[a]), got)
-               + benchmarks.shared(got, benchmarks.kmers(refs[a])))
-    ref = benchmarks.kmers(refs[best])
-    recall, precision = benchmarks.shared(ref, got), benchmarks.shared(got, ref)
-    v = ("concordant" if min(recall, precision) >= benchmarks.CONCORDANT else
-         "similar" if min(recall, precision) >= benchmarks.SIMILAR else "discordant")
-    return best, recall, precision, v
+    """benchmarks.marker_rows' verdict of a protein against its species' reference proteins."""
+    best, recall, precision = benchmarks.best_match(protein, refs)
+    return best, recall, precision, benchmarks.verdict(recall, precision)
 
 
 def main(argv=None):
@@ -47,7 +42,7 @@ def main(argv=None):
     opts = p.parse_args(argv)
     ncbi = ncbi_mod.Ncbi(os.path.join(opts.sources, "taxdump.tar.gz"))
     folder = markers.folder_of(opts.sources)
-    marker_loci = markers.all_loci(folder)
+    marker_loci = odb_mod.all_loci(folder)
     kinds = markers.kinds(folder)
     odb = odb_mod.Odb(odb_mod.folder_of(opts.sources), marker_loci, [folder])
     lineages = odb_mod.species_lineages(odb, ncbi)

@@ -6,8 +6,10 @@ position or after to the last at its last position or before (inserts between in
 record holds bases within SLACK positions of both its ends. The alignments are cached by sequence under WORK/cmalign/.
 """
 
+import glob
 import hashlib
 import os
+import socket
 import subprocess
 import tempfile
 
@@ -29,13 +31,26 @@ def cm_path(src_dir):
 
 
 def fetch(src_dir, download, log=print):
-    """Rfam's SSU model into src_dir/rfam (kept when there)."""
+    """Rfam's SSU model into src_dir/rfam (kept when there and an Infernal model: a page saved in its place, e.g. a
+    proxy's, is fetched again; since 2026-11-08 it was kept, and every package stage then stopped)."""
     path = cm_path(src_dir)
-    if not os.path.isfile(path):
+    if not is_cm(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         log(f"Rfam: fetching {SSU_CM[0]}")
         download(SSU_CM[1], path)
+        if not is_cm(path):
+            os.remove(path)
+            raise OSError(f"{SSU_CM[1]}: not an Infernal model")
     return path
+
+
+def is_cm(path):
+    """Whether a file is an Infernal model (its first line INFERNAL1/a ...)."""
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(9) == b"INFERNAL1"
+    except OSError:
+        return False
 
 
 def read_regions(path=REGIONS):
@@ -120,12 +135,6 @@ def locate(states, cols):
     return out
 
 
-def _ends_in_newline(path):
-    with open(path, "rb") as fh:
-        fh.seek(-1, os.SEEK_END)
-        return fh.read(1) == b"\n"
-
-
 def ssu_of(seq, row):
     """A record's 18S and where it starts on the record, or None (no 18S found in it)."""
     if row.get("kind") == "18S":
@@ -140,20 +149,27 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
     """Every record's 18S variable regions (records [(name, sequence, row)]) -> rows (REGION_COLUMNS). Each distinct 18S
     is aligned once (cached under WORK/cmalign/)."""
     regions = read_regions()
-    # the cache: a line per 18S, added after each cmalign batch (since 2026-11-08: written once all were aligned, so
-    # that a killed run kept none; and an 18S cmalign failed on was cached as one without regions, never aligned
-    # again: now left out, tried again by the next run); .gz: a run's before 2026-11-08, written whole
-    cache_path = os.path.join(work, "cmalign", f"ssu.{util.md5(cm)[:10]}.tsv") if work else None
-    cache = {}
-    for path in (cache_path + ".gz", cache_path) if cache_path else ():
-        if os.path.isfile(path):
-            with util.open_text(path) as fh:
-                for line in fh:
-                    f = line.rstrip("\n").split("\t")
-                    if line.endswith("\n") and len(f) == 2:  # a line a killed run cut: aligned again
-                        cache[f[0]] = f[1]
-    ref = cmalign(cm, {"reference": reference()}, cmalign_bin, threads, work)["reference"]
+    ref = cmalign(cm, {"reference": reference()}, cmalign_bin, threads, work).get("reference")
+    if ref is None:  # a damaged model, a cmalign that fails: no regions, the package goes on (until 2026-11-08 stopped)
+        log(f"WARNING: cmalign could not align the yeast 18S reference to {cm}: no 18S variable regions")
+        return []
     cols = columns(ref, regions)
+    # the cache: a line per distinct 18S, added after each cmalign batch (since 2026-11-08: written once all were
+    # aligned, so that a killed run kept none; and an 18S cmalign failed on was cached as one without regions, never
+    # aligned again: now left out, tried again by the next run). Its name is the digest of all its regions depend on:
+    # the model, the regions table, the reference, SLACK, MAX_SSU (since 2026-11-08: the model's alone, an edited
+    # regions table's regions never placed); one file per process (since 2026-11-08: two package stages on one WORK
+    # appended to one, their lines interleaved), all read
+    key = hashlib.md5("\n".join([util.md5(cm), util.md5(REGIONS), reference(), str(SLACK), str(MAX_SSU)]).encode())
+    stem = os.path.join(work, "cmalign", f"ssu.{key.hexdigest()[:10]}") if work else None
+    cache = {}
+    for path in sorted(glob.glob(glob.escape(stem) + "*.tsv")) if stem else ():
+        with open(path) as fh:
+            for line in fh:
+                f = line.rstrip("\n").split("\t")
+                if line.endswith("\n") and len(f) == 2:  # a line a killed run cut: aligned again
+                    cache[f[0]] = f[1]
+    cache_path = f"{stem}.{socket.gethostname()}-{os.getpid()}.tsv" if stem else None
     ssu = {}
     for name, seq, row in records:
         got = ssu_of(seq, row)
@@ -165,7 +181,7 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
         out = None
         if cache_path:
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            cut = os.path.isfile(cache_path) and os.path.getsize(cache_path) and not _ends_in_newline(cache_path)
+            cut = os.path.isfile(cache_path) and os.path.getsize(cache_path) and not util.ends_in_newline(cache_path)
             out = open(cache_path, "a", newline="\n")
             if cut:
                 out.write("\n")

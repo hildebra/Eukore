@@ -17,9 +17,9 @@ The record's `screen` column names the parts and ranks (`28S 3':family`); `-` fo
 """
 
 import collections
-import os
-import subprocess
 import tempfile
+
+from . import util
 
 FLANK = 50
 MIN_PART = 300
@@ -78,22 +78,14 @@ def agrees_to(a, b):
 
 
 def search(queries, db_seqs, vsearch, threads, tmp, ident=SCREEN_ID, accepts=SCREEN_ACCEPTS, rejects=SCREEN_REJECTS):
-    """vsearch --usearch_global -> {query: [(identity, target)]}, self hits left out."""
+    """vsearch --usearch_global (util.vsearch_global; the same set as queries and db written once) -> {query:
+    [(identity, target)]}, self hits left out."""
     if not queries or not db_seqs:
         return {}
-    q, db, out = (os.path.join(tmp, f) for f in ("screen_q.fna", "screen_db.fna", "screen_hits.tsv"))
-    for path, seqs in ((q, queries), (db, db_seqs)):
-        with open(path, "w") as fh:
-            fh.writelines(f">{n}\n{s}\n" for n, s in seqs.items() if s)
-    subprocess.run([vsearch, "--usearch_global", q, "--db", db, "--id", str(ident), "--iddef", "2",
-                    "--maxaccepts", str(accepts), "--maxrejects", str(rejects), "--userout", out,
-                    "--userfields", "query+target+id", "--threads", str(max(1, threads)), "--quiet"], check=True)
     hits = collections.defaultdict(list)
-    with open(out) as fh:
-        for line in fh:
-            a, b, ident = line.rstrip("\n").split("\t")
-            if a != b:
-                hits[a].append((float(ident), b))
+    for a, b, found in util.vsearch_global(vsearch, queries, db_seqs, ident, threads, accepts, rejects, tmp=tmp):
+        if a != b:
+            hits[a].append((found, b))
     return hits
 
 

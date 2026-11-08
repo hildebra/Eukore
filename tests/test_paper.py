@@ -11,6 +11,7 @@ import gzip
 import json
 import os
 import random
+import shutil
 import struct
 import sys
 import tempfile
@@ -110,10 +111,10 @@ class AnnotationTest(unittest.TestCase):
                          "Zoo__z__HL1\tMus z\t7\tHL1\t\tDNA Zoo Consortium\t900\n")
             listings = {"reference_zebrafinch_X": ["Bird__b__GCA_3.1"], "reference_chicken_Y": ["Bird__b__GCA_3.1"],
                         "reference_human_hg38": ["Zoo__z__HL1"]}
-            self.assertEqual(annotation.toga2_index(table, listings), {"GCA_3.1": (
-                "reference_chicken_Y",
-                f"{annotation.TOGA2_URL}/TOGA2/reference_chicken_Y/Bird__b__GCA_3.1/query_annotation.gtf.gz")})
             rows = {r["accession"]: r for r in annotation.toga2_rows(table, listings, {"Mammalia": ["Zoo__z__HL1"]})}
+            self.assertEqual((rows["TOGA2_HLb1"]["ncbi_accession"], rows["TOGA2_HLb1"]["reference"],
+                              rows["TOGA2_HLb1"]["annotation"]), ("GCA_3.1", "reference_chicken_Y",
+                             f"{annotation.TOGA2_URL}/TOGA2/reference_chicken_Y/Bird__b__GCA_3.1/query_annotation.gtf.gz"))
             self.assertEqual((rows["TOGA2_HL1"]["ncbi_accession"], rows["TOGA2_HL1"]["genome"],
                               rows["TOGA2_HLb1"]["genome"]),
                              ("-", f"{annotation.TOGA2_URL}/Genomes/Mammalia/Zoo__z__HL1/HL1.2bit", "-"))
@@ -181,18 +182,19 @@ class AnnotationTest(unittest.TestCase):
             self.assertEqual(annotation.veupathdb_index(table), {"GCA_6.1": (
                 "VEuPathDB 2024", "https://PlasmoDB.org/a/service/raw-files/Current_Release/P/gff/data/P.gff")})
             # without an API key its annotations are not given to the jobs
-            index = {"GCA_6.1": [("veupathdb", "https://v/P.gff"), ("ensembl", "https://e")]}
+            v = "https://plasmodb.org/a/service/raw-files/P.gff"
+            index = {"GCA_6.1": [("veupathdb", v), ("ensembl", "https://e")]}
             jobs = {"GCA_6.1": dict(accession="GCA_6.1", url="https://n/GCA_6.1_a_genomic.fna.gz", annotated=False)}
             annotation.assign(jobs, index)
             self.assertEqual(annotation.candidates(jobs["GCA_6.1"]), [("ensembl", "https://e")])
             annotation.assign(jobs, index, veupathdb=True)
-            self.assertEqual(annotation.candidates(jobs["GCA_6.1"])[0], ("veupathdb", "https://v/P.gff"))
+            self.assertEqual(annotation.candidates(jobs["GCA_6.1"])[0], ("veupathdb", v))
             # with it: asked for with the key as a bearer token, kept plain; its own sequence names matched by length
             asked = {}
 
             def fetch_file(url, dest, **how):
                 asked[url] = how
-                if not url.startswith("https://v/"):
+                if url != v:
                     return "not found"
                 with open(dest, "w") as fh:
                     fh.write("##gff-version 3\n##sequence-region Pf_01 1 5000\n##sequence-region Pf_02 1 7000\n"
@@ -207,9 +209,18 @@ class AnnotationTest(unittest.TestCase):
                 annotation.util.fetch_file = real
             self.assertEqual((path, source), (annotation.gff_file(genomes_dir, "GCA_6.1", "veupathdb"), "veupathdb"))
             self.assertTrue(path.endswith(".veupathdb.gff"))
-            self.assertEqual((asked["https://v/P.gff"]["headers"], asked["https://v/P.gff"]["gzip_check"]),
-                             ({"Authorization": "Bearer KEY"}, False))
+            self.assertEqual((asked[v]["headers"], asked[v]["gzip_check"]), ({"Authorization": "Bearer KEY"}, False))
             self.assertNotIn("headers", asked["https://n/GCA_6.1_a_assembly_report.txt"])  # the key to VEuPathDB alone
+            # a URL its table names on another host, or over http: never asked with the key (since 2026-11-08)
+            for url in ("https://cdn.example.com/P.gff", "http://plasmodb.org/P.gff"):
+                asked.clear()
+                elsewhere = dict(jobs["GCA_6.1"], accession="GCA_7.1", annotations=[("veupathdb", url)])
+                real, annotation.util.fetch_file = annotation.util.fetch_file, fetch_file
+                try:
+                    annotation.fetch(elsewhere, genomes_dir, "KEY")
+                finally:
+                    annotation.util.fetch_file = real
+                self.assertNotIn(url, asked)
             report = os.path.join(tmp, "report.txt")
             with open(report, "w") as fh:
                 fh.write("# Sequence-Name\tSequence-Role\tAssigned-Molecule\tAssigned-Molecule-Location/Type\t"
@@ -312,6 +323,22 @@ class FatesTest(unittest.TestCase):
             self.assertEqual(twobit.to_fasta(path, fasta), 15)
             with gzip.open(fasta, "rt") as fh:
                 self.assertEqual(fh.read(), ">chr1\nACNNNGcaac\n>u2\nGGGTA\n")
+            # TOGA2's genome fetched: its .2bit in --scratch (since 2026-11-08), none left anywhere after
+            from unittest import mock  # noqa: PLC0415
+            out, scratch = os.path.join(tmp, "genomes"), os.path.join(tmp, "scratch")
+            os.makedirs(out)
+            os.makedirs(scratch)
+            got = []
+
+            def fetch(url, dest, **_how):
+                got.append(dest)
+                shutil.copyfile(path, dest)
+                return ""
+            with mock.patch.object(genomes.util, "fetch_file", fetch):
+                job = dict(url="https://t/A1.2bit")
+                self.assertEqual(genomes.fetch_genome(job, os.path.join(out, "TOGA2_A1.fna.gz"), scratch=scratch), "")
+            self.assertEqual(got, [os.path.join(scratch, "TOGA2_A1.fna.gz.2bit")])
+            self.assertEqual((os.listdir(out), os.listdir(scratch)), (["TOGA2_A1.fna.gz"], []))
 
 
 class ReadsTest(unittest.TestCase):

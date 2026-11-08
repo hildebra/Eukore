@@ -18,7 +18,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import eukore_build  # noqa: E402
-from eukore import genomes, loci, util  # noqa: E402
+from eukore import genomes, loci, placement, util  # noqa: E402
 
 
 def fake_run(item):
@@ -29,6 +29,13 @@ def fake_run(item):
     return job["accession"], {"threads": settings["threads"], "began": began, "ended": time.time()}, None
 
 
+def killed_run(item):
+    """genomes.run's stand-in whose worker is killed (the OOM killer) on the genome "killed"."""
+    if item[0]["accession"] == "killed":
+        os.kill(os.getpid(), 9)
+    return fake_run(item)
+
+
 class Quiet:
     def tick(self, note=""):
         pass
@@ -36,9 +43,9 @@ class Quiet:
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "fork's pools")
 class ScheduleTest(unittest.TestCase):
-    def run_all(self, opts, sizes):
+    def run_all(self, opts, sizes, run=fake_run):
         old = eukore_build.run_one
-        eukore_build.run_one = fake_run  # the workers are forked: theirs too
+        eukore_build.run_one = run  # submitted by name: a module-level stand-in pickles under fork and forkserver
         try:
             todo = [({"accession": a}, {"threads": opts.threads_per_genome, "rrna": None})
                     for a in sorted(sizes, key=lambda a: -sizes[a])]
@@ -71,6 +78,9 @@ class ScheduleTest(unittest.TestCase):
         opts.memory = 10e9
         got = self.run_all(opts, {"huge": 5e9, "small": 1e8})
         self.assertFalse(got["huge"]["began"] < got["small"]["ended"] and got["small"]["began"] < got["huge"]["ended"])
+        # a worker killed: the build stops (until 2026-11-08 the scheduler waited for its genome forever)
+        with self.assertRaises(SystemExit):
+            self.run_all(opts, {"killed": 1e8, "small": 1e8}, killed_run)
 
     def test_memory_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -165,6 +175,17 @@ class OrfTest(unittest.TestCase):
         out = io.StringIO()
         loci.split_orfs(io.StringIO(self.TEXT), out, "p2.")
         self.assertEqual(out.getvalue(), whole.getvalue().replace(">orf", ">p2.orf"))
+
+    def test_a_genomes_pieces_stay_under_their_limit(self):
+        # chromosomes of 3 units and a limit of 4: a piece each (until 2026-11-08 a piece took the next whole one,
+        # 6 units: a giant genome's miniprot index over the memory the build reserved); a contig over it alone
+        with tempfile.TemporaryDirectory() as tmp:
+            genome = os.path.join(tmp, "g.fna")
+            with open(genome, "w") as fh:
+                fh.writelines(f">c{i}\n" + "ACGT" * (n // 4) + "\n" for i, n in enumerate((3000, 3000, 1000, 9000, 500)))
+            pieces = placement.chunks(genome, tmp, max_bases=4000)
+            self.assertEqual([[n for _c, n in placement.contig_lengths(p)] for p in pieces],
+                             [[3000], [3000, 1000], [9000], [500]])
 
     @unittest.skipUnless(shutil.which("esl-translate"), "esl-translate")
     def test_pieces_as_one_run(self):

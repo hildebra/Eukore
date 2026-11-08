@@ -15,9 +15,8 @@ Each a column of busco/copies.tsv; a copy failing one is kept and flagged, so th
 """
 
 import collections
-import os
-import subprocess
-import tempfile
+
+from . import util
 
 NEAR = 1.0
 FOREIGN_ID = 90.0
@@ -87,18 +86,9 @@ def check(copies, species_of, ncbi, vsearch=None, threads=1, protein_length=None
         if len({species_of[a] for a in seqs}) < 2:
             continue
         hits = collections.defaultdict(list)
-        with tempfile.TemporaryDirectory() as tmp:
-            fasta, table = os.path.join(tmp, "c.fna"), os.path.join(tmp, "hits.tsv")
-            with open(fasta, "w") as fh:
-                fh.writelines(f">{a}\n{s}\n" for a, s in seqs.items())
-            subprocess.run([vsearch, "--usearch_global", fasta, "--db", fasta, "--id", str(MIN_ID), "--iddef", "2",
-                            "--maxaccepts", "32", "--maxrejects", "256", "--self", "--userout", table, "--userfields",
-                            "query+target+id", "--threads", str(max(1, threads)), "--quiet"], check=True)
-            with open(table) as fh:
-                for line in fh:
-                    q, t, ident = line.rstrip("\n").split("\t")
-                    if species_of[q] != species_of[t]:
-                        hits[q].append((float(ident), t))
+        for q, t, ident in util.vsearch_global(vsearch, seqs, seqs, MIN_ID, threads, 32, 256, ["--self"]):
+            if species_of[q] != species_of[t]:
+                hits[q].append((ident, t))
         for acc in seqs:
             found = hits.get(acc, [])
             if not found:

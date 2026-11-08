@@ -46,6 +46,15 @@ class MarkerTest(unittest.TestCase):
         self.assertIn("K02999", got["RPB1"]["decoys"])  # RNA polymerase I's largest subunit
         self.assertTrue(all("_" not in m for m in got))  # refseq_db's names: <locus>_<taxid>_<id>
 
+    def test_any_failure_of_the_build_is_an_oserror(self):
+        # an NCBI reply without its count (AttributeError) or of bad XML: the fetch stage goes on without the markers
+        # (until 2026-11-08 it stopped, every source after them unfetched)
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(markers, "ready", return_value=None), \
+                mock.patch.object(markers, "build", side_effect=AttributeError("'NoneType' has no attribute 'group'")):
+            with self.assertRaisesRegex(OSError, "marker set not built: AttributeError"):
+                markers.fetch(tmp)
+
     def test_kofam_rule_and_members(self):
         kos = {"K1": (100.0, "full", "target"), "K2": (100.0, "domain", "paralog")}
         self.assertEqual(markers.classify({"K1": (300.0, 290.0), "K2": (200.0, 190.0)}, kos, {"K1", "K2"}), "K1")
