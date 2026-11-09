@@ -816,7 +816,8 @@ def run(args):
         side.shutdown(wait=True, cancel_futures=True)
         if got[2]:
             shutil.rmtree(tmp, ignore_errors=True)
-            return got
+            # its three alone (until 2026-11-09 _run's four: the build stopped at the first genome that failed)
+            return got[:3]
         if os.path.isdir(folder):
             shutil.rmtree(folder)
         os.replace(tmp, folder)

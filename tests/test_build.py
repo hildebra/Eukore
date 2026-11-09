@@ -153,6 +153,17 @@ class ResumeTest(unittest.TestCase):
             acc, summary, why = eukore_build.run_one(({"accession": "GCA_1.1"}, {}))
         self.assertEqual((acc, summary), ("GCA_1.1", None))
         self.assertTrue(why.startswith("UnicodeDecodeError"))
+        # a step's failure (_run's four values, its gene models' files the fourth): three, as a done genome's (until
+        # 2026-11-09 the four, and the process stage stopped at the first genome that failed: too many values)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "g.fna.gz")
+            open(path, "w").close()
+            failed = ("GCA_1.1", None, "locus calling failed: x", (None, None))
+            with mock.patch.object(eukore_build.genomes, "_run", return_value=failed):
+                got = eukore_build.genomes.run(({"accession": "GCA_1.1", "path": path},
+                                                {"work": os.path.join(d, "WORK"), "genomes": d}))
+            self.assertEqual(got, failed[:3])
+            self.assertFalse(os.path.isdir(eukore_build.genomes.done_dir(os.path.join(d, "WORK"), "GCA_1.1")))
         # a batch of published reads barrnap fails on, a GFF comparison's unexpected error: theirs, not the stage's
         with mock.patch.object(eukore_build.rrna, "published_regions", side_effect=RuntimeError("barrnap failed")):
             self.assertEqual(eukore_build._annotate_batch([("EUK_1", "ACGT", "all")], "barrnap"),
