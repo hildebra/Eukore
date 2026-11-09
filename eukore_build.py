@@ -459,10 +459,10 @@ def schedule(opts, todo, sizes, progress, note, poll=60):
 
 
 def progress_of(opts, what, weights, unit="Gb", scale=1e9):
-    """A pass's progress (util.Progress): said every --report_minutes (its first at 1, 2, 3, 5 and 8 minutes in), each
+    """A pass's progress (util.Progress): said every minute of its first 10, then every --report_minutes, each
     report with the cores, memory and disk the build uses (opts.usage; since 2026-11-08)."""
     every = opts.report_minutes * 60
-    return util.Progress(what, weights, say, every, unit, scale, early=[s for s in util.REPORT_EARLY if s < every],
+    return util.Progress(what, weights, say, every, unit, scale, early=util.early_reports(every),
                          usage=opts.usage.line)
 
 
@@ -1012,7 +1012,7 @@ def main(argv=None):
     p.add_argument("--report_minutes", type=float, default=util.REPORT_EVERY / 60,
                    help="minutes between progress reports of the genomes' downloads and the process stage's passes: "
                         "items left, time left and, in the process stage, the cores, memory and disk used (default "
-                        "10; the first reports at 1, 2, 3, 5 and 8 minutes)")
+                        "10; a report every minute of a pass's first 10)")
     opts = p.parse_args(argv)
     opts.groups = [g for g in opts.groups.split(",") if g]
     compare = []
@@ -1079,7 +1079,7 @@ def main(argv=None):
         # every --report_minutes: genomes left and the time left, by their sizes (a plant's genome is a thousand
         # yeasts'), and the download rate, all kept by this thread (the downloads' are at_a_time's)
         progress = util.Progress("genomes fetched", [j.get("size") or 0 for j in todo], say, opts.report_minutes * 60,
-                                 early=[s for s in util.REPORT_EARLY if s < opts.report_minutes * 60])
+                                 early=util.early_reports(opts.report_minutes * 60))
         fetched = 0
         # each download's gzip check in a process of its own (a core apart from the downloads' threads; spawned, as
         # a process with threads is not forked), its .part file in --scratch
@@ -1143,7 +1143,8 @@ def main(argv=None):
                      or genomes.better_annotation(opts.work, j))]
         say(f"fetching {len(todo):,} genomes' annotations (the first of {', '.join(annotation.SOURCES)} that has one) "
             f"into {opts.genomes}")
-        progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1)
+        progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1,
+                                 early=util.early_reports(opts.report_minutes * 60))
         def get(j):
             return j, annotation.fetch(j, opts.genomes, opts.veupathdb_key, **how)
         for done in at_a_time(get, todo, downloads):

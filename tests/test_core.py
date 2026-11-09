@@ -230,10 +230,10 @@ class ProgressTest(unittest.TestCase):
         self.assertIn("~10s left", said[-1])
 
     def test_early_reports_then_every_interval(self):
-        # the downloads' first reports at 1, 2, 3, 5 and 8 minutes, then every 10; an item finishing every 30 s
+        # a pass's first reports every minute of its first 10, then every 10 (since 2026-11-09); an item every 30 s
         now, said = [0.0], []
         p = util.Progress("genomes fetched", [1] * 100, said.append, every=600, clock=lambda: now[0],
-                          early=util.REPORT_EARLY)
+                          early=util.early_reports(600))
         at = []
         for _ in range(60):
             now[0] += 30
@@ -241,7 +241,10 @@ class ProgressTest(unittest.TestCase):
             p.step(1)
             if len(said) > n:
                 at.append(now[0])
-        self.assertEqual(at, [60, 120, 180, 300, 480, 1080, 1680])
+        self.assertEqual(at, [60 * m for m in range(1, 11)] + [1200, 1800])
+        # --report_minutes shorter than 10: every minute up to it, then its own interval
+        self.assertEqual(util.early_reports(180), [60, 120, 180])
+        self.assertEqual(util.early_reports(30), [])
 
     def test_reports_while_nothing_finishes_with_the_resources(self):
         # a pool whose first result comes 25 minutes in: reports at 10 and 20 minutes all the same, each with usage

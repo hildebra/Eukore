@@ -262,7 +262,14 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
 # --- progress of a long loop (since 2026-11-06: the genomes' downloads and runs) ----------------------------------
 
 REPORT_EVERY = 600  # seconds between progress reports (eukore_build.py --report_minutes)
-REPORT_EARLY = (60, 120, 180, 300, 480)  # the genomes' downloads' first reports, seconds in: is the rate right?
+# a pass's first reports, seconds in: every minute of its first 10 (is the rate right?), then every REPORT_EVERY
+# (since 2026-11-09; until then at 1, 2, 3, 5 and 8 minutes)
+REPORT_EARLY = tuple(range(60, 601, 60))
+
+
+def early_reports(every):
+    """REPORT_EARLY's reports up to `every` seconds in, the later ones `every` apart (Progress's early)."""
+    return [s for s in REPORT_EARLY if s <= every]
 
 
 def duration(seconds):

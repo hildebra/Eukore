@@ -163,8 +163,9 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   It also fetches the transcriptomes of species without a genome and the intraspecific panel's further assemblies,
   as it fetches genomes.
 
-  Then it fetches each species' genome into `OUT/genomes` (its RefSeq copy where it has one). After 1, 2, 3, 5 and
-  8 minutes, then every 10 (`--report_minutes`), it says the genomes fetched, failed and left, the Gb left, the download rate and the time
+  Then it fetches each species' genome into `OUT/genomes` (its RefSeq copy where it has one). Every minute for the
+  first 10 minutes, then every 10 (`--report_minutes`; until 2026-11-09 the first after 1, 2, 3, 5 and 8 minutes), it
+  says the genomes fetched, failed and left, the Gb left, the download rate and the time
   left, estimated by the genomes' sizes; the process stage reports its genomes alike. Beside each genome it fetches
   its gene models and NCBI's assembly report: NCBI's GFF (RefSeq's or a GenBank submitter's; not asked for where the
   assembly summary gives no protein-coding genes; a 404 or a GFF without coding sequences is none), else VEuPathDB's (with
@@ -189,8 +190,8 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   (`--memory_gb`; a genome taking a larger share of it than `-t / -j` threads of `-t` gets that share of the threads,
   up to 32), each genome's hmmsearch runs are split by model over its threads, the rescue's six-frame ORFs are made in
   as many pieces at once, and the organelle and metadata passes run a genome a core. Each of these passes reports on
-  the same clock as the fetch stage (after 1, 2, 3, 5 and 8 minutes, then every
-  `--report_minutes`), whether or not an item finished meanwhile (since 0.2.1). Each report gives the items done,
+  the same clock as the fetch stage (every minute of its first 10, then every `--report_minutes`), whether or not an
+  item finished meanwhile (since 0.2.1). Each report gives the items done,
   failed, running and left, the time so far and the time left, and the resources the build uses: the cores its
   processes kept busy since the last report (out of `-t`), their resident memory and its peak, the node's free memory
   and load, and the free disk of WORK and OUT. The stage's first and last lines give the same, the last with its time:
@@ -236,7 +237,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--memory_gb` | SLURM's allocation, else the cgroup's limit, else the node's memory available; 85% of it | the process stage's memory: a genome is begun where its run's estimate (~7.5 bytes a base, of 4 Gb at most, and 3 GB) fits in what the running ones leave, the largest first, a smaller one in the room a larger one does not fit (since 0.2.1; until then `-j` at once whatever their sizes) |
 | `--downloads` | 8 | the fetch stage's genomes and annotations downloaded at a time, by `curl` where it is on the PATH (one NCBI connection: ~30–40 MB/s by curl, ~10 by Python's urllib); their gzip checks run in one process of their own, a second core, by ISA-L's `igzip` where it is on the PATH (conda-forge's `isa-l`; ~3.5x Python's), else `pigz`, else Python |
 | `--scratch DIR` | beside `OUT/genomes`; `TMPDIR` | a node's local disk (or a scratch file system without backups) for temporary files: the fetch stage's unfinished downloads (`.part` files) and their gzip checks, each file copied into `OUT/genomes` once whole; since 0.2.1 the process stage's too: each genome run's copy of its genome (read there by every step, not from `OUT` some six times), miniprot's pieces of a genome over 4 Gb, the rescue's ORFs, tiara's and vsearch's files, and `TMPDIR`'s (barrnap's, ITSx's); only the results are written to `WORK`. Room: up to ~3 times a genome's size per genome running (a few GB; ~10–20 GB for a mammal's, ~45 GB for a 30 Gb genome's pieces) |
-| `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and the process stage's passes (items left, time left; in the process stage the cores, memory and disk used) |
+| `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and the process stage's passes, after a report every minute of each one's first 10 (items left, time left; in the process stage the cores, memory and disk used) |
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
 | `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
