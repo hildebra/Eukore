@@ -17,8 +17,11 @@ Stages:
   organelle molecules where RefSeq has none (WORK/organelle);
 - package: the copies' checks across species, the published rRNA reads' regions (WORK/published), the organelle genes
   of any assembly not searched yet, OUT/genomes cut back to --keep_gb where given (genomes.prune: the model species'
-  and the smallest kept first; without it no genome file is deleted), then OUT/Eukore_<version>/.
-`all` runs them in turn. Every stage is resumable: a rerun does only what is not done.
+  and the smallest kept first; without it no genome file is deleted), then OUT/Eukore_<version>/ and, unless
+  --no_release, OUT/release/: the website's data (website/) and the downloads, BGZF (eukore/release.py);
+- release: OUT/release/ again of a finished OUT/Eukore_<version>/.
+`all` runs fetch, process and package in turn. Every stage is resumable: a rerun does only what is not done. Every
+compressed file is BGZF (gzip in blocks: bgzip -@ decompresses it on many threads), compressed on -t threads.
 """
 
 import argparse
@@ -46,6 +49,7 @@ from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sou
 from eukore import annotation, benchmarks, labels, metadata as metadata_mod, organelle as organelle_mod  # noqa: E402
 from eukore import groups as groups_mod, intraspecific as intraspecific_mod, markers as markers_mod, quality  # noqa: E402
 from eukore import placement, primers as primers_mod, reads as reads_mod, regions as regions_mod  # noqa: E402
+from eukore import release as release_mod  # noqa: E402
 from eukore import __version__  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
@@ -873,7 +877,9 @@ def banner(opts, argv, whence):
                  + ", then each species' genome and gene models into OUT/genomes",
         "process": "each genome's loci called and its rRNA extracted, then the organelle genes",
         "package": "the checks across species" + (", FCS-GX's screen" if opts.fcs_gx_db else "")
-                   + ("" if opts.no_benchmarks else ", the benchmarks") + f", then OUT/{package_dir}/"}
+                   + ("" if opts.no_benchmarks else ", the benchmarks") + f", then OUT/{package_dir}/"
+                   + ("" if opts.no_release else " and OUT/release/ (the website's data, the release's bundles)"),
+        "release": f"OUT/release/ of OUT/{package_dir}/: the website's data and the release's bundles, BGZF"}
     if opts.wanted is None:
         species = "every species of the groups"
     else:
@@ -921,8 +927,13 @@ def main(argv=None):
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-V", action="version", version=f"Eukore {__version__}", help="Eukore's own version, and exit")
     p.add_argument("--work", required=True, help="the build's work folder (sources, calls, extractions)")
-    p.add_argument("--out", required=True, help="where Eukore_<version>/ and genomes/ go")
-    p.add_argument("--stage", choices=("all", "fetch", "process", "package"), default="all")
+    p.add_argument("--out", required=True, help="where Eukore_<version>/, release/ and genomes/ go")
+    p.add_argument("--stage", choices=("all", "fetch", "process", "package", "release"), default="all",
+                   help="all: fetch, process and package in turn; release: OUT/release/ (the website's data and the "
+                        "downloads) of a finished OUT/Eukore_<version>/ again, which the package stage writes last")
+    p.add_argument("--no_release", action="store_true",
+                   help="the package stage writes no OUT/release/ (the website's data and the downloads: a second "
+                        "copy of the package, compressed)")
     p.add_argument("--version", default=datetime.date.today().strftime("%Y.%m"), help="the package's version (YYYY.MM)")
     p.add_argument("--groups", default=",".join(sources.ASSEMBLY_GROUPS),
                    help=f"NCBI's assembly groups whose species the package holds (default all: "
@@ -1045,6 +1056,11 @@ def main(argv=None):
     print(banner(opts, argv, whence), flush=True)  # the version and what the run will do (since 2026-11-08)
     if warning:
         say(warning)
+    # every compressed file BGZF, its blocks compressed on the run's threads (since 2026-11-09)
+    util.compression_threads(opts.threads)
+    if opts.stage == "release":  # the website's data and the downloads of a finished package (since 2026-11-09)
+        release_mod.write(os.path.join(opts.out, f"Eukore_{opts.version}"), os.path.join(opts.out, "release"), say)
+        return 0
     os.makedirs(opts.work, exist_ok=True)
     os.makedirs(opts.genomes, exist_ok=True)
     # the resources the build uses, said with the process stage's progress (since 2026-11-08)
@@ -1323,6 +1339,8 @@ def main(argv=None):
                             loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook,
                             metadata=meta, tables=extra_tables, writers=writers)
         say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")
+        if not opts.no_release:  # the website's data and the downloads (since 2026-11-09; --stage release again)
+            release_mod.write(out, os.path.join(opts.out, "release"), say)
     return 0
 
 

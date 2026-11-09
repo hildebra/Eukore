@@ -16,7 +16,6 @@ Markers: each BUSCO (its coding sequence), 18S, ITS (ITS1, 5.8S and ITS2 of an r
 """
 
 import collections
-import gzip
 import os
 import statistics
 
@@ -167,6 +166,6 @@ def write(part, rows, whole, rrna_out, org_out, gap_rows):
                           ("rrna.fna.gz", [r for a in sorted(rrna_out) for r in rrna_out[a]]),
                           ("organelle.fna.gz", [r for a in sorted(org_out) for r in org_out[a]])):
         path = os.path.join(folder, name)
-        with gzip.open(util.part_of(path), "wt", compresslevel=6) as fh:
+        with util.bgzf_open(util.part_of(path)) as fh:
             fh.writelines(f">{n}\n{s.upper()}\n" for n, s in records)
         os.replace(util.part_of(path), path)

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 420" width="1600" height="420" preserveAspectRatio="xMidYMid slice">
+  <!-- the landing page's cover: Eukore's navy and teal, with the logo's tree drawn faintly across it -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16324F"/>
+      <stop offset="0.6" stop-color="#1D5C73"/>
+      <stop offset="1" stop-color="#1E8C8E"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="420" fill="url(#bg)"/>
+  <g fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M900,40 V300 H1180 V250"/>
+    <path d="M1010,40 V250 H1260 V200"/>
+    <path d="M1120,40 V200 H1340 V150"/>
+    <path d="M1230,40 V150 H1450 V100"/>
+    <path d="M1340,40 V100 H1560 V40"/>
+    <path d="M1180,300 V420"/>
+    <path d="M60,420 V330 H260 V280"/>
+    <path d="M160,280 V230 H360 V180"/>
+    <path d="M260,180 V120 H420 V60"/>
+  </g>
+  <g fill="#FFFFFF" fill-opacity="0.10">
+    <circle cx="900" cy="40" r="16"/>
+    <circle cx="1010" cy="40" r="16"/>
+    <circle cx="1120" cy="40" r="16"/>
+    <circle cx="1230" cy="40" r="16"/>
+    <circle cx="1340" cy="40" r="16"/>
+    <circle cx="1450" cy="40" r="16"/>
+    <circle cx="1560" cy="40" r="16"/>
+    <circle cx="420" cy="60" r="14"/>
+    <circle cx="360" cy="180" r="12"/>
+  </g>
+  <g fill="none" stroke="#7FD3CF" stroke-opacity="0.12" stroke-width="4">
+    <ellipse cx="1180" cy="330" rx="90" ry="22"/>
+    <path d="M1090,355 A90,22 0 0 0 1270,355"/>
+    <path d="M1090,380 A90,22 0 0 0 1270,380"/>
+  </g>
+</svg>

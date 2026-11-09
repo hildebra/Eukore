@@ -16,13 +16,12 @@ collapsed across species) are left out.
 import argparse
 import collections
 import glob
-import gzip
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, sources  # noqa: E402
+from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, sources, util  # noqa: E402
 
 LOCUS_RE = re.compile(r"-(\d+at\d+)-S\d+$")
 
@@ -47,7 +46,7 @@ def main(argv=None):
                 owner[f[0]] = ncbi.species_of(int(f[1]))
     wanted = {r: sp for r, sp in owner.items() if sp not in have and ncbi.rank.get(sp) == "species"}
     n, species = 0, collections.Counter()
-    with gzip.open(opts.out + ".part", "wt", compresslevel=9) as out:
+    with util.bgzf_open(opts.out + ".part") as out:
         # every line of a record (until 2026-11-06 its first alone: a wrapped FASTA's records cut)
         for name, seq in odb_mod.read_fasta(os.path.join(opts.eukdetect2, "eukdb.fasta")):
             if name not in wanted:

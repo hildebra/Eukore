@@ -1,0 +1,126 @@
+{
+ "package": "Eukore_2026.11-013",
+ "version": "2026.11-013",
+ "built": "2026-11-07T18:01:48",
+ "folder": "downloads/Eukore_2026.11-013/",
+ "compression": "BGZF (gzip), level 9",
+ "files": [
+  {
+   "key": "complete",
+   "group": "Complete package",
+   "title": "Eukore, whole",
+   "what": "every file of the package: the marker genes, rDNA, organelle genes, metadata, taxonomy and benchmarks, with the manifest of their sizes and MD5s",
+   "file": "Eukore_2026.11-013.tar.gz",
+   "files": 435,
+   "bytes": 6709469,
+   "md5": "1d651683d8fb332df76c17f0dfcf3d71"
+  },
+  {
+   "key": "marker_genes",
+   "group": "Marker genes",
+   "title": "Marker genes with introns",
+   "what": "the BUSCO genes and Eukore's own marker loci, each copy whole from first to last codon (exons and introns), one FASTA per locus; with their tables (copies, loci, exons and introns) and species.tsv, genomes.tsv",
+   "file": "Eukore_2026.11-013_marker_genes.tar.gz",
+   "files": 136,
+   "bytes": 2161089,
+   "md5": "7d362efa2dd084ebe86521266f725dc5"
+  },
+  {
+   "key": "marker_cds",
+   "group": "Marker genes",
+   "title": "Marker genes without introns",
+   "what": "the same copies' coding sequences (exons joined) and proteins, one FASTA per locus; with copies.tsv, loci.tsv, species.tsv, genomes.tsv",
+   "file": "Eukore_2026.11-013_marker_cds.tar.gz",
+   "files": 262,
+   "bytes": 1864012,
+   "md5": "640519dd00de2e086893581ce003113d"
+  },
+  {
+   "key": "rrna_organelle",
+   "group": "rRNA and organelle markers",
+   "title": "rRNA operons and organelle markers",
+   "what": "nuclear rDNA records (18S spans and whole operons: 18S, ITS1, 5.8S, ITS2, 28S, 5S), their 18S V1-V9 and in-silico PCR; the mitochondrial and plastid genes (12S, 16S, 5S, COX1, CYTB, rbcL, matK, ...) with their coding sequences, proteins and PCR; species.tsv, genomes.tsv (the organelle molecules whole are in the complete package)",
+   "file": "Eukore_2026.11-013_rrna_organelle.tar.gz",
+   "files": 11,
+   "bytes": 1455460,
+   "md5": "d9f8636ef2d1c2a49989c6f047748d03"
+  },
+  {
+   "key": "species",
+   "group": "Metadata tables",
+   "title": "Species",
+   "what": "one row per species: supergroup, group, NCBI's lineage and six references'",
+   "file": "Eukore_2026.11-013_species.tsv.gz",
+   "files": null,
+   "source": "species.tsv",
+   "bytes": 2882,
+   "md5": "afac48301292898d4219691e7d3f8f90"
+  },
+  {
+   "key": "genomes",
+   "group": "Metadata tables",
+   "title": "Genomes",
+   "what": "each species' genome: accession, quality flags, rRNA copies, genetic code, duplication",
+   "file": "Eukore_2026.11-013_genomes.tsv.gz",
+   "files": null,
+   "source": "genomes.tsv",
+   "bytes": 83242,
+   "md5": "5ac758585f9ea5f76aa27c4a63522d82"
+  },
+  {
+   "key": "crossrefs",
+   "group": "Metadata tables",
+   "title": "Cross-references",
+   "what": "each species' Open Tree, GBIF, WoRMS, IRMNG, UNITE SH and BOLD ids",
+   "file": "Eukore_2026.11-013_crossrefs.tsv.gz",
+   "files": null,
+   "source": "crossrefs.tsv",
+   "bytes": 1170,
+   "md5": "6aff75ba27b23ceee707a18401e4334c"
+  },
+  {
+   "key": "assembly",
+   "group": "Metadata tables",
+   "title": "Assemblies",
+   "what": "each genome's size, contiguity, gaps, GC, masking, telomeres, organelle molecules, where it came from",
+   "file": "Eukore_2026.11-013_assembly.tsv.gz",
+   "files": null,
+   "source": "metadata/assembly.tsv.gz",
+   "bytes": 4638,
+   "md5": "ca90d7cf26fcf48dec5ee56dd7b73bc6"
+  },
+  {
+   "key": "ncbi",
+   "group": "Metadata tables",
+   "title": "NCBI's assembly summary",
+   "what": "NCBI's own row of every genome",
+   "file": "Eukore_2026.11-013_ncbi.tsv.gz",
+   "files": null,
+   "source": "metadata/ncbi.tsv.gz",
+   "bytes": 156168,
+   "md5": "8550b47cd4a5dc00eff5e479605c14ba"
+  },
+  {
+   "key": "tetranucleotides",
+   "group": "Metadata tables",
+   "title": "Tetranucleotides",
+   "what": "each genome's 136 canonical tetranucleotides",
+   "file": "Eukore_2026.11-013_tetranucleotides.tsv.gz",
+   "files": null,
+   "source": "metadata/tetranucleotides.tsv.gz",
+   "bytes": 15611,
+   "md5": "f7e0383b5628e5c2b056314fdc29d529"
+  },
+  {
+   "key": "codons",
+   "group": "Metadata tables",
+   "title": "Codons",
+   "what": "the genetic-code check's evidence per genome",
+   "file": "Eukore_2026.11-013_codons.tsv.gz",
+   "files": null,
+   "source": "metadata/codons.tsv.gz",
+   "bytes": 9293,
+   "md5": "5617bec06caf6e318a9b74394dc8fa3d"
+  }
+ ]
+}

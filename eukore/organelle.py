@@ -423,7 +423,7 @@ def refseq_genes(src_dir, work_folder, ncbi, log=print):
     if not os.path.isfile(cache):
         log(f"RefSeq organelles: parsing {len(files)} GenBank files")
         os.makedirs(work_folder, exist_ok=True)
-        with gzip.open(util.part_of(cache), "wt", compresslevel=6) as fh:
+        with util.bgzf_open(util.part_of(cache), level=util.WORK_LEVEL) as fh:
             fh.write("\t".join(CACHE_COLUMNS) + "\n")
             for path in files:
                 organelle = "mitochondrion" if os.path.basename(path).startswith("mitochondrion") else "plastid"
@@ -928,10 +928,10 @@ def write_genes(folder, records):
     where they have them."""
     os.makedirs(folder, exist_ok=True)
     paths = {n: os.path.join(folder, n) for n in ("genes.fna.gz", "genes.tsv", "cds.fna.gz", "proteins.faa.gz")}
-    with gzip.open(util.part_of(paths["genes.fna.gz"]), "wt", compresslevel=6) as fa, \
+    with util.bgzf_open(util.part_of(paths["genes.fna.gz"])) as fa, \
             open(util.part_of(paths["genes.tsv"]), "w", newline="\n") as tb, \
-            gzip.open(util.part_of(paths["cds.fna.gz"]), "wt", compresslevel=6) as fc, \
-            gzip.open(util.part_of(paths["proteins.faa.gz"]), "wt", compresslevel=6) as fp:
+            util.bgzf_open(util.part_of(paths["cds.fna.gz"])) as fc, \
+            util.bgzf_open(util.part_of(paths["proteins.faa.gz"])) as fp:
         tb.write("\t".join(GENE_COLUMNS) + "\n")
         for name, seq, row in records:
             fa.write(f">{name}\n{seq}\n")

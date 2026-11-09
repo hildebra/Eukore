@@ -10,9 +10,10 @@ Memory: a sequence is held once (its bytearray), unpacked and written out in pie
 --downloads genomes at once: 12 mammalian chromosomes' ~17 GB killed a build on a 10 GB node.
 """
 
-import gzip
 import os
 import struct
+
+from . import util
 
 SIGNATURE = 0x1A412743
 BASES = b"TCAG"
@@ -67,7 +68,7 @@ def to_fasta(path, dest, chunk=LINE * 16384):
     bases lined and written at a time (a multiple of LINE), the sequence itself never copied."""
     total = 0
     part = dest + ".part"
-    with gzip.open(part, "wb", compresslevel=6) as out:
+    with util.bgzf_open(part, "wb", util.WORK_LEVEL) as out:
         for name, seq in records(path):
             out.write(b">" + name.encode() + b"\n")
             view = memoryview(seq)
