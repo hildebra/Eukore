@@ -2,7 +2,7 @@
 stage measures them as it builds (into the package's benchmarks/, before its manifest, which keeps summary.json's
 figures as `benchmarks`); any package can be measured again afterwards:
 
-    python3 -m eukore.benchmarks OUT/Eukore_2026.11 --work WORK -t 8     # into OUT/Eukore_2026.11/benchmarks/
+    python3 -m eukore.benchmarks OUT/Eukore_2026.11 --build_dir WORK -t 8    # into OUT/Eukore_2026.11/benchmarks/
 
 docs/benchmarks.md describes them, docs/benchmarks/plot_benchmarks.py draws them. Each is a table of benchmarks/:
 - completeness.tsv: per species' genome its BUSCOs Single, Duplicated, Fragmented and Missing, its copies'
@@ -823,7 +823,7 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
             log(f"benchmarks: held-out calls of {summary['orthodb']['held_out']['species']} species "
                 f"({summary['orthodb']['held_out']['verdicts']}; {summary['orthodb']['held_out']['place']})")
         elif compared:
-            summary["left_out"]["orthodb_held_out"] = "no held-out calls (genomes run before 2026-11-06, or no --work)"
+            summary["left_out"]["orthodb_held_out"] = "no held-out calls (genomes run before 2026-11-06, or no --build_dir)"
 
     if vsearch:
         markers = dict(busco_nearest)
@@ -894,7 +894,7 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
         else:
             summary["left_out"]["runtime"] = "no genome timed (genomes run before 2026-11-06)"
     else:
-        summary["left_out"]["runtime"] = "no work folder (--work)"
+        summary["left_out"]["runtime"] = "no build folder (--build_dir)"
     paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside, reads, flags,
           {a: tuple(v) for a, v in gene_bases.items()}, threads, summary, log, databases)
     if stages is not None:
@@ -909,7 +909,9 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("package", help="a package folder (Eukore_<version>/)")
-    p.add_argument("--work", help="the build's work folder: runtime.tsv, and the defaults of --odb and --taxdump")
+    p.add_argument("--build_dir", "--work", dest="work", metavar="WORK",
+                   help="the build's folder (eukore_build.py --build_dir; --work before 2026-11-09): runtime.tsv, and "
+                        "the defaults of --odb and --taxdump")
     p.add_argument("--odb", help="BUSCO's dataset the package was called with (default WORK/sources/eukaryota_odb12): "
                                  "orthodb.tsv")
     p.add_argument("--taxdump", help="NCBI's taxdump (default WORK/sources/taxdump.tar.gz, else the package's "

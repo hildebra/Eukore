@@ -15,11 +15,11 @@ manifest (`--no_benchmarks` skips them). A benchmark whose inputs are missing is
 Any package can be measured again afterwards, and the figures drawn:
 
 ```bash
-python3 -m eukore.benchmarks OUT/Eukore_2026.11 --work WORK -t 8      # into OUT/Eukore_2026.11/benchmarks/
+python3 -m eukore.benchmarks OUT/Eukore_2026.11 --build_dir WORK -t 8      # into OUT/Eukore_2026.11/benchmarks/
 python3 docs/benchmarks/plot_benchmarks.py OUT/Eukore_2026.11         # into docs/benchmarks/figures/
 ```
 
-`--work` gives BUSCO's dataset (`WORK/sources/eukaryota_odb12`, for the OrthoDB benchmark), NCBI's whole taxonomy
+`--build_dir` gives BUSCO's dataset (`WORK/sources/eukaryota_odb12`, for the OrthoDB benchmark), NCBI's whole taxonomy
 (`WORK/sources/taxdump.tar.gz`, else the package's own `taxonomy/`) and the genomes' run times (`WORK/done/`); each
 can also be given alone (`--odb`, `--taxdump`). `--out` writes the tables elsewhere (a measured-again package's
 manifest does not list them). The plots need matplotlib (in `envs/eukore.yaml`); `--format svg` or `pdf` for print.

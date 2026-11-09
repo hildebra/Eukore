@@ -170,16 +170,16 @@ python3 -m unittest discover -s tests -t tests            # ~140 tests with stan
 A **trial** builds a few clades on one machine (here *Saccharomyces*, taxid 4930); its manifest marks it partial:
 
 ```bash
-python3 eukore_build.py --work work --out out --groups fungi --species 4930 -t 8
+python3 eukore_build.py --build_dir work --out out --groups fungi --species 4930 -t 8
 ```
 
 The **full reference** is built in three stages, the first where the network is, the rest on compute nodes:
 
 ```bash
-python3 eukore_build.py --work WORK --out OUT --stage fetch                  # sources and genomes (~6.5 TB, pruned as it goes)
-python3 eukore_build.py --work WORK --out OUT --stage process -t 64 \
-    [--memory_gb 200] [--scratch /local/disk]                                # each genome's genes and rRNA
-python3 eukore_build.py --work WORK --out OUT --stage package -t 64 \
+python3 eukore_build.py --build_dir WORK --out OUT --stage fetch             # sources and genomes (~6.5 TB, pruned as it goes)
+python3 eukore_build.py --build_dir WORK --out OUT --stage process -t 64 \
+    [--memory_gb 200] [--local_tmp /local/disk]                              # each genome's genes and rRNA
+python3 eukore_build.py --build_dir WORK --out OUT --stage package -t 64 \
     [--fcs_gx_db /dev/shm/gxdb/all] [--tiara .../bin/tiara]                  # checks, rRNA, labels, package, benchmarks,
                                                                              # the release (OUT/release/)
 ```

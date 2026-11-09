@@ -460,7 +460,7 @@ def fetch_genome(job, path, **how):
     if not url.endswith(".2bit"):
         return util.fetch_file(url, path, **how)
     from . import twobit  # noqa: PLC0415
-    # the .2bit in --scratch where given (since 2026-11-08: beside the genome, a killed conversion's left there for
+    # the .2bit in --local_tmp where given (since 2026-11-08: beside the genome, a killed conversion's left there for
     # good; the fetch stage now deletes leftovers of a day)
     raw = os.path.join(how.get("scratch") or os.path.dirname(path), os.path.basename(path) + ".2bit")
     why = util.fetch_file(url, raw, gzip_check=False, **{k: v for k, v in how.items() if k == "times"})
@@ -840,7 +840,7 @@ def run(args):
         shutil.rmtree(tmp, ignore_errors=True)
         os.makedirs(tmp)
         # the run's temporary files (miniprot's pieces of a large genome, the rescue's ORFs, tiara's and vsearch's
-        # files) and a copy of the genome, read there by every step, in settings["scratch"] where given (--scratch: a
+        # files) and a copy of the genome, read there by every step, in settings["scratch"] where given (--local_tmp: a
         # node's local disk; since 2026-11-08: all in WORK, the genome read from OUT some six times), else in tmp
         scratch = scratch_dir(settings, acc) or tmp
         side = concurrent.futures.ThreadPoolExecutor(2)
@@ -877,7 +877,7 @@ SCRATCH_PREFIX = ".eukore-"
 
 
 def scratch_dir(settings, accession):
-    """A genome run's own folder in settings["scratch"] (--scratch), or None."""
+    """A genome run's own folder in settings["scratch"] (--local_tmp), or None."""
     if not settings.get("scratch"):
         return None
     os.makedirs(settings["scratch"], exist_ok=True)

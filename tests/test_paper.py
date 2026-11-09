@@ -323,7 +323,7 @@ class FatesTest(unittest.TestCase):
             self.assertEqual(twobit.to_fasta(path, fasta), 15)
             with gzip.open(fasta, "rt") as fh:
                 self.assertEqual(fh.read(), ">chr1\nACNNNGcaac\n>u2\nGGGTA\n")
-            # TOGA2's genome fetched: its .2bit in --scratch (since 2026-11-08), none left anywhere after
+            # TOGA2's genome fetched: its .2bit in --local_tmp (since 2026-11-08), none left anywhere after
             from unittest import mock  # noqa: PLC0415
             out, scratch = os.path.join(tmp, "genomes"), os.path.join(tmp, "scratch")
             os.makedirs(out)

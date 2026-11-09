@@ -373,7 +373,7 @@ class Release(unittest.TestCase):
             toy_package(os.path.join(tmp, "out", "Eukore_2026.11"), sketches=False)
             printed = io.StringIO()
             with contextlib.redirect_stdout(printed):
-                self.assertEqual(eukore_build.main(["--work", os.path.join(tmp, "work"), "--out",
+                self.assertEqual(eukore_build.main(["--build_dir", os.path.join(tmp, "work"), "--out",
                                                     os.path.join(tmp, "out"), "--stage", "release",
                                                     "--version", "2026.11", "-t", "2"]), 0)
             self.assertIn("OUT/release/ of OUT/Eukore_2026.11/", printed.getvalue())  # the banner

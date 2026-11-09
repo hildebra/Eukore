@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests of the process stage on a large node (2026-11-08): genomes begun as their memory fits, each with threads by
 its share of it, the intraspecific panel's in the same pool; hmmsearch in runs of a share of the models; the rescue's
-ORFs read in blocks and made in pieces; a run's temporary files in --scratch.
+ORFs read in blocks and made in pieces; a run's temporary files in --local_tmp.
 
     python3 -m unittest discover -s tests -t tests
 """

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Build Eukore, the standalone eukaryote reference (docs/FORMAT.md; since 2026-11-05).
 
-    python3 eukore_build.py --work WORK --out OUT -t 16                 # all stages on a node with internet
-    python3 eukore_build.py --work WORK --out OUT --stage fetch -t 8    # a cluster: the node with internet,
-    python3 eukore_build.py --work WORK --out OUT --stage process -t 32 #   then any node (nothing fetched),
-    python3 eukore_build.py --work WORK --out OUT --stage package       #   then the package
+    python3 eukore_build.py --build_dir WORK --out OUT -t 16                 # all stages on a node with internet
+    python3 eukore_build.py --build_dir WORK --out OUT --stage fetch -t 8    # a cluster: the node with internet,
+    python3 eukore_build.py --build_dir WORK --out OUT --stage process -t 32 #   then any node (nothing fetched),
+    python3 eukore_build.py --build_dir WORK --out OUT --stage package       #   then the package
 
 Stages:
 - fetch: the sources into WORK/sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
@@ -842,7 +842,7 @@ def at_a_time(work, items, n):
 
 
 def scratch_problem(path):
-    """Why --scratch's folder can't be used (made where not there, then written in), or None. A SLURM job's
+    """Why --local_tmp's folder can't be used (made where not there, then written in), or None. A SLURM job's
     $SLURM_LOCAL_SCRATCH may be named where the job asked for no local disk, its folder then not made."""
     try:
         os.makedirs(path, exist_ok=True)
@@ -903,11 +903,11 @@ def banner(opts, argv, whence):
     rows += [("groups", ", ".join(opts.groups)), ("species", species),
              ("loci", (f"the BUSCOs of --loci {opts.loci}" if opts.loci else f"every BUSCO of {odb_mod.LINEAGE}")
               + ("" if opts.no_markers else ", and Eukore's markers")),
-             ("work", os.path.abspath(opts.work)),
+             ("build_dir", os.path.abspath(opts.work)),
              ("out", os.path.abspath(opts.out) + (f"; the genomes in {os.path.abspath(opts.genomes)} (--genomes)"
                                                   if separate_genomes(opts) else ""))]
     if opts.scratch:
-        rows.append(("scratch", os.path.abspath(opts.scratch)))
+        rows.append(("local_tmp", os.path.abspath(opts.scratch)))
     cores = f"{opts.threads}"
     if "process" in stages:
         cores += f"; {opts.jobs} genomes at a time, {opts.threads_per_genome} threads each"
@@ -939,12 +939,32 @@ def banner(opts, argv, whence):
                      + [f" {k:<10}{v}" for k, v in rows] + [rule])
 
 
+# the folders' flags before 2026-11-09, still taken as they were: --work is --build_dir, --scratch --local_tmp (so that
+# a script's --scratch $SLURM_LOCAL_SCRATCH stays the runs' temporary files)
+RENAMED = {"--work": "--build_dir", "--scratch": "--local_tmp"}
+
+
+def renamed(argv):
+    """argv with the flags' old names (RENAMED) as their new ones, `--work=DIR` too."""
+    out = []
+    for a in argv:
+        flag, eq, value = a.partition("=")
+        out.append(RENAMED[flag] + eq + value if flag in RENAMED else a)
+    return out
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=f"Eukore {__version__}. " + __doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-V", action="version", version=f"Eukore {__version__}", help="Eukore's own version, and exit")
-    p.add_argument("--work", required=True, help="the build's work folder (sources, calls, extractions)")
-    p.add_argument("--out", required=True, help="where Eukore_<version>/, release/ and genomes/ (unless --genomes) go")
+    p.add_argument("--build_dir", dest="work", metavar="WORK", required=True,
+                   help="the build's own folder, kept for the whole build and every rerun: the sources the fetch stage "
+                        "gets (sources/), each genome's results (done/<accession>/: a full build's weeks of runs), "
+                        "the package stage's caches. Not a scratch folder: a file system that keeps its files "
+                        "(--work before 2026-11-09)")
+    p.add_argument("--out", required=True,
+                   help="what the build makes: Eukore_<version>/ (the package), release/ (the website's data and the "
+                        "downloads) and genomes/ (unless --genomes)")
     p.add_argument("--genomes", metavar="DIR",
                    help="the genomes' folder: the fetch stage downloads each species' genome, its gene models and "
                         "NCBI's assembly report into it, the process stage reads them from it, the package stage cuts "
@@ -1044,17 +1064,18 @@ def main(argv=None):
     p.add_argument("--downloads", type=int, default=8,
                    help="the fetch stage's genomes and annotations downloaded at a time (default 8), by curl where on "
                         "the PATH (one NCBI connection: ~30-40 MB/s by curl, ~10 by Python's urllib)")
-    p.add_argument("--scratch", help="a node's local disk (or a scratch file system without backups) for temporary "
-                                     "files: the fetch stage's unfinished downloads (.part files) and their gzip "
-                                     "checks, each file copied into OUT/genomes (--genomes) once whole; the process "
-                                     "stage's (each genome run's copy of its genome, miniprot's pieces of a large one, "
-                                     "the rescue's ORFs, up to ~3 times a genome's size each; and TMPDIR's, barrnap's "
-                                     "and ITSx's), only the results written to WORK (default: beside them, and TMPDIR)")
+    p.add_argument("--local_tmp", dest="scratch", metavar="DIR",
+                   help="a node's local disk (or a scratch file system without backups) for temporary files: the fetch "
+                        "stage's unfinished downloads (.part files) and their gzip checks, each file copied into "
+                        "OUT/genomes (--genomes) once whole; the process stage's (each genome run's copy of its "
+                        "genome, miniprot's pieces of a large one, the rescue's ORFs, up to ~3 times a genome's size "
+                        "each; and TMPDIR's, barrnap's and ITSx's), only the results written to --build_dir (default: "
+                        "beside them, and TMPDIR; --scratch before 2026-11-09)")
     p.add_argument("--report_minutes", type=float, default=util.REPORT_EVERY / 60,
                    help="minutes between progress reports of the genomes' downloads and the process stage's passes: "
                         "items left, time left and, in the process stage, the cores, memory and disk used (default "
                         "10; a report every minute of a pass's first 10)")
-    opts = p.parse_args(argv)
+    opts = p.parse_args(renamed(sys.argv[1:] if argv is None else argv))
     opts.groups = [g for g in opts.groups.split(",") if g]
     compare = []
     for spec in opts.read_compare or ():
@@ -1073,11 +1094,11 @@ def main(argv=None):
     warning = None  # said after the banner
     if opts.scratch:  # checked now, not after the minutes of planning (since 2026-11-08)
         why = scratch_problem(opts.scratch)
-        if why and opts.stage == "fetch":  # its .part files beside the genomes then, as without --scratch
-            warning = f"WARNING: --scratch {why}: the .part files beside the genomes instead"
+        if why and opts.stage == "fetch":  # its .part files beside the genomes then, as without --local_tmp
+            warning = f"WARNING: --local_tmp {why}: the .part files beside the genomes instead"
             opts.scratch = None
         elif why:  # the process stage's temporary files would load WORK's file system: stop
-            p.error(f"--scratch {why}")
+            p.error(f"--local_tmp {why}")
     opts.jobs = opts.jobs or max(1, opts.threads // 4)
     opts.threads_per_genome = max(1, opts.threads // opts.jobs)
     opts.genomes = opts.genomes or os.path.join(opts.out, "genomes")  # --genomes since 2026-11-09
@@ -1111,8 +1132,8 @@ def main(argv=None):
         say(f"--reversion: {sum(stamped.values()):,} done genomes stamped with genome record {genomes.GENOME_RECORD}"
             + (f" (from {', '.join(f'{n:,} of record {r}' for r, n in sorted(stamped.items()))}), their calls kept"
                if stamped else ": none was of an older one"))
-    # the genomes and their annotations fetched (--downloads at a time, through --scratch), by `all` too (until
-    # 2026-11-06 `all` left them to the process stage's workers, --scratch and --downloads unused)
+    # the genomes and their annotations fetched (--downloads at a time, through --local_tmp), by `all` too (until
+    # 2026-11-06 `all` left them to the process stage's workers, --local_tmp and --downloads unused)
     if opts.stage in ("all", "fetch"):
         loci = called_loci(opts, src_dir)  # the BUSCOs and the markers: a genome not searched for one is fetched again
         # a done genome no longer here is fetched again where better gene models than its run took are there
@@ -1145,7 +1166,7 @@ def main(argv=None):
                                  early=util.early_reports(opts.report_minutes * 60))
         fetched = 0
         # each download's gzip check in a process of its own (a core apart from the downloads' threads; spawned, as
-        # a process with threads is not forked), its .part file in --scratch
+        # a process with threads is not forked), its .part file in --local_tmp
         checker = concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"))
         how = {"scratch": opts.scratch, "checker": checker}
         if opts.scratch:

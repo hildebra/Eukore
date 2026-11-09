@@ -179,7 +179,7 @@ class ResumeTest(unittest.TestCase):
         import eukore_build  # noqa: PLC0415
         from unittest import mock  # noqa: PLC0415
         with tempfile.TemporaryDirectory() as tmp:
-            args = ["--work", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"), "--species", "4751,5794",
+            args = ["--build_dir", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"), "--species", "4751,5794",
                     "--groups", "fungi,protozoa", "--memory_gb", "100", "-t", "16", "--no_tsa", "--veupathdb_key",
                     "s3cret", "--veupathdb=s3cret2", "--version", "2026.11"]
             with mock.patch.object(eukore_build, "fetch_sources", side_effect=RuntimeError("fetched")), \
@@ -200,7 +200,7 @@ class ResumeTest(unittest.TestCase):
                 mock.patch.object(eukore_build, "fetch_sources", side_effect=RuntimeError("fetched")), \
                 mock.patch.object(eukore_build.ncbi_mod, "Ncbi", side_effect=RuntimeError("planned")), \
                 self.assertRaises(RuntimeError):
-            eukore_build.main(["--work", tmp, "--out", tmp, "--stage", "package", "--keep_gb", "500"])
+            eukore_build.main(["--build_dir", tmp, "--out", tmp, "--stage", "package", "--keep_gb", "500"])
         text = out.getvalue()
         self.assertIn("stage     package\n   package ", text)
         self.assertIn("genomes   cut back to 500 GB (--keep_gb)", text)
@@ -225,16 +225,16 @@ class ResumeTest(unittest.TestCase):
                     self.skipTest("root writes anywhere")
                 self.assertIn("Permission denied", eukore_build.scratch_problem(os.path.join(locked, "job", "x")))
                 self.assertIn("not writable", eukore_build.scratch_problem(locked))
-                args = ["--work", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"),
-                        "--scratch", os.path.join(locked, "job", "x")]
+                args = ["--build_dir", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"),
+                        "--local_tmp", os.path.join(locked, "job", "x")]
                 with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
                     eukore_build.main(args + ["--stage", "process"])
-                self.assertIn("--scratch", err.getvalue())
+                self.assertIn("--local_tmp", err.getvalue())
                 self.assertFalse(os.path.exists(os.path.join(tmp, "work")))  # stopped before any work
                 with mock.patch.object(eukore_build, "fetch_sources", side_effect=RuntimeError("fetched")), \
                         contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(RuntimeError):
                     eukore_build.main(args + ["--stage", "fetch"])
-                self.assertIn("WARNING: --scratch", out.getvalue())
+                self.assertIn("WARNING: --local_tmp", out.getvalue())
             finally:
                 os.chmod(locked, 0o700)
 
@@ -248,7 +248,7 @@ class ResumeTest(unittest.TestCase):
         passes = ("backfill_pass", "intraspecific_pass", "describe_pass", "drop_superseded", "organelle_genes",
                   "annotate_pass")
         with tempfile.TemporaryDirectory() as tmp:
-            args = ["--work", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"), "--stage", "process"]
+            args = ["--build_dir", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"), "--stage", "process"]
             with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
                 eukore_build.main(args[:-1] + ["package", "--genomes_only"])  # `all` would package without them
             self.assertIn("--genomes_only: with --stage process alone", err.getvalue())
@@ -266,6 +266,24 @@ class ResumeTest(unittest.TestCase):
                 self.assertEqual({n for n, m in called.items() if m.called}, set() if only else set(passes))
                 self.assertEqual("left to a process run without it" in out.getvalue(), only)
 
+    def test_the_folders_old_flags_still_taken(self):
+        # --build_dir and --local_tmp since 2026-11-09; a running build's scripts' --work and --scratch still mean what
+        # they did (never --scratch the build's folder: a node's local disk, emptied after its job)
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        self.assertEqual(eukore_build.renamed(["--work", "W", "--scratch=/l", "--out", "O", "--work_x"]),
+                         ["--build_dir", "W", "--local_tmp=/l", "--out", "O", "--work_x"])
+        with tempfile.TemporaryDirectory() as tmp:
+            work, local = os.path.join(tmp, "work"), os.path.join(tmp, "local")
+            with mock.patch.object(eukore_build, "fetch_sources", side_effect=RuntimeError("fetched")), \
+                    contextlib.redirect_stdout(io.StringIO()) as said, self.assertRaises(RuntimeError):
+                eukore_build.main(["--work", work, "--out", os.path.join(tmp, "out"), "--scratch", local])
+            self.assertIn(f"build_dir {work}\n", said.getvalue())
+            self.assertIn(f"local_tmp {local}\n", said.getvalue())
+            self.assertTrue(os.path.isdir(os.path.join(work)))
+
     def test_the_genomes_folder_apart_from_out(self):
         # --genomes (since 2026-11-09): the downloads in a folder of their own, not OUT/genomes; the banner says it
         import contextlib  # noqa: PLC0415
@@ -277,7 +295,7 @@ class ResumeTest(unittest.TestCase):
             for given in ([], ["--genomes", apart]):
                 with mock.patch.object(eukore_build, "fetch_sources", side_effect=RuntimeError("fetched")), \
                         contextlib.redirect_stdout(io.StringIO()) as said, self.assertRaises(RuntimeError):
-                    eukore_build.main(["--work", os.path.join(tmp, "work"), "--out", out, "--stage", "fetch"] + given)
+                    eukore_build.main(["--build_dir", os.path.join(tmp, "work"), "--out", out, "--stage", "fetch"] + given)
                 self.assertEqual(f"the genomes in {apart} (--genomes)" in said.getvalue(), bool(given))
                 self.assertEqual("into --genomes" in said.getvalue(), bool(given))
             self.assertTrue(os.path.isdir(apart))

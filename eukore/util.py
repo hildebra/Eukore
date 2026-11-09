@@ -332,7 +332,7 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
     gzip file, gzip reads it to its end), else why not. A missing file ("not found") or another refusal (HTTP 4xx but
     429) is not asked for again; other failures are (ATTEMPTS times), after growing waits, or as long as the server
     asks (Retry-After, a minute at most; urllib's alone).
-    scratch: the folder of the download's .part file (eukore_build.py --scratch: dest's storage then gets the whole
+    scratch: the folder of the download's .part file (eukore_build.py --local_tmp: dest's storage then gets the whole
     file once, written in one go), else beside dest; checker: a process pool the gzip check runs in (a core of its own),
     else this thread; times: a dict (a Counter) its seconds of transfer, check (with its wait for the checker) and
     copy (from scratch) are added to, and the bytes of the file it placed; headers: the request's others (an API
