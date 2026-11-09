@@ -137,8 +137,10 @@ python3 eukore_build.py --work WORK --out OUT --stage package --groups fungi,pro
 python3 eukore_build.py --work WORK --out OUT --stage release --version 2026.11 -t 64
 ```
 
-Give every stage the same `--work`, `--out`, `--groups` and `--species`: each stage plans the same genome set from
-them. `--stage all` (the default) runs the three in turn on one machine with internet.
+Give every stage the same `--work`, `--out`, `--genomes`, `--groups` and `--species`: each stage plans the same genome
+set from them. The genomes go into `OUT/genomes` unless `--genomes DIR` puts them in a folder of their own (since
+2026-11-09), e.g. a download area apart from the package; to move a build's genomes there, move the folder's files
+(the genomes, their gene models, assembly reports and `.annotation_none` notes, `manifest.tsv`) with it. `--stage all` (the default) runs the three in turn on one machine with internet.
 
 The process stage may run on several nodes at once, e.g. a SLURM array: each run claims the genomes it takes, so the
 runs share them out without a split. With `--genomes_only` (since 2026-11-09) each runs its genomes and stops; one
@@ -245,7 +247,8 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | option | default | |
 |---|---|---|
 | `--work DIR` | required | the build's work folder: sources, each genome's results, caches |
-| `--out DIR` | required | where `Eukore_<version>/`, `release/` and `genomes/` go |
+| `--out DIR` | required | where `Eukore_<version>/`, `release/` and `genomes/` (unless `--genomes`) go |
+| `--genomes DIR` | `OUT/genomes` | the genomes' folder: the fetch stage downloads each species' genome, its gene models and NCBI's assembly report into it, the process stage reads them from it, the package stage cuts it back to `--keep_gb`; the same for every stage (since 2026-11-09) |
 | `--stage` | `all` | `fetch`, `process`, `package` or `all` (the three in turn); `release`: `OUT/release/` again of a finished `OUT/Eukore_<version>/` (since 2026-11-09) |
 | `--genomes_only` | | with `--stage process`: run the genomes and stop, the passes after them (backfill, intraspecific panel, metadata, organelle genes, gene models) left to a process run without it; for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages); since 2026-11-09) |
 | `--no_release` | | the package stage writes no `OUT/release/` (the website's data and the downloads, a second copy of the package: since 2026-11-09 written last by default) |

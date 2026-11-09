@@ -10,15 +10,15 @@ Stages:
 - fetch: the sources into WORK/sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
   BUSCO's eukaryota_odb12, EUKARYOME 2.1, ROD v1.2, RefSeq's organelle genomes, NCBI's FCS-GX and ANI reports, which
   rank the genomes: eukore/quality.py, PR2's and KSGP's taxonomies, Eukore's marker set: KOfam's profiles, Swiss-Prot's
-  and NCBI's proteins, eukore/markers.py), then each species' genome (genomes.jobs) into OUT/genomes;
+  and NCBI's proteins, eukore/markers.py), then each species' genome (genomes.jobs) into OUT/genomes (--genomes);
 - process: each genome's BUSCO genes called (a genome searched for fewer than those called is run again) and its rRNA
   extracted (WORK/done/<accession>/); a genome not fetched yet waits for the next run; then the organelle genes
   (mitochondrial and plastid rRNA, mitochondrial COX1) of RefSeq's organelle genomes, and of the assemblies' own
   organelle molecules where RefSeq has none (WORK/organelle);
 - package: the copies' checks across species, the published rRNA reads' regions (WORK/published), the organelle genes
-  of any assembly not searched yet, OUT/genomes cut back to --keep_gb where given (genomes.prune: the model species'
-  and the smallest kept first; without it no genome file is deleted), then OUT/Eukore_<version>/ and, unless
-  --no_release, OUT/release/: the website's data (website/) and the downloads, BGZF (eukore/release.py);
+  of any assembly not searched yet, OUT/genomes (--genomes) cut back to --keep_gb where given (genomes.prune: the
+  model species' and the smallest kept first; without it no genome file is deleted), then OUT/Eukore_<version>/ and,
+  unless --no_release, OUT/release/: the website's data (website/) and the downloads, BGZF (eukore/release.py);
 - release: OUT/release/ again of a finished OUT/Eukore_<version>/.
 `all` runs fetch, process and package in turn. Every stage is resumable: a rerun does only what is not done. Every
 compressed file is BGZF (gzip in blocks: bgzip -@ decompresses it on many threads), compressed on -t threads.
@@ -871,6 +871,11 @@ def command_of(argv):
     return " ".join(words)
 
 
+def separate_genomes(opts):
+    """Whether --genomes puts the genomes elsewhere than OUT/genomes."""
+    return os.path.abspath(opts.genomes) != os.path.abspath(os.path.join(opts.out, "genomes"))
+
+
 def banner(opts, argv, whence):
     """The run's opening lines on STDOUT (since 2026-11-08): Eukore's version, where and when, the command, what each
     stage of the run will do and with what (the folders, the genome set, the cores, memory and downloads)."""
@@ -878,7 +883,8 @@ def banner(opts, argv, whence):
     package_dir = f"Eukore_{opts.version}"
     does = {
         "fetch": "the sources" + (" (their tables fetched again: --refresh)" if opts.refresh else "")
-                 + ", then each species' genome and gene models into OUT/genomes",
+                 + ", then each species' genome and gene models into "
+                 + ("--genomes" if separate_genomes(opts) else "OUT/genomes"),
         "process": "each genome's loci called and its rRNA extracted"
                    + (" alone (--genomes_only: the passes after, the organelle genes among them, left to a run without "
                       "it)" if opts.genomes_only else ", then the organelle genes"),
@@ -897,7 +903,9 @@ def banner(opts, argv, whence):
     rows += [("groups", ", ".join(opts.groups)), ("species", species),
              ("loci", (f"the BUSCOs of --loci {opts.loci}" if opts.loci else f"every BUSCO of {odb_mod.LINEAGE}")
               + ("" if opts.no_markers else ", and Eukore's markers")),
-             ("work", os.path.abspath(opts.work)), ("out", os.path.abspath(opts.out))]
+             ("work", os.path.abspath(opts.work)),
+             ("out", os.path.abspath(opts.out) + (f"; the genomes in {os.path.abspath(opts.genomes)} (--genomes)"
+                                                  if separate_genomes(opts) else ""))]
     if opts.scratch:
         rows.append(("scratch", os.path.abspath(opts.scratch)))
     cores = f"{opts.threads}"
@@ -936,7 +944,11 @@ def main(argv=None):
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-V", action="version", version=f"Eukore {__version__}", help="Eukore's own version, and exit")
     p.add_argument("--work", required=True, help="the build's work folder (sources, calls, extractions)")
-    p.add_argument("--out", required=True, help="where Eukore_<version>/, release/ and genomes/ go")
+    p.add_argument("--out", required=True, help="where Eukore_<version>/, release/ and genomes/ (unless --genomes) go")
+    p.add_argument("--genomes", metavar="DIR",
+                   help="the genomes' folder: the fetch stage downloads each species' genome, its gene models and "
+                        "NCBI's assembly report into it, the process stage reads them from it, the package stage cuts "
+                        "it back to --keep_gb (default OUT/genomes). Give every stage the same")
     p.add_argument("--stage", choices=("all", "fetch", "process", "package", "release"), default="all",
                    help="all: fetch, process and package in turn; release: OUT/release/ (the website's data and the "
                         "downloads) of a finished OUT/Eukore_<version>/ again, which the package stage writes last")
@@ -953,10 +965,10 @@ def main(argv=None):
                    help=f"NCBI's assembly groups whose species the package holds (default all: "
                         f"{','.join(sources.ASSEMBLY_GROUPS)}; e.g. fungi,protozoa first)")
     p.add_argument("--keep_gb", type=float,
-                   help="the genomes kept in OUT/genomes by the package stage, GB, cut back to it before the package "
-                        "is written (so that genomes.tsv says which are kept; the build may hold more while it "
-                        "works); with it, a superseded assembly's and the intraspecific panel's genome files are "
-                        "deleted once done too (default: no genome file deleted; until 2026-11-08 1000)")
+                   help="the genomes kept in OUT/genomes (--genomes) by the package stage, GB, cut back to it before "
+                        "the package is written (so that genomes.tsv says which are kept; the build may hold more "
+                        "while it works); with it, a superseded assembly's and the intraspecific panel's genome files "
+                        "are deleted once done too (default: no genome file deleted; until 2026-11-08 1000)")
     p.add_argument("--loci", help="call only these BUSCOs (a file, one per line or a loci table's first column; "
                                   "default: every BUSCO of the dataset)")
     p.add_argument("--species", help="a partial build (a trial run): only the species inside these NCBI taxids' clades, "
@@ -1034,10 +1046,10 @@ def main(argv=None):
                         "the PATH (one NCBI connection: ~30-40 MB/s by curl, ~10 by Python's urllib)")
     p.add_argument("--scratch", help="a node's local disk (or a scratch file system without backups) for temporary "
                                      "files: the fetch stage's unfinished downloads (.part files) and their gzip "
-                                     "checks, each file copied into OUT/genomes once whole; the process stage's (each "
-                                     "genome run's copy of its genome, miniprot's pieces of a large one, the rescue's "
-                                     "ORFs, up to ~3 times a genome's size each; and TMPDIR's, barrnap's and ITSx's), "
-                                     "only the results written to WORK (default: beside them, and TMPDIR)")
+                                     "checks, each file copied into OUT/genomes (--genomes) once whole; the process "
+                                     "stage's (each genome run's copy of its genome, miniprot's pieces of a large one, "
+                                     "the rescue's ORFs, up to ~3 times a genome's size each; and TMPDIR's, barrnap's "
+                                     "and ITSx's), only the results written to WORK (default: beside them, and TMPDIR)")
     p.add_argument("--report_minutes", type=float, default=util.REPORT_EVERY / 60,
                    help="minutes between progress reports of the genomes' downloads and the process stage's passes: "
                         "items left, time left and, in the process stage, the cores, memory and disk used (default "
@@ -1068,7 +1080,7 @@ def main(argv=None):
             p.error(f"--scratch {why}")
     opts.jobs = opts.jobs or max(1, opts.threads // 4)
     opts.threads_per_genome = max(1, opts.threads // opts.jobs)
-    opts.genomes = os.path.join(opts.out, "genomes")
+    opts.genomes = opts.genomes or os.path.join(opts.out, "genomes")  # --genomes since 2026-11-09
     wanted = opts.wanted = clades(opts.species)
     # the process stage's memory (since 2026-11-08): genomes begun while their estimates fit (schedule)
     memory, whence = (opts.memory_gb * 1e9, "--memory_gb") if opts.memory_gb else util.memory_budget()
@@ -1084,7 +1096,8 @@ def main(argv=None):
     os.makedirs(opts.work, exist_ok=True)
     os.makedirs(opts.genomes, exist_ok=True)
     # the resources the build uses, said with the process stage's progress (since 2026-11-08)
-    opts.usage = util.Usage([("WORK", opts.work), ("OUT", opts.genomes)], opts.threads)
+    opts.usage = util.Usage([("WORK", opts.work), ("GENOMES" if separate_genomes(opts) else "OUT", opts.genomes)],
+                            opts.threads)
     src_dir = os.path.join(opts.work, "sources")
     if opts.stage in ("all", "fetch"):
         fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh, opts.threads)

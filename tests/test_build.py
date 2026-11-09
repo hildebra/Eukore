@@ -266,6 +266,23 @@ class ResumeTest(unittest.TestCase):
                 self.assertEqual({n for n, m in called.items() if m.called}, set() if only else set(passes))
                 self.assertEqual("left to a process run without it" in out.getvalue(), only)
 
+    def test_the_genomes_folder_apart_from_out(self):
+        # --genomes (since 2026-11-09): the downloads in a folder of their own, not OUT/genomes; the banner says it
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            out, apart = os.path.join(tmp, "out"), os.path.join(tmp, "downloads")
+            for given in ([], ["--genomes", apart]):
+                with mock.patch.object(eukore_build, "fetch_sources", side_effect=RuntimeError("fetched")), \
+                        contextlib.redirect_stdout(io.StringIO()) as said, self.assertRaises(RuntimeError):
+                    eukore_build.main(["--work", os.path.join(tmp, "work"), "--out", out, "--stage", "fetch"] + given)
+                self.assertEqual(f"the genomes in {apart} (--genomes)" in said.getvalue(), bool(given))
+                self.assertEqual("into --genomes" in said.getvalue(), bool(given))
+            self.assertTrue(os.path.isdir(apart))
+            self.assertEqual(os.listdir(out), ["genomes"])  # the run without --genomes'
+
     def test_a_package_written_over_a_killed_runs_old(self):
         from eukore import package  # noqa: PLC0415
         with tempfile.TemporaryDirectory() as tmp:
