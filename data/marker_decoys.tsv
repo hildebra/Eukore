@@ -1,0 +1,12 @@
+# Decoys of Eukore's marker loci that KEGG has no KO of (eukore/markers.py, decoy_profiles; since 2026-11-09): each
+# built from NCBI's proteins of its Entrez query (any eukaryote, environmental samples too: its records are mostly PCR
+# fragments of cultures and of the environment), those the marker's target profile scores best, under its members'
+# 5th percentile score and unlike every member (shared 5-mers), aligned to the target profile (hmmalign) and built into
+# an HMM (hmmbuild) named decoy-<decoy>. It joins the marker's decoys: a region whose best profile is a decoy's is not
+# the marker.
+# EFL, the elongation factor-like GTPase that replaced EF-1a in many lineages (Keeling & Inagaki 2004; NCBI's EFL
+# records: green algae, diatoms, chytrids, Basidiobolus, ichthyosporeans, ...): EF-1a's profile (K03231) scores it best,
+# its paralogs' KOs (eRF3, HBS1, EF-Tu) do not, and on NCBI's records of 2026-11-09 51 of its 237 scored over TEF1's
+# cutoff: a genome holding EFL alone had it called TEF1.
+locus	decoy	name	ncbi
+TEF1	EFL	elongation factor-like GTPase (EFL), EF-1a's replacement	(EFL[Gene Name] OR "elongation factor-like"[Title] OR "elongation factor like"[Title] OR "elongation factor 1-alpha-like"[Title] OR "elongation factor 1 alpha-like"[Title] OR "elongation factor-1 alpha-like"[Title]) AND 150:700[slen]

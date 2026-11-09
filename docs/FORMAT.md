@@ -1,4 +1,4 @@
-# Eukore package format, version 5
+# Eukore package format, version 6
 
 Eukore is a standalone eukaryote reference. It holds every BUSCO gene of eukaryota_odb12 and the rDNA operons of every
 eukaryote species with an NCBI genome, complete (genes with all their introns, operons uncut) and checked, and the
@@ -19,6 +19,28 @@ genetic codes and duplication, more organelle genes with their checks, the 18S v
 barcode primers, a two-level supergroup, three more references' lineages and other databases' ids, and a barcode gap
 measured on a panel of species ([Changes](#changes)).
 
+Since format 6 (Eukore 0.2.3, 2026-11-09) a confidence tier tells a sequence nothing could be checked against
+(`unverified`) from one where something may be wrong (`medium`); the coding sequences are checked against the proteins
+their HMMs confirmed; a Duplicated locus' copy is the one whose lineage fits; a sequence two clades' genomes share goes
+to its owner; an 18S is checked to be a nucleus'; and each genome names what made its calls (`genome_record`).
+
+### Confidence tiers (format 6)
+
+Every copy, record and organelle gene has one of four tiers, and its reasons in `flags` (comma-separated, those of the
+worse tiers first):
+- `high`: a check across species confirms it (its nearest copies of other species agree with its lineage to the
+  family or deeper), and nothing says something may be wrong;
+- `unverified`: nothing says something may be wrong, but its own-species check could not decide
+  (`own_species_undecided`: no other species of its family near enough, often a protist lineage the package holds
+  few species of; for a published read, not made);
+- `medium`: something may be wrong (a fragment, a duplicate, a short span, an assembly gap, a contig's end, a stop
+  inside its protein, a sequence shared with another clade's genome whose owner is undecided, ...);
+- `low`: a check calls it another organism's, or not the gene (a contaminant, a bacterium's or an organelle's SSU as
+  an 18S, a marker's paralog).
+
+Until format 6 there were three: `unverified` was `medium`, `own_species_undecided` one of its reasons. A user who
+drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack of evidence, not evidence.
+
 ## Every file
 
 | file | what it holds | format |
@@ -27,27 +49,27 @@ measured on a panel of species ([Changes](#changes)).
 | [`taxonomy/`](#taxonomy) | NCBI's taxonomy cut to the package; nuclear, mitochondrial and plastid genetic codes | codes: 5 |
 | [`species.tsv`](#speciestsv) | one row per species: its genome, supergroup and group, NCBI lineage (and filled), lineages in PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2, type material | 4, more in 5 |
 | [`crossrefs.tsv`](#crossrefstsv-format-5) | each species' ids in Open Tree, GBIF, WoRMS, IRMNG, Index Fungorum, UNITE (SH), BOLD (BIN) | 5 |
-| [`genomes.tsv`](#genomestsv) | each genome: accession, flags, rRNA copies, genetic code and its check, duplication, introns, type material | 4, more in 5 |
+| [`genomes.tsv`](#genomestsv) | each genome: accession, flags, rRNA copies, genetic code and its check, duplication, introns, type material, genome record, copies another clade's | 4, more in 5 and 6 |
 | [`copy_numbers.tsv.gz`](#copy_numberstsvgz-format-5) | each genome's copies of every BUSCO and marker locus, rRNA gene and unit, organelle molecule and gene; by reads where measured | 5 |
 | [`busco/loci.tsv`](#busco) | each BUSCO's call rate, overall and per group | 4 |
 | [`busco/copies/`, `cds/`, `proteins/`](#busco) | each BUSCO's copies whole (introns and all), their coding sequences, their proteins | cds, proteins: 5 |
-| [`busco/copies.tsv`](#busco) | each copy's call, checks, confidence, internal stops, duplicated copies' identity | 4, more in 5 |
+| [`busco/copies.tsv`](#busco) | each copy's call, checks, confidence, internal stops, duplicated copies' identity, coding sequence check, how it was chosen | 4, more in 5 and 6 |
 | [`busco/features.tsv`](#busco) | each copy's exons, introns, frameshifts, masked runs, gaps | 4 |
 | [`busco/introns.tsv`, `intron_sites.tsv`](#busco) | each intron's phase, splice sites, class, U12 look, place on the HMM; the sites shared across species | 5 |
 | [`markers/`](#markers-format-5) | Eukore's own marker loci (RPB1, RPB2, EF-2, EF-1α, ...): the same files as `busco/`, for genes BUSCO cannot hold | 5 |
-| [`rrna/records.tsv`, `records.fna.gz`](#rrna) | 18S spans and rDNA units of genomes and published long reads, their parts, checks, confidence | 4 |
+| [`rrna/records.tsv`, `records.fna.gz`](#rrna) | 18S spans and rDNA units of genomes and published long reads, their parts, checks, confidence, SSU model | 4, more in 6 |
 | [`rrna/regions.tsv`](#rrna) | each record's 18S V1-V5, V7-V9 | 5 |
 | [`rrna/amplicons.tsv`](#rrna) | in-silico PCR of 10 18S, ITS and 28S primer pairs on each record | 5 |
-| [`organelle/genes.tsv`, `genes.fna.gz`](#organelle) | mitochondrial and plastid rRNA and protein-coding genes, the trnH-psbA spacer, their checks and confidence | 4, more in 5 |
+| [`organelle/genes.tsv`, `genes.fna.gz`](#organelle) | mitochondrial and plastid rRNA and protein-coding genes, the trnH-psbA spacer, their checks and confidence | 4, more in 5 and 6 |
 | [`organelle/cds.fna.gz`, `proteins.faa.gz`](#organelle) | the protein-coding genes' coding sequences and proteins by the organelle's code | 5 |
 | [`organelle/amplicons.tsv`](#organelle) | in-silico PCR of 8 COI, rbcL, matK, psbA-trnH, 12S and 16S primer pairs | 5 |
 | [`organelle/molecules.fna.gz`](#organelle) | the assemblies' organelle molecules, whole | 4 |
-| [`intraspecific/`](#intraspecific-format-5) | the panel's further assemblies' copies, rRNA and organelle genes; the barcode gap | 5 |
+| [`intraspecific/`](#intraspecific-format-5) | the panel's further assemblies' copies, rRNA and organelle genes; the barcode gap | 5, more in 6 |
 | [`metadata/`](#metadata) | each genome's measures (size, contiguity, GC, masking, telomeres, ...), tetranucleotides, sketches, NCBI's summary, codon evidence | codons: 5 |
 | [`benchmarks/`](#benchmarks-optional) | the build's measures of the package | |
 
 ## manifest.json
-`format` (5; a reader of 5 also takes 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, e.g. `0.2.2`), `built` (ISO time),
+`format` (6; a reader of 6 also takes 5 and 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, e.g. `0.2.3`), `built` (ISO time),
 `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
@@ -137,6 +159,7 @@ The species' genomes and their other assemblies:
 | `gencode` | NCBI's nuclear genetic code for its taxid, the table its BUSCO copies were called and are translated by (format 5) |
 | `duplicated_share`, `dup_identity_median`, `duplication` | of its BUSCOs called (Single or Duplicated) the share Duplicated; the median `dup_identity` of those; `haplotypes` (15% or more Duplicated, their copies 99.5% alike or more: an assembly holding both haplotypes of a diploid, or a recent hybrid), `wgd_or_polyploid` (15% or more Duplicated and less alike: a whole-genome duplication, a polyploid, an older hybrid), `low` (under 15%), `-` (under 20 BUSCOs called, or a genome run before 0.2). A heuristic: read it with the genome's size and the species' biology (format 5) |
 | `introns`, `introns_per_kb_cds`, `median_intron_length` | its BUSCO copies' introns (`busco/introns.tsv`): their number, per kb of the copies' coding sequence, their median length (format 5) |
+| `genome_record`, `foreign_copies`, `foreign_source` | what made its calls (Eukore's genome record, `genomes.GENOME_RECORD`: 1 for a run before 2026-11-09, 2 since; a build runs a genome of an older one again unless `--reversion` keeps its calls); its copies another clade's (`own_species` f); the NCBI taxid of those clades' lowest common ancestor, `-` (format 6) |
 | `gencode_check`, `gencode_codons`, `best_table` | its code checked against its BUSCO genes ([methods.md](methods.md)) on the codons nuclear codes are known to read otherwise (the stops TAA, TAG, TGA and CTG): `agrees`, `differs:<codon>><amino acid>,...` (NCBI's table reads them otherwise than the genes' conserved positions do), `undecided` (too few codons at conserved positions); of those four, the ones seen at 10 conserved positions or more (a stop at 5: under its own reading it is at none; a stop not seen is a stop; a CTG not seen is not judged: CTG-clade yeasts avoid it), `-` for none; the NCBI table that fits them best (NCBI's own where it fits as well; `-` where undecided). Every codon's evidence is `metadata/codons.tsv.gz` (format 5) |
 
 A species' genome is NCBI's best by Eukore's ranking: never one NCBI flags as contaminated, of an unverified source
@@ -204,19 +227,31 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 | `protein_length` | of its translation |
 | `window_class` | tiara's class of the 50 kb around it (`eukarya`, `bacteria`, `archaea`, `organelle`, `unknown`), `-` where not classified |
 | `fcs` | NCBI FCS-GX's call over the copy (`ACTION:division:top taxon`, its action `EXCLUDE`, `TRIM`, `FIX` or `REVIEW`), `-` for none or where not screened |
-| `own_species` | `t`, `f` or `-`: its coding sequence's nearest copies of other species agree with its NCBI lineage to the family or deeper; or share no more than the phylum at 90% or more (another clade's gene: a contaminant, a misidentified genome) |
+| `own_species` | `t`, `f` or `-`: its coding sequence's nearest copies of other species agree with its NCBI lineage to the family or deeper; or, at 90% or more, are known to part from it at the class or above (a phylum or class both name and differ in, else two groups; since format 6 two lineages that name no such rank to compare are not), its owner told (below): another clade's gene, a contaminant, a misidentified genome |
 | `same_as` | the NCBI taxid of the lowest common ancestor of the species with a copy 99% identical to it, `-` for none |
-| `length_check` | `short`, `long` (its protein in its locus' bottom or top 5%), `ok` |
+| `length_check` | `short`, `long` (its protein under 0.75 or over 1.33 times the median of its relatives', its 3 or more hits of other species; else under 0.5 or over 2 times its locus' median; until format 6 its locus' bottom or top 5%, a tenth of every locus whatever its lengths), `ok` |
 | `contig_edge` | bases from the copy to its contig's nearer end: a copy at an end may be cut, or joined to another sequence |
 | `gaps` | runs of 10 Ns or more in the copy (assembly gaps: a misjoin's mark) |
-| `confidence`, `flags` | `high`, `medium` or `low`, and why (comma-separated, `-` for none; below) |
+| `confidence`, `flags` | `high`, `unverified`, `medium` or `low` ([the tiers](#confidence-tiers-format-6); `unverified` since format 6), and why (comma-separated, `-` for none; below) |
 | `internal_stops` | stop codons inside its protein by the genome's table (a pseudogene, a frameshift miniprot did not see, or a genetic code NCBI's table does not give: `genomes.tsv`'s `gencode_check`; format 5) |
 | `dup_identity` | a Duplicated copy's nearest other complete copy in the genome: the identity of their coding sequences (vsearch, %), `<50` where none is 50% identical; `-` for a Single or Fragmented copy, or a genome run before 0.2 (format 5) |
+| `cds_check` | its coding sequence (as `cds/` holds it) against the protein its HMM confirmed: `clean`; `recovered` (the best HMM score's alignment was not clean, another alignment of the gene, or one made again on its place, is and was confirmed: it is the copy); `stops` (a stop inside its translation); `mismatch` (its translation is not that protein: under 90% of its 5-mers in it); `-` for a genome of genome record 1 (format 6; [methods.md](methods.md)) |
+| `cross` | the species of another clade whose genome holds this copy's sequence (90% or more): for a copy another clade's (`own_species` f), its source; for an undecided one, the other holder; else `-` (format 6) |
+| `choice` | how the copy was chosen among a Duplicated locus' complete copies: `hmm` (the best HMM score's, as before format 6), `lineage` (another, whose own-species verdict fits its lineage where the best one's did not; format 6) |
 
-A copy is `low` where a check calls it another organism's: `own_species` (f), `fcs` (FCS-GX's EXCLUDE, TRIM or FIX),
-`window_prokaryote` (tiara's bacteria or archaea). It is `medium` where something may be wrong: `fragmented`,
-`duplicated`, `rescued` (the rescue pass': its span may fall short of the gene's ends), `length_short` or `length_long`, `gap`, `contig_edge` (under 1,000 bases), `own_species_undecided`
-(`own_species` -), `window_organelle`, `fcs_review`. Else `high`.
+A copy is `low` where a check calls it another organism's or not the locus: `own_species` (f), `fcs` (FCS-GX's EXCLUDE,
+TRIM or FIX), `window_prokaryote` (tiara's bacteria or archaea), `paralog` (format 6: a marker copy whose best profile
+is a decoy's, EFL called as EF-1a by a genome run before that decoy). It is `medium` where something may be wrong:
+`fragmented`, `duplicated`, `rescued` (the rescue pass': its span may fall short of the gene's ends), `length_short` or
+`length_long`, `gap`, `contig_edge` (under 1,000 bases), `window_organelle`, `fcs_review`, `transcript`, and since
+format 6 `internal_stops`, `cds_mismatch` and `cross_shared` (its sequence held by another clade's genome too, and
+neither clade's other species tell whose it is). It is `unverified` where none of these holds but `own_species` is `-`
+(`own_species_undecided`; `medium` until format 6). Else `high`.
+
+A sequence two clades' genomes hold goes to its owner (format 6; until then both copies were `f`, the true owner's
+too): the clade whose other species hold it nearer; where neither holds it near, not the clade that holds the locus as
+another sequence; else undecided (`cross`, `cross_shared`). A genome with 3 or more copies another clade's of one
+phylum has its undecided copies shared with that phylum called `f` too (`genomes.tsv`'s `foreign_copies`).
 
 - `features.tsv`: per copy its exons and introns, the assembly's soft-masked runs of 20 bases or more
   (`soft_masked`), its low-complexity runs (`low_complexity`: DUST's score over 20 in 64-base windows) and its
@@ -284,19 +319,24 @@ manifest's `counts.marker_loci` the markers.
 | `lsu_complete` | `t` where barrnap's 28S hit covers its whole model |
 | `ambiguous`, `homopolymer` | the share of non-ACGT bases; the longest one-base run |
 | `type` | its 99% 18S type within the species (`1`, `2`, ...) |
-| `own_species` | `t`, `f`, or `-`: whether its nearest records of other sources agree with its NCBI lineage to the family or deeper (a genome's contaminant rDNA fails; a genome's copies searched as one per 99% type, so that its own do not fill the hits) |
+| `own_species` | `t`, `f`, or `-`: whether its nearest records of other sources agree with its NCBI lineage to the family or deeper (a genome's contaminant rDNA fails; a genome's copies searched as one per 99% type, so that its own do not fill the hits; its own assembly's records in another source, ROD's, are its own: format 6), the owner of a shared 18S told as `busco/copies.tsv`'s |
 | `screen` | the part screen's flags: `-`, or `part:rank,...`, each a part (`18S`, `junction`, `28S 5'`, `28S 3'`) whose nearest records of other genomes are another clade's at that rank (`kingdom` .. `family`) |
 | `label_from` | how its taxid was found: `assembly`, `rod_taxid`, `eukaryome_name`, `eukaryome_genus` |
 | `contig`, `start`, `end`, `strand` | a genome's record: where it lies in the assembly (1-based, inclusive; the 18S span's, or the unit's from its first region to its last); `-` for a published read |
 | `contig_edge` | a genome's record: bases to its contig's nearer end |
 | `introns` | the 18S's introns on the record (`18S:start-end,...`: the gaps between barrnap's 18S pieces), `-` for none; the 18S region spans them |
 | `gaps` | runs of 10 Ns or more in the record |
-| `confidence`, `flags` | `high`, `medium` or `low`, and why (below) |
+| `confidence`, `flags` | `high`, `unverified`, `medium` or `low`, and why (below) |
+| `cross` | the species of another clade whose genome holds its 18S (as `busco/copies.tsv`'s; format 6) |
+| `ssu_model` | the SSU model of Rfam that scores its 18S best (cmsearch of the profile HMMs of RF01960 and RF02542, eukaryote, RF00177, bacteria, RF01959, archaea; a prokaryote model by 20 bits over the eukaryote's best): `eukarya`, `bacteria` or `archaea` (a bacterium's, a mitochondrion's or a plastid's SSU: `low`), `-` where none scored it or not measured (format 6) |
 
 A record is `low` where a check calls it another organism's or of bad sequence: `own_species` (f), `screen`,
-`ambiguous` (over 0.5%), `homopolymer` (36 or longer). It is `medium` where something may be wrong: `gap`, `contig_edge`
-(under 1,000 bases), `own_species_undecided`, `lsu_partial` (an operon without a whole 28S), `genus_label` (a
-published read labelled by its genus alone). Else `high`.
+`ambiguous` (over 0.5%), `homopolymer` (36 or longer), `ssu_prokaryote` (format 6: its 18S scored best by Rfam's
+bacterial or archaeal SSU model, a bacterium's or an organelle's SSU). It is `medium` where something may be wrong:
+`gap`, `contig_edge` (under 1,000 bases), `lsu_partial` (an operon without a whole 28S), `genus_label` (a published read
+labelled by its genus alone), `cross_shared` (format 6). It is `unverified` where none of these holds but its
+own-species check is undecided or was not made, a published read's (`own_species_undecided`; `medium` until format 6).
+Else `high`.
 
 An operon's spacers are its ITS1 and ITS2 (`regions`); the intergenic spacer between units is not taken (a unit runs
 from its 18S to its 28S, and its 5S where that lies in the same block). A 5S elsewhere in the genome (most animals' and
@@ -363,7 +403,8 @@ name a mitochondrion, chloroplast, plastid or apicoplast).
 | `regions` | the trnH-psbA record's parts on it, `psbA3':0-200,spacer:200-...,trnH:...` (0-based, end excluded), else `-` (format 5) |
 | `internal_stops` | stops inside a protein-coding gene's protein by the organelle's code: a NUMT, a pseudogene, RNA editing, or a code NCBI does not give (format 5) |
 | `own_species`, `same_as`, `length_check` | as `busco/copies.tsv`'s, each gene of each organelle compared across species (its coding sequence where it has one, else its record; format 5) |
-| `confidence`, `flags` | `low` (`own_species` f, `ambiguous` over 0.005, `internal_stops`), `medium` (`partial`, `own_species_undecided`, `length_short` or `length_long`, `trans_spliced`, `exons_approximate`), else `high` (format 5) |
+| `confidence`, `flags` | `low` (`own_species` f, `ambiguous` over 0.005), `medium` (`internal_stops`: RNA editing or a code NCBI does not give leaves stops in a working gene, `low` until format 6; `partial`, `length_short` or `length_long`, `trans_spliced`, `exons_approximate`, `cross_shared`), `unverified` (`own_species_undecided`: format 6, `medium` until then), else `high` (format 5) |
+| `cross` | the species of another clade whose organelle holds its sequence (as `busco/copies.tsv`'s; format 6) |
 
 - `amplicons.tsv` (format 5): as `rrna/amplicons.tsv`, the organelle genes' primer pairs on their genes: COX1 `COI_Folmer` (LCO1490/HCO2198), `COI_Leray` (mlCOIintF/jgHCO2198); rbcL `rbcLa`; matK `matK_KIM`; `psbA-trnH`; an animal mitochondrion's 12S `MiFish-U`, `12S_V5` and 16S `16S_Palumbi`.
 - `molecules.fna.gz` (since 2026-11-07): the organelle molecules of each species' genome as its assembly holds them
@@ -439,7 +480,8 @@ species is set beside its distance to the nearest other species ([methods.md](me
 | `assemblies` | the species' assemblies holding the marker (its genome and its further ones) |
 | `intra_min`, `intra_median` | the identity of their copies to each other (vsearch, `--iddef 2`, %): the least alike pair, the median pair (a pair under 50% read as 50) |
 | `inter_max` | the identity of the species' genome's copy to its nearest copy of another species in the package (a BUSCO's: its check's, `qc.check`), `-` where none is 50% alike |
-| `gap`, `resolved` | `intra_min - inter_max`; `t` where above 0 (its assemblies nearer to each other than to any other species), `f` where not, `-` where not measured |
+| `gap`, `resolved` | `intra_min - inter_max`; `t` where above 0 (its assemblies nearer to each other than to any other species) and its nearest other species is a congener (format 6: a gap to a farther relative says nothing of its congeners), `f` where not above 0, `-` where not measured or no congener is nearest |
+| `inter_rank` | the deepest rank its nearest other species shares with it (`genus` .. `phylum`, `none`), `-` where not known (format 6). Pairs are aligned over 80% of their query at least (format 6) |
 
 ## benchmarks/ (optional)
 How complete, right and discriminating the package is, measured by the build (`eukore/benchmarks.py`; absent with
@@ -541,6 +583,15 @@ them). `genomes.tsv`'s
   own stream, level 6). A gzip reader reads it as before; `bgzip -d -@` decompresses it on many threads and
   `samtools faidx` indexes a FASTA. The release beside the package (`OUT/release/`, eukore/release.py: the website's
   data and the downloads) is no part of the package.
+- 6 (2026-11-09, Eukore 0.2.3): the confidence tier `unverified` (nothing against a sequence, its own-species check
+  undecided: until 6 `medium`), in every `confidence` column and the manifest's counts, `benchmarks/completeness.tsv`'s
+  and `rrna.tsv`'s `unverified`; `busco/copies.tsv`'s (and `markers/`') `cds_check`, `cross` and `choice`, and its flags
+  `internal_stops`, `cds_mismatch`, `cross_shared`, `paralog`; `length_check` against the copy's relatives (until 6 its
+  locus' outer 5%); `own_species` with the owner of a shared sequence told and unnamed ranks no longer another clade;
+  `genomes.tsv`'s `genome_record`, `foreign_copies` and `foreign_source`; `rrna/records.tsv`'s `cross` and `ssu_model`
+  and its flags `ssu_prokaryote` and `cross_shared`; `organelle/genes.tsv`'s `cross`, its `internal_stops` `medium`
+  (until 6 `low`); `intraspecific/barcode_gap.tsv`'s `inter_rank`, `resolved` `t` against a congener alone. A reader
+  of format 5 reads format 6 but for the tier `unverified`, which it may read as `medium`.
 - 2026-11-06, no new format (optional, added to a built package): `depth.tsv`, `genomes.tsv`'s `rdna_copies_reads`,
   `mt_copies_reads` and `pt_copies_reads`, the manifest's `inputs.read_depth` (`tools/rdna_depth.py`). A reader
   takes a package with or without them.

@@ -23,7 +23,8 @@ The build (fetch, WORK/sources/eukore_markers):
   many PCR fragments), one per species: the best checked record (Swiss-Prot's, RefSeq's curated NP_, RefSeq's
   predicted XP_, GenBank's), then one of typical length, then the best scoring; a GenBank member nearest to other
   phyla's alone at near identity is dropped (foreign(): a contaminant of its source, a mislabelled organism);
-  members.tsv: every candidate assigned, its source, score, coverage and fate (member, foreign, incomplete, other);
+  members.tsv: every candidate assigned, its source, score, coverage and fate (member, foreign, decoy: scoring a decoy
+  of data/marker_decoys.tsv over its target, since 2026-11-09, incomplete, other);
 - hmms/<locus>.hmm (the target's profile, named the locus), decoys/<KO>.hmm (named decoy-<KO>), scores_cutoff (half
   the members' 5th percentile score: fragments pass, the decoys tell paralogs), hmm_spans (each target profile's
   median coverage of its members: KOfam's profiles are longer than the proteins, EF-1a's 772 positions for ~460
@@ -49,6 +50,10 @@ from . import util
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TABLE = os.path.join(HERE, "data", "markers.tsv")
+DECOYS = os.path.join(HERE, "data", "marker_decoys.tsv")  # decoys KEGG has no KO of (decoy_profiles; since 2026-11-09)
+DECOY_SCOPE = "eukaryota[orgn]"  # their NCBI proteins': any eukaryote's, environmental samples' too
+DECOY_UNLIKE = 0.5   # a decoy's seed shares under this share of its 5-mers (both ways) with every member of the marker
+DECOY_MIN = 10       # seeds a decoy profile is built of at least
 FOLDER = "eukore_markers"
 STATE = "markers.json"
 KOFAM = "https://www.genome.jp/ftp/db/kofam"
@@ -73,19 +78,39 @@ def read_table(path=TABLE):
     return out
 
 
+def read_decoys(path=DECOYS):
+    """data/marker_decoys.tsv -> [dict(locus, decoy, name, ncbi)] ([] without the file)."""
+    if not path or not os.path.isfile(path):
+        return []
+    with open(path) as fh:
+        lines = [line.rstrip("\n").split("\t") for line in fh if line.strip() and not line.startswith("#")]
+    return [dict(zip(lines[0], f)) for f in lines[1:]]
+
+
 def folder_of(src_dir):
     return os.path.join(src_dir, FOLDER)
 
 
-def ready(src_dir, table=TABLE):
-    """The marker dataset's folder where it is built from this table, else None."""
+def ready(src_dir, table=TABLE, decoys=None):
+    """The marker dataset's folder where it is built from this table (and, given decoys, since 2026-11-09, from this
+    decoy table: current(), the fetch stage's test; a set built before its decoys still serves the other stages, the
+    build saying so), else None."""
     folder = folder_of(src_dir)
     try:
         with open(os.path.join(folder, STATE)) as fh:
             state = json.load(fh)
     except (OSError, ValueError):
         return None
-    return folder if state.get("table_md5") == util.md5(table) else None
+    if state.get("table_md5") != util.md5(table):
+        return None
+    if decoys is not None and state.get("decoys_md5") != (util.md5(decoys) if os.path.isfile(decoys) else None):
+        return None
+    return folder
+
+
+def current(src_dir):
+    """Whether the marker dataset is built from this table and this decoy table (data/marker_decoys.tsv)."""
+    return ready(src_dir, TABLE, DECOYS) is not None
 
 
 def ko_list(path):
@@ -237,13 +262,13 @@ def chosen(summaries, per_taxon=PER_TAXON):
     return sorted(a for got in by_taxon.values() for _d, a in sorted(got)[:per_taxon])
 
 
-def ncbi_proteins(term, path, log=print):
-    """NCBI's proteins of an Entrez query within NCBI_SCOPE, PER_TAXON per organism (chosen()), kept in path
-    (>accession taxid) -> [dict(accession, organism_id, sequence)]."""
+def ncbi_proteins(term, path, log=print, scope=NCBI_SCOPE):
+    """NCBI's proteins of an Entrez query within scope (default NCBI_SCOPE), PER_TAXON per organism (chosen()), kept
+    in path (>accession taxid) -> [dict(accession, organism_id, sequence)]."""
     import re  # noqa: PLC0415
     import xml.etree.ElementTree as ET  # noqa: PLC0415
     if not os.path.isfile(path):
-        found = eutils("esearch.fcgi", db="protein", term=f"({term}) AND {NCBI_SCOPE}", usehistory="y", retmax=0)
+        found = eutils("esearch.fcgi", db="protein", term=f"({term}) AND {scope}", usehistory="y", retmax=0)
         count = int(re.search(r"<Count>(\d+)</Count>", found).group(1))
         env, key = re.search(r"<WebEnv>(\S+)</WebEnv>", found).group(1), re.search(r"<QueryKey>(\d+)", found).group(1)
         summaries = []
@@ -460,8 +485,11 @@ class Depth:
         self.ncbi, self.cache = ncbi, {}
 
     def __call__(self, a, b):
-        from .qc import depth  # noqa: PLC0415
-        return depth(self.ncbi, int(a), int(b), self.cache)
+        """qc.depth's, but 0 only where the two are known to part (qc.apart; since 2026-11-09: two protists of
+        sister genera, NCBI ranking neither's phylum or class, were another phylum's to foreign()), else 1 at least."""
+        from .qc import apart, depth  # noqa: PLC0415
+        d = depth(self.ncbi, int(a), int(b), self.cache)
+        return d if d or apart(self.ncbi, int(a), int(b), self.cache) else 1
 
     def phylum(self, taxid):
         taxid = int(taxid)
@@ -478,10 +506,12 @@ def renamed(profile_text, name):
                    for line in profile_text.splitlines(keepends=True))
 
 
-def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, download=None):
-    """The marker dataset (module docstring) -> its folder."""
+def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, download=None, decoys=DECOYS):
+    """The marker dataset (module docstring) -> its folder. decoys: the table of decoys KEGG has no KO of
+    (decoy_profile; since 2026-11-09)."""
     folder = folder_of(src_dir)
     markers = read_table(table)
+    decoy_rows = read_decoys(decoys)
     os.makedirs(folder, exist_ok=True)
     listing = os.path.join(folder, "ko_list.gz")
     if not os.path.isfile(listing):
@@ -549,6 +579,14 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
                       trusted=[i for i, r in enumerate(kept) if source_rank(r["accession"]) <= 2])
         dropped = {kept[i]["accession"] for i in bad}
         kept = [r for r in kept if r["accession"] not in dropped]
+        # the decoys KEGG has no KO of (decoy_profile; since 2026-11-09: EFL for EF-1a), built before the cutoff: a
+        # member that scores one over its target is that paralog's (EFL filed as EF-1a), not the marker's
+        built, paralogs = {}, set()
+        for d in [d for d in decoy_rows if d["locus"] == m["locus"]]:
+            built[d["decoy"]], over = decoy_profile(d, m, kept, sorted(own[r["accession"]] for r in kept), folder, db,
+                                                    hmmsearch, threads, log)
+            paralogs |= over
+        kept = [r for r in kept if r["accession"] not in paralogs]
         if len(kept) < MIN_MEMBERS:
             raise ValueError(f"marker {m['locus']}: {len(kept)} members (fewer than {MIN_MEMBERS})")
         is_member = {r["accession"] for r in kept}
@@ -557,7 +595,7 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
             table_rows.append((m["locus"], a, r["organism_id"], species_of(r["organism_id"]), SOURCES[source_rank(a)],
                                f"{own[a]:.1f}", f"{scores[a][best[a]][2]:.3f}", len(r["sequence"]),
                                "member" if a in is_member else "foreign" if a in dropped else
-                               "incomplete" if a not in complete else "other"))
+                               "decoy" if a in paralogs else "incomplete" if a not in complete else "other"))
         own_scores = sorted(own[r["accession"]] for r in kept)
         cutoff = CUTOFF_SHARE * own_scores[int(CUTOFF_QUANTILE * (len(own_scores) - 1))]
         hmm = os.path.join(folder, "hmms", f"{m['locus']}.hmm")
@@ -577,9 +615,10 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
         sources = collections.Counter(SOURCES[source_rank(r["accession"])] for r in kept)
         counts[m["locus"]] = dict(members=len(kept), assigned=len(assigned), complete=len(complete),
                                   foreign=sorted(dropped), sources=dict(sources), cutoff=round(cutoff, 1),
-                                  targets=m["targets"], decoys=m["decoys"], kind=m["kind"])
+                                  targets=m["targets"], decoys=m["decoys"], kind=m["kind"],
+                                  built_decoys=built, decoy_members=sorted(paralogs))
         log(f"markers: {m['locus']}: {len(kept)} species' proteins (of {len(assigned)} assigned, {len(complete)} "
-            f"complete, {len(dropped)} foreign; {dict(sources)}), cutoff {cutoff:.0f}")
+            f"complete, {len(dropped)} foreign, {len(paralogs)} a decoy's; {dict(sources)}), cutoff {cutoff:.0f}")
     for name, lines in (("scores_cutoff", cut_lines), ("links_to_ODB12.txt", names), ("hmm_spans", spans)):
         with open(os.path.join(folder, name), "w", newline="\n") as fh:
             fh.writelines(lines)
@@ -589,6 +628,7 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
     with util.bgzf_open(os.path.join(folder, "refseq_db.faa.gz"), level=util.WORK_LEVEL) as fh:
         fh.writelines(f">{n}\n{s}\n" for n, s in records)
     state = dict(table_md5=util.md5(table), kofam_ko_list_md5=util.md5(listing), swissprot=release,
+                 decoys_md5=util.md5(decoys) if decoys and os.path.isfile(decoys) else None,
                  ncbi=dict(scope=NCBI_SCOPE, per_taxon=PER_TAXON, fetched=from_ncbi), candidates=len(rows),
                  markers=counts,
                  built=__import__("datetime").datetime.now().isoformat(timespec="seconds"))
@@ -597,12 +637,112 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
     return folder
 
 
+def sibling(binary, name):
+    """A HMMER tool beside binary (hmmsearch's: its hmmalign, hmmbuild), else name on the PATH."""
+    path = shutil.which(binary) if binary else None
+    near = os.path.join(os.path.dirname(path), name) if path else None
+    return near if near and os.path.isfile(near) else shutil.which(name) or name
+
+
+def decoy_profile(row, marker, members_, member_scores, folder, kofam_db, hmmsearch="hmmsearch", threads=1,
+                  log=print):
+    """A decoy KEGG has no KO of (data/marker_decoys.tsv's row; since 2026-11-09) -> (folder/decoys/<decoy>.hmm, its
+    profile named decoy-<decoy>, and dict(seeds, members_over), the members scoring it over their own target: a
+    paralog's protein filed as the marker's, the build drops them: 2026-11-09, 8 green algae's and Salpingoeca's
+    "EF-1a", EFL); (None, set()) where under DECOY_MIN seeds are found. Its seeds: NCBI's proteins of its query
+    (DECOY_SCOPE) whose best profile of every marker's KOs (kofam_db) is one of the marker's targets, scoring under the
+    members' 5th percentile (member_scores, sorted) and unlike every member (under DECOY_UNLIKE of shared 5-mers, both
+    ways: not the marker's fragment), aligned to the marker's first target profile (hmmalign --trim) and built
+    (hmmbuild)."""
+    from .benchmarks import kmers  # noqa: PLC0415
+    tag = hashlib.md5(f"{row['ncbi']} {DECOY_SCOPE}".encode()).hexdigest()[:8]
+    os.makedirs(os.path.join(folder, "ncbi"), exist_ok=True)
+    got = ncbi_proteins(row["ncbi"], os.path.join(folder, "ncbi", f"decoy-{row['decoy']}.{tag}.faa.gz"), log,
+                        DECOY_SCOPE)
+    seqs = {r["accession"]: r["sequence"] for r in got if r["sequence"]}
+    scores = score(seqs, kofam_db, hmmsearch, threads,
+                   os.path.join(folder, f"scores.decoy-{row['decoy']}.{tag}.tsv.gz"))
+    targets, p5 = set(marker["targets"]), member_scores[int(CUTOFF_QUANTILE * (len(member_scores) - 1))]
+    theirs = [kmers(r["sequence"]) for r in members_]
+    seeds = {}
+    for a, s in sorted(scores.items()):
+        best = max(s, key=lambda k: s[k][0]) if s else None
+        if best not in targets or s[best][0] >= p5:
+            continue
+        mine = kmers(seqs[a])
+        if mine and all(len(mine & t) < DECOY_UNLIKE * min(len(mine), len(t)) for t in theirs if t):
+            seeds[a] = seqs[a]
+    log(f"markers: {marker['locus']}'s decoy {row['decoy']}: {len(seeds)} seeds of NCBI's {len(seqs)} proteins")
+    if len(seeds) < DECOY_MIN:
+        log(f"WARNING: markers: {marker['locus']}'s decoy {row['decoy']} not built (under {DECOY_MIN} seeds)")
+        return None, set()
+    out = os.path.join(folder, "decoys", f"{row['decoy']}.hmm")
+    with tempfile.TemporaryDirectory(dir=folder) as tmp:
+        faa, sto, pair = (os.path.join(tmp, n) for n in ("seeds.faa", "seeds.sto", "pair.hmm"))
+        with open(faa, "w") as fh:
+            fh.writelines(f">{a}\n{s}\n" for a, s in seeds.items())
+        target = os.path.join(folder, "kofam", f"{marker['targets'][0]}.hmm")
+        for cmd in ([sibling(hmmsearch, "hmmalign"), "--amino", "--trim", "-o", sto, target, faa],
+                    [sibling(hmmsearch, "hmmbuild"), "--amino", "-n", f"decoy-{row['decoy']}", "-o", os.devnull,
+                     util.part_of(out), sto]):
+            run = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if run.returncode != 0:
+                raise RuntimeError(f"{os.path.basename(cmd[0])} failed (exit {run.returncode}): "
+                                   f"{run.stderr.strip()[-200:]}")
+        os.replace(util.part_of(out), out)
+        # the marker's members against it and its target: none should score it over the target (it took the marker)
+        with open(pair, "w") as fh:
+            for path in (target, out):
+                with open(path) as src:
+                    fh.write(src.read())
+        mine = score({r["accession"]: r["sequence"] for r in members_}, pair, hmmsearch, threads)
+    name = f"decoy-{row['decoy']}"
+    own = {a: max((s for k, s in scores_of.items() if k != name), default=(0.0,))[0] for a, scores_of in mine.items()}
+    over = {a for a, scores_of in mine.items() if scores_of.get(name, (0.0,))[0] > own.get(a, 0.0)}
+    if over:  # a paralog's protein filed as the marker's (EFL as EF-1a): the build drops it
+        log(f"markers: {len(over)} of {marker['locus']}'s members score its decoy {row['decoy']} over the target: "
+            f"the decoy's, not members (e.g. {sorted(over)[:3]})")
+    return dict(seeds=len(seeds), members_over=len(over)), over
+
+
+def recheck(folder, hmmsearch="hmmsearch", threads=1):
+    """The marker copies' check by the marker set's profiles, decoys too (since 2026-11-09; a genome run before a decoy
+    joined its marker, EFL EF-1a's, kept its calls) -> a function of ({(accession, locus): coding sequence}, genomes
+    {accession: row with gencode}) -> the keys whose best profile is a decoy's (package.collect's `paralog`), or None
+    without a marker set."""
+    if not folder:
+        return None
+
+    def paralogs(cds, genomes):
+        from .gencode import protein_of  # noqa: PLC0415
+        if not cds:
+            return set()
+        names = {f"p{i}": key for i, key in enumerate(sorted(cds))}
+        proteins = {n: protein_of(cds[k], genomes.get(k[0], {}).get("gencode", 1))[0].replace("*", "X")
+                    for n, k in names.items()}
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "markers.hmm")
+            with open(db, "w") as out:
+                for sub in ("hmms", "decoys"):
+                    for f in sorted(os.listdir(os.path.join(folder, sub))):
+                        if f.endswith(".hmm"):
+                            with open(os.path.join(folder, sub, f)) as fh:
+                                out.write(fh.read())
+            got = score({n: p for n, p in proteins.items() if p}, db, hmmsearch, threads)
+        out = set()
+        for n, s in got.items():
+            if s and max(s, key=lambda k: s[k][0]).startswith("decoy-"):
+                out.add(names[n])
+        return out
+    return paralogs
+
+
 def fetch(src_dir, download=None, log=print, hmmsearch="hmmsearch", threads=1):
     """The marker dataset, built where it is not built from this table yet (the fetch stage's) -> its folder; a build
     that fails is an OSError (the fetch stage goes on without it), whatever failed (since 2026-11-08: an NCBI reply
     without its count, or of bad XML, stopped the fetch stage and every source after this one)."""
     try:
-        return ready(src_dir) or build(src_dir, TABLE, hmmsearch, threads, log, download)
+        return ready(src_dir, TABLE, DECOYS) or build(src_dir, TABLE, hmmsearch, threads, log, download, DECOYS)
     except Exception as e:  # noqa: BLE001
         raise OSError(f"marker set not built: {type(e).__name__}: {e}") from e
 

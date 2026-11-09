@@ -97,11 +97,14 @@ relative.
 
 ### Confidence (`completeness.tsv`, `rrna.tsv`)
 
-The copies' and records' tiers (`high`, `medium`, `low`), the sum of the checks that set them
-([FORMAT.md](FORMAT.md)): another organism's sequence (`own_species`, FCS-GX, tiara), a duplicated or fragmented
-call, a length in its locus' outer 5%, a contig end, an assembly gap; for rRNA, ambiguous bases, homopolymers, the part
-screen, a partial 28S, a read labelled by its genus. Published reads are mostly `medium`: their own-species check has
-little to compare them with in a trial, and a read labelled by its genus is never `high`.
+The copies' and records' tiers (`high`, `unverified`, `medium`, `low`; `unverified` since format 6, 2026-11-09), the
+sum of the checks that set them ([FORMAT.md](FORMAT.md#confidence-tiers-format-6)): another organism's sequence
+(`own_species`, FCS-GX, tiara, a bacterium's SSU as an 18S), a duplicated or fragmented call, a length off its
+relatives', a contig end, an assembly gap, a stop inside the protein; for rRNA, ambiguous bases, homopolymers, the
+part screen, a partial 28S, a read labelled by its genus. A sequence its own-species check could not decide is
+`unverified` (until format 6 `medium`): published reads mostly, whose own-species check is not made, and a trial's
+species with no relative of their family in it. The figure below is of a format-5 trial: its `medium` holds what
+format 6 calls `unverified`.
 
 ![Confidence tiers](benchmarks/figures/confidence.png)
 

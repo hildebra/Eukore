@@ -135,16 +135,18 @@ $categories = $stats['markers'] ?? [];
 <h2 id="markers">Marker gene categories</h2>
 <hr>
 <p>What the release holds of each kind of marker: its loci or genes, its sequences and the species they come from,
-  and its sequences' confidence tiers (high: no check against it; medium: something may be wrong, such as a fragment,
+  and its sequences' confidence tiers (high: checked against its relatives, nothing against it; unverified: nothing
+  against it, but no relative near enough to check it by; medium: something may be wrong, such as a fragment,
   a gap or a contig's end; low: a check calls it another organism's).</p>
 <ul class="legend" aria-label="Confidence">
   <li><span class="swatch c-high"></span>high</li>
+  <li><span class="swatch c-unverified"></span>unverified</li>
   <li><span class="swatch c-medium"></span>medium</li>
   <li><span class="swatch c-low"></span>low</li>
 </ul>
 <div class="cards">
 <?php foreach ($categories as $c):
-    $conf = $c['confidence'];
+    $conf = $c['confidence'] + ['unverified' => 0];  // a format-5 release's has none
     $all = max(1, array_sum($conf));
     $max = 1;
     foreach ($c['items'] as $i) {
@@ -159,12 +161,12 @@ $categories = $stats['markers'] ?? [];
       <div><dt><?= $c['key'] === 'busco' || $c['key'] === 'markers' ? 'Copies' : 'Records' ?></dt><dd><?= num($c['sequences']) ?></dd></div>
       <div><dt>Species</dt><dd><?= num($c['species']) ?></dd></div>
     </dl>
-    <div class="stack stack-thin" role="img" aria-label="confidence: high <?= num($conf['high']) ?>, medium <?= num($conf['medium']) ?>, low <?= num($conf['low']) ?>">
-<?php foreach (['high', 'medium', 'low'] as $tier): if ($conf[$tier] > 0): ?>
+    <div class="stack stack-thin" role="img" aria-label="confidence: high <?= num($conf['high']) ?>, unverified <?= num($conf['unverified']) ?>, medium <?= num($conf['medium']) ?>, low <?= num($conf['low']) ?>">
+<?php foreach (['high', 'unverified', 'medium', 'low'] as $tier): if ($conf[$tier] > 0): ?>
       <span class="seg c-<?= $tier ?>" style="width:<?= number_format(100 * $conf[$tier] / $all, 3, '.', '') ?>%" data-tip="<?= h($c['title'] . ' · ' . $tier . ': ' . num($conf[$tier]) . ' (' . pct($conf[$tier] / $all) . ')') ?>"></span>
 <?php endif; endforeach; ?>
     </div>
-    <p class="card-conf"><?= pct($conf['high'] / $all, 0) ?> high · <?= pct($conf['medium'] / $all, 0) ?> medium · <?= pct($conf['low'] / $all, 0) ?> low</p>
+    <p class="card-conf"><?= pct($conf['high'] / $all, 0) ?> high · <?= pct($conf['unverified'] / $all, 0) ?> unverified · <?= pct($conf['medium'] / $all, 0) ?> medium · <?= pct($conf['low'] / $all, 0) ?> low</p>
     <h4><?= h(ucfirst($c['items_title'])) ?></h4>
     <ul class="items">
 <?php foreach ($c['items'] as $i): ?>

@@ -58,7 +58,8 @@ GENE_COLUMNS = ("record", "gene", "organelle", "taxid", "species_taxid", "source
                 # since 2026-11-07 (format 5): the gene's common name, where its exons come from, its parts on its
                 # source, a trans-spliced gene, the spacer's regions, its checks (check)
                 "name", "model", "parts", "trans_spliced", "regions", "internal_stops", "own_species", "same_as",
-                "length_check", "confidence", "flags")
+                "length_check", "confidence", "flags",
+                "cross")  # since 2026-11-09 (format 6): the other clade's species it is shared with (qc.verdict)
 CACHE_COLUMNS = ("seqid", "organelle", "taxid", "record_length", "gene", "start", "end", "strand", "exons", "copies",
                  "partial", "sequence", "spliced", "parts", "trans_spliced", "regions")
 ASSEMBLY_COLUMNS = ("gene", "organelle", "seqid", "start", "end", "strand", "exons", "copies", "partial", "sequence",
@@ -892,34 +893,42 @@ def check(records, ncbi, vsearch=None, threads=1):
     checks = qc.check(seqs, species, ncbi, vsearch, threads, lengths)
     for name, _seq, row in records:
         c = checks[(name, row["organelle"] + ":" + row["gene"])]
-        row.update(own_species=c["own_species"], same_as=c["same_as"], length_check=c["length"])
+        row.update(own_species=c["own_species"], same_as=c["same_as"], length_check=c["length"],
+                   cross=c["cross"] or "-")
         row["confidence"], row["flags"] = confidence(row)
     return records
 
 
 def confidence(row):
-    """An organelle gene's tier and why: low where a check calls it another organism's or not a working gene
-    (own_species f; ambiguous bases over MAX_AMBIGUOUS; a stop inside its protein by the organelle's code: a NUMT, a
-    pseudogene, or a code NCBI does not give); medium where something may be wrong (partial, own_species undecided,
-    its length in its gene's outer 5%, trans-spliced, nhmmer's hits joined: their exons not exact); else high."""
-    low, medium = [], []
+    """An organelle gene's tier and why (package.tier's four since 2026-11-09): low where a check calls it another
+    organism's or not a working gene (own_species f; ambiguous bases over MAX_AMBIGUOUS); medium where something may
+    be wrong (partial, its length off its relatives', trans-spliced, nhmmer's hits joined: their exons not exact, a
+    sequence shared with another clade's, its owner undecided; a stop inside its protein by the organelle's code, low
+    until 2026-11-09: RNA editing (a hornwort's, a fern's plastid genes) or a code NCBI does not give leaves stops in a
+    working gene, and an organelle molecule is no NUMT); unverified where nothing is wrong but its own-species check
+    could not decide; else high."""
+    from .package import tier  # noqa: PLC0415
+    low, medium, unverified = [], [], []
     if row.get("own_species") == "f":
         low.append("own_species")
     if float(row.get("ambiguous") or 0) > MAX_AMBIGUOUS:
         low.append("ambiguous")
     if int(row.get("internal_stops") or 0):
-        low.append("internal_stops")
+        medium.append("internal_stops")
     if row.get("partial") in ("t", True):
         medium.append("partial")
-    if row.get("own_species") in ("-", None):
-        medium.append("own_species_undecided")
     if row.get("length_check", "ok") != "ok":
         medium.append(f"length_{row['length_check']}")
     if row.get("trans_spliced") in ("t", True):
         medium.append("trans_spliced")
     if row["gene"] in CODING and row.get("model") == "nhmmer" and str(row.get("exons")) != "1":
         medium.append("exons_approximate")
-    return ("low" if low else "medium" if medium else "high"), ",".join(low + medium) or "-"
+    if row.get("own_species") in ("-", None):
+        if row.get("cross") not in (None, "-", ""):
+            medium.append("cross_shared")
+        else:
+            unverified.append("own_species_undecided")
+    return tier(low, medium, unverified)
 
 
 def write_genes(folder, records):

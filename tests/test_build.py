@@ -389,12 +389,24 @@ class RerunTest(unittest.TestCase):
             def done(acc, here=True, **summary):
                 os.makedirs(genomes.done_dir(opts.work, acc))
                 with open(os.path.join(genomes.done_dir(opts.work, acc), "done.json"), "w") as fh:
-                    json.dump(dict(dict(searched=loci, rescue=True, annotation="-", annotation_none=[]), **summary), fh)
+                    json.dump(dict(dict(searched=loci, rescue=True, annotation="-", annotation_none=[],
+                                        genome_record=genomes.GENOME_RECORD), **summary), fh)
                 if here:
                     open(genomes.genome_file(opts.genomes, acc), "w").close()
-            jobs = {a: dict(accession=a, species_taxid=1, url="") for a in ("new", "done", "short", "held_out",
-                                                                             "held_out_gone", "rescue", "annotation")}
+            jobs = {a: dict(accession=a, species_taxid=1, url="") for a in (
+                "new", "done", "short", "held_out", "held_out_gone", "rescue", "annotation", "old_record",
+                "old_record_gone", "reversioned")}
             done("done")
+            # since 2026-11-09: a genome of an older genome record is run again (its genome here), unless stamped
+            done("old_record", genome_record=1)
+            done("old_record_gone", here=False, genome_record=1)  # the fetch stage fetches it again
+            done("reversioned", genome_record=1)
+            self.assertEqual(genomes.reversion(opts.work, "reversioned"), 1)
+            self.assertIsNone(genomes.reversion(opts.work, "reversioned"))  # of this record now: left alone
+            self.assertEqual(genomes.done_summary(opts.work, "reversioned")["reversioned"][0]["record"], 1)
+            with open(os.path.join(genomes.done_dir(opts.work, "old_record"), "done.json"), "w") as fh:
+                json.dump(dict(searched=loci, rescue=True, annotation="-", annotation_none=[]), fh)  # no record: 1
+            self.assertTrue(genomes.record_stale(opts.work, "old_record"))
             done("short", searched=loci[:1])  # searched for fewer loci than called now
             jobs["held_out"]["species_taxid"] = jobs["held_out_gone"]["species_taxid"] = 7  # a dataset species
             done("held_out")
@@ -406,7 +418,7 @@ class RerunTest(unittest.TestCase):
             todo, again = eukore_build.genomes_to_run(opts, jobs, settings)
             got = {j["accession"]: j.get("rerun", "whole") for j, _s in todo}
             self.assertEqual(got, {"new": "whole", "short": "whole", "held_out": "whole", "rescue": "whole",
-                                   "annotation": "annotation"})
+                                   "annotation": "annotation", "old_record": "whole"})
             self.assertEqual(again, 1)
             # each with its done.json as the plan saw it: a genome another build finished meanwhile is left alone
             stamps = {j["accession"]: j["done_stamp"] for j, _s in todo}

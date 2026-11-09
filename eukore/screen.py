@@ -17,6 +17,7 @@ The record's `screen` column names the parts and ranks (`28S 3':family`); `-` fo
 """
 
 import collections
+import re
 import tempfile
 
 from . import util
@@ -103,9 +104,19 @@ def verdict_of(depth, top, own, theirs):
     return "flagged"
 
 
+ASSEMBLY = re.compile(r"^GC[AF]_(\d+)(?:\.\d+)?$")
+
+
 def genome_of(name, row):
+    """A record's genome: its assembly, one name for its GenBank and RefSeq copies and every version of it (since
+    2026-11-09: ROD's operons are NCBI assemblies' own, and its copy of the genome a record is extracted from, another
+    version's or RefSeq's, confirmed the record as another genome's would, a contaminant's operon too), else its
+    accession, else its name."""
     acc = row.get("accession") or "-"
-    return acc if acc != "-" else name
+    if acc == "-":
+        return name
+    m = ASSEMBLY.match(acc)
+    return f"GC_{m.group(1)}" if m else acc
 
 
 def representatives(seqs, owner):

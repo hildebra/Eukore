@@ -110,9 +110,10 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
 4. **The checks across species** (`eukore/qc.py`), each a column of `busco/copies.tsv`. They cover what EukDetect
    checked with its alien index, its 99% collapse and its length filter:
    - `own_species`: the copy's nearest copies of other species agree with its lineage, or are another clade's
-     (a contaminant, a misidentified genome);
+     (a contaminant, a misidentified genome); since 2026-11-09 a sequence two clades' genomes share goes to its owner
+     ([below](#checks-and-choices-format-6-since-2026-11-09));
    - `same_as`: the common ancestor of species with 99% identical copies;
-   - `length_check`: its protein in the bottom or top 5% of its locus.
+   - `length_check`: its protein against its relatives' (until 2026-11-09 the bottom or top 5% of its locus).
 5. **Species without an assembly.** 75 species NCBI has no assembly of (EukDetect2 took them from EukProt, and
    re-assembled *Dientamoeba fragilis*' transcriptome) come from `data/no_assembly.fna.gz`. That file is the one
    remnant of EukDetect2 (CC BY 4.0; Shih, Zhao, Pollard & Lind 2026), made by `tools/no_assembly_records.py`. Their
@@ -159,8 +160,8 @@ A gene is kept whole, introns and all (fungi's and plants' COX1 hold group I and
 (2026-11-05): human's mitochondrion (queried with the chimpanzee's) gave its 12S, 16S and COX1 within 6 bases of
 RefSeq's annotation; yeast's (queried with *Kluyveromyces lactis*') its COX1 exactly (13,818-26,701, 8 exons), its 15S
 and 21S within 90 bases. barrnap alone found no rRNA in yeast's mitochondrion, and Arabidopsis' plastid 16S and 23S
-but not its 5S. A species with neither source has no organelle genes. The organelle genes have no checks across species
-yet.
+but not its 5S. A species with neither source has no organelle genes. The organelle genes' checks across species
+(since 2026-11-07) are [below](#organelle-genes-format-5-since-2026-11-07).
 
 ## assembly metadata is measured
 
@@ -187,8 +188,9 @@ So that a user (protal's build) has what it needs without computing it again:
   the array is collapsed; per organelle gene its copies on the organelle genome.
 - **Chimeras.** Each copy's and each genome record's distance to its contig's end and its assembly gaps, beside
   `own_species`, `same_as`, tiara's window, FCS-GX and the rRNA part screen.
-- **Confidence.** `high`, `medium` or `low` per copy and per record, with the flags that set it ([FORMAT.md](FORMAT.md)): a user
-  drops the `low` ones and weighs the `medium` ones as it sees fit.
+- **Confidence.** `high`, `unverified` (since 2026-11-09), `medium` or `low` per copy and per record, with the flags
+  that set it ([FORMAT.md](FORMAT.md#confidence-tiers-format-6)): a user drops the `low` ones and weighs the `medium`
+  ones (something may be wrong) and the `unverified` ones (nothing could be checked against them) as it sees fit.
 
 ## The copies' genetics (since 2026-11-07, format 5)
 
@@ -365,3 +367,94 @@ as loci of Eukore's own (`data/markers.tsv`, `eukore/markers.py`; the package's 
   782 against HSP90's: the decoy rule kept it out. Before the members' checks, KOfam's two actin profiles failed
   Arabidopsis's actin (its best, the vertebrates', under its threshold) and Arabidopsis's member was its plastid GAPCp:
   both fixed above.
+- **EFL** (since 2026-11-09; `data/marker_decoys.tsv`, `markers.decoy_profile`). The elongation factor-like GTPase that
+  replaced EF-1α in green algae, diatoms, haptophytes, chytrids and others (Keeling & Inagaki 2004) has no KEGG KO, and
+  EF-1α's profile scores it best: of NCBI's 237 EFL records (2026-11-09, mostly PCR fragments) all scored best against
+  TEF1's profile and 51 over TEF1's cutoff, so a genome holding EFL alone had it called as its TEF1. Its decoy is built
+  of NCBI's EFL records that TEF1's target scores best, under the members' 5th percentile and unlike every member
+  (shared 5-mers under half), aligned to EF-1α's profile (hmmalign) and built (hmmbuild, `decoy-EFL`). A member that
+  scores the decoy over its target is the decoy's protein filed under the marker's name and is dropped
+  (`members.tsv`'s `decoy`). Built on the trial's marker set (2026-11-09): 112 seeds of NCBI's 153 records; every one of
+  the 237 EFL records then scores best against the decoy (none against TEF1; 26 against eRF3's KO, as before), 3,780
+  of TEF1's 3,789 members against TEF1, and the other 9 were EFL: eight green algae's (*Volvox*, *Chlorella*,
+  *Ostreococcus*, *Tetraselmis*, ...) and *Salpingoeca rosetta*'s "EF-1α", scoring ~830 bits against the decoy and
+  470-500 against TEF1 (its cutoff 425). Those had been TEF1's queries for green algae. The package stage checks every
+  marker copy again by the set's profiles and decoys (`markers.recheck`): a copy whose best profile is a decoy's, a
+  genome's called before the decoy existed, is `low` (`paralog`).
+
+## Checks and choices, format 6 (since 2026-11-09)
+
+A critical review of the build (2026-11-09) found calls made by older code kept beside new ones, coding sequences out
+of frame shipped as `high`, the true owner of a contaminant's sequence called another clade's, a tier that counted
+"could not be checked" as "may be wrong", and bacterial SSU accepted as 18S. These are the changes.
+
+- **The genome record** (`genomes.GENOME_RECORD`, `done.json`'s `genome_record`). A done genome was done for good
+  whatever code made its calls; five fixes to the calls of 2026-11-06 reached none of the genomes done before them, and
+  the trial package of 2026-11-07 held 32 genomes of 33 called before the frameshift fix (521 of 3,796 copies with a
+  stop inside, 30-40% of each *Blastocystis* genome's; *S. pastorianus*' duplication not measured). Each run now
+  stamps its genome record (2: this format's calls), and a change to what a genome's run makes that a package should
+  not mix with older runs' raises it: a done genome of an older record is run again (fetched again where pruned).
+  `--reversion` stamps every done genome with the current record instead, keeping its calls (the choice of a build
+  whose genomes are done and good enough; `done.json`'s `reversioned` notes what it had). The package stage names
+  genomes of an older record and `genomes.tsv`'s `genome_record` says each one's.
+- **The coding sequence checked** (`loci.cds_state`, `copies.tsv`'s `cds_check`). The HMM confirmed miniprot's own
+  translation of an alignment, the package shipped the exons joined: whatever made the two differ (each of the
+  parser's past errors did) shipped unseen. Each confirmed alignment's coding sequence, as its copy would ship it, is
+  now translated and set beside the protein the HMM confirmed: `clean`, `stops` or `mismatch` (under 90% of its 5-mers
+  in that protein). A region's alignments are taken clean first (complete before a fragment where the best is complete,
+  then by HMM score), a locus' regions too (a Duplicated locus' gene before a pseudogene's copy), and a copy still not
+  clean is aligned again on its place (its span and 2 kb each side, its locus' queries, miniprot as it is, with a
+  cheaper intron (`-J15`) and with the rescue pass' sensitive seeding): a clean model the HMMs confirm there, on the
+  copy's contig and strand and overlapping it, takes its place (`recovered`). The rule changes no call that was clean:
+  the exon-refinement trials of 2026-11-06 that hurt curated genomes chose by HMM score among every model, this one
+  only replaces a broken one. Checked on four trial genomes (2026-11-09, all 129 BUSCOs, no annotation): the best HMM
+  score's alignment was not clean in 3 of *B. hominis*' 121 confirmed regions, 26 of *Blastocystis* sp. RusS' 103, 5
+  of *Trichuris trichiura*'s 126 and 2 of *C. elegans*' 127 (each a stop inside, none a mismatch). Of the copies
+  shipped (110, 100, 121, 124), another alignment of the gene mended 1, 12, 3 and 1, aligning again 1, 10, 1 and 0;
+  0, 4, 1 and 1 ship with a stop. (The trial package of 2026-11-07, its calls made before the frameshift fix, shipped
+  22, 42, 28 and 10.) A copy that stays unclean ships as it is, `medium` (`internal_stops`, `cds_mismatch`);
+  the organelle genes' stops are `medium` too (RNA editing leaves stops in a working plastid gene; until 2026-11-09
+  `low`). An annotated model is not taken where its protein has a stop inside and miniprot's has none, nor where it is
+  over 1.5 times miniprot's protein and the profile (a fusion of two genes: the HMM's score does not see the second).
+- **A Duplicated locus' copy by lineage** (`package.collect`, `copies.tsv`'s `choice`). The best HMM score chose among
+  a locus' complete copies before any check: in a divergent genome a contaminant's copy from a clade the HMMs know well
+  scores best, and the genome's own was dropped (KOfam's GAPDH and HSP90 profiles, built with bacteria's proteins too,
+  may give a bacterium's copy the same edge). A run now keeps the three best other complete copies whole (`alternates.*` in the done folder);
+  the package checks them across species beside the copies, and takes the one whose own-species verdict ranks best
+  (agrees, then undecided, then shared with another clade, then another clade's), the best HMM score's where none
+  ranks above it (`choice` `hmm` or `lineage`); its copy, features, coding sequence and introns are written. A genome
+  run before (genome record 1) has no alternates: its copies stay the best HMM score's.
+- **Cross-contamination: the owner told** (`qc.verdict`, both `own_species` checks). A copy whose nearest copies (at
+  90% or more) are another clade's was `f`, and so was that clade's own copy of the same sequence where its own
+  relatives lay more than 1 point (the 18S: 0.5) behind the contaminated genome's: both genomes' copies `low`, the true
+  owner's too. The unit test passed only because its congener lay 0.7 points behind. Now the sequence goes to the clade
+  whose other species hold it nearer; where neither holds it near, not to the clade that holds the locus as another
+  sequence (a species' family holds the gene, none near this copy: the copy is not the family's); else it is undecided,
+  `cross_shared` (`medium`), with the other holder in `cross`. A genome with 3 or more copies another clade's of one
+  phylum has its undecided copies shared with that phylum called `f` too; `genomes.tsv`'s `foreign_copies` and
+  `foreign_source` sum a genome's. The exposure is large: on NCBI's tables of 2026-11-05, 1,352 species keep a genome
+  NCBI calls contaminated, and the transcriptome-only species that the check compares against (some 5,000, cultures
+  known for cross-contamination) are 27% of TSAR's species, 37% of Amoebozoa's, 61-63% of Haptista's and Cryptista's.
+- **Unnamed ranks** (`qc.apart`). "Another clade" meant sharing no named rank down to the class; two sister protist
+  genera whose phylum, class, order and family NCBI names none of shared none and were another clade's at 90%. Another
+  clade is now one that a phylum or class both name tells apart, else (naming none to compare) another group
+  (`groups.group_of`: Stramenopiles, Alveolata, Fungi, Metazoa, ...). The markers' member filter reads it the same way.
+- **The 18S a nucleus'** (`regions.ssu_models`, `records.tsv`'s `ssu_model`). barrnap's eukaryote models alone call a
+  bacterium's or a mitochondrion's SSU an 18S (methods above), the seeds' motifs are universal, and tiara and FCS-GX
+  screen the BUSCO windows alone: a contaminant contig's 16S, a NUMT or an endosymbiont's insertion gave a species an
+  "18S" (`medium`, nothing being near it). cmsearch scores each distinct 18S by the profile HMMs of Rfam's eukaryote
+  (RF01960, and RF02542 for microsporidia) and prokaryote (RF00177, RF01959) SSU models: a prokaryote model's best by 20
+  bits over the eukaryote's is `ssu_prokaryote`, `low`. ROD's operons are NCBI assemblies' own: a record's own
+  assembly in ROD (another version, RefSeq's copy) is now its own genome, no confirmation of it (`screen.genome_of`).
+- **The tiers** ([FORMAT.md](FORMAT.md#confidence-tiers-format-6)). `high` needed a relative of the copy's family
+  near it, so a lineage the package holds few species of could not be `high`, and its copies were `medium` beside
+  fragments and contig ends. On NCBI's tables of 2026-11-05, 5.9% of the species with a genome have no other species
+  of their family (TSAR 12%, Amoebozoa 19%, Metamonada 37%, CRuMs all). `unverified` is now its own tier, between
+  `high` and `medium`. The length check flagged each locus' outer 5% whatever the lengths (in the trial, with the
+  undecided check, 650 of 1,769 `medium` copies were `medium` for these alone); it now compares a copy with its
+  relatives' median (0.75-1.33), else its locus' (0.5-2).
+- **Statistics of the right copies.** The intron sites' shares count whole genomic copies alone (a transcriptome's,
+  which holds no introns, a fragment and a `low` copy no longer lower them); the genetic-code check leaves `low` copies
+  out (a contaminant's codons are its own code's); the barcode gap's `resolved` is `t` against a congener alone
+  (`inter_rank`; until 2026-11-09 `t` where the package held no congener of the species) and its pairs align over 80%
+  of their query.

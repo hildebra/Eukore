@@ -47,13 +47,14 @@ DEPTHS = ("none", "phylum", "class", "order", "family", "genus")  # qc.depth's 0
 QUANTILES = (("q05", 0.05), ("q25", 0.25), ("median", 0.5), ("q75", 0.75), ("q95", 0.95))
 SSU_MIN = 1000      # an 18S this long at least, for resolution.tsv (a read's fragment would understate identity)
 REGIONS = ("18S", "ITS1", "5.8S", "ITS2", "28S", "5S")
-TIERS = ("high", "medium", "low")
+TIERS = package.TIERS  # high, unverified, medium, low (format 6; a format-5 package has no unverified: 0)
 MATCHES = ("taxid", "species", "synonym", "genus", "-")  # taxid: MIDORI2's own (since format 5)
 REFERENCES = package.REFERENCES
 ALL_BUSCOS = "BUSCO (all)"
 
 COMPLETENESS_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "source", "level", "genome_size",
                         "contigs", "loci", "single", "duplicated", "fragmented", "missing", "complete", "high",
+                        "unverified",
                         "medium", "low", "rrna_18s", "rdna_units", "rdna_complete")
 ORTHODB_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "locus", "status", "odb_proteins",
                    "odb_length", "protein_length", "recall", "precision", "guided", "verdict")

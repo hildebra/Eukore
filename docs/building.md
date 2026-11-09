@@ -233,7 +233,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
-| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.2, is in the manifest's `eukore`) |
+| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.3, is in the manifest's `eukore`) |
 | `-V` | | print Eukore's own version and exit |
 | `--keep_gb` | none: no genome deleted | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept); with it, a superseded assembly's and the intraspecific panel's genome files are deleted once done too (until 2026-11-08 the default was 1000) |
 | `-t`, `--threads` | 8 | threads in all; since 2026-11-09 also those that compress every `.gz` file the build writes (BGZF: the package's and the release's at level 9, the work folder's at 6) |
@@ -245,6 +245,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
 | `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
+| `--reversion` | off | stamp every done genome of an older genome record with the build's, its calls kept, so that it is not run again ([Resuming and rebuilding](#resuming-and-rebuilding); since 2026-11-09) |
 | `--organelle_models` | `miniprot` | the assemblies' organelle protein-coding genes: `nhmmer`'s hits alone, or with `miniprot`'s exons by the organelle's code where nhmmer joined several hits (a gene with introns; measured: [methods.md](methods.md); format 5) |
 | `--intraspecific` | 3 | further assemblies of each species of `data/intraspecific_panel.tsv` run for the barcode gap (`intraspecific/`); 0: none |
 | `--no_markers` | markers on | no Eukore marker loci (`data/markers.tsv`: RPB1, RPB2, EF-2, EF-1α, ...), the BUSCOs alone |
@@ -279,6 +280,24 @@ Every stage is resumable: a rerun does only what is not done.
 - A species whose genome changed since the last plan (`WORK/genome_set.tsv`: TOGA2's assembly in its place; NCBI's
   newer assembly or version, after `--refresh`) gets the new one fetched and run; the old file (and its annotation)
   is deleted once the new one is done (`WORK/superseded.tsv`), its done folder kept.
+- A done genome of an older genome record than the build's is run again (since 2026-11-09; the fetch stage fetches
+  it again where the prune deleted it). The genome record (`genomes.GENOME_RECORD`, `done.json`'s `genome_record`)
+  names what made a genome's calls: it is raised only where a change to Eukore's calls should not be mixed with older
+  runs' in one package, not at every version (1: runs before 2026-11-09; 2: the coding sequences checked and recovered,
+  a Duplicated locus' other copies kept for the choice by lineage: [methods.md](methods.md#checks-and-choices-format-6-since-2026-11-09)).
+  `--reversion` stamps every done genome of an older record with the build's instead and keeps its calls, so that
+  a build whose genomes were run by an earlier Eukore goes on without running them again: their copies keep the best
+  HMM score's choice and their coding sequences unchecked (the package stage still checks each one's protein for
+  stops and its lineage across species). Its `done.json` notes `reversioned` (the record it had, when, by which
+  Eukore). The package stage says how many genomes are of an older record; `genomes.tsv`'s `genome_record` says each
+  one's.
+
+On a build begun before 2026-11-09 (every done genome of record 1), run the next stage with `--reversion` once to keep
+its genomes' calls, or without it to run them all again with the checked coding sequences and the alternates:
+
+```bash
+python3 eukore_build.py --work WORK --out OUT --stage process --reversion -t 120 -j 30 --memory_gb 200
+```
 
 `--refresh` (with the fetch stage, or `all`) fetches again what chooses the genomes and their gene models: NCBI's
 assembly tables, its FCS-GX and ANI reports, and Ensembl's, VEuPathDB's and TOGA2's indexes (each old one kept where

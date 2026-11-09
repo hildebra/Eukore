@@ -46,7 +46,11 @@ ITSX_FIELD = re.compile(r"(SSU|ITS1|5\.8S|ITS2|LSU): (\d+)-(\d+)")
 ITSX_58_PROBLEM = re.compile(r"5\.8S: (No start|No end|Not found|Overlap SSU|Overlap LSU)")
 RECORD_COLUMNS = ("record", "kind", "taxid", "species_taxid", "accession", "source", "regions", "length",
                   "lsu_complete", "ambiguous", "homopolymer", "type", "own_species", "screen", "label_from",
-                  "contig", "start", "end", "strand", "contig_edge", "introns", "gaps", "confidence", "flags")
+                  "contig", "start", "end", "strand", "contig_edge", "introns", "gaps", "confidence", "flags",
+                  # since 2026-11-09 (format 6): the other clade's species its 18S is shared with (qc.verdict); the
+                  # SSU model its 18S scores best by (regions.ssu_models: eukarya, else bacteria or archaea: not a
+                  # nucleus' 18S; - unscored)
+                  "cross", "ssu_model")
 GAP_MIN = 10        # a run of Ns this long: an assembly gap (or a read's)
 EDGE = 1000         # a genome's record this close to its contig's end: maybe cut, or joined to another sequence
 MAX_AMBIGUOUS = 0.005
@@ -586,17 +590,21 @@ def ssu_part(seq, row):
 
 
 def own_species(records, ncbi, vsearch, threads=1):
-    """The own-species check (module docstring) -> {record: t, f or -}: each genome's 18S types against the 18S of
-    every other genome and source (vsearch --usearch_global at 80%, the first 32 hits), their nearest (within NEAR
-    points of the best) agreeing with the genome's NCBI lineage to the family or deeper: t; sharing no more than the
-    phylum at FOREIGN_ID or more: f; else -. records: [(name, sequence, row)] (row: accession, source, species_taxid,
-    regions); a published record is not checked (its label is its source's). A genome's (or a source's) 18S are
-    searched as one per 99% type (screen.representatives), so that its own copies do not fill the first hits."""
+    """The own-species check (module docstring) -> {record: (t, f or -, the other clade's species its 18S is shared
+    with or None)}: each genome's 18S types against the 18S of every other genome and source (vsearch
+    --usearch_global at 80%, the first 32 hits), their nearest (within NEAR points of the best) agreeing with the
+    genome's NCBI lineage to the family or deeper: t; at FOREIGN_ID or more and known to part from it at the class or
+    above, its owner told (qc.verdict): f; else -. records: [(name, sequence, row)] (row: accession, source,
+    species_taxid, regions); a published record is not checked (its label is its source's). A genome's (or a
+    source's) 18S are searched as one per 99% type (screen.representatives), so that its own copies do not fill the
+    first hits."""
     from . import qc, screen  # noqa: PLC0415
     if not vsearch or not records:
         return {}
     ssu = {name: ssu_part(seq, row)[:2500] for name, seq, row in records}
-    owner = {name: row["accession"] for name, _s, row in records}
+    # a record's genome, its RefSeq copy's and every version's one (screen.genome_of; since 2026-11-09: ROD's copy of
+    # it was another genome's, a contaminant's operon confirmed by its own copy)
+    owner = {name: screen.genome_of(name, row) for name, _s, row in records}
     group = {name: (row["source"], screen.genome_of(name, row)) for name, _s, row in records}
     reps = screen.representatives({n: s for n, s in ssu.items() if s}, group)
     genome_reps = {k for k in reps if group[k][0] == "genome"}
@@ -607,15 +615,15 @@ def own_species(records, ncbi, vsearch, threads=1):
                               threads, tmp, ident=0.8, accepts=32, rejects=256)
     taxid_of = {name: int(row["species_taxid"]) for name, _s, row in records}
     cache, out = {}, {}
+    # since 2026-11-09 qc.verdict's: another clade's only where known to part at the class or above (apart), and of
+    # a sequence two clades' genomes hold, the clade whose other species hold it nearer its owner (until then both
+    # genomes' records were f, the true owner's too)
+    members = qc.families(ncbi, {taxid_of[k] for k in reps}, cache)
     for rep in genome_reps:
-        hits = [(i, t) for i, t in found.get(rep, []) if owner[t] != owner[rep]]
-        verdict = "-"
-        if hits:
-            top = max(i for i, _t in hits)
-            depth = max(qc.depth(ncbi, taxid_of[rep], taxid_of[t], cache) for i, t in hits if i >= top - NEAR)
-            verdict = "t" if depth >= 4 else "f" if depth <= 1 and top >= FOREIGN_ID else "-"
+        hits = [(i, taxid_of[t]) for i, t in found.get(rep, []) if owner[t] != owner[rep]]
+        verdict, cross, _top, _agree = qc.verdict(taxid_of[rep], hits, ncbi, cache, members, NEAR, FOREIGN_ID)
         for member in reps[rep]:
-            out[member] = verdict
+            out[member] = (verdict, cross)
     return out
 
 
@@ -633,11 +641,13 @@ def write_records(folder, records):
     os.replace(util.part_of(table), table)
 
 
-def finish(records, ncbi, vsearch=None, threads=1, log=None):
+def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None):
     """The checks over all records [(name, sequence, row)] (row: kind, accession, source, species_taxid, taxid,
     regions_list, lsu_complete, label_from) -> the same with their RECORD_COLUMNS filled, sorted by species and name.
     The 99% types are within a species: records labelled by a genus alone (EUKARYOME's) get none (until 2026-11-06 a
-    genus of thousands of environmental reads was typed in pure Python for an hour). log: the screen's counts."""
+    genus of thousands of environmental reads was typed in pure Python for an hour). log: the screen's counts.
+    ssu_models: a function of {record: its 18S} -> {record: the SSU model it scores best by} (regions.ssu_models;
+    since 2026-11-09: a bacterium's or an organelle's SSU, barrnap's 18S by its eukaryote models alone, is told)."""
     by_species = collections.defaultdict(list)
     for name, seq, row in records:
         if ncbi is None or ncbi.rank.get(int(row["species_taxid"])) == "species":
@@ -652,11 +662,19 @@ def finish(records, ncbi, vsearch=None, threads=1, log=None):
     screened, counts_ = screen_mod.screen(records, ncbi, vsearch, threads)
     if log and counts_:
         log("rRNA part screen: " + ", ".join(f"{k} {v}" for k, v in sorted(counts_.items())))
+    models = {}
+    if ssu_models:
+        models = ssu_models({name: ssu_part(seq, row) for name, seq, row in records})
+        if log:
+            log("rRNA SSU models: " + ", ".join(f"{k} {v}" for k, v in sorted(collections.Counter(
+                models.values()).items())))
     out = []
     for name, seq, row in records:
+        verdict, cross = own.get(name, ("-", None))
         row = dict(row, record=name, length=len(seq), regions=regions_text(row.get("regions_list")),
                    lsu_complete="t" if row.get("lsu_complete") else "f", ambiguous=f"{ambiguous(seq):.4f}",
-                   homopolymer=homopolymer(seq), type=type_of.get(name, "-"), own_species=own.get(name, "-"),
+                   homopolymer=homopolymer(seq), type=type_of.get(name, "-"), own_species=verdict,
+                   cross=cross or "-", ssu_model=models.get(name, "-"),
                    screen=screened.get(name, "-"), introns=regions_text(row.get("introns_list")), gaps=gaps(seq))
         edge = contig_edge(row)
         row["contig_edge"] = "-" if edge is None else edge
@@ -771,15 +789,21 @@ def contig_edge(row):
 
 
 def confidence(row):
-    """A record's tier and why (rrna/records.tsv's confidence and flags): low where a check calls it another organism's
-    or of bad sequence (own_species f, the part screen, ambiguous bases over MAX_AMBIGUOUS, a homopolymer of
-    HOMOPOLYMER); medium where something may be wrong (an assembly gap in it, at a contig's end, its own-species check
-    undecided, an operon without a whole 28S, labelled by its genus alone); else high."""
-    low, medium = [], []
+    """A record's tier and why (rrna/records.tsv's confidence and flags; package.tier's four since 2026-11-09): low
+    where a check calls it another organism's or of bad sequence (own_species f, the part screen, ambiguous bases over
+    MAX_AMBIGUOUS, a homopolymer of HOMOPOLYMER; since 2026-11-09 an 18S a bacterial or archaeal SSU model scores best:
+    `ssu_prokaryote`, a bacterium's or an organelle's); medium where something may be wrong (an assembly gap in it, at
+    a contig's end, an operon without a whole 28S, labelled by its genus alone, an 18S shared with another clade's
+    genome, its owner undecided); unverified where nothing is wrong but its own-species check could not decide or was
+    not made (a published read's: its label is its source's; until 2026-11-09 medium); else high."""
+    from .package import tier  # noqa: PLC0415
+    low, medium, unverified = [], [], []
     if row.get("own_species") == "f":
         low.append("own_species")
     if row.get("screen", "-") not in ("-", ""):
         low.append("screen")
+    if row.get("ssu_model") in ("bacteria", "archaea"):
+        low.append("ssu_prokaryote")
     if float(row.get("ambiguous") or 0) > MAX_AMBIGUOUS:
         low.append("ambiguous")
     if int(row.get("homopolymer") or 0) >= HOMOPOLYMER:
@@ -789,11 +813,13 @@ def confidence(row):
     edge = row.get("contig_edge")
     if edge not in (None, "-") and int(edge) < EDGE:
         medium.append("contig_edge")
-    if row.get("own_species") in ("-", None):
-        medium.append("own_species_undecided")
     if row.get("kind") == "rDNA" and row.get("lsu_complete") != "t":
         medium.append("lsu_partial")
     if row.get("label_from") == "eukaryome_genus":
         medium.append("genus_label")
-    tier = "low" if low else "medium" if medium else "high"
-    return tier, ",".join(low + medium) or "-"
+    if row.get("own_species") in ("-", None):
+        if row.get("cross") not in (None, "-", ""):
+            medium.append("cross_shared")
+        else:
+            unverified.append("own_species_undecided")
+    return tier(low, medium, unverified)

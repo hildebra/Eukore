@@ -330,9 +330,10 @@ def genomes_to_run(opts, job_map, settings):
         return os.path.isfile(j.get("path") or genomes.genome_file(opts.genomes, a))
     better = {a for a, j in job_map.items() if genomes.is_done(opts.work, a, settings["loci"])
               and genomes.rerun_for_annotation(opts.work, j, opts.genomes, not settings["staged_only"])}
+    # and (since 2026-11-09) a done genome of an older genome record (genomes.record_stale; --reversion stamps them)
     whole = {a for a, j in job_map.items() if not genomes.is_done(opts.work, a, settings["loci"])
-             or ((genomes.held_out_missing(opts.work, j, settings)
-                  or genomes.rescue_missing(opts.work, a, settings)) and here(a, j))}
+             or ((genomes.held_out_missing(opts.work, j, settings) or genomes.rescue_missing(opts.work, a, settings)
+                  or genomes.record_stale(opts.work, a)) and here(a, j))}
     # each with its done.json as seen now: a genome another build on the WORK finishes meanwhile is left alone
     # (genomes.done_stamp; since 2026-11-08 it was run again whole)
     return [(dict(j, done_stamp=genomes.done_stamp(opts.work, a)) if a in whole
@@ -739,7 +740,10 @@ def intraspecific_writer(opts, ncbi, extras, collected, records, organelle, vsea
     for sp, rows_ in org_by_sp.items():
         for marker, seq in intraspecific_mod.organelle_seqs(rows_).items():
             others[marker][f"{sp}|org"] = seq
-    inter = {(reps[r["accession"]], r["locus"]): r.get("nearest_id") for r in collected["copy_rows"]
+    # its nearest other species' identity and shared rank (qc.check's; the rank since 2026-11-09: resolved against a
+    # congener alone)
+    inter = {(reps[r["accession"]], r["locus"]): None if r.get("nearest_id") is None else
+             (r["nearest_id"], r.get("nearest_depth")) for r in collected["copy_rows"]
              if r["accession"] in panel.values()}
     species_of = dict(reps, **{a: int(j["species_taxid"]) for a, j in extras.items()})
     gap = intraspecific_mod.barcode_gap(panel, rep_markers, markers, species_of, inter, others, ncbi, vsearch,
@@ -914,6 +918,9 @@ def banner(opts, argv, whence):
                                    ("intraspecific panel", not opts.intraspecific)) if flag]
     if off:
         rows.append(("off", ", ".join(off)))
+    rows.append(("record", f"genome record {genomes.GENOME_RECORD}: "
+                 + ("every done genome stamped with it, its calls kept (--reversion)" if opts.reversion else
+                    "a done genome of an older one is run again")))
     rule = "=" * 100
     return "\n".join([rule, f" Eukore {__version__}: the standalone eukaryote reference's build",
                       f" {datetime.datetime.now():%Y-%m-%d %H:%M:%S} on {socket.gethostname()} (pid {os.getpid()}), "
@@ -982,6 +989,10 @@ def main(argv=None):
                         "alone, over https")
     p.add_argument("--no_rescue", action="store_true", help="no rescue pass of the BUSCOs miniprot missed (loci.py: "
                                                             "their HMMs in the genome's six-frame ORFs place them)")
+    p.add_argument("--reversion", action="store_true",
+                   help="stamp every done genome of an older genome record (genomes.GENOME_RECORD: what made its "
+                        "calls) with this Eukore's, its calls kept as they were made, so that it is not run again; "
+                        "its done.json notes the record it had (`reversioned`). Without, such a genome is run again")
     p.add_argument("--no_markers", action="store_true",
                    help="no Eukore marker loci (RPB1, RPB2, EF-2, EF-1a, ...: data/markers.tsv), the BUSCOs alone")
     p.add_argument("--no_tsa", action="store_true",
@@ -1072,6 +1083,12 @@ def main(argv=None):
     opts.inside = inside_of(ncbi, wanted)
     job_map, assemblies = plan(opts, src_dir, ncbi)
     extras = extras_of(opts, src_dir, ncbi, job_map, assemblies)  # the barcode gap's panel (since 2026-11-07)
+    if opts.reversion:  # done genomes of an older genome record stamped with this one, kept (since 2026-11-09)
+        olds = (genomes.reversion(opts.work, a) for a in sorted({**job_map, **extras}))
+        stamped = collections.Counter(old for old in olds if old is not None)
+        say(f"--reversion: {sum(stamped.values()):,} done genomes stamped with genome record {genomes.GENOME_RECORD}"
+            + (f" (from {', '.join(f'{n:,} of record {r}' for r, n in sorted(stamped.items()))}), their calls kept"
+               if stamped else ": none was of an older one"))
     # the genomes and their annotations fetched (--downloads at a time, through --scratch), by `all` too (until
     # 2026-11-06 `all` left them to the process stage's workers, --scratch and --downloads unused)
     if opts.stage in ("all", "fetch"):
@@ -1084,6 +1101,14 @@ def main(argv=None):
         if again:
             say(f"{len(again):,} done genomes no longer here fetched again for better gene models (e.g. "
                 f"{sorted(again)[:3]})")
+        # and a done genome of an older genome record (since 2026-11-09): run again by this one, unless --reversion
+        stale = {a for a, j in {**job_map, **extras}.items() if j["url"] and not j.get("path")
+                 and not os.path.isfile(genomes.genome_file(opts.genomes, a)) and genomes.is_done(opts.work, a, loci)
+                 and genomes.record_stale(opts.work, a)} - again
+        if stale:
+            say(f"{len(stale):,} done genomes of an older genome record than {genomes.GENOME_RECORD} no longer here "
+                f"fetched again to be run again (e.g. {sorted(stale)[:3]}; --reversion keeps their calls instead)")
+            again |= stale
         todo = [j for a, j in sorted({**job_map, **extras}.items()) if j["url"] and not j.get("path")
                 and not os.path.isfile(genomes.genome_file(opts.genomes, a))
                 and (not genomes.is_done(opts.work, a, loci) or a in again)]
@@ -1251,13 +1276,24 @@ def main(argv=None):
         if short:
             say(f"WARNING: {len(short)} genomes were not searched for all {len(loci)} loci called (run before a locus "
                 f"was, e.g. {short[:3]}): their call rates count them out; run --stage process again for them all")
+        stale = sorted(a for a in job_map if genomes.is_done(opts.work, a) and genomes.record_stale(opts.work, a))
+        if stale:  # since 2026-11-09: their calls go into the package as they are, genomes.tsv's genome_record says so
+            say(f"WARNING: {len(stale):,} genomes' calls are of an older genome record than {genomes.GENOME_RECORD} "
+                f"(e.g. {stale[:3]}): run --stage process again for them (their genomes fetched again where pruned), "
+                "or --reversion to keep them; genomes.tsv's genome_record names each one's")
         undone = sorted(a for a in job_map if not genomes.is_done(opts.work, a))
         if undone:
             say(f"WARNING: {len(undone)} genomes of the plan are not done (e.g. {undone[:3]}): the package is written "
                 "without them (manifest: inputs.genomes_not_done)")
+        marker_folder = markers_of(opts, src_dir)
+        if marker_folder and not markers_mod.current(src_dir):
+            say("WARNING: the marker set was built before data/marker_decoys.tsv's decoys (EFL for EF-1a): run "
+                "--stage fetch to build it again; until then a genome holding EFL alone has it as its TEF1")
         with timed(stages, "BUSCO copies and their checks"):
+            # the marker copies checked again by the set's profiles, decoys too (since 2026-11-09: markers.recheck)
             collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads,
-                                        markers_mod.kinds(markers_of(opts, src_dir)))
+                                        markers_mod.kinds(marker_folder),
+                                        markers_mod.recheck(marker_folder, opts.hmmsearch, opts.threads))
         with timed(stages, "introns and genetic codes"):
             hmmalign = shutil.which("hmmalign")
             if not hmmalign:
@@ -1266,7 +1302,14 @@ def main(argv=None):
             package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say, opts.threads)
         with timed(stages, "rRNA records and their checks"):
             records = genome_rrna_records(opts, job_map, ncbi) + published(opts, src_dir, ncbi)
-            records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say)
+            # each 18S's SSU model (since 2026-11-09): a bacterium's or an organelle's SSU is no 18S
+            models, cmsearch = regions_mod.models_path(src_dir), shutil.which("cmsearch")
+            ssu = functools.partial(regions_mod.ssu_models, cm=models, cmsearch=cmsearch, threads=opts.threads,
+                                    tmp=opts.work) if cmsearch and regions_mod.is_cm(models) else None
+            if ssu is None:
+                say("WARNING: no cmsearch (infernal) or no Rfam SSU models (--stage fetch fetches them): the 18S not "
+                    "told from a bacterium's or an organelle's SSU (records.tsv's ssu_model -)")
+            records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say, ssu_models=ssu)
         extra_tables = []
         with timed(stages, "18S variable regions and amplicons"):
             cm, cmalign = regions_mod.cm_path(src_dir), shutil.which("cmalign")

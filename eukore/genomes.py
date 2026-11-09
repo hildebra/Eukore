@@ -55,7 +55,21 @@ LOCI_COLUMNS = ("locus", "status", "contig", "contig_length", "start", "end", "s
                 "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies", "query",
                 "protein_length", "window_class", "rescued",  # rescued: loci.py's rescue pass (since 2026-11-06)
                 "model",  # model: miniprot's, or the annotation's source (loci.annotated, since 2026-11-06)
-                "dup_identity")  # a Duplicated locus' nearest other copy (loci.dup_identity, since 2026-11-07)
+                "dup_identity",  # a Duplicated locus' nearest other copy (loci.dup_identity, since 2026-11-07)
+                "cds_check")  # its coding sequence against the protein confirmed (loci.cds_state, since 2026-11-09)
+# A Duplicated locus' other complete copies kept whole (loci.ALTERNATES; since 2026-11-09, genome record 2): the
+# package takes one where the chosen copy's lineage does not fit (package.collect). Their rows are LOCI_COLUMNS' with
+# `alt` (1, 2, ...) first; their copies >locus|alt; their features with `alt` after the locus.
+ALTERNATES = ("alternates.tsv", "alternates.fna", "alternates_features.tsv")
+# The genome record (since 2026-11-09): what made a done genome's calls, in its done.json's `genome_record`. A change to
+# what a genome's run makes (its calls, copies, features) that a package should not mix with older runs' is a new
+# record: a done genome of an older one is run again (fetched again where pruned), unless the build's --reversion
+# stamps it with this one (its calls then kept as they are). A done.json without one is of record 1.
+# 1: the runs until 2026-11-09.
+# 2: the coding sequence checked against the protein confirmed and recovered (loci.cds_state, cds_check); a region's
+#    clean alignment first; a Duplicated locus' other complete copies kept whole (ALTERNATES); an annotated model
+#    with a stop inside, or a fusion, not taken.
+GENOME_RECORD = 2
 
 
 def safe(name):
@@ -554,6 +568,37 @@ def is_done(work, accession, loci=None):
     return got is not None and set(loci) <= got
 
 
+def record_of(summary):
+    """A done genome's genome record (done.json's `genome_record`; 1 for a run before 2026-11-09), or None for none."""
+    return None if summary is None else int(summary.get("genome_record", 1))
+
+
+def record_stale(work, accession):
+    """Whether a done genome's calls are of an older genome record than this Eukore's (GENOME_RECORD): run again."""
+    got = record_of(done_summary(work, accession))
+    return got is not None and got < GENOME_RECORD
+
+
+def reversion(work, accession):
+    """A done genome's done.json stamped with this Eukore's genome record, its calls kept as they are (--reversion;
+    since 2026-11-09): `reversioned` notes the record it had and when -> that record, or None where it was not done or
+    of this record already (or newer)."""
+    path = os.path.join(done_dir(work, accession), "done.json")
+    summary = done_summary(work, accession)
+    old = record_of(summary)
+    if old is None or old >= GENOME_RECORD:
+        return None
+    import datetime  # noqa: PLC0415
+    from . import __version__  # noqa: PLC0415
+    summary["genome_record"] = GENOME_RECORD
+    summary.setdefault("reversioned", []).append(dict(
+        record=old, to=GENOME_RECORD, eukore=__version__, at=datetime.datetime.now().isoformat(timespec="seconds")))
+    with open(util.part_of(path), "w", newline="\n") as fh:
+        json.dump(summary, fh, indent=1)
+    os.replace(util.part_of(path), path)
+    return old
+
+
 DONE_ELSEWHERE = "done by another build"  # finished by another build on the WORK since this build's plan (done_stamp)
 
 
@@ -906,6 +951,17 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
     window_of = {n.split("|", 1)[0]: n for n in got["windows"]}
     dup = loci_mod.dup_identity(got["loci"], settings.get("vsearch"), settings.get("threads", 1), scratch)
     taken_loci = 0
+
+    def row_of(locus, r, window_class, dup_identity):
+        exons = sum(1 for f in r["features"] if f[0] == "exon")
+        return [locus, r["status"], r["contig"], r["contig_length"], r["start"], r["end"], r["strand"], len(r["copy"]),
+                len(r["spliced"]), exons, f"{r['identity']:.4f}", f"{r['coverage']:.3f}", f"{r['hmm_score']:.1f}",
+                f"{r['cutoff']:.1f}", f"{r['hmm_coverage']:.3f}", r["copies"], r["query"], len(r["protein"]),
+                window_class, "t" if r.get("rescued") else "f", r.get("model", "miniprot"), dup_identity,
+                r.get("cds_check", "-")]
+    alternates = [(locus, k, dict(alt, status=r["status"], copies=r["copies"]))
+                  for locus in odb.loci for r in [got["loci"].get(locus, {})]
+                  for k, alt in enumerate(r.get("alternates") or (), 1)]
     with open(os.path.join(tmp, "copies.fna"), "w", newline="\n") as fa, \
             open(os.path.join(tmp, "loci.tsv"), "w", newline="\n") as tb, \
             open(os.path.join(tmp, "features.tsv"), "w", newline="\n") as ft:
@@ -918,14 +974,19 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
                 continue
             taken_loci += 1
             fa.write(f">{locus}\n{r['copy']}\n")
-            exons = sum(1 for f in r["features"] if f[0] == "exon")
-            tb.write("\t".join(map(str, [
-                locus, r["status"], r["contig"], r["contig_length"], r["start"], r["end"], r["strand"],
-                len(r["copy"]), len(r["spliced"]), exons, f"{r['identity']:.4f}", f"{r['coverage']:.3f}",
-                f"{r['hmm_score']:.1f}", f"{r['cutoff']:.1f}", f"{r['hmm_coverage']:.3f}", r["copies"], r["query"],
-                len(r["protein"]), classes.get(window_of.get(locus, ""), "-"),
-                "t" if r.get("rescued") else "f", r.get("model", "miniprot"), dup.get(locus, "-")])) + "\n")
+            tb.write("\t".join(map(str, row_of(locus, r, classes.get(window_of.get(locus, ""), "-"),
+                                               dup.get(locus, "-")))) + "\n")
             ft.writelines(f"{locus}\t{k}\t{s}\t{e}\n" for k, s, e in r["features"])
+    if alternates:  # a Duplicated locus' other complete copies whole (ALTERNATES; since 2026-11-09)
+        table, fasta, features = (os.path.join(tmp, n) for n in ALTERNATES)
+        with open(table, "w", newline="\n") as tb, open(fasta, "w", newline="\n") as fa, \
+                open(features, "w", newline="\n") as ft:
+            tb.write("\t".join(("alt",) + LOCI_COLUMNS) + "\n")
+            ft.write("locus\talt\tkind\tstart\tend\n")
+            for locus, k, r in alternates:
+                tb.write("\t".join(map(str, [k] + row_of(locus, r, "-", "-"))) + "\n")
+                fa.write(f">{locus}|{k}\n{r['copy']}\n")
+                ft.writelines(f"{locus}\t{k}\t{kind}\t{s}\t{e}\n" for kind, s, e in r["features"])
     rrna = rrna_job
     if isinstance(rrna_job, concurrent.futures.Future):
         try:
@@ -945,7 +1006,11 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
             if why:
                 return acc, None, why, taken
             held = {"left_out": own, "seconds": round(time.time() - started - seconds, 1)}
+    from . import __version__  # noqa: PLC0415
     summary = {"accession": acc, "fetched": job.get("fetch", acc), "why": job["why"], "loci": taken_loci,
+               "genome_record": GENOME_RECORD, "eukore": __version__,  # what made its calls (since 2026-11-09)
+               "cds_check": dict(collections.Counter(r.get("cds_check", "-") for r in got["loci"].values()
+                                                     if r["status"] != "Missing")),
                "searched": list(odb.loci),
                "status": dict(collections.Counter(r["status"] for r in got["loci"].values())), "rrna": rrna,
                "bytes": os.path.getsize(path), "seconds": seconds, "threads": settings.get("threads", 1),

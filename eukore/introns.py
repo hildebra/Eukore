@@ -96,9 +96,16 @@ def annotate(collected, states, group_of=None):
         row["hmm_position"] = state if state is not None else "-"
         rows.append(row)
         by_locus[row["locus"]].append(row)
-    aligned = collections.defaultdict(set)  # the genomes each locus was aligned in: a site's share is of them
+    # the genomes each locus was aligned in: a site's share is of them; since 2026-11-09 of a whole genomic copy alone
+    # (not a transcriptome's, which holds no introns, nor a fragment, nor a copy a check calls another organism's:
+    # each made the shares too low, a group rich in transcriptomes losing introns it holds)
+    counted = {(r["accession"], r["locus"]) for r in collected.get("copy_rows", ())
+               if r.get("status") in ("Single", "Duplicated") and r.get("transcript") != "t"
+               and r.get("confidence") != "low"} if collected.get("copy_rows") else None
+    aligned = collections.defaultdict(set)
     for acc, locus in states:
-        aligned[locus].add(acc)
+        if counted is None or (acc, locus) in counted:
+            aligned[locus].add(acc)
     group_of = group_of or {}
     groups = sorted(set(group_of.values()))
     site_rows = []
@@ -107,7 +114,7 @@ def annotate(collected, states, group_of=None):
         holders = collections.defaultdict(set)
         for r in rs:
             r["site"] = named.get((r["hmm_position"], r["phase"]), "-")
-            if r["site"] != "-":
+            if r["site"] != "-" and r["accession"] in aligned[locus]:
                 holders[r["site"]].add(r["accession"])
         n = len(aligned[locus]) or 1
         per_group = collections.Counter(group_of.get(a) for a in aligned[locus])

@@ -202,5 +202,47 @@ class MarkerTest(unittest.TestCase):
             loci.hmmsearch = saved
 
 
+RECHECK_HMMSEARCH = '''#!/usr/bin/env python3
+"""hmmsearch's stand-in for markers.recheck: an EF-1a-like protein (MGKEK...) scores 500 against TEF1 and 300
+against decoy-EFL, an EFL-like one (MSRQV...) 400 and 800; any other profile 10."""
+import sys
+args = sys.argv[1:]
+dom, hmm, faa = args[args.index("--domtblout") + 1], args[-2], args[-1]
+names = [line.split()[1] for line in open(hmm) if line.startswith("NAME")]
+proteins, name = {}, None
+for line in open(faa):
+    if line.startswith(">"):
+        name = line[1:].split()[0]
+        proteins[name] = ""
+    else:
+        proteins[name] += line.strip()
+scores = {"MGKEK": {"TEF1": 500.0, "decoy-EFL": 300.0}, "MSRQV": {"TEF1": 400.0, "decoy-EFL": 800.0}}
+with open(dom, "w") as out:
+    for p, seq in proteins.items():
+        for h in names:
+            s = scores.get(seq[:5], {}).get(h, 10.0)
+            f = [p, "-", str(len(seq)), h, "-", "100", "1e-10", str(s), "0", "1", "1", "1e-10", "1e-10", str(s), "0",
+                 "1", "100", "1", str(len(seq)), "1", str(len(seq)), "0.9", "-"]
+            out.write(" ".join(f) + "\\n")
+'''
+
+
+class RecheckTest(unittest.TestCase):
+    def test_a_copy_whose_best_profile_is_a_decoy(self):
+        # since 2026-11-09: a genome's TEF1 called before the EFL decoy joined the set is EFL: low (`paralog`)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = os.path.join(tmp, "eukore_markers")
+            for sub, name in (("hmms", "TEF1"), ("decoys", "EFL"), ("decoys", "K03267")):
+                os.makedirs(os.path.join(folder, sub), exist_ok=True)
+                profile = "decoy-" + name if sub == "decoys" else name
+                with open(os.path.join(folder, sub, f"{name}.hmm"), "w") as fh:
+                    fh.write(f"HMMER3/f [3.4]\nNAME  {profile}\nLENG  100\n//\n")
+            check = markers.recheck(folder, fx.tool(tmp, "hmmsearch", RECHECK_HMMSEARCH))
+            cds = {("G1", "TEF1"): fx.cds_of("MSRQV" + "A" * 40), ("G2", "TEF1"): fx.cds_of("MGKEK" + "A" * 40)}
+            self.assertEqual(check(cds, {"G1": {"gencode": 1}, "G2": {"gencode": 1}}), {("G1", "TEF1")})
+            self.assertEqual(check({}, {}), set())
+            self.assertIsNone(markers.recheck(None))
+
+
 if __name__ == "__main__":
     unittest.main()

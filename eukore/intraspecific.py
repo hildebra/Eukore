@@ -9,7 +9,12 @@ compared with each other and with the species' genome's.
   BUSCO's: busco/copies.tsv's own check, qc.check's nearest_id; the 18S, the ITS, an organelle gene's: vsearch against
   every other species' in the package).
 - gap: intra_min - inter_max; resolved: t where it is above 0 (every assembly of the species nearer to each other than
-  to any other species), f where not, - where the species has no other species' copy 50% alike.
+  to any other species) and the nearest other species is a congener, f where it is not above 0, - where the species
+  has no other species' copy 50% alike, or (since 2026-11-09) none of its genus: a gap to a farther relative says
+  nothing of telling the species from its congeners (until then t, where the package held no congener).
+- inter_rank (since 2026-11-09): the deepest rank the nearest other species shares with the species (genus ..
+  phylum, none; qc.depth), - where not known.
+Pairs are aligned over COVER of their query at least (since 2026-11-09).
 
 Markers: each BUSCO (its coding sequence), 18S, ITS (ITS1, 5.8S and ITS2 of an rDNA unit), and the organelle genes
 (their coding sequence where known, else their record).
@@ -23,8 +28,11 @@ from . import organelle as organelle_mod
 from . import package, qc, rrna, util
 
 MIN_ID = 0.5
+COVER = 0.8  # a pair's alignment covers this share of its query (since 2026-11-09)
 GAP_COLUMNS = ("marker", "species_taxid", "name", "group", "assemblies", "intra_min", "intra_median", "inter_max",
-               "gap", "resolved")
+               "gap", "resolved",
+               "inter_rank")  # since 2026-11-09 (format 6): the rank the nearest other species shares with it
+RANK_NAMES = ("none", "phylum", "class", "order", "family", "genus")  # qc.depth's 0 .. 5
 COPY_COLUMNS = ("accession", "species_taxid", "locus", "status", "contig", "start", "end", "strand", "length",
                 "cds_length", "exons", "hmm_score", "hmm_coverage", "copies", "dup_identity")
 
@@ -89,13 +97,16 @@ def collect(work, extras, organelle_folder):
 
 def _pairs(query, db, vsearch, threads=1, maxaccepts=0):
     """vsearch of query {name: seq} against db {name: seq} -> [(query, target, identity)], or None where vsearch
-    failed (since 2026-11-08: [], every pair then read as under MIN_ID and the gap called unresolved)."""
+    failed (since 2026-11-08: [], every pair then read as under MIN_ID and the gap called unresolved). A pair's
+    alignment covers COVER of the query (since 2026-11-09: --iddef 2 reads identity over the aligned columns alone, and
+    a partial record's few hundred bases matched made a nearest species or a strain look nearer than it is)."""
     if not vsearch:
         return None
     if not query or not db:
         return []
     try:
-        return util.vsearch_global(vsearch, query, db, MIN_ID, threads, maxaccepts, 256 if maxaccepts else 0)
+        return util.vsearch_global(vsearch, query, db, MIN_ID, threads, maxaccepts, 256 if maxaccepts else 0,
+                                   ["--query_cov", str(COVER)])
     except OSError:
         return None
 
@@ -104,9 +115,9 @@ def barcode_gap(panel_species, rep_markers, extra_markers, species_of, inter, ot
                 group_of=None):
     """The barcode gap's rows (GAP_COLUMNS). panel_species: {species taxid: representative accession};
     rep_markers / extra_markers: {accession: {marker: sequence}}; species_of: {accession: species taxid}; inter: {(species
-    taxid, marker): the representative's nearest other species' identity} known (the BUSCOs'); others: {marker: {name:
-    sequence}} of every other species in the package for the markers whose inter is measured here, names
-    `<species taxid>|...`."""
+    taxid, marker): the representative's nearest other species' identity, or (identity, the depth its lineage shares
+    with the species: qc.depth's)} known (the BUSCOs'); others: {marker: {name: sequence}} of every other species in the
+    package for the markers whose inter is measured here, names `<species taxid>|...`."""
     by_marker = collections.defaultdict(dict)
     for acc, markers in list(rep_markers.items()) + list(extra_markers.items()):
         sp = species_of[acc]
@@ -121,10 +132,14 @@ def barcode_gap(panel_species, rep_markers, extra_markers, species_of, inter, ot
                  if name.split("|")[1] == panel_species.get(int(name.split("|")[0]))}
         best = {}
         for q, t, ident in _pairs(query, db, vsearch, threads, maxaccepts=64) or ():  # failed: not known
-            if q.split("|")[0] != t.split("|")[0]:
-                best[q] = max(best.get(q, 0.0), ident)
+            if q.split("|")[0] != t.split("|")[0] and ident > best.get(q, (0.0, None))[0]:
+                best[q] = (ident, int(t.split("|")[0]))
+        cache = {}
         for name in query:
-            inter[(int(name.split("|")[0]), marker)] = best.get(name)
+            sp = int(name.split("|")[0])
+            ident, other = best.get(name, (None, None))
+            inter[(sp, marker)] = None if ident is None else (
+                ident, qc.depth(ncbi, sp, other, cache) if ncbi is not None else None)
     out = []
     for marker, seqs in sorted(by_marker.items()):
         hits = collections.defaultdict(dict)
@@ -144,13 +159,17 @@ def barcode_gap(panel_species, rep_markers, extra_markers, species_of, inter, ot
             pairs = [(a, b) for i, a in enumerate(sorted(names)) for b in sorted(names)[i + 1:]]
             ids = [hits[sp].get((a, b), MIN_ID * 100) for a, b in pairs]
             near = inter.get((int(sp), marker))
+            near, depth = near if isinstance(near, tuple) else (near, None)
             intra_min = min(ids)
-            out.append(dict(marker=marker, species_taxid=sp, name=ncbi.name.get(int(sp), "-"),
+            # resolved against a congener alone (since 2026-11-09); nearer to a farther relative is unresolved all
+            # the same
+            resolved = "-" if near is None else "f" if intra_min <= near else "t" if depth == 5 else "-"
+            out.append(dict(marker=marker, species_taxid=sp, name=ncbi.name.get(int(sp), "-") if ncbi else "-",
                             group=(group_of or {}).get(int(sp), "-"), assemblies=len(names),
                             intra_min=f"{intra_min:.1f}", intra_median=f"{statistics.median(ids):.1f}",
                             inter_max="-" if near is None else f"{near:.1f}",
-                            gap="-" if near is None else f"{intra_min - near:.1f}",
-                            resolved="-" if near is None else "t" if intra_min > near else "f"))
+                            gap="-" if near is None else f"{intra_min - near:.1f}", resolved=resolved,
+                            inter_rank="-" if depth is None else RANK_NAMES[depth]))
     return out
 
 
