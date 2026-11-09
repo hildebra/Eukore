@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Eukore's small helpers (since 2026-11-05; copied here so that Eukore imports nothing from protal's scripts/): text
 files plain, gzipped or zstd-compressed (open_text; zstd by Python 3.14's compression.zstd where there is one, else the
-zstd command through a pipe), a writer's temporary name, MD5s, downloads, a long loop's progress.
+zstd command through a pipe), a writer's temporary name, MD5s, downloads, a long loop's progress; since 2026-11-09
+every compressed file Eukore writes as BGZF (bgzf_open), on many threads where asked (compression_threads).
 """
 
 import gzip
@@ -60,6 +61,8 @@ import urllib.error  # noqa: E402
 import urllib.parse  # noqa: E402
 import urllib.request  # noqa: E402
 import http.client  # noqa: E402
+import io  # noqa: E402
+import struct  # noqa: E402
 import zlib  # noqa: E402
 
 import threading  # noqa: E402
@@ -172,6 +175,140 @@ def gzip_whole(path, tool=None):
     with gzip.open(path, "rb") as gz:
         while gz.read(1 << 22):
             pass
+
+
+# --- BGZF: every file Eukore compresses (since 2026-11-09; gzip's own stream until then) -----------------------------
+# BGZF (htslib's blocked gzip, SAM/BAM specification 4.1) is gzip, one member per 64 KiB block, each block's size in
+# its header: gzip, zcat, Python's gzip and every zlib reader read it as they read gzip; bgzip -@, samtools, seqkit and
+# rapidgzip decompress it on many threads, and samtools faidx and tabix index it. Its blocks are compressed apart,
+# so a writer compresses them on many threads too (compression_threads).
+
+BGZF_LEVEL = 9  # the package's and the release's files, those a user downloads: deflate's best (since 2026-11-09)
+WORK_LEVEL = 6  # the work folder's own files, read by the build alone: faster
+BGZF_BLOCK = 0xff00  # uncompressed bytes a block (htslib's BGZF_BLOCK_SIZE: its deflate always fits the 64 KiB a
+#                      block may take, header and trailer included)
+BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")  # the empty last block
+BGZF_PENDING = 32  # a threaded writer's blocks compressing at once at most (32 x 64 KiB a writer)
+_BGZF_POOL = {"threads": 1, "pid": None, "executor": None}
+
+
+def compression_threads(n):
+    """The threads every BGZF writer of this process compresses its blocks on from now (bgzf_open; 1: in the writer's
+    own thread). zlib lets go of Python's lock while it compresses, so threads compress in parallel; the blocks are
+    written in their order whatever thread made them, the file the same."""
+    old = _BGZF_POOL["executor"]
+    if old is not None and _BGZF_POOL["pid"] == os.getpid():
+        old.shutdown(wait=True)
+    _BGZF_POOL.update(threads=max(1, int(n or 1)), pid=None, executor=None)
+
+
+def _bgzf_executor():
+    """The process' compression threads (compression_threads), None for none; made at first use, again in a child
+    process (a forked child has the parent's executor without its threads)."""
+    if _BGZF_POOL["threads"] <= 1:
+        return None
+    if _BGZF_POOL["pid"] != os.getpid():
+        _BGZF_POOL.update(pid=os.getpid(), executor=concurrent.futures.ThreadPoolExecutor(
+            _BGZF_POOL["threads"], thread_name_prefix="bgzf"))
+    return _BGZF_POOL["executor"]
+
+
+def bgzf_block(data, level=BGZF_LEVEL):
+    """One BGZF block of data (at most BGZF_BLOCK bytes): a gzip member with a BC extra field giving its size."""
+    deflate = zlib.compressobj(level, zlib.DEFLATED, -15)
+    body = deflate.compress(data) + deflate.flush()
+    # ID1 ID2 CM FLG(FEXTRA) MTIME XFL OS(unknown) XLEN, subfield B C SLEN BSIZE (the block's size less 1)
+    return (struct.pack("<4BIBBH2BHH", 31, 139, 8, 4, 0, 0, 255, 6, 66, 67, 2, len(body) + 25) + body
+            + struct.pack("<II", zlib.crc32(data), len(data)))
+
+
+class BgzfWriter(io.RawIOBase):
+    """A BGZF file being written (bytes): its data cut into BGZF_BLOCK blocks, compressed at level on the process'
+    compression threads (compression_threads) or in this thread, closed by the empty EOF block. target: a path or a
+    binary file object (left open)."""
+
+    def __init__(self, target, level=BGZF_LEVEL):
+        super().__init__()
+        self._own = isinstance(target, (str, bytes, os.PathLike))
+        self._fh = open(target, "wb") if self._own else target
+        self._level = level
+        self._buf = bytearray()
+        self._pending = collections.deque()
+        self._pool = _bgzf_executor()
+
+    def writable(self):
+        return True
+
+    def write(self, data):
+        self._buf += data
+        if len(self._buf) >= BGZF_BLOCK:
+            view, at = memoryview(self._buf), 0
+            while len(self._buf) - at >= BGZF_BLOCK:
+                self._block(bytes(view[at:at + BGZF_BLOCK]))
+                at += BGZF_BLOCK
+            view.release()
+            del self._buf[:at]
+        return len(data)
+
+    def _block(self, data):
+        if self._pool is None:
+            self._fh.write(bgzf_block(data, self._level))
+            return
+        self._pending.append(self._pool.submit(bgzf_block, data, self._level))
+        while self._pending and (len(self._pending) > BGZF_PENDING or self._pending[0].done()):
+            self._fh.write(self._pending.popleft().result())
+
+    def close(self):
+        if self.closed:
+            return
+        try:
+            if self._buf:
+                self._block(bytes(self._buf))
+                self._buf.clear()
+            while self._pending:
+                self._fh.write(self._pending.popleft().result())
+            self._fh.write(BGZF_EOF)
+        finally:
+            if self._own:
+                self._fh.close()
+            super().close()
+
+
+def bgzf_open(target, mode="wt", level=BGZF_LEVEL, encoding="utf-8", newline="\n"):
+    """A BGZF file opened for writing (BgzfWriter): mode "wb" (bytes) or "wt" (text, newline "\\n" by default); level:
+    BGZF_LEVEL for a file of the package or the release, WORK_LEVEL for the work folder's own. Read it back with
+    gzip.open or open_text."""
+    if mode not in ("wb", "wt"):
+        raise ValueError(f"bgzf_open: mode {mode!r} (wb or wt)")
+    binary = io.BufferedWriter(BgzfWriter(target, level), buffer_size=1 << 20)
+    return binary if mode == "wb" else io.TextIOWrapper(binary, encoding=encoding, newline=newline)
+
+
+def is_bgzf(path):
+    """Whether a file starts with a BGZF block (a gzip header whose first extra subfield is BC)."""
+    with open(path, "rb") as fh:
+        head = fh.read(18)
+    return len(head) == 18 and head[:4] == b"\x1f\x8b\x08\x04" and head[12:14] == b"BC"
+
+
+def bgzf_copy(src, dest, level=BGZF_LEVEL):
+    """src (plain, gzipped or zstd-compressed) as a BGZF file dest, written beside it and renamed into place."""
+    part = part_of(dest)
+    with open_binary(src) as fh, bgzf_open(part, "wb", level) as out:
+        shutil.copyfileobj(fh, out, 1 << 22)
+    os.replace(part, dest)
+    return dest
+
+
+def open_binary(path):
+    """A file's bytes, plain or decompressed (gzip and BGZF; zstd read whole), by its first bytes."""
+    with open(path, "rb") as fh:
+        head = fh.read(4)
+    if head[:2] == b"\x1f\x8b":
+        return gzip.open(path, "rb")
+    if is_zstd(head):
+        return io.BytesIO(read_zstd(path).encode())
+    return open(path, "rb")
 
 
 class KeepAuthorization(urllib.request.HTTPRedirectHandler):

@@ -352,7 +352,7 @@ def describe(path, folder, accession, fetched=None, sourmash=None, want=None):
         except (OSError, EOFError, ValueError) as e:
             why = f"metadata: {type(e).__name__}: {e}"
         else:
-            with gzip.open(util.part_of(os.path.join(folder, ORGANELLE)), "wt", compresslevel=6) as fh:
+            with util.bgzf_open(util.part_of(os.path.join(folder, ORGANELLE)), level=util.WORK_LEVEL) as fh:
                 fh.writelines(f">{n} {k}\n{s}\n" for n, k, s in molecules)
             os.replace(util.part_of(os.path.join(folder, ORGANELLE)), os.path.join(folder, ORGANELLE))
             stats = dict(accession=accession, fetched=fetched or accession, md5=util.md5(path),
@@ -461,7 +461,7 @@ def write(part, genomes, work, tables=(), jobs=None):
     described, listed, sketches = [], [], []
     molecules = os.path.join(part, "organelle", "molecules.fna.gz")
     n_molecules = 0
-    with gzip.open(util.part_of(molecules), "wt", compresslevel=6) as mol:
+    with util.bgzf_open(util.part_of(molecules)) as mol:
         for acc in sorted(genomes):
             if genomes[acc].get("representative") != "t":
                 continue

@@ -121,8 +121,8 @@ COPY_NUMBERS = "copy_numbers.tsv.gz"
 
 
 def write_gz(path, columns, rows):
-    """A gzipped TSV table (- for an empty value)."""
-    with gzip.open(util.part_of(path), "wt", compresslevel=6, newline="\n") as fh:
+    """A gzipped TSV table (- for an empty value; BGZF since 2026-11-09)."""
+    with util.bgzf_open(util.part_of(path)) as fh:
         fh.write("\t".join(columns) + "\n")
         fh.writelines("\t".join("-" if r.get(c) in (None, "") else str(r[c]) for c in columns) + "\n" for r in rows)
     os.replace(util.part_of(path), path)
@@ -437,12 +437,12 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
         # each copy's coding sequence (exons joined, frameshifts' bases out); its protein (since 2026-11-07)
         for sub, ext, seqs in (("cds", "fna", by_locus["cds"].get(locus, {})),
                                ("proteins", "faa", by_locus["proteins"].get(locus, {}))):
-            with gzip.open(os.path.join(part, set_of[locus], sub, f"{locus}.{ext}.gz"), "wt", compresslevel=6) as fh:
+            with util.bgzf_open(os.path.join(part, set_of[locus], sub, f"{locus}.{ext}.gz")) as fh:
                 fh.writelines(f">{acc}\n{seqs[acc].upper()}\n" for acc in sorted(seqs) if seqs[acc])
     # each copy whole and the features: read again from each done genome in turn into every locus' file at once
     # (since 2026-11-08: all held in memory from collect on)
-    copy_files = {item["locus"]: gzip.open(os.path.join(part, set_of[item["locus"]], "copies",
-                                                        f"{item['locus']}.fna.gz"), "wt", compresslevel=6)
+    copy_files = {item["locus"]: util.bgzf_open(os.path.join(part, set_of[item["locus"]], "copies",
+                                                             f"{item['locus']}.fna.gz"))
                   for item in loci}
     feature_files = {s: open(util.part_of(os.path.join(part, s, "features.tsv")), "w", newline="\n") for s in sets}
     try:
@@ -481,7 +481,7 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                                                                               int(r["hmm_position"]), int(r["phase"]))))
         os.makedirs(os.path.join(part, "metadata"), exist_ok=True)
         path = os.path.join(part, "metadata", "codons.tsv.gz")
-        with gzip.open(util.part_of(path), "wt", compresslevel=6, newline="\n") as fh:
+        with util.bgzf_open(util.part_of(path)) as fh:
             fh.write("\t".join(codecheck.CODON_COLUMNS) + "\n")
             fh.writelines("\t".join(str(r[c]) for c in codecheck.CODON_COLUMNS) + "\n" for r in collected["codons"])
         os.replace(util.part_of(path), path)

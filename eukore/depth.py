@@ -392,7 +392,7 @@ def stream_reads(url, dest, max_reads, max_bases, attempts=3, opener=None, spots
     for _ in range(attempts):
         part = util.part_of(dest)
         try:
-            with opener(url) as response, gzip.open(part, "wb", compresslevel=6) as fh:
+            with opener(url) as response, util.bgzf_open(part, "wb", util.WORK_LEVEL) as fh:
                 got = take_reads(response, fh, max_reads, max_bases, spots)
             os.replace(part, dest)
             return got

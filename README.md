@@ -60,7 +60,8 @@ FCS-GX and ANI screens find contaminated or misidentified where a better one exi
 (ENA's TSA sets: some 5,000 species, most animals and plants) has its BUSCOs called in it (`species.tsv`'s `source` `tsa`).
 
 A package is plain TSV and gzipped FASTA with a `manifest.json` of checksums; its format is
-[docs/FORMAT.md](docs/FORMAT.md) (format 5).
+[docs/FORMAT.md](docs/FORMAT.md) (format 5). Every `.gz` file is BGZF (blocked gzip, since 2026-11-09): any gzip
+reader reads it, `bgzip -d -@` decompresses it on many threads.
 
 ```
 Eukore_2026.11/
@@ -122,6 +123,12 @@ What you may want, where it is in a package, and where it is described. The file
 of a few clades exist so far. Until a release is published, build it yourself (below): a trial of seven clades took
 about an hour on 6 cores, the full reference needs a cluster.
 
+A release is published on Eukore's website (`website/`, PHP; the [website's README](website/README.md)): its
+statistics (species by genome source and supergroup, the taxonomy as a tree, the marker categories) and its
+downloads: the complete package, the marker genes with or without introns, the rRNA and organelle markers, the
+sourmash sketches and each metadata table, all BGZF. The package stage writes both into `OUT/release/` from the
+package it built (`--stage release` again, `--no_release` none).
+
 ## Use a package
 
 The tables are plain TSV, read by any tool. With Eukore's own reader:
@@ -173,7 +180,8 @@ python3 eukore_build.py --work WORK --out OUT --stage fetch                  # s
 python3 eukore_build.py --work WORK --out OUT --stage process -t 64 \
     [--memory_gb 200] [--scratch /local/disk]                                # each genome's genes and rRNA
 python3 eukore_build.py --work WORK --out OUT --stage package -t 64 \
-    [--fcs_gx_db /dev/shm/gxdb/all] [--tiara .../bin/tiara]                  # checks, rRNA, labels, package, benchmarks
+    [--fcs_gx_db /dev/shm/gxdb/all] [--tiara .../bin/tiara]                  # checks, rRNA, labels, package, benchmarks,
+                                                                             # the release (OUT/release/)
 ```
 
 Every stage is resumable: a rerun does only what is not done. Optional tools: tiara (the windows around each copy
@@ -257,12 +265,13 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 | path | |
 |---|---|
 | `eukore_build.py` | the build (stages fetch, process, package) |
-| `eukore/` | the package: `genomes.py` (genome set, one genome's run), `odb.py`, `loci.py` (BUSCO calls), `rrna.py`, `screen.py` (rRNA and its chimera screen), `organelle.py`, `qc.py` (checks across species), `quality.py` (NCBI's FCS-GX and ANI reports), `labels.py` (PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2; crossrefs), `groups.py` (supergroups, groups), `gencode.py` (NCBI's genetic codes), `align.py` (hmmalign), `introns.py`, `codecheck.py` (genetic code check), `regions.py` (18S V1-V9, cmalign), `primers.py` (in-silico PCR), `intraspecific.py` (barcode gap), `markers.py` (Eukore's marker set: KOfam, Swiss-Prot, NCBI), `package.py` (write, read, check), `benchmarks.py` |
+| `eukore/` | the package: `genomes.py` (genome set, one genome's run), `odb.py`, `loci.py` (BUSCO calls), `rrna.py`, `screen.py` (rRNA and its chimera screen), `organelle.py`, `qc.py` (checks across species), `quality.py` (NCBI's FCS-GX and ANI reports), `labels.py` (PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2; crossrefs), `groups.py` (supergroups, groups), `gencode.py` (NCBI's genetic codes), `align.py` (hmmalign), `introns.py`, `codecheck.py` (genetic code check), `regions.py` (18S V1-V9, cmalign), `primers.py` (in-silico PCR), `intraspecific.py` (barcode gap), `markers.py` (Eukore's marker set: KOfam, Swiss-Prot, NCBI), `package.py` (write, read, check), `benchmarks.py`, `release.py` (the website's data and the downloads), `util.py` (BGZF, downloads, progress) |
 | `data/` | the model species, curated rDNA units, the records of species without an assembly; since 0.2 `supergroups.tsv` (supergroups and groups), `primers.tsv` and `primer_pairs.tsv` (the in-silico PCR), `primer_references.fna` (their test records), `rrna_regions.tsv` (the 18S V-regions on yeast), `intraspecific_panel.tsv` (the barcode gap's species), `classic_markers.*`, `markers.tsv` (Eukore's marker loci: their KOfam targets and decoys) |
 | `envs/` | the micromamba environments (`eukore.yaml`; `tiara.yaml`, tiara needing an older Python) |
 | `tools/` | choosing loci: `rank_loci.py`, `eukaryote_panel.py`, `prokaryote_panel.py`, `prokaryote_separation.py`; `classic_markers.py` (classic markers among the BUSCOs), `primer_references.py` (the primers' test records), `organelle_models.py` (nhmmer against miniprot on RefSeq's exons), `validate_markers.py` (the marker loci against each species' own reference protein, held out) |
 | `tests/` | unit and end-to-end tests with stand-in tools |
 | `docs/` | documentation, the format, the benchmarks' plot script and figures, the logo |
+| `website/` | Eukore's website (PHP): home, statistics, downloads, tutorial, acknowledgements; it reads a build's `OUT/release/` |
 | `LICENSE` | GPL-2.0 |
 
 ## Status and limitations

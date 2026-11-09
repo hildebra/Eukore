@@ -1,0 +1,344 @@
+{
+ "package": "Eukore_2026.11-013",
+ "version": "2026.11-013",
+ "eukore": "0.2",
+ "format": 5,
+ "built": "2026-11-07T18:01:48",
+ "released": "2026-11-09T07:49:20",
+ "release_by": "0.2.2",
+ "partial": {
+  "species_clades": [
+   3702,
+   4930,
+   5476,
+   6239,
+   7227,
+   12967,
+   36087
+  ]
+ },
+ "totals": {
+  "species": 43,
+  "species_with_genome": 34,
+  "species_rrna_only": 9,
+  "genomes": 34,
+  "assemblies_listed": 2652,
+  "supergroups": 3,
+  "groups": 4,
+  "phyla": 4,
+  "classes": 7,
+  "orders": 7,
+  "families": 7,
+  "genera": 7,
+  "marker_categories": 4,
+  "marker_loci": 139,
+  "sequences": 6552
+ },
+ "sources": {
+  "columns": [
+   "NCBI RefSeq",
+   "NCBI GenBank",
+   "rRNA records only"
+  ],
+  "text": {
+   "NCBI RefSeq": "NCBI's RefSeq assembly",
+   "NCBI GenBank": "NCBI's GenBank assembly",
+   "rRNA records only": "published rRNA reads alone (EUKARYOME, ROD)"
+  },
+  "supergroups": [
+   {
+    "name": "Obazoa",
+    "counts": {
+     "NCBI RefSeq": 8,
+     "NCBI GenBank": 9,
+     "rRNA records only": 7
+    },
+    "species": 24,
+    "groups": [
+     {
+      "name": "Fungi",
+      "counts": {
+       "NCBI RefSeq": 6,
+       "NCBI GenBank": 8,
+       "rRNA records only": 7
+      },
+      "species": 21
+     },
+     {
+      "name": "Metazoa",
+      "counts": {
+       "NCBI RefSeq": 2,
+       "NCBI GenBank": 1,
+       "rRNA records only": 0
+      },
+      "species": 3
+     }
+    ]
+   },
+   {
+    "name": "TSAR",
+    "counts": {
+     "NCBI RefSeq": 1,
+     "NCBI GenBank": 15,
+     "rRNA records only": 2
+    },
+    "species": 18,
+    "groups": [
+     {
+      "name": "Stramenopiles",
+      "counts": {
+       "NCBI RefSeq": 1,
+       "NCBI GenBank": 15,
+       "rRNA records only": 2
+      },
+      "species": 18
+     }
+    ]
+   },
+   {
+    "name": "Archaeplastida",
+    "counts": {
+     "NCBI RefSeq": 1,
+     "NCBI GenBank": 0,
+     "rRNA records only": 0
+    },
+    "species": 1,
+    "groups": [
+     {
+      "name": "Viridiplantae",
+      "counts": {
+       "NCBI RefSeq": 1,
+       "NCBI GenBank": 0,
+       "rRNA records only": 0
+      },
+      "species": 1
+     }
+    ]
+   }
+  ]
+ },
+ "markers": [
+  {
+   "key": "busco",
+   "title": "BUSCO genes",
+   "what": "the near-universal single-copy orthologs of BUSCO's eukaryota_odb12, each copy whole with its introns, its coding sequence and protein",
+   "loci": 129,
+   "sequences": 3796,
+   "species": 34,
+   "confidence": {
+    "high": 1994,
+    "medium": 1769,
+    "low": 33
+   },
+   "items_title": "BUSCOs by the share of species they are called in",
+   "items": [
+    {
+     "name": "0%-10%",
+     "sequences": 0
+    },
+    {
+     "name": "10%-20%",
+     "sequences": 7
+    },
+    {
+     "name": "20%-30%",
+     "sequences": 4
+    },
+    {
+     "name": "30%-40%",
+     "sequences": 1
+    },
+    {
+     "name": "40%-50%",
+     "sequences": 4
+    },
+    {
+     "name": "50%-60%",
+     "sequences": 25
+    },
+    {
+     "name": "60%-70%",
+     "sequences": 10
+    },
+    {
+     "name": "70%-80%",
+     "sequences": 10
+    },
+    {
+     "name": "80%-90%",
+     "sequences": 13
+    },
+    {
+     "name": "90%-100%",
+     "sequences": 55
+    }
+   ],
+   "items_unit": "BUSCOs"
+  },
+  {
+   "key": "rrna",
+   "title": "Nuclear rDNA",
+   "what": "18S spans and whole operons (18S, ITS1, 5.8S, ITS2, 28S, 5S) of the genomes, EUKARYOME's and ROD's long reads, with their 18S V1-V9",
+   "loci": 6,
+   "sequences": 2745,
+   "species": 41,
+   "confidence": {
+    "high": 263,
+    "medium": 2468,
+    "low": 14
+   },
+   "items_title": "records holding each region",
+   "items": [
+    {
+     "name": "18S",
+     "sequences": 2745,
+     "species": 41
+    },
+    {
+     "name": "ITS1",
+     "sequences": 2565,
+     "species": 39
+    },
+    {
+     "name": "5.8S",
+     "sequences": 2565,
+     "species": 39
+    },
+    {
+     "name": "ITS2",
+     "sequences": 2559,
+     "species": 39
+    },
+    {
+     "name": "28S",
+     "sequences": 2565,
+     "species": 39
+    },
+    {
+     "name": "5S",
+     "sequences": 58,
+     "species": 14
+    },
+    {
+     "name": "whole units (18S to 28S)",
+     "sequences": 2565,
+     "species": null
+    }
+   ],
+   "items_unit": "records",
+   "sources": {
+    "ROD": 2350,
+    "genome": 321,
+    "EUKARYOME": 74
+   }
+  },
+  {
+   "key": "mitochondrion",
+   "title": "Mitochondrial genes",
+   "what": "rRNA (12S, 16S, 5S) and COX1, COX3, CYTB, nad1, nad5, atp6, with their proteins by the organelle's code",
+   "loci": 2,
+   "sequences": 9,
+   "species": 5,
+   "confidence": {
+    "high": 2,
+    "medium": 7,
+    "low": 0
+   },
+   "items_title": "records and species per gene",
+   "items": [
+    {
+     "name": "SSU rRNA (12S)",
+     "sequences": 5,
+     "species": 5
+    },
+    {
+     "name": "LSU rRNA (16S)",
+     "sequences": 4,
+     "species": 4
+    }
+   ],
+   "items_unit": "records"
+  },
+  {
+   "key": "plastid",
+   "title": "Plastid genes",
+   "what": "rRNA (16S, 23S, 5S) and rbcL, matK, tufA, psbA, ycf1, the trnH-psbA spacer",
+   "loci": 2,
+   "sequences": 2,
+   "species": 1,
+   "confidence": {
+    "high": 0,
+    "medium": 2,
+    "low": 0
+   },
+   "items_title": "records and species per gene",
+   "items": [
+    {
+     "name": "SSU rRNA (16S)",
+     "sequences": 1,
+     "species": 1
+    },
+    {
+     "name": "LSU rRNA (23S)",
+     "sequences": 1,
+     "species": 1
+    }
+   ],
+   "items_unit": "records"
+  }
+ ],
+ "benchmarks": {
+  "completeness": {
+   "median": 0.8175,
+   "at_least_90": 0.0588,
+   "by_supergroup": {
+    "Fungi": 0.849,
+    "Metazoa": 0.899,
+    "Stramenopiles": 0.601,
+    "Viridiplantae": 1.0
+   }
+  },
+  "resolution": {
+   "BUSCO (all)": {
+    "copies": 3796,
+    "under_99": 0.6589,
+    "under_97": 0.5485
+   },
+   "18S": {
+    "copies": 39,
+    "under_99": 0.359,
+    "under_97": 0.2308
+   }
+  },
+  "rrna": {
+   "records": 2745,
+   "operons": 2565,
+   "lsu_complete_of_operons": 0.9961
+  },
+  "primers": {
+   "12S_V5": 0.2,
+   "16S_Palumbi": 0.25,
+   "ITS1F_ITS4": 0.512,
+   "ITS3_ITS4": 0.634,
+   "ITS86F_ITS4": 0.585,
+   "LR0R_LR5": 0.902,
+   "MiFish-U": 0.0,
+   "NL1_NL4": 0.634,
+   "NS1_NS4": 0.951,
+   "V4_TAReuk": 0.976,
+   "V9_1380F_1510R": 0.976,
+   "V9_1391F_EukB": 0.976,
+   "gITS7_ITS4": 0.585
+  }
+ },
+ "ranks": [
+  "supergroup",
+  "group",
+  "phylum",
+  "class",
+  "order",
+  "family",
+  "genus",
+  "species"
+ ]
+}

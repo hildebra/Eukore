@@ -18,7 +18,6 @@ labelled by NCBI taxid, checked without any KSGP.
 """
 
 import collections
-import gzip
 import os
 import re
 import subprocess
@@ -624,7 +623,7 @@ def write_records(folder, records):
     """records [(name, sequence, row)] -> folder/records.fna.gz and records.tsv (RECORD_COLUMNS)."""
     os.makedirs(folder, exist_ok=True)
     fasta, table = os.path.join(folder, "records.fna.gz"), os.path.join(folder, "records.tsv")
-    with gzip.open(util.part_of(fasta), "wt", compresslevel=6) as fa, open(util.part_of(table), "w", newline="\n") as tb:
+    with util.bgzf_open(util.part_of(fasta)) as fa, open(util.part_of(table), "w", newline="\n") as tb:
         tb.write("\t".join(RECORD_COLUMNS) + "\n")
         for name, seq, row in records:
             fa.write(f">{name}\n{seq}\n")

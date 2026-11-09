@@ -28,7 +28,7 @@ import sys
 import tarfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eukore import labels, ncbi as ncbi_mod, rrna  # noqa: E402
+from eukore import labels, ncbi as ncbi_mod, rrna, util  # noqa: E402
 
 EUK_CLADE = re.compile(r"'clade': 't__EUK(\d+)'")
 
@@ -106,7 +106,7 @@ def write(out, name, records):
     """records [(record, sequence, taxid)] -> out/<name>.fna.gz and out/<name>_taxids.tsv; how many."""
     os.makedirs(out, exist_ok=True)
     n = 0
-    with gzip.open(os.path.join(out, f"{name}.fna.gz"), "wt") as fa, \
+    with util.bgzf_open(os.path.join(out, f"{name}.fna.gz")) as fa, \
             open(os.path.join(out, f"{name}_taxids.tsv"), "w", newline="\n") as tab:
         for record, seq, taxid in records:
             fa.write(f">{record}\n{seq}\n")

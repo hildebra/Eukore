@@ -148,7 +148,7 @@ def unpack(name, folder, seven_zip="7za"):
         subprocess.run([seven_zip, "x", "-y", f"-o{work}", archive], check=True, stdout=subprocess.DEVNULL)
         dest = os.path.join(folder, "General_EUK_longread_v2.1.fasta.gz")
         with open(os.path.join(work, "General_EUK_longread_v2.1.fasta"), "rb") as src, \
-                gzip.open(dest + ".part", "wb", compresslevel=6) as dst:
+                util.bgzf_open(dest + ".part", "wb", util.WORK_LEVEL) as dst:
             shutil.copyfileobj(src, dst, 1 << 22)
         os.replace(dest + ".part", dest)
         shutil.rmtree(work)

@@ -256,7 +256,7 @@ def ncbi_proteins(term, path, log=print):
         wanted = chosen(summaries)
         taxid = {a: t for a, t, _n in summaries}
         log(f"markers: fetching {len(wanted):,} of NCBI's {count:,} proteins of {term[:50]}...")
-        with gzip.open(util.part_of(path), "wt") as out:
+        with util.bgzf_open(util.part_of(path), level=util.WORK_LEVEL) as out:
             for i in range(0, len(wanted), BATCH):
                 fasta = eutils("efetch.fcgi", db="protein", id=",".join(wanted[i:i + BATCH]), rettype="fasta",
                                retmode="text")
@@ -323,7 +323,7 @@ def score(proteins, hmm_db, hmmsearch="hmmsearch", threads=1, cache=None):
         covered = {i for a, b in spans[(p, h)] for i in range(a, b + 1)}
         out[p][h] = (full, domain, len(covered) / max(qlen[h], 1))
     if cache:
-        with gzip.open(util.part_of(cache), "wt") as fh:
+        with util.bgzf_open(util.part_of(cache), level=util.WORK_LEVEL) as fh:
             fh.writelines(f"{p}\t{h}\t{v[0]}\t{v[1]}\t{v[2]:.4f}\n" for p, hs in out.items() for h, v in hs.items())
         os.replace(util.part_of(cache), cache)
     return out
@@ -586,7 +586,7 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
     with open(os.path.join(folder, "members.tsv"), "w", newline="\n") as fh:  # every candidate assigned, its fate
         fh.write("\t".join(MEMBER_COLUMNS) + "\n")
         fh.writelines("\t".join(map(str, r)) + "\n" for r in table_rows)
-    with gzip.open(os.path.join(folder, "refseq_db.faa.gz"), "wt") as fh:
+    with util.bgzf_open(os.path.join(folder, "refseq_db.faa.gz"), level=util.WORK_LEVEL) as fh:
         fh.writelines(f">{n}\n{s}\n" for n, s in records)
     state = dict(table_md5=util.md5(table), kofam_ko_list_md5=util.md5(listing), swissprot=release,
                  ncbi=dict(scope=NCBI_SCOPE, per_taxon=PER_TAXON, fetched=from_ncbi), candidates=len(rows),

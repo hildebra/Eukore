@@ -129,9 +129,12 @@ python3 eukore_build.py --work WORK --out OUT --stage fetch --groups fungi,proto
 # compute nodes, no network: each genome's BUSCOs and rRNA, then the organelle genes
 python3 eukore_build.py --work WORK --out OUT --stage process --groups fungi,protozoa -t 64 -j 16
 
-# then the package: the checks across species, the published rRNA, the prune, the package
+# then the package: the checks across species, the published rRNA, the prune, the package, the release
 python3 eukore_build.py --work WORK --out OUT --stage package --groups fungi,protozoa -t 64 --keep_gb 1000 \
     [--fcs_gx_db /dev/shm/gxdb/all] [--tiara .../bin/tiara] [--ksgp_tax .../KSGP_v4.4_plus2.tax]
+
+# only the release again (the website's data, the downloads) of a finished package
+python3 eukore_build.py --work WORK --out OUT --stage release --version 2026.11 -t 64
 ```
 
 Give every stage the same `--work`, `--out`, `--groups` and `--species`: each stage plans the same genome set from
@@ -224,15 +227,16 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | option | default | |
 |---|---|---|
 | `--work DIR` | required | the build's work folder: sources, each genome's results, caches |
-| `--out DIR` | required | where `Eukore_<version>/` and `genomes/` go |
-| `--stage` | `all` | `fetch`, `process`, `package` or `all` |
+| `--out DIR` | required | where `Eukore_<version>/`, `release/` and `genomes/` go |
+| `--stage` | `all` | `fetch`, `process`, `package` or `all` (the three in turn); `release`: `OUT/release/` again of a finished `OUT/Eukore_<version>/` (since 2026-11-09) |
+| `--no_release` | | the package stage writes no `OUT/release/` (the website's data and the downloads, a second copy of the package: since 2026-11-09 written last by default) |
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
 | `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.2, is in the manifest's `eukore`) |
 | `-V` | | print Eukore's own version and exit |
 | `--keep_gb` | none: no genome deleted | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept); with it, a superseded assembly's and the intraspecific panel's genome files are deleted once done too (until 2026-11-08 the default was 1000) |
-| `-t`, `--threads` | 8 | threads in all |
+| `-t`, `--threads` | 8 | threads in all; since 2026-11-09 also those that compress every `.gz` file the build writes (BGZF: the package's and the release's at level 9, the work folder's at 6) |
 | `-j`, `--jobs` | threads / 4 | genomes at a time at most, `-t / -j` threads each; fewer where `--memory_gb` holds fewer, each then with more threads (since 0.2.1) |
 | `--memory_gb` | SLURM's allocation, else the cgroup's limit, else the node's memory available; 85% of it | the process stage's memory: a genome is begun where its run's estimate (~7.5 bytes a base, of 4 Gb at most, and 3 GB) fits in what the running ones leave, the largest first, a smaller one in the room a larger one does not fit (since 0.2.1; until then `-j` at once whatever their sizes) |
 | `--downloads` | 8 | the fetch stage's genomes and annotations downloaded at a time, by `curl` where it is on the PATH (one NCBI connection: ~30–40 MB/s by curl, ~10 by Python's urllib); their gzip checks run in one process of their own, a second core, by ISA-L's `igzip` where it is on the PATH (conda-forge's `isa-l`; ~3.5x Python's), else `pigz`, else Python |
@@ -286,6 +290,7 @@ Without it, these sources stay as first fetched. For a newer taxonomy, delete `W
 | path | |
 |---|---|
 | `OUT/Eukore_<version>/` | the package ([FORMAT.md](FORMAT.md)), with its `benchmarks/` ([benchmarks.md](benchmarks.md)); its `manifest.json` is written last, so a folder without one is unfinished |
+| `OUT/release/` | since 2026-11-09, the package's release, laid out as Eukore's website (`website/`) is, so that `rsync -a OUT/release/ <site>/` publishes it: `data/stats.json` (species by genome source and supergroup, the marker categories, the headline benchmarks), `data/taxonomy.json` (the species as a tree, each taxon's counts), `data/downloads.json`; `downloads/Eukore_<version>/`: the complete package (`Eukore_<version>.tar.gz`), the marker genes with introns (`_marker_genes.tar.gz`) and without (`_marker_cds.tar.gz`: coding sequences, proteins), the rDNA and organelle markers (`_rrna_organelle.tar.gz`), the genomes' sourmash sketches as one collection (`_sketches.sig.gz`), each metadata table alone (`_species.tsv.gz`, `_genomes.tsv.gz`, `_assembly.tsv.gz`, ...) and `MD5SUMS`. A bundle's files sit under `Eukore_<version>/` as in the package. A rerun keeps the downloads of the same package (its manifest's MD5). `--stage release` writes it again; `--no_release`, none |
 | `OUT/genomes/` | the genomes kept after the prune (`<accession>.fna.gz`, as NCBI serves them; `manifest.tsv` lists kept and deleted). `genomes.tsv`'s `local` column names them |
 | `WORK/sources/` | the sources, with their versions and checks (`source.json`, `labels.json`, ...) |
 | `WORK/done/<accession>/` | each genome's calls (`loci.tsv`, `copies.fna`, `features.tsv`), windows, rRNA (`rrna.tsv`), FCS-GX's ranges; for a species of BUSCO's dataset, its calls made without its own proteins (`held_out.tsv`, the OrthoDB benchmark's) |

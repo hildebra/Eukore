@@ -894,7 +894,7 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
             locus: dict(r["miniprot"], status=r["status"], contig=r["contig"], strand=r["strand"])
             for locus, r in got["loci"].items() if r["status"] != "Missing"}, source=source)
     windows = os.path.join(tmp, "windows.fna.gz")
-    with gzip.open(windows, "wt", compresslevel=6) as fh:
+    with util.bgzf_open(windows, level=util.WORK_LEVEL) as fh:
         fh.writelines(f">{n}\n{s}\n" for n, s in got["windows"].items())
     classes, tiara = {}, "-"
     if job.get("kind") != "transcriptome":  # a transcript's flanks are no window

@@ -10,6 +10,7 @@ the manifest. Each copy and record carries its checks, a confidence tier and the
 needs to spot a chimera (contig ends, assembly gaps, the screens). A user of the package (protal's build) takes what
 it needs (protal: the 30 BUSCOs of its euk30, chosen by `busco/loci.tsv`'s figures) and converts it: naming, length
 limits, masking, record cuts. Paths below are relative to the package folder, `Eukore_<YYYY.MM>/`. A
+`.gz` file is BGZF (blocked gzip, read by any gzip reader; since 2026-11-09). A
 `.tsv` has a header line, tab-separated columns and no quoting. `-` means "none". Coordinates are 0-based, end
 excluded, on the sequence as the package holds it, unless they are a contig's (1-based, inclusive).
 
@@ -536,6 +537,10 @@ them). `genomes.tsv`'s
   (protal's euk30 choice) reads `call_<group>`.
   Since 2026-11-08, still format 5: `copy_numbers.tsv.gz` (every genome's copy numbers of its loci, rRNA and
   organelles in one table; the manifest's `counts.copy_numbers`), and `inputs.markers` and `inputs.tsa`.
+  Since 2026-11-09, still format 5: every `.gz` file is BGZF (htslib's blocked gzip, at level 9; until then gzip's
+  own stream, level 6). A gzip reader reads it as before; `bgzip -d -@` decompresses it on many threads and
+  `samtools faidx` indexes a FASTA. The release beside the package (`OUT/release/`, eukore/release.py: the website's
+  data and the downloads) is no part of the package.
 - 2026-11-06, no new format (optional, added to a built package): `depth.tsv`, `genomes.tsv`'s `rdna_copies_reads`,
   `mt_copies_reads` and `pt_copies_reads`, the manifest's `inputs.read_depth` (`tools/rdna_depth.py`). A reader
   takes a package with or without them.
