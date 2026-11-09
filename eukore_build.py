@@ -879,7 +879,9 @@ def banner(opts, argv, whence):
     does = {
         "fetch": "the sources" + (" (their tables fetched again: --refresh)" if opts.refresh else "")
                  + ", then each species' genome and gene models into OUT/genomes",
-        "process": "each genome's loci called and its rRNA extracted, then the organelle genes",
+        "process": "each genome's loci called and its rRNA extracted"
+                   + (" alone (--genomes_only: the passes after, the organelle genes among them, left to a run without "
+                      "it)" if opts.genomes_only else ", then the organelle genes"),
         "package": "the checks across species" + (", FCS-GX's screen" if opts.fcs_gx_db else "")
                    + ("" if opts.no_benchmarks else ", the benchmarks") + f", then OUT/{package_dir}/"
                    + ("" if opts.no_release else " and OUT/release/ (the website's data, the release's bundles)"),
@@ -938,6 +940,11 @@ def main(argv=None):
     p.add_argument("--stage", choices=("all", "fetch", "process", "package", "release"), default="all",
                    help="all: fetch, process and package in turn; release: OUT/release/ (the website's data and the "
                         "downloads) of a finished OUT/Eukore_<version>/ again, which the package stage writes last")
+    p.add_argument("--genomes_only", action="store_true",
+                   help="with --stage process: run the genomes and stop, the passes after them (backfill, organelle "
+                        "genes, intraspecific panel, metadata, gene models) left to a process run without it. For "
+                        "several runs on one WORK (a SLURM array: the genome claims share them out), so that each does "
+                        "not make those passes over the genomes done so far; one run without it after them all")
     p.add_argument("--no_release", action="store_true",
                    help="the package stage writes no OUT/release/ (the website's data and the downloads: a second "
                         "copy of the package, compressed)")
@@ -1049,6 +1056,8 @@ def main(argv=None):
     unknown = set(opts.groups) - set(sources.ASSEMBLY_GROUPS)
     if unknown:
         p.error(f"--groups: {sorted(unknown)} (known: {', '.join(sources.ASSEMBLY_GROUPS)})")
+    if opts.genomes_only and opts.stage != "process":  # `all` would package without the passes
+        p.error("--genomes_only: with --stage process alone")
     warning = None  # said after the banner
     if opts.scratch:  # checked now, not after the minutes of planning (since 2026-11-08)
         why = scratch_problem(opts.scratch)
@@ -1224,13 +1233,18 @@ def main(argv=None):
         say(f"process stage: {opts.jobs} genomes at a time, {opts.threads_per_genome} threads each, progress every "
             f"{opts.report_minutes:g} minutes" + opts.usage.line())
         waiting, failed = run_genomes(opts, job_map, settings, extras)
-        backfill_pass(opts, job_map, settings)
-        intraspecific_pass(opts, src_dir, ncbi, extras)
-        describe_pass(opts, job_map)
-        drop_superseded(opts, job_map)
-        organelle_genes(opts, src_dir, job_map, ncbi)
-        annotate_pass(opts, job_map, may_fetch=opts.stage == "all")
-        say(f"process stage: took {util.duration(time.time() - began)}" + opts.usage.line())
+        # --genomes_only (since 2026-11-09): one of several runs on the WORK (a SLURM array), the passes left to one
+        # run after them all (until then each run made them over the genomes done so far, the others still running)
+        if not opts.genomes_only:
+            backfill_pass(opts, job_map, settings)
+            intraspecific_pass(opts, src_dir, ncbi, extras)
+            describe_pass(opts, job_map)
+            drop_superseded(opts, job_map)
+            organelle_genes(opts, src_dir, job_map, ncbi)
+            annotate_pass(opts, job_map, may_fetch=opts.stage == "all")
+        say(f"process stage: took {util.duration(time.time() - began)}"
+            + (" (--genomes_only: the passes after the genomes left to a process run without it)"
+               if opts.genomes_only else "") + opts.usage.line())
         # a rerun mends a genome not fetched yet or a download that may come; not one NCBI no longer serves, nor a
         # call that failed (it fails again): `all` packages without those (until 2026-11-06 it waited for them forever)
         retry = waiting + [(a, w) for a, w in failed if w.startswith("fetch failed: ") and not placement.given_up(

@@ -238,6 +238,34 @@ class ResumeTest(unittest.TestCase):
             finally:
                 os.chmod(locked, 0o700)
 
+    def test_genomes_only_runs_the_genomes_alone(self):
+        # several process runs on one WORK (a SLURM array, since 2026-11-09): with --genomes_only each runs its share
+        # of the genomes and stops, the passes after them left to one run without it once all have ended
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        passes = ("backfill_pass", "intraspecific_pass", "describe_pass", "drop_superseded", "organelle_genes",
+                  "annotate_pass")
+        with tempfile.TemporaryDirectory() as tmp:
+            args = ["--work", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"), "--stage", "process"]
+            with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+                eukore_build.main(args[:-1] + ["package", "--genomes_only"])  # `all` would package without them
+            self.assertIn("--genomes_only: with --stage process alone", err.getvalue())
+            for only in (True, False):
+                with contextlib.ExitStack() as stack:
+                    out = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                    stack.enter_context(mock.patch.object(eukore_build.ncbi_mod, "Ncbi"))
+                    for name, value in (("inside_of", None), ("plan", ({}, {})), ("extras_of", {}),
+                                        ("settings_of", {}), ("run_genomes", ([], []))):
+                        stack.enter_context(mock.patch.object(eukore_build, name, return_value=value))
+                    stack.enter_context(mock.patch.object(eukore_build.shutil, "which", side_effect=lambda t: "/x/" + t))
+                    stack.enter_context(mock.patch.object(eukore_build.rrna, "check_itsx", return_value=None))
+                    called = {n: stack.enter_context(mock.patch.object(eukore_build, n)) for n in passes}
+                    self.assertEqual(eukore_build.main(args + (["--genomes_only"] if only else [])), 0)
+                self.assertEqual({n for n, m in called.items() if m.called}, set() if only else set(passes))
+                self.assertEqual("left to a process run without it" in out.getvalue(), only)
+
     def test_a_package_written_over_a_killed_runs_old(self):
         from eukore import package  # noqa: PLC0415
         with tempfile.TemporaryDirectory() as tmp:

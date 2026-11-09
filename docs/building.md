@@ -140,6 +140,23 @@ python3 eukore_build.py --work WORK --out OUT --stage release --version 2026.11 
 Give every stage the same `--work`, `--out`, `--groups` and `--species`: each stage plans the same genome set from
 them. `--stage all` (the default) runs the three in turn on one machine with internet.
 
+The process stage may run on several nodes at once, e.g. a SLURM array: each run claims the genomes it takes, so the
+runs share them out without a split. With `--genomes_only` (since 2026-11-09) each runs its genomes and stops; one
+process run without it, after them all, makes the passes after the genomes over every one of them, then the package:
+
+```bash
+# eukore.sh: process, or package once the array's tasks have all ended well
+#   jid=$(sbatch --parsable --array=1-8 eukore.sh process)
+#   sbatch --dependency=afterok:$jid eukore.sh package
+B=(python3 eukore_build.py --work WORK --out OUT --groups fungi,protozoa)
+if [[ $1 == process ]]; then
+    "${B[@]}" --stage process --genomes_only --scratch $SLURM_LOCAL_SCRATCH -t $SLURM_CPUS_PER_TASK
+else
+    "${B[@]}" --stage process --scratch $SLURM_LOCAL_SCRATCH -t $SLURM_CPUS_PER_TASK  # no genome left: the passes
+    "${B[@]}" --stage package -t $SLURM_CPUS_PER_TASK --keep_gb 1000
+fi
+```
+
 Each run opens with a banner on STDOUT (since 2026-11-08): Eukore's version, the date, host and Python, the command
 (a `--veupathdb_key` on it hidden), then what each of its stages will do and with what: the groups and species, the
 loci, the folders, the threads, the process stage's memory, the package stage's `--keep_gb`, and what is switched off.
@@ -182,7 +199,8 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   e.g. one per node (since 2026-11-08): each genome is claimed by the run that takes it (`WORK/done/.<accession>.claim`;
   touched every minute, a claim of a killed job or a node that died is taken over after 5 minutes untouched, so a
   restart runs the genomes its killed job held), a genome another run finished after this one planned is left alone
-  (since 0.2.2: run again), and each run then makes the passes below too. A worker process that dies (the OOM killer,
+  (since 0.2.2: run again), and each run then makes the passes below too, unless `--genomes_only` leaves them to one
+  run after them all (since 2026-11-09; above). A worker process that dies (the OOM killer,
   a crash) stops the stage with a message; a rerun goes on (since 0.2.2: the stage waited for it forever). A genome
   over 4 Gb is aligned in pieces of 4 Gb at most, a chromosome over that alone (since 0.2.2: a piece took one more
   whole chromosome past it, over the memory the scheduler reserved). Then it
@@ -229,6 +247,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--work DIR` | required | the build's work folder: sources, each genome's results, caches |
 | `--out DIR` | required | where `Eukore_<version>/`, `release/` and `genomes/` go |
 | `--stage` | `all` | `fetch`, `process`, `package` or `all` (the three in turn); `release`: `OUT/release/` again of a finished `OUT/Eukore_<version>/` (since 2026-11-09) |
+| `--genomes_only` | | with `--stage process`: run the genomes and stop, the passes after them (backfill, intraspecific panel, metadata, organelle genes, gene models) left to a process run without it; for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages); since 2026-11-09) |
 | `--no_release` | | the package stage writes no `OUT/release/` (the website's data and the downloads, a second copy of the package: since 2026-11-09 written last by default) |
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
