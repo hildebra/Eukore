@@ -33,6 +33,7 @@ import hashlib
 import json
 import multiprocessing
 import os
+import shlex
 import shutil
 import socket
 import sys
@@ -844,6 +845,77 @@ def scratch_problem(path):
     return None
 
 
+def command_of(argv):
+    """The command line as a shell takes it, a VEuPathDB key on it hidden (a log is read by others)."""
+    words, hide = [os.path.abspath(__file__)], False
+    for w in argv:
+        flag, eq, _key = w.partition("=")
+        if hide:
+            words.append("HIDDEN")
+            hide = False
+            continue
+        if len(flag) > 4 and "--veupathdb_key".startswith(flag):  # argparse takes a flag's unique prefix too
+            if eq:
+                words.append(flag + "=HIDDEN")
+                continue
+            hide = True
+        words.append(shlex.quote(w))
+    return " ".join(words)
+
+
+def banner(opts, argv, whence):
+    """The run's opening lines on STDOUT (since 2026-11-08): Eukore's version, where and when, the command, what each
+    stage of the run will do and with what (the folders, the genome set, the cores, memory and downloads)."""
+    stages = ("fetch", "process", "package") if opts.stage == "all" else (opts.stage,)
+    package_dir = f"Eukore_{opts.version}"
+    does = {
+        "fetch": "the sources" + (" (their tables fetched again: --refresh)" if opts.refresh else "")
+                 + ", then each species' genome and gene models into OUT/genomes",
+        "process": "each genome's loci called and its rRNA extracted, then the organelle genes",
+        "package": "the checks across species" + (", FCS-GX's screen" if opts.fcs_gx_db else "")
+                   + ("" if opts.no_benchmarks else ", the benchmarks") + f", then OUT/{package_dir}/"}
+    if opts.wanted is None:
+        species = "every species of the groups"
+    else:
+        taxids = sorted(opts.wanted)
+        species = (f"a trial: the clades of {len(taxids)} taxids ({', '.join(map(str, taxids[:5]))}"
+                   + (", ..." if len(taxids) > 5 else "") + ")")
+    rows = [("stage", opts.stage + (": " + " -> ".join(stages) if opts.stage == "all" else ""))]
+    rows += [(f"  {s}", does[s]) for s in stages]
+    rows += [("groups", ", ".join(opts.groups)), ("species", species),
+             ("loci", (f"the BUSCOs of --loci {opts.loci}" if opts.loci else f"every BUSCO of {odb_mod.LINEAGE}")
+              + ("" if opts.no_markers else ", and Eukore's markers")),
+             ("work", os.path.abspath(opts.work)), ("out", os.path.abspath(opts.out))]
+    if opts.scratch:
+        rows.append(("scratch", os.path.abspath(opts.scratch)))
+    cores = f"{opts.threads}"
+    if "process" in stages:
+        cores += f"; {opts.jobs} genomes at a time, {opts.threads_per_genome} threads each"
+    if "fetch" in stages:
+        cores += f"; {max(1, opts.downloads)} downloads at a time ({'curl' if util.CURL else 'urllib'})"
+    rows.append(("threads", cores))
+    if "process" in stages:
+        rows.append(("memory", f"{util.size_text(opts.memory)} for the genomes' runs ("
+                     + (whence if opts.memory_gb else f"{MEMORY_SHARE:.0%} of {whence}") + ")" if opts.memory else
+                     "not known (--memory_gb): -j genomes at once whatever their sizes"))
+    if "package" in stages:
+        rows.append(("genomes", "every one kept (no --keep_gb)" if opts.keep_gb is None else
+                     f"cut back to {opts.keep_gb:g} GB (--keep_gb)"))
+    off = [what for what, flag in (("rescue pass", opts.no_rescue), ("transcriptomes", opts.no_tsa),
+                                   ("tiara", opts.no_tiara), ("sketches", opts.no_sketches),
+                                   ("benchmarks", opts.no_benchmarks),
+                                   ("read benchmark", not opts.read_genomes and not opts.no_benchmarks),
+                                   ("intraspecific panel", not opts.intraspecific)) if flag]
+    if off:
+        rows.append(("off", ", ".join(off)))
+    rule = "=" * 100
+    return "\n".join([rule, f" Eukore {__version__}: the standalone eukaryote reference's build",
+                      f" {datetime.datetime.now():%Y-%m-%d %H:%M:%S} on {socket.gethostname()} (pid {os.getpid()}), "
+                      f"Python {sys.version.split()[0]}",
+                      " " + command_of(sys.argv[1:] if argv is None else argv), "-" * 100]
+                     + [f" {k:<10}{v}" for k, v in rows] + [rule])
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=f"Eukore {__version__}. " + __doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -955,31 +1027,32 @@ def main(argv=None):
     unknown = set(opts.groups) - set(sources.ASSEMBLY_GROUPS)
     if unknown:
         p.error(f"--groups: {sorted(unknown)} (known: {', '.join(sources.ASSEMBLY_GROUPS)})")
+    warning = None  # said after the banner
     if opts.scratch:  # checked now, not after the minutes of planning (since 2026-11-08)
         why = scratch_problem(opts.scratch)
         if why and opts.stage == "fetch":  # its .part files beside the genomes then, as without --scratch
-            say(f"WARNING: --scratch {why}: the .part files beside the genomes instead")
+            warning = f"WARNING: --scratch {why}: the .part files beside the genomes instead"
             opts.scratch = None
         elif why:  # the process stage's temporary files would load WORK's file system: stop
             p.error(f"--scratch {why}")
     opts.jobs = opts.jobs or max(1, opts.threads // 4)
     opts.threads_per_genome = max(1, opts.threads // opts.jobs)
     opts.genomes = os.path.join(opts.out, "genomes")
+    wanted = opts.wanted = clades(opts.species)
+    # the process stage's memory (since 2026-11-08): genomes begun while their estimates fit (schedule)
+    memory, whence = (opts.memory_gb * 1e9, "--memory_gb") if opts.memory_gb else util.memory_budget()
+    opts.memory = memory * (1 if opts.memory_gb else MEMORY_SHARE) if memory else None
+    print(banner(opts, argv, whence), flush=True)  # the version and what the run will do (since 2026-11-08)
+    if warning:
+        say(warning)
     os.makedirs(opts.work, exist_ok=True)
     os.makedirs(opts.genomes, exist_ok=True)
     # the resources the build uses, said with the process stage's progress (since 2026-11-08)
     opts.usage = util.Usage([("WORK", opts.work), ("OUT", opts.genomes)], opts.threads)
-    # the process stage's memory (since 2026-11-08): genomes begun while their estimates fit (schedule)
-    memory, whence = (opts.memory_gb * 1e9, "--memory_gb") if opts.memory_gb else util.memory_budget()
-    opts.memory = memory * (1 if opts.memory_gb else MEMORY_SHARE) if memory else None
-    if opts.stage in ("all", "process"):
-        say(f"memory: {util.size_text(opts.memory)} for the genomes' runs ({whence})" if opts.memory else
-            "memory: not known (--memory_gb): the genomes run -j at once whatever their sizes")
     src_dir = os.path.join(opts.work, "sources")
     if opts.stage in ("all", "fetch"):
         fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh, opts.threads)
     ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
-    wanted = opts.wanted = clades(opts.species)
     opts.inside = inside_of(ncbi, wanted)
     job_map, assemblies = plan(opts, src_dir, ncbi)
     extras = extras_of(opts, src_dir, ncbi, job_map, assemblies)  # the barcode gap's panel (since 2026-11-07)

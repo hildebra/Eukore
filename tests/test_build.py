@@ -161,6 +161,41 @@ class ResumeTest(unittest.TestCase):
             self.assertEqual(eukore_build.annotate_one("w", "g", False, None, {"accession": "GCA_1.1"}),
                              ("GCA_1.1", None, "ValueError: bad GFF"))
 
+    def test_the_banner_says_the_version_and_the_run(self):
+        # since 2026-11-08 a run opens with Eukore's version and what it will do, before any work; a key never said
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            args = ["--work", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"), "--species", "4751,5794",
+                    "--groups", "fungi,protozoa", "--memory_gb", "100", "-t", "16", "--no_tsa", "--veupathdb_key",
+                    "s3cret", "--veupathdb=s3cret2", "--version", "2026.11"]
+            with mock.patch.object(eukore_build, "fetch_sources", side_effect=RuntimeError("fetched")), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(RuntimeError):
+                eukore_build.main(args)
+        text = out.getvalue()
+        self.assertTrue(text.startswith("=" * 100 + f"\n Eukore {eukore_build.__version__}: "))
+        for said in ("stage     all: fetch -> process -> package", "groups    fungi, protozoa",
+                     "species   a trial: the clades of 2 taxids (4751, 5794)",
+                     "threads   16; 4 genomes at a time, 4 threads each; 8 downloads at a time",
+                     "memory    100.0 GB for the genomes' runs (--memory_gb)", "genomes   every one kept (no --keep_gb)",
+                     "off       transcriptomes", "OUT/Eukore_2026.11/", "--veupathdb_key HIDDEN",
+                     "--veupathdb=HIDDEN"):
+            self.assertIn(said, text)
+        self.assertNotIn("s3cret", text)
+        self.assertTrue(text.isascii())  # a node's log in any locale
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch.object(eukore_build, "fetch_sources", side_effect=RuntimeError("fetched")), \
+                mock.patch.object(eukore_build.ncbi_mod, "Ncbi", side_effect=RuntimeError("planned")), \
+                self.assertRaises(RuntimeError):
+            eukore_build.main(["--work", tmp, "--out", tmp, "--stage", "package", "--keep_gb", "500"])
+        text = out.getvalue()
+        self.assertIn("stage     package\n   package ", text)
+        self.assertIn("genomes   cut back to 500 GB (--keep_gb)", text)
+        self.assertNotIn("memory ", text)  # the process stage's alone
+        self.assertNotIn("downloads", text)  # the fetch stage's alone
+
     def test_a_scratch_that_cannot_be_made(self):
         # a SLURM job's $SLURM_LOCAL_SCRATCH named, its folder not made (no local disk asked for): the fetch stage
         # puts its .part files beside the genomes, the process stage stops at once (not after the planning's minutes)

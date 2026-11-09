@@ -137,6 +137,10 @@ python3 eukore_build.py --work WORK --out OUT --stage package --groups fungi,pro
 Give every stage the same `--work`, `--out`, `--groups` and `--species`: each stage plans the same genome set from
 them. `--stage all` (the default) runs the three in turn on one machine with internet.
 
+Each run opens with a banner on STDOUT (since 2026-11-08): Eukore's version, the date, host and Python, the command
+(a `--veupathdb_key` on it hidden), then what each of its stages will do and with what: the groups and species, the
+loci, the folders, the threads, the process stage's memory, the package stage's `--keep_gb`, and what is switched off.
+
 - **fetch** gets the sources into `WORK/sources`, each kept once there and whole:
   - NCBI's GenBank and RefSeq assembly tables of the `--groups`;
   - NCBI's taxdump;
