@@ -25,6 +25,11 @@ its relatives), and with its whole order's left out (`novel`, since 2026-11-09: 
 class at best). Per rank (species .. phylum) an assignment is correct (its taxon there is the read's), wrong, or above
 it (an assignment of a higher rank, which is right but says less). A background read is a prokaryote's (wrong wherever
 placed) or, given its taxid (since 2026-11-09: human chromosome 21, the host), a eukaryote's, scored as a test's.
+
+held_out and novel filter one alignment's hits, they build no reference without the records: a read whose
+MAX_SECONDARY secondary alignments are all to records left out is not assigned, where a reference without them would
+have given it its next relatives (the species-rich genera and orders: assigned and wrong are both read too low).
+These reads are counted (`censored`, since 2026-11-10; censored()); the classes are as they were.
 """
 
 import bisect
@@ -57,7 +62,8 @@ NOVEL_RANK = "order"
 MODES = ("in", "held_out", "novel")
 REFERENCES = ("Eukore", "Eukore exons", "Eukore 18S")
 COLUMNS = ("test", "kind", "species_taxid", "supergroup", "congeners", "reference", "mode", "reads", "n",
-           "assigned") + tuple(f"{r}_{x}" for r in RANKS for x in ("correct", "wrong"))
+           "assigned") + tuple(f"{r}_{x}" for r in RANKS for x in ("correct", "wrong")) + (
+               "censored",)  # since 2026-11-10 (the last column): of the reads not assigned, those censored()
 # detection (detection.tsv): each test genome a sample, its reads from anywhere in it (the first `depth`) and as many
 # background reads (depth / their genomes of each); a taxon is detected with MIN_READS reads placed to it at the rank
 # scored (the species with it in the reference, `in`; its genus with it held out) and MIN_SHARE of the sample's reads
@@ -242,24 +248,54 @@ def simulate(genome, spans, rng, n_genome=GENOME_READS):
 
 # --- assignment ----------------------------------------------------------------------------------------------------
 
-def paf_groups(path):
-    """A minimap2 PAF's alignments per read (consecutive) -> (read, [(identity, target)]) of those covering
-    MIN_COVER of the read."""
-    read, hits = None, []
+def paf_reads(path):
+    """A minimap2 PAF's alignments per read (consecutive) -> (read, [(identity, target)] of those covering MIN_COVER
+    of the read, the targets of all its alignments, the number of its secondary ones (tp:A:S): censored()'s)."""
+    read, hits, targets, secondary = None, [], set(), 0
     with open(path) as fh:
         for line in fh:
-            f = line.split("\t")
+            f = line.rstrip("\n").split("\t")
             if len(f) < 11:
                 continue
             if f[0] != read:
                 if read is not None:
-                    yield read, hits
-                read, hits = f[0], []
+                    yield read, hits, targets, secondary
+                read, hits, targets, secondary = f[0], [], set(), 0
             qlen, qs, qe, matches, block = int(f[1]), int(f[2]), int(f[3]), int(f[9]), int(f[10])
+            targets.add(f[5])
+            secondary += "tp:A:S" in f[12:]
             if block and (qe - qs) >= MIN_COVER * qlen:
                 hits.append((matches / block, f[5]))
     if read is not None:
+        yield read, hits, targets, secondary
+
+
+def paf_groups(path):
+    """A minimap2 PAF's alignments per read (consecutive) -> (read, [(identity, target)]) of those covering
+    MIN_COVER of the read."""
+    for read, hits, _targets, _secondary in paf_reads(path):
         yield read, hits
+
+
+def censored(targets, secondary, taxa, ncbi, leave_out=None, clade=None, cache=None):
+    """Whether a read's assignment with records left out (leave_out: the species held out; clade: (rank, taxid),
+    novel; assign()'s) is censored (since 2026-11-10): minimap2's list of its secondary alignments was full
+    (MAX_SECONDARY of them or more) and every alignment it reports (targets) is to a record left out. Such a read is
+    not assigned, and not because the reference without those records has nothing like it: the records left out took
+    every place of the list, and what the next relatives' records would have got is not known (a reference built
+    without the clade would have placed some of these reads, some of them wrongly). Not every read the filter after
+    the alignment touches: a full list with one record kept in it, or one that -p 0.5's score cut ended, may have
+    lost its next relatives' hits all the same."""
+    if (leave_out is None and clade is None) or secondary < MAX_SECONDARY or not targets:
+        return False
+    cache = {} if cache is None else cache
+    for t in targets:
+        if t not in taxa:
+            return False
+        if not ((leave_out is not None and ncbi.species_of(taxa[t]) == leave_out) or
+                (clade is not None and ranks_of(ncbi, taxa[t], cache).get(clade[0]) == clade[1])):
+            return False
+    return True
 
 
 def assign(hits, taxa, ncbi, leave_out=None, clade=None, cache=None):
@@ -432,7 +468,7 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
         os.remove(err)
         tally = collections.defaultdict(collections.Counter)
         placed = {mode: collections.defaultdict(dict) for mode in MODES}  # genome reads: {source: {index: taxon}}
-        for read, hits in paf_groups(paf):
+        for read, hits, targets, secondary in paf_reads(paf):
             test, kind, i = read.rsplit("|", 2)
             what, sp = meta[test]
             for mode in MODES:
@@ -441,9 +477,12 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
                     if not novel.get(test):
                         continue
                     clade = (NOVEL_RANK, novel[test])
-                taxon = assign(hits, taxa, ncbi, sp if mode == "held_out" and what == "eukaryote" else None, clade,
-                               cache)
+                leave_out = sp if mode == "held_out" and what == "eukaryote" else None
+                taxon = assign(hits, taxa, ncbi, leave_out, clade, cache)
                 if taxon is None:
+                    # counted apart (since 2026-11-10): not assigned because the records left out filled the list
+                    if censored(targets, secondary, taxa, ncbi, leave_out, clade, cache):
+                        tally[(test, kind, mode)]["censored"] += 1
                     continue
                 if kind == "genome":
                     placed[mode][test][int(i)] = taxon

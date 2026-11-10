@@ -55,6 +55,7 @@ import glob  # noqa: E402
 import hashlib  # noqa: E402
 import itertools  # noqa: E402
 import os  # noqa: E402
+import signal  # noqa: E402
 import socket  # noqa: E402
 import time  # noqa: E402
 import urllib.error  # noqa: E402
@@ -66,6 +67,7 @@ import struct  # noqa: E402
 import zlib  # noqa: E402
 
 import threading  # noqa: E402
+import weakref  # noqa: E402
 
 USER_AGENT = "Eukore-build (https://protal.earlham.ac.uk)"
 ATTEMPTS = 5       # tries of a download before it is given up on
@@ -85,13 +87,14 @@ def part_of(path):
 PARTIAL_STALE = 2 * 86400  # another host's partial untouched this long is a dead run's (dead_partials)
 
 
-def dead_partials(folder, name):
+def dead_partials(folder, name, end=".partial"):
     """The partials (part_of's .<host>-<pid>.<name>.partial) in folder of runs that ended: this host's whose process is
     gone, another host's untouched for PARTIAL_STALE (since 2026-11-08: a run deleted every one, another build's going
-    on too) -> their paths."""
+    on too) -> their paths. end: a partial's own ending where a tool reads its file's format off the name
+    (metadata.describe's .<host>-<pid>.sketch.partial.sig.gz)."""
     out, host = [], socket.gethostname()
-    for path in glob.glob(os.path.join(glob.escape(folder), f".*.{glob.escape(name)}.partial")):
-        their_host, _dash, pid = os.path.basename(path)[1:-len(f".{name}.partial")].rpartition("-")
+    for path in glob.glob(os.path.join(glob.escape(folder), f".*.{glob.escape(name)}{glob.escape(end)}")):
+        their_host, _dash, pid = os.path.basename(path)[1:-len(f".{name}{end}")].rpartition("-")
         if their_host == host and pid.isdigit():
             if not pid_alive(int(pid)):
                 out.append(path)
@@ -115,11 +118,189 @@ def pid_alive(pid):
     return True
 
 
+def publish(part, dest):
+    """A file written under a temporary name (part) renamed into place (dest), its bytes on the disk first and the
+    folder's entry after (fsync; since 2026-11-10, for the files a release publishes: a node that went down after the
+    rename could leave a file of the final name empty or cut on a network file system, which a rerun then kept)."""
+    fd = os.open(part, os.O_RDWR)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(part, dest)
+    with contextlib.suppress(OSError):  # a folder is not opened or synced everywhere (Windows, some network systems)
+        fd = os.open(os.path.dirname(os.path.abspath(dest)), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    return dest
+
+
+# --- one run at a time (since 2026-11-10) ----------------------------------------------------------------------------
+# A stage that two runs must not go through at once on one folder (the fetch stage: its downloads have no claims of
+# their own) holds a lock file there, as a genome's run holds its claim (genomes.claim, genomes.claimed).
+
+RUN_BEAT = 60    # seconds between a held lock's touches (single_run)
+RUN_STALE = 300  # another host's lock untouched this long is a dead run's
+RUN_YOUNG = 60   # a lock that cannot be read (written this instant) is held while younger; a takeover's lock too
+_RUNS = set()    # the locks this process holds (one whose file names this process but is not here: a dead run's)
+_RUNS_LOCK = threading.Lock()
+
+
+class RunHeld(RuntimeError):
+    """Another run holds a single_run lock: its path, and the host and process it names (None where unreadable)."""
+
+    def __init__(self, path, host=None, pid=None):
+        who = f"process {pid} on {host}" if host else "a run that is starting"
+        super().__init__(f"{path}: held by {who}; one run at a time (a dead run's lock is taken over: this host's "
+                         f"when its process is gone, another host's {RUN_STALE} s after its last touch)")
+        self.path, self.host, self.pid = path, host, pid
+
+
+def run_lock(folder, name):
+    """The path of single_run's lock file: folder/.<name>.lock."""
+    return os.path.join(folder, f".{name}.lock")
+
+
+def lock_holder(path):
+    """(host, pid) a lock file names, or None (not there, or not readable)."""
+    try:
+        with open(path) as fh:
+            host, pid = fh.read().split()
+        return host, int(pid)
+    except (OSError, ValueError):
+        return None
+
+
+def _lock_mine():
+    return socket.gethostname(), os.getpid()
+
+
+def lock_live(path, stale=RUN_STALE):
+    """Whether a lock file is held: by a process alive on this host, or by another host's that touched it within
+    `stale` seconds (single_run touches its lock every RUN_BEAT seconds)."""
+    try:
+        age = time.time() - os.path.getmtime(path)
+    except OSError:  # not there
+        return False
+    holder = lock_holder(path)
+    if holder is None:  # being written this instant, or damaged: held while young
+        return age < RUN_YOUNG
+    if holder == _lock_mine():  # this process' own; a file that names it but is not held here: an earlier process'
+        return path in _RUNS
+    if holder[0] == socket.gethostname():
+        return pid_alive(holder[1])
+    return age < stale
+
+
+def _lock_new(path):
+    """This process' lock file made where none is there (O_EXCL: one process alone can) -> whether it was."""
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w") as fh:
+        fh.write("{}\t{}\n".format(*_lock_mine()))
+    return True
+
+
+def _lock_taken(path, stale):
+    """The lock file made for this process -> whether it was. A dead run's (lock_live) is taken over under a lock of
+    the takeover (<path>.take, O_EXCL), so that two runs that both found it dead do not each remove what is there and
+    make their own, the second removing the first's new lock (as genomes.claim)."""
+    if _lock_new(path):
+        return True
+    if lock_live(path, stale):
+        return False
+    take = path + ".take"
+    try:
+        os.close(os.open(take, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+    except FileExistsError:  # another run takes it over this instant; a killed takeover's lock removed for the next
+        with contextlib.suppress(OSError):
+            if time.time() - os.path.getmtime(take) > RUN_YOUNG:
+                os.remove(take)
+        return False
+    try:
+        if lock_live(path, stale):  # taken over since it was found dead
+            return False
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+        return _lock_new(path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(take)
+
+
+@contextlib.contextmanager
+def single_run(folder, name, stale=RUN_STALE, beat=RUN_BEAT):
+    """One run at a time through the block, of all runs on folder, this host's and other hosts' (since 2026-11-10): a
+    lock file folder/.<name>.lock (run_lock) naming this host and process, made with O_CREAT|O_EXCL, touched every
+    `beat` seconds by a thread while the block runs and removed after it, while it is this process' still -> yields
+    the lock's path. Raises RunHeld where another run holds it: a process alive on this host, or another host's whose
+    lock was touched within `stale` seconds; a dead run's lock is taken over.
+        try:
+            with util.single_run(opts.genomes, "fetch"):
+                ...  # the stage
+        except util.RunHeld as e:
+            raise SystemExit(f"fetch: {e}") from None
+    """
+    os.makedirs(folder, exist_ok=True)
+    path = run_lock(folder, name)
+    with _RUNS_LOCK:  # this process' threads one at a time: the file names the process, _RUNS says whether it holds it
+        if not _lock_taken(path, stale):
+            raise RunHeld(path, *(lock_holder(path) or ()))
+        _RUNS.add(path)
+    stop = threading.Event()
+
+    def touch():
+        while not stop.wait(beat):
+            if lock_holder(path) == _lock_mine():  # not another run's, which took over a run stalled past `stale`
+                with contextlib.suppress(OSError):
+                    os.utime(path)
+    heart = threading.Thread(target=touch, daemon=True)
+    heart.start()
+    try:
+        yield path
+    finally:
+        stop.set()
+        heart.join()
+        _RUNS.discard(path)
+        if lock_holder(path) == _lock_mine():
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+
 def ends_in_newline(path):
     """Whether a file's last byte is a line end (a cache a killed run appended to: its last line cut where not)."""
     with open(path, "rb") as fh:
         fh.seek(-1, os.SEEK_END)
         return fh.read(1) == b"\n"
+
+
+def cache_read(stem):
+    """A cache's lines {key: value}: of all its files (stem.<host>-<pid>.tsv, one a process), a line a killed run cut
+    (no line end, not its two fields) left out (since 2026-11-10 here, shared by regions and align: until then
+    regions' own)."""
+    cache = {}
+    for path in sorted(glob.glob(glob.escape(stem) + "*.tsv")):
+        with open(path) as fh:
+            for line in fh:
+                f = line.rstrip("\n").split("\t")
+                if line.endswith("\n") and len(f) == 2:
+                    cache[f[0]] = f[1]
+    return cache
+
+
+def cache_open(stem):
+    """This process' own file of a cache, opened to add lines (after a line a killed run cut: a line end first)."""
+    path = f"{stem}.{socket.gethostname()}-{os.getpid()}.tsv"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cut = os.path.isfile(path) and os.path.getsize(path) and not ends_in_newline(path)
+    out = open(path, "a", newline="\n")
+    if cut:
+        out.write("\n")
+    return out
 
 
 def md5(path):
@@ -190,6 +371,16 @@ BGZF_BLOCK = 0xff00  # uncompressed bytes a block (htslib's BGZF_BLOCK_SIZE: its
 BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")  # the empty last block
 BGZF_PENDING = 32  # a threaded writer's blocks compressing at once at most (32 x 64 KiB a writer)
 _BGZF_POOL = {"threads": 1, "pid": None, "executor": None}
+_BGZF_LOCK = [threading.Lock()]  # the executor made once where several threads open their first writers at once
+_BGZF_OPEN = weakref.WeakSet()  # this process' writers on its compression threads, open (bgzf_quiet)
+
+
+def _bgzf_lock_anew():
+    _BGZF_LOCK[0] = threading.Lock()  # a forked child's own: the parent's may be held by a thread the child has not
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_bgzf_lock_anew)
 
 
 def compression_threads(n):
@@ -207,10 +398,24 @@ def _bgzf_executor():
     process (a forked child has the parent's executor without its threads)."""
     if _BGZF_POOL["threads"] <= 1:
         return None
-    if _BGZF_POOL["pid"] != os.getpid():
-        _BGZF_POOL.update(pid=os.getpid(), executor=concurrent.futures.ThreadPoolExecutor(
-            _BGZF_POOL["threads"], thread_name_prefix="bgzf"))
-    return _BGZF_POOL["executor"]
+    with _BGZF_LOCK[0]:  # since 2026-11-10: the release's threads (release.downloads) each made one at their first file
+        if _BGZF_POOL["pid"] != os.getpid():
+            _BGZF_POOL.update(pid=os.getpid(), executor=concurrent.futures.ThreadPoolExecutor(
+                _BGZF_POOL["threads"], thread_name_prefix="bgzf"))
+        return _BGZF_POOL["executor"]
+
+
+def bgzf_quiet():
+    """This process' compression threads ended where no BGZF writer of it is open (since 2026-11-10; made again at the
+    next writer's first block) -> whether they are: a process forked while threads run may hang (a lock a thread
+    held, never let go of in the child; Python 3.12 warns of it), and they stayed, idle, once made."""
+    if any(not w.closed for w in _BGZF_OPEN):
+        return False
+    old = _BGZF_POOL["executor"]
+    if old is not None and _BGZF_POOL["pid"] == os.getpid():
+        old.shutdown(wait=True)
+    _BGZF_POOL.update(pid=None, executor=None)
+    return True
 
 
 def bgzf_block(data, level=BGZF_LEVEL):
@@ -235,6 +440,8 @@ class BgzfWriter(io.RawIOBase):
         self._buf = bytearray()
         self._pending = collections.deque()
         self._pool = _bgzf_executor()
+        if self._pool is not None:
+            _BGZF_OPEN.add(self)
 
     def writable(self):
         return True
@@ -291,6 +498,20 @@ def is_bgzf(path):
     return len(head) == 18 and head[:4] == b"\x1f\x8b\x08\x04" and head[12:14] == b"BC"
 
 
+def bgzf_whole(path):
+    """Whether a file ends with BGZF's empty end block (BGZF_EOF), as every file bgzf_open wrote to its end does: one
+    cut short (a killed writer, a node that went down, a copy that broke off) does not, nor does a file that is not
+    there (since 2026-11-10; nothing looked at a kept file's end)."""
+    try:
+        with open(path, "rb") as fh:
+            if fh.seek(0, os.SEEK_END) < len(BGZF_EOF):
+                return False
+            fh.seek(-len(BGZF_EOF), os.SEEK_END)
+            return fh.read(len(BGZF_EOF)) == BGZF_EOF
+    except OSError:
+        return False
+
+
 def bgzf_copy(src, dest, level=BGZF_LEVEL):
     """src (plain, gzipped or zstd-compressed) as a BGZF file dest, written beside it and renamed into place."""
     part = part_of(dest)
@@ -327,19 +548,29 @@ class KeepAuthorization(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(KeepAuthorization)
 
 
+def fetch_part(path):
+    """A download's own temporary name, <path>.<host>-<pid>.part (since 2026-11-10; until then <path>.part, which two
+    runs fetching one file both wrote and renamed: one's bytes in the other's file). No download goes on from a part
+    an earlier one left (curl -o and urllib write it anew), so nothing needs one name. It ends in .part still: the
+    fetch stage removes the old *.part files of killed runs."""
+    return f"{path}.{socket.gethostname()}-{os.getpid()}.part"
+
+
 def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=None, times=None, headers=None):
     """Downloads url to dest (by curl where there, else urllib): "" if it arrived whole (the length it announced, and, a
     gzip file, gzip reads it to its end), else why not. A missing file ("not found") or another refusal (HTTP 4xx but
     429) is not asked for again; other failures are (ATTEMPTS times), after growing waits, or as long as the server
     asks (Retry-After, a minute at most; urllib's alone).
-    scratch: the folder of the download's .part file (eukore_build.py --local_tmp: dest's storage then gets the whole
-    file once, written in one go), else beside dest; checker: a process pool the gzip check runs in (a core of its own),
-    else this thread; times: a dict (a Counter) its seconds of transfer, check (with its wait for the checker) and
-    copy (from scratch) are added to, and the bytes of the file it placed; headers: the request's others (an API
-    key's: by urllib, never on curl's command line, where other users of the node could read it)."""
+    scratch: the folder of the download's .part file (fetch_part: this process' own; eukore_build.py --local_tmp:
+    dest's storage then gets the whole file once, written in one go), else beside dest; checker: a process pool the
+    gzip check runs in (a core of its own), else this thread; times: a dict (a Counter) its seconds of transfer, check
+    (with its wait for the checker) and copy (from scratch) are added to, and the bytes of the file it placed;
+    headers: the request's others (an API key's: by urllib, never on curl's command line, where other users of the
+    node could read it)."""
     why, asked = "", 0.0
     times = collections.Counter() if times is None else times
-    part = os.path.join(scratch, os.path.basename(dest) + ".part") if scratch else dest + ".part"
+    beside = fetch_part(dest)
+    part = fetch_part(os.path.join(scratch, os.path.basename(dest))) if scratch else beside
     for attempt in range(attempts or ATTEMPTS):
         if attempt:
             time.sleep(max(RETRY_WAIT * 2 ** (attempt - 1), asked))
@@ -369,8 +600,8 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
             times["check"] += time.monotonic() - started
             started, size = time.monotonic(), os.path.getsize(part)
             if scratch:  # another file system: copied beside dest, then renamed into place
-                shutil.copyfile(part, dest + ".part")
-                os.replace(dest + ".part", dest)
+                shutil.copyfile(part, beside)
+                os.replace(beside, dest)
                 os.remove(part)
             else:
                 os.replace(part, dest)
@@ -390,7 +621,7 @@ def fetch_file(url, dest, attempts=None, gzip_check=True, scratch=None, checker=
                 asked = min(60.0, float(retry))
         except (OSError, EOFError, http.client.HTTPException, zlib.error) as e:
             why = f"{type(e).__name__}: {e}"
-    for left in {part, dest + ".part"}:
+    for left in {part, beside}:
         if os.path.exists(left):
             os.remove(left)
     return why
@@ -513,7 +744,9 @@ def process_pool(workers):
     """A pool of `workers` processes (concurrent.futures'; since 2026-11-08). A worker that dies (killed by the OOM
     killer or SLURM, a crash in a C library) breaks the pool: the build stops (SystemExit), a rerun goes on; until then
     multiprocessing.Pool lost its task and the build waited for it forever. On any other error or a stop (Ctrl-C) the
-    workers are ended, not waited for."""
+    workers are ended, not waited for, and the tools they started with them (_end_workers). This process'
+    idle compression threads ended first (bgzf_quiet; since 2026-11-10)."""
+    bgzf_quiet()
     pool = concurrent.futures.ProcessPoolExecutor(max(1, workers))
     pool.size = max(1, workers)
     try:
@@ -528,9 +761,81 @@ def process_pool(workers):
         pool.shutdown(wait=True, cancel_futures=True)
 
 
+@contextlib.contextmanager
+def forked_pool(workers):
+    """A process_pool of `workers` whose workers are all forked on entering (since 2026-11-10), None for one worker:
+    the compression threads ended first (process_pool), so that a caller opening BGZF writers inside it forks
+    no process while their threads run. The parent's objects (the package's tens of GB) out of the collector's reach
+    while workers fork from it: a collection in a worker would touch every one of them, and copy their pages into
+    each worker (Python's gc docs)."""
+    if workers <= 1:
+        yield None
+        return
+    import gc  # noqa: PLC0415
+    gc.freeze()
+    try:
+        with process_pool(workers) as pool:
+            pool.submit(os.getpid).result()  # forks every worker where processes fork (Linux until Python 3.14)
+            yield pool
+    finally:
+        gc.unfreeze()
+
+
+def ordered(task, items, workers=1, ahead=None, pool=None):
+    """task(item) of each item -> the results in the items' order (since 2026-11-10: the package's reading of every
+    done genome, until then one after another): in this process where workers is 1, else in a forked_pool of
+    `workers` (or `pool`, one entered before: its size), at most `ahead` (default 4 x workers) submitted beyond the
+    result awaited, so that the parent holds a few items' results, not all. task: a module's function (a worker
+    imports it); an item's error is raised here."""
+    if pool is None and workers <= 1:
+        for item in items:
+            yield task(item)
+        return
+    with contextlib.nullcontext(pool) if pool is not None else forked_pool(workers) as pool:
+        ahead = max(1, ahead or 4 * pool.size)
+        pending = collections.deque()
+        for item in items:
+            pending.append(pool.submit(task, item))
+            if len(pending) > ahead:
+                yield pending.popleft().result()
+        while pending:
+            yield pending.popleft().result()
+
+
+def descendants(pids, proc="/proc"):
+    """The processes under pids (their children, and theirs), by /proc's parents -> their pids; [] without /proc."""
+    try:
+        entries = [int(e) for e in os.listdir(proc) if e.isdigit()]
+    except OSError:
+        return []
+    children = collections.defaultdict(list)
+    for pid in entries:
+        try:
+            with open(os.path.join(proc, str(pid), "stat")) as fh:
+                text = fh.read()
+            children[int(text[text.rfind(")") + 2:].split()[1])].append(pid)  # field 4: the parent
+        except (OSError, ValueError, IndexError):  # ended meanwhile
+            continue
+    out, todo = [], list(pids)
+    while todo:
+        below = children.get(todo.pop(), [])
+        out += below
+        todo += below
+    return out
+
+
 def _end_workers(pool):
-    for process in list((getattr(pool, "_processes", None) or {}).values()):
+    """The pool's workers ended (SIGTERM), and the processes under them: the tools they run (miniprot, vsearch;
+    since 2026-11-10: the workers alone were ended, and on a workstation their tools went on to their end, writing
+    into folders the next run uses; SLURM ends a job's with its cgroup). The tools are listed before the workers end:
+    after it they are init's children. Where there is no /proc (macOS) the workers alone, as before."""
+    workers = list((getattr(pool, "_processes", None) or {}).values())
+    below = descendants([p.pid for p in workers if p.pid])
+    for process in workers:
         process.terminate()
+    for pid in below:
+        with contextlib.suppress(OSError):  # ended meanwhile
+            os.kill(pid, signal.SIGTERM)
 
 
 def unordered(pool, task, items, progress=None, note=lambda: "", poll=60):

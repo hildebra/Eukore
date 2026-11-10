@@ -125,33 +125,45 @@ def count_records(path):
 def unpack(name, folder, seven_zip="7za"):
     """A source's files as rdna_freeze.py reads them: ROD's tables out of its zip, EUKARYOME's long reads out of its zip
     and 7z (gzipped) and its compromised-quality ids as a table (openpyxl, where installed; else none, said: until
-    2026-11-06 a missing openpyxl left all of EUKARYOME not ready)."""
+    2026-11-06 a missing openpyxl left all of EUKARYOME not ready). Every file is written under this process' own
+    name (util.part_of) and EUKARYOME's archives are unpacked in this process' own folder, removed whatever happens
+    (since 2026-11-10: fixed `.part` names and one `unpack` folder, which two runs fetching the sources at once wrote
+    and removed under each other; a run that failed left the folder)."""
     if name == "ROD":
         with zipfile.ZipFile(os.path.join(folder, SOURCES[name]["files"][0][0])) as z:
             for member in z.namelist():
                 base = os.path.basename(member)
                 if base in SOURCES[name]["unpack"]:
-                    with z.open(member) as src, open(os.path.join(folder, base) + ".part", "wb") as dst:
+                    part = util.part_of(os.path.join(folder, base))
+                    with z.open(member) as src, open(part, "wb") as dst:
                         shutil.copyfileobj(src, dst)
-                    os.replace(os.path.join(folder, base) + ".part", os.path.join(folder, base))
+                    os.replace(part, os.path.join(folder, base))
     elif name == "EUKARYOME":
-        work = os.path.join(folder, "unpack")
-        os.makedirs(work, exist_ok=True)
-        with zipfile.ZipFile(os.path.join(folder, "General_EUK_longread_v2.1.zip")) as z:
-            z.extractall(work)
-        archive = os.path.join(work, "General_EUK_longread_v2.1.7z")
-        if not shutil.which(seven_zip):
-            raise RuntimeError(f"{seven_zip}: not found (conda-forge's p7zip), for EUKARYOME's 7z archive")
-        test = subprocess.run([seven_zip, "t", archive], capture_output=True, text=True)
-        if test.returncode != 0 or "Everything is Ok" not in test.stdout:
-            raise RuntimeError(f"{archive}: the 7z archive does not test whole")
-        subprocess.run([seven_zip, "x", "-y", f"-o{work}", archive], check=True, stdout=subprocess.DEVNULL)
+        for dead in util.dead_partials(folder, "unpack"):  # the folders of runs that were killed
+            shutil.rmtree(dead, ignore_errors=True)
+        work = util.part_of(os.path.join(folder, "unpack"))
+        shutil.rmtree(work, ignore_errors=True)
+        os.makedirs(work)
         dest = os.path.join(folder, "General_EUK_longread_v2.1.fasta.gz")
-        with open(os.path.join(work, "General_EUK_longread_v2.1.fasta"), "rb") as src, \
-                util.bgzf_open(dest + ".part", "wb", util.WORK_LEVEL) as dst:
-            shutil.copyfileobj(src, dst, 1 << 22)
-        os.replace(dest + ".part", dest)
-        shutil.rmtree(work)
+        part = util.part_of(dest)
+        try:
+            with zipfile.ZipFile(os.path.join(folder, "General_EUK_longread_v2.1.zip")) as z:
+                z.extractall(work)
+            archive = os.path.join(work, "General_EUK_longread_v2.1.7z")
+            if not shutil.which(seven_zip):
+                raise RuntimeError(f"{seven_zip}: not found (conda-forge's p7zip), for EUKARYOME's 7z archive")
+            test = subprocess.run([seven_zip, "t", archive], capture_output=True, text=True)
+            if test.returncode != 0 or "Everything is Ok" not in test.stdout:
+                raise RuntimeError(f"{archive}: the 7z archive does not test whole")
+            subprocess.run([seven_zip, "x", "-y", f"-o{work}", archive], check=True, stdout=subprocess.DEVNULL)
+            with open(os.path.join(work, "General_EUK_longread_v2.1.fasta"), "rb") as src, \
+                    util.bgzf_open(part, "wb", util.WORK_LEVEL) as dst:
+                shutil.copyfileobj(src, dst, 1 << 22)
+            os.replace(part, dest)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+            if os.path.exists(part):
+                os.remove(part)
         compromised = os.path.join(folder, "EUK2_1_compromised_quality.tsv")
         from .labels import read_xlsx_rows  # noqa: PLC0415
         try:
@@ -161,9 +173,9 @@ def unpack(name, folder, seven_zip="7za"):
         except ImportError:
             print("WARNING: no openpyxl: EUKARYOME's compromised-quality ids not read (none left out)", flush=True)
             ids = []
-        with open(compromised + ".part", "w", newline="\n") as fh:
+        with open(util.part_of(compromised), "w", newline="\n") as fh:
             fh.write("accession\n" + "".join(f"{i}\n" for i in ids))
-        os.replace(compromised + ".part", compromised)
+        os.replace(util.part_of(compromised), compromised)
 
 
 def rod_operons(folder):
@@ -268,9 +280,9 @@ def fetch(inputs, name, download, seven_zip="7za", log=print):
     state = {"source": name, "version": spec["version"], "files": files, "records": counted,
              "ready": not problems, "problems": problems,
              "checked": datetime.datetime.now().isoformat(timespec="seconds")}
-    with open(os.path.join(folder, STATE) + ".part", "w") as fh:
+    with open(util.part_of(os.path.join(folder, STATE)), "w") as fh:
         json.dump(state, fh, indent=1)
-    os.replace(os.path.join(folder, STATE) + ".part", os.path.join(folder, STATE))
+    os.replace(util.part_of(os.path.join(folder, STATE)), os.path.join(folder, STATE))
     log(f"{name} {spec['version']}: " + ("ready, " + f"{counted} records as published" if not problems else
                                           "NOT READY: " + "; ".join(problems)))
     return state

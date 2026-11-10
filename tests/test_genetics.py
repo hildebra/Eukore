@@ -5,6 +5,7 @@ U12 look and shared sites (introns.py), a genome's genetic code checked (codeche
     python3 -m unittest discover -s tests -t tests
 """
 
+import hashlib
 import os
 import sys
 import tempfile
@@ -12,7 +13,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import align, codecheck, gencode, introns  # noqa: E402
+from eukore import align, codecheck, gencode, introns, util  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 AMINO = "ACDEFGHIKLMNPQRSTVWY"
@@ -27,6 +28,10 @@ class AlignTest(unittest.TestCase):
         # a residue, a deletion, an insert (lower case), a residue: states 1, (2 skipped), None, 3
         self.assertEqual(align.states_of("A-gC", "xx.x"), [1, None, 3])
         self.assertEqual(align.states_of("..AC", "..xx"), [1, 2])
+        # since 2026-11-10 a row kept on the profile alone (A2M): the same states, the other rows' inserts left out
+        for row, rf in (("A-gC", "xx.x"), ("..AC", "..xx"), ("A-.C", "xx.x"), ("Mk-l", "x.xx")):
+            self.assertEqual(align.states_of_a2m(align.a2m_of(row, rf)), align.states_of(row, rf))
+        self.assertEqual(align.a2m_of("A-.gC", "xx..x"), "A-gC")
 
     def test_emissions_and_hmmalign(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -42,6 +47,17 @@ class AlignTest(unittest.TestCase):
             self.assertEqual(len(os.listdir(os.path.join(tmp, "cache"))), 1)  # kept: a second call reads it
             self.assertEqual(align.align_locus(hmm, {"a": "MKL", "b": "MK*LV"}, "no-hmmalign",
                                                os.path.join(tmp, "cache")), got)
+            # since 2026-11-10 kept by protein: a locus' protein more is aligned alone, a protein twice once; the
+            # rest read whatever hmmalign is there
+            cache = os.path.join(tmp, "cache")
+            more = align.align_locus(hmm, {"a": "MKL", "b": "MK*LV", "c": "MKLVS", "d": "MKL"}, fx.hmmalign(tmp),
+                                     cache)
+            self.assertEqual(more, dict(got, c=[1, 2, 3, 4, 5], d=[1, 2, 3]))
+            self.assertEqual(sorted(util.cache_read(os.path.join(cache, f"1at2759.{util.md5(hmm)[:16]}"))), sorted(
+                hashlib.md5(p.encode()).hexdigest() for p in ("MKL", "MKXLV", "MKLVS")))
+            self.assertEqual(align.align_locus(hmm, {"c": "MKLVS", "e": "MKL"}, "no-hmmalign", cache),
+                             {"c": [1, 2, 3, 4, 5], "e": [1, 2, 3]})
+            self.assertEqual(align.align_locus(hmm, {"f": "WWW"}, "no-hmmalign", cache), {})
 
 
 class IntronTest(unittest.TestCase):
@@ -68,6 +84,15 @@ class IntronTest(unittest.TestCase):
         rows = [dict(hmm_position=10, phase=0)] * 3 + [dict(hmm_position=11, phase=0), dict(hmm_position=10, phase=1),
                                                        dict(hmm_position=30, phase=2), dict(hmm_position="-", phase=0)]
         self.assertEqual(introns.sites(rows), {(10, 0): "10.0", (11, 0): "10.0", (10, 1): "10.1", (30, 2): "30.2"})
+
+    def test_a_genome_without_coding_bases(self):
+        # since 2026-11-10: a genome whose copies' coding sequences are all empty gets `-`, not a division by zero
+        row = dict(accession="B", locus="L1", intron=1, start=7, end=57, length=50, phase=0, donor="GT", acceptor="AG",
+                   u12="f", aa_position=2, **{"class": "GT-AG"})
+        collected = dict(intron_rows=[row], cds={("A", "L1"): "", ("A", "L2"): "", ("B", "L1"): "ATGAAA" * 100})
+        _rows, _sites, _shares, genome = introns.annotate(collected, {})
+        self.assertEqual(genome, {"A": dict(introns=0, introns_per_kb_cds="-", median_intron_length="-"),
+                                  "B": dict(introns=1, introns_per_kb_cds="1.67", median_intron_length=50)})
 
 
 class CodeTest(unittest.TestCase):

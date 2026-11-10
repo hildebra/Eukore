@@ -1,12 +1,16 @@
 """A genome as the locus caller reads it (since 2026-11-05; the rest of protal's eukdetect1_genomic.py, whose
-EukDetect1 placements loci.py replaced): its URL on NCBI's server, its contigs, its pieces for miniprot, and which
-failed fetches are final.
+EukDetect1 placements loci.py replaced): its URL on NCBI's server, its contigs, its pieces for miniprot, miniprot's
+saved indexes of them (since 2026-11-10: saved_indexes), and which failed fetches are final.
 """
 
 import bisect
+import contextlib
 import gzip
+import hashlib
 import os
 import re
+import tempfile
+import threading
 
 
 def genome_url(row):
@@ -158,6 +162,76 @@ def chunks(genome_path, folder, max_bases=None):
     if out:
         out.close()
     return paths
+
+
+INDEX_SUFFIX = ".mpi"
+_INDEX_LOCKS, _INDEX_GUARD = {}, threading.Lock()
+
+
+def index_file(index_dir, genome_path, key, piece=None, max_bases=None):
+    """The file in index_dir of miniprot's saved index of a genome (piece None) or of one of its pieces (its number in
+    chunks()' order, of max_bases at most). Its name holds all that shapes the index: the genome (its path, size and
+    time: another file under that name is another genome), the piece, and key (the tool and its indexing options:
+    loci.split_options')."""
+    stat = os.stat(genome_path)
+    what = [os.path.abspath(genome_path), stat.st_size, stat.st_mtime_ns, *key]
+    stem = os.path.basename(genome_path)
+    if piece is not None:
+        what += ["piece", max_bases or CHUNK_BASES, piece]
+        stem += f".piece{piece}"
+    digest = hashlib.sha1("\n".join(str(x) for x in what).encode()).hexdigest()[:16]
+    return os.path.join(index_dir, f"{stem}.{digest}{INDEX_SUFFIX}")
+
+
+def saved_indexes(genome_path, folder, index_dir, key, build, max_bases=None):
+    """A genome as miniprot takes it where it is aligned more than once (since 2026-11-10: a dataset species' genome is
+    called up to five times a run, the main call and its hold-outs, and each call made miniprot's index, most of a
+    large genome's time, again): the saved indexes of its pieces (chunks()) in index_dir, each made once (index_file
+    names it) -> ([their paths] in the pieces' order, why one could not be made or None).
+    build(source, dest): writes the index of a FASTA to dest -> why it failed, or None. It writes a name of its own
+    that is renamed once it is whole, so a failed or killed build leaves no file a later call takes for an index; one
+    build at a time a genome in this process (threads); two processes at worst build twice, neither reads half a
+    file. The pieces are written into folder and each deleted once its index is there; their number is noted beside
+    the indexes, so a later call does not cut the genome again. Nothing is kept outside index_dir, which is the
+    caller's to delete (~7.5 bytes a base)."""
+    max_bases = max_bases or CHUNK_BASES
+    os.makedirs(index_dir, exist_ok=True)
+
+    def names(n):
+        return [index_file(index_dir, genome_path, key, i if n > 1 else None, max_bases) for i in range(n)]
+
+    noted = index_file(index_dir, genome_path, ["pieces", max_bases])[:-len(INDEX_SUFFIX)] + ".pieces"
+    with _INDEX_GUARD:
+        lock = _INDEX_LOCKS.setdefault((os.path.abspath(index_dir), os.path.abspath(genome_path)), threading.Lock())
+    with lock:
+        try:
+            with open(noted) as fh:
+                paths = names(int(fh.read()))
+        except (OSError, ValueError):
+            paths = []
+        if paths and all(os.path.isfile(p) for p in paths):
+            return paths, None
+        parts = chunks(genome_path, folder, max_bases)
+        paths = names(len(parts))
+        for part, dest in zip(parts, paths):
+            if not os.path.isfile(dest):
+                fd, partial = tempfile.mkstemp(prefix=os.path.basename(dest) + ".", suffix=".partial", dir=index_dir)
+                os.close(fd)
+                try:
+                    why = build(part, partial)
+                    if why:
+                        return [], why
+                    os.replace(partial, dest)
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.remove(partial)
+            if part != genome_path:
+                os.remove(part)  # read from its index from here on
+        fd, partial = tempfile.mkstemp(prefix=os.path.basename(noted) + ".", suffix=".partial", dir=index_dir)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(f"{len(parts)}\n")
+        os.replace(partial, noted)
+    return paths, None
 
 
 def given_up(row):

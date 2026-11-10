@@ -132,8 +132,10 @@ def annotate(collected, states, group_of=None):
     per_genome = collections.defaultdict(list)
     for r in rows:
         per_genome[r["accession"]].append(r["length"])
+    # since 2026-11-10: `-` where a genome's coding sequences are all empty (no base to count per); until then the
+    # division by zero ended the package stage
     genome = {acc: dict(introns=len(per_genome.get(acc, [])),
-                        introns_per_kb_cds=f"{1000 * len(per_genome.get(acc, [])) / cds[acc]:.2f}",
+                        introns_per_kb_cds=f"{1000 * len(per_genome.get(acc, [])) / cds[acc]:.2f}" if cds[acc] else "-",
                         median_intron_length=int(statistics.median(per_genome[acc])) if per_genome.get(acc) else "-")
               for acc in cds}
     return rows, site_rows, [f"share_{g}" for g in groups], genome

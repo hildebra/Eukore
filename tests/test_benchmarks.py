@@ -235,5 +235,70 @@ class CladeHoldOutTest(unittest.TestCase):
         self.assertEqual((summary["genus"]["called"], summary["genus"]["concordant_of_called"]), (0.6, 0.5))
 
 
+CENSOR_MINIMAP2 = '''#!/usr/bin/env python3
+"""minimap2's stand-in for the read benchmark's censored reads: read 0's primary alignment and 50 secondary ones are
+all to S. cerevisiae's records (y0 .. y50); read 1's too, but for one to S. paradoxus' (p); read 2 has one alignment."""
+for read, targets in (("Y|marker|0", [f"y{i}" for i in range(51)]),
+                      ("Y|marker|1", [f"y{i}" for i in range(50)] + ["p"]), ("Y|marker|2", ["y0"])):
+    for i, target in enumerate(targets):
+        print(read, 150, 0, 150, "+", target, 1000, 0, 150, 148, 150, 60, "tp:A:" + "SP"[i == 0], sep="\\t")
+'''
+
+
+class CensoredReadsTest(unittest.TestCase):
+    """reads.py's `censored` (since 2026-11-10): a read held_out or novel does not assign because the records left out
+    took minimap2's whole list of secondary alignments; counted apart, the classes as they were."""
+
+    def test_a_full_list_of_records_left_out(self):
+        from eukore import reads  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            taxa = dict({f"y{i}": 4932 for i in range(60)}, p=27291, h=9606)
+            yeast, full = {f"y{i}" for i in range(51)}, reads.MAX_SECONDARY
+            order = ("order", 4892)  # the yeasts': S. paradoxus' too
+            self.assertTrue(reads.censored(yeast, full, taxa, ncbi, leave_out=4932))
+            self.assertTrue(reads.censored(yeast, full, taxa, ncbi, clade=order))
+            self.assertFalse(reads.censored(yeast, full, taxa, ncbi))  # nothing left out (`in`)
+            self.assertFalse(reads.censored(yeast, full - 1, taxa, ncbi, leave_out=4932))  # the list not full
+            self.assertFalse(reads.censored(yeast | {"p"}, full, taxa, ncbi, leave_out=4932))  # a record kept
+            self.assertTrue(reads.censored(yeast | {"p"}, full, taxa, ncbi, clade=order))
+            self.assertFalse(reads.censored(yeast | {"h"}, full, taxa, ncbi, clade=order))
+            self.assertFalse(reads.censored(yeast | {"unknown"}, full, taxa, ncbi, leave_out=4932))
+            paf = os.path.join(tmp, "h.paf")
+            with open(paf, "w") as fh:
+                for i in range(12):  # a read's alignments: the primary and 11 secondary, 2 of them over half the read
+                    fh.write(f"r1\t150\t0\t{150 if i < 10 else 75}\t+\ty{i}\t1000\t0\t150\t148\t150\t60\t"
+                             f"NM:i:2\ttp:A:{'S' if i else 'P'}\n")
+            self.assertEqual([(r, len(h), len(t), n) for r, h, t, n in reads.paf_reads(paf)], [("r1", 10, 12, 11)])
+            self.assertEqual([(r, len(h)) for r, h in reads.paf_groups(paf)], [("r1", 10)])  # as before
+
+    def test_counted_apart_in_the_table(self):
+        from unittest import mock  # noqa: PLC0415
+        from eukore import reads  # noqa: PLC0415
+        self.assertEqual((reads.COLUMNS[9], reads.COLUMNS[10], reads.COLUMNS[-1], len(reads.COLUMNS)),
+                         ("assigned", "species_correct", "censored", 10 + 2 * len(reads.RANKS) + 1))
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            taxa = dict({f"y{i}": 4932 for i in range(60)}, p=27291)
+            ref = os.path.join(tmp, "ref.fna")
+            with open(ref, "w") as fh:
+                fh.write(">y0\nACGT\n")
+            tables = {"genomes.tsv": [dict(accession="Y", representative="t", species_taxid="4932")],
+                      "species.tsv": [dict(taxid="4932", group="Fungi")]}
+            with mock.patch.object(reads.package, "read_table", lambda folder, name: tables[name]), \
+                    mock.patch.object(reads, "references", return_value={"Eukore": (ref, taxa)}), \
+                    mock.patch.object(reads, "marker_spans", return_value={}), \
+                    mock.patch.object(reads, "simulate", return_value=(["ACGT" * 40] * 3, [])):
+                rows = reads.run(tmp, ncbi, tmp, ["Y"], fx.tool(tmp, "minimap2", CENSOR_MINIMAP2), 1,
+                                 os.path.join(tmp, "work"), log=lambda *a: None)
+            got = {r["mode"]: (r["n"], r["assigned"], r["censored"], r["species_correct"], r["species_wrong"])
+                   for r in rows if r["reads"] == "marker"}
+            # in: all three assigned (read 1 to the genus, its congener's record as good as its own). held out: read 1
+            # its congener's (wrong at the species), read 0 censored, read 2 not assigned and not censored (its list
+            # was not full). novel: reads 0 and 1 censored
+            self.assertEqual(got, {"in": (3, 3, 0, 2, 0), "held_out": (3, 1, 1, 0, 1), "novel": (3, 0, 2, 0, 0)})
+            self.assertTrue(all(r["censored"] == 0 for r in rows if r["reads"] == "genome"))
+
+
 if __name__ == "__main__":
     unittest.main()

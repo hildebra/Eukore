@@ -31,6 +31,8 @@ The build (fetch, WORK/sources/eukore_markers):
   residues, so a call's coverage is read over it, odb.Odb.by_locus), refseq_db.faa.gz (<locus>_<taxid>_<accession>:
   miniprot's queries, the nearest species' first), links_to_ODB12.txt (the names), markers.json (the inputs, the
   members per marker).
+These files (SET) are written to a folder beside it and put in its place when whole (since 2026-11-10: build(),
+swap()); the folder's other files are the build's caches, which a new set takes over.
 """
 
 import collections
@@ -39,6 +41,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -56,6 +59,11 @@ DECOY_UNLIKE = 0.5   # a decoy's seed shares under this share of its 5-mers (bot
 DECOY_MIN = 10       # seeds a decoy profile is built of at least
 FOLDER = "eukore_markers"
 STATE = "markers.json"
+# the set itself in the folder (what odb.Odb, recheck() and the manifest read); the rest of it is the build's caches
+SET = ("hmms", "decoys", "scores_cutoff", "links_to_ODB12.txt", "hmm_spans", "members.tsv", "refseq_db.faa.gz", STATE)
+OLD = ".old"  # the set a build replaces, for the moment of the swap (swap())
+RECHECK = "recheck."  # recheck()'s cache in the folder: recheck.<digest>.tsv.gz
+RECIPE = 1  # the build's rules: raised with a change of them that none of recipe()'s constants shows
 KOFAM = "https://www.genome.jp/ftp/db/kofam"
 SWISSPROT = ("https://ftp.ebi.ac.uk/pub/databases/uniprot/current_release/knowledgebase/complete/"
              "uniprot_sprot.fasta.gz")  # its eukaryote proteins: the candidates (UniProt's REST export is too slow)
@@ -91,10 +99,28 @@ def folder_of(src_dir):
     return os.path.join(src_dir, FOLDER)
 
 
+def recipe():
+    """A digest of what shapes the set beside its tables and inputs: RECIPE and the constants of the build's rules (the
+    state's `recipe`, since 2026-11-10: a set built under another NCBI_SCOPE, PER_TAXON or threshold read as this
+    code's)."""
+    from . import loci as loci_mod  # noqa: PLC0415
+    rules = (RECIPE, NCBI_SCOPE, PER_TAXON, DECOY_SCOPE, DECOY_UNLIKE, DECOY_MIN, LENGTH_RANGE, TYPICAL, CUTOFF_SHARE,
+             CUTOFF_QUANTILE, MIN_MEMBERS, FOREIGN_SIM, FOREIGN_QUANTILE, NEAR_SIM, MIN_PAIRS, loci_mod.COMPLETE)
+    return hashlib.md5(repr(rules).encode()).hexdigest()[:12]
+
+
+def md5_or_none(path):
+    return util.md5(path) if os.path.isfile(path) else None
+
+
 def ready(src_dir, table=TABLE, decoys=None):
     """The marker dataset's folder where it is built from this table (and, given decoys, since 2026-11-09, from this
     decoy table: current(), the fetch stage's test; a set built before its decoys still serves the other stages, the
-    build saying so), else None."""
+    build saying so), else None. Given decoys, since 2026-11-10 it is also built by this code's rules (recipe()) and
+    from the inputs its folder holds now (the state's `inputs`: KOfam's ko_list and profiles, Swiss-Prot's file,
+    NCBI's proteins' files, by their MD5s; one that is replaced or deleted makes the set stale, so a newer Swiss-Prot
+    put there, or ncbi/ emptied, is built from at the next fetch stage): a set of before has neither and is built
+    again there, its caches read."""
     folder = folder_of(src_dir)
     try:
         with open(os.path.join(folder, STATE)) as fh:
@@ -103,13 +129,19 @@ def ready(src_dir, table=TABLE, decoys=None):
         return None
     if state.get("table_md5") != util.md5(table):
         return None
-    if decoys is not None and state.get("decoys_md5") != (util.md5(decoys) if os.path.isfile(decoys) else None):
-        return None
+    if decoys is not None:
+        inputs = state.get("inputs")
+        if state.get("decoys_md5") != md5_or_none(decoys) or state.get("recipe") != recipe() or \
+                not isinstance(inputs, dict):
+            return None
+        if any(digest != md5_or_none(os.path.join(folder, name)) for name, digest in inputs.items()):
+            return None
     return folder
 
 
 def current(src_dir):
-    """Whether the marker dataset is built from this table and this decoy table (data/marker_decoys.tsv)."""
+    """Whether the marker dataset is built from this table and this decoy table (data/marker_decoys.tsv), by this
+    code's rules and from the inputs its folder holds (ready())."""
     return ready(src_dir, TABLE, DECOYS) is not None
 
 
@@ -264,10 +296,42 @@ def chosen(summaries, per_taxon=PER_TAXON):
     return sorted(a for got in by_taxon.values() for _d, a in sorted(got)[:per_taxon])
 
 
+EFETCH_TRIES = 3  # a batch whose reply is not whole is asked for again this often
+
+
+def fasta_records(text):
+    """FASTA text -> [(header without its ">", sequence)]. A record starts at a line's ">" alone (until 2026-11-10 the
+    text was split at every ">": a title holding one, "5'->3' exoribonuclease", was cached with an empty sequence)."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith(">"):
+            out.append([line[1:], []])
+        elif out:
+            out[-1][1].append(line.strip())
+    return [(head, "".join(seq)) for head, seq in out]
+
+
+def efetch(ids, length, tries=EFETCH_TRIES):
+    """One efetch call's proteins of ids (accessions) -> [(header, sequence)], every id answered: as many records as
+    ids, none of a known accession shorter than its summary's length (length: {accession: residues, 0 not known});
+    asked again where it is not, then an OSError. Since 2026-11-10: NCBI's reply cut short inside an answer of status
+    200 (fewer records, or the last one's sequence cut) was written to the cache as it came, and the cache, once
+    renamed, was read as complete for good: a marker's candidates then lacked whole batches of organisms."""
+    why = ""
+    for _attempt in range(tries):
+        records = fasta_records(eutils("efetch.fcgi", db="protein", id=",".join(ids), rettype="fasta",
+                                       retmode="text"))
+        cut = [head.split()[0] for head, seq in records if head.split() and len(seq) < length.get(head.split()[0], 0)]
+        if len(records) >= len(ids) and not cut:
+            return records
+        why = f"{len(records)} records for {len(ids)} ids" + (f", {cut[0]}'s sequence cut short" if cut else "")
+    raise OSError(f"NCBI's efetch answered in part {tries} times ({why}; the first id {ids[0]})")
+
+
 def ncbi_proteins(term, path, log=print, scope=NCBI_SCOPE):
     """NCBI's proteins of an Entrez query within scope (default NCBI_SCOPE), PER_TAXON per organism (chosen()), kept
-    in path (>accession taxid) -> [dict(accession, organism_id, sequence)]."""
-    import re  # noqa: PLC0415
+    in path (>accession taxid) -> [dict(accession, organism_id, sequence)]. path is written under another name and
+    renamed once every batch came whole (efetch()): a download that fails leaves no cache."""
     import xml.etree.ElementTree as ET  # noqa: PLC0415
     if not os.path.isfile(path):
         found = eutils("esearch.fcgi", db="protein", term=f"({term}) AND {scope}", usehistory="y", retmax=0)
@@ -282,16 +346,19 @@ def ncbi_proteins(term, path, log=print, scope=NCBI_SCOPE):
                     summaries.append((item["AccessionVersion"], item["TaxId"], int(item.get("Length") or 0)))
         wanted = chosen(summaries)
         taxid = {a: t for a, t, _n in summaries}
+        length = {a: n for a, _t, n in summaries}
         log(f"markers: fetching {len(wanted):,} of NCBI's {count:,} proteins of {term[:50]}...")
-        with util.bgzf_open(util.part_of(path), level=util.WORK_LEVEL) as out:
-            for i in range(0, len(wanted), BATCH):
-                fasta = eutils("efetch.fcgi", db="protein", id=",".join(wanted[i:i + BATCH]), rettype="fasta",
-                               retmode="text")
-                for block in fasta.split(">")[1:]:
-                    head, _, seq = block.partition("\n")
-                    acc = head.split()[0]
-                    if acc in taxid:
-                        out.write(f">{acc} {taxid[acc]}\n{seq.replace(chr(10), '')}\n")
+        try:
+            with util.bgzf_open(util.part_of(path), level=util.WORK_LEVEL) as out:
+                for i in range(0, len(wanted), BATCH):
+                    for head, seq in efetch(wanted[i:i + BATCH], length):
+                        acc = head.split()[0] if head.split() else ""
+                        if acc in taxid:
+                            out.write(f">{acc} {taxid[acc]}\n{seq}\n")
+        except BaseException:  # no half file left under the writer's name either
+            if os.path.isfile(util.part_of(path)):
+                os.remove(util.part_of(path))
+            raise
         os.replace(util.part_of(path), path)
     out = []
     with gzip.open(path, "rt") as fh:
@@ -305,7 +372,6 @@ def ncbi_proteins(term, path, log=print, scope=NCBI_SCOPE):
 def release_id(text):
     """UniProt's release id (2026_04) of its reldate.txt's first line ("UniProt Knowledgebase Release 2026_04 consists
     of:"), the text itself where it names none."""
-    import re  # noqa: PLC0415
     found = re.search(r"Release (\S+)", text or "")
     return found.group(1) if found else text
 
@@ -350,10 +416,15 @@ def score(proteins, hmm_db, hmmsearch="hmmsearch", threads=1, cache=None):
         covered = {i for a, b in spans[(p, h)] for i in range(a, b + 1)}
         out[p][h] = (full, domain, len(covered) / max(qlen[h], 1))
     if cache:
-        with util.bgzf_open(util.part_of(cache), level=util.WORK_LEVEL) as fh:
-            fh.writelines(f"{p}\t{h}\t{v[0]}\t{v[1]}\t{v[2]:.4f}\n" for p, hs in out.items() for h, v in hs.items())
-        os.replace(util.part_of(cache), cache)
+        keep_scores(out, cache)
     return out
+
+
+def keep_scores(scores, cache):
+    """score()'s result written to its cache file (under another name, then renamed)."""
+    with util.bgzf_open(util.part_of(cache), level=util.WORK_LEVEL) as fh:
+        fh.writelines(f"{p}\t{h}\t{v[0]}\t{v[1]}\t{v[2]:.4f}\n" for p, hs in scores.items() for h, v in hs.items())
+    os.replace(util.part_of(cache), cache)
 
 
 def classify(scores, kos, targets):
@@ -373,10 +444,19 @@ def classify(scores, kos, targets):
     return best if any(reaches(k) for k in targets) else None
 
 
+UNIPROT = re.compile(r"[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2}")
+# UniProt's accession (its own pattern: P04050, A0A0B4J2F0), as swissprot() reads it from Swiss-Prot's headers
+
+
 def source_rank(accession):
-    """How far a protein's record is checked: 0 Swiss-Prot's (no version), 1 RefSeq's curated (NP_), 2 RefSeq's
-    predicted (XP_), 3 another (GenBank's: a submitter's model, often of a transcriptome)."""
-    return 0 if "." not in accession else 1 if accession.startswith("NP_") else 2 if accession.startswith("XP_") else 3
+    """How far a protein's record is checked: 0 Swiss-Prot's (a UniProt accession), 1 RefSeq's curated (NP_), 2
+    RefSeq's predicted (XP_), 3 another (GenBank's: a submitter's model, often of a transcriptome). Since 2026-11-10 by
+    UniProt's accession pattern: until then any accession without a version was Swiss-Prot's, and NCBI's protein
+    database names some so (a PDB chain 4CBU_A, PIR's and PRF's records): the best checked rank, the basis of a
+    marker's median length and never foreign(), for a record nobody curated as the marker."""
+    if UNIPROT.fullmatch(accession):
+        return 0
+    return 1 if accession.startswith("NP_") else 2 if accession.startswith("XP_") else 3
 
 
 def members(rows, assigned, own_scores, species_of=lambda taxid: taxid, complete=None, basis=None):
@@ -508,13 +588,83 @@ def renamed(profile_text, name):
                    for line in profile_text.splitlines(keepends=True))
 
 
+def salvage(path, folder):
+    """The build's caches (all but the set's own, SET) in path moved into folder, where it has none of the name."""
+    for name in os.listdir(path):
+        if name not in SET and not os.path.lexists(os.path.join(folder, name)):
+            os.rename(os.path.join(path, name), os.path.join(folder, name))
+
+
+def recover(src_dir, log=print):
+    """What builds that ended half-way left beside the folder (util.dead_partials: dead runs' alone, another build's
+    going on is not touched): a whole new set whose swap was cut between its two renames is put in place, a replaced
+    set and a half-built one are removed, the caches a cut swap had moved into them taken back."""
+    folder = folder_of(src_dir)
+    for path in util.dead_partials(src_dir, FOLDER) + util.dead_partials(src_dir, FOLDER + OLD):  # new sets first
+        if not os.path.isdir(path):
+            continue
+        if not os.path.isdir(folder) and os.path.isfile(os.path.join(path, STATE)):
+            os.rename(path, folder)
+            log(f"markers: {folder} was missing (a build cut while it put its set in place): {path} taken")
+            continue
+        os.makedirs(folder, exist_ok=True)
+        salvage(path, folder)
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def swap(folder, new):
+    """A whole new set (new: SET's files) put in the folder's place: the folder's caches moved into it, the folder
+    renamed away and new renamed to it, the old set removed. A reader sees the old set or the new one, whole; between
+    the two renames (no file is written there) there is no folder, as there is none before the first build."""
+    old = util.part_of(folder + OLD)
+    shutil.rmtree(old, ignore_errors=True)
+    for name in os.listdir(folder):
+        if name not in SET:
+            os.rename(os.path.join(folder, name), os.path.join(new, name))
+    os.rename(folder, old)
+    try:
+        os.rename(new, folder)
+    except OSError:
+        os.rename(old, folder)  # the old set back in its place
+        raise
+    shutil.rmtree(old, ignore_errors=True)
+
+
 def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, download=None, decoys=DECOYS):
     """The marker dataset (module docstring) -> its folder. decoys: the table of decoys KEGG has no KO of
-    (decoy_profile; since 2026-11-09)."""
+    (decoy_profile; since 2026-11-09). Since 2026-11-10 the set is written to a folder of its own beside the final one
+    (util.part_of's name) and put in its place when it is whole (swap()), the caches staying in the final one until
+    then: until then hmms/ and decoys/ were emptied and written anew in the folder itself, under the old
+    markers.json, so that a build that failed half-way, or one going on, left a half set ready() took."""
+    folder, new = folder_of(src_dir), util.part_of(folder_of(src_dir))
+    recover(src_dir, log)
+    os.makedirs(folder, exist_ok=True)
+    shutil.rmtree(new, ignore_errors=True)
+    os.mkdir(new)
+    try:
+        write_set(src_dir, new, table, hmmsearch, threads, log, download, decoys)
+        swap(folder, new)
+    except BaseException:
+        if os.path.isdir(folder) and os.path.isdir(new):  # else a swap cut between its renames: recover()'s
+            try:
+                salvage(new, folder)  # the caches a failed swap had moved
+                shutil.rmtree(new, ignore_errors=True)
+            except OSError:
+                pass  # left to the next build's recover()
+        raise
+    return folder
+
+
+def query_tag(term, scope):
+    """An Entrez query's tag in its cache's name: an edited query, or another scope, is fetched anew."""
+    return hashlib.md5(f"{term} {scope}".encode()).hexdigest()[:8]
+
+
+def write_set(src_dir, new, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, download=None, decoys=DECOYS):
+    """build()'s work: the caches fetched into the marker folder, the set (SET) written into new, markers.json last."""
     folder = folder_of(src_dir)
     markers = read_table(table)
     decoy_rows = read_decoys(decoys)
-    os.makedirs(folder, exist_ok=True)
     listing = os.path.join(folder, "ko_list.gz")
     if not os.path.isfile(listing):
         (download or (lambda u, d: urllib.request.urlretrieve(u, d)))(f"{KOFAM}/ko_list.gz", listing)
@@ -536,10 +686,12 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
     release = release_of(SWISSPROT.rsplit("/", 1)[0] + "/reldate.txt")
     os.makedirs(os.path.join(folder, "ncbi"), exist_ok=True)
     from_ncbi = {}
+    inputs = ["ko_list.gz", "kofam.hmm", "uniprot_sprot.fasta.gz"]  # the state's `inputs` (ready()), with ncbi/'s
     for m in markers:  # NCBI's proteins gathered by name (Swiss-Prot holds few species): the profiles decide
         if m.get("ncbi"):
-            tag = hashlib.md5(f"{m['ncbi']} {NCBI_SCOPE}".encode()).hexdigest()[:8]  # an edited query is fetched anew
-            got = ncbi_proteins(m["ncbi"], os.path.join(folder, "ncbi", f"{m['locus']}.{tag}.faa.gz"), log)
+            name = f"ncbi/{m['locus']}.{query_tag(m['ncbi'], NCBI_SCOPE)}.faa.gz"
+            got = ncbi_proteins(m["ncbi"], os.path.join(folder, name), log)
+            inputs.append(name)
             from_ncbi[m["locus"]] = len(got)
             for r in got:
                 if r["organism_id"].isdigit() and eukaryote(int(r["organism_id"])):
@@ -555,8 +707,7 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
     scores = score({a: r["sequence"] for a, r in rows.items()}, db, hmmsearch, threads,
                    os.path.join(folder, f"scores.{key}.tsv.gz"))
     for sub in ("hmms", "decoys"):  # this table's alone (since 2026-11-08: a decoy dropped from it kept competing)
-        shutil.rmtree(os.path.join(folder, sub), ignore_errors=True)
-        os.makedirs(os.path.join(folder, sub))
+        os.makedirs(os.path.join(new, sub))
     from . import loci as loci_mod  # noqa: PLC0415
     species_of = functools.lru_cache(maxsize=None)(lambda t: ncbi.species_of(int(t)))
     depth = Depth(ncbi)
@@ -586,7 +737,8 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
         built, paralogs = {}, set()
         for d in [d for d in decoy_rows if d["locus"] == m["locus"]]:
             built[d["decoy"]], over = decoy_profile(d, m, kept, sorted(own[r["accession"]] for r in kept), folder, db,
-                                                    hmmsearch, threads, log)
+                                                    hmmsearch, threads, log, new)
+            inputs.append(f"ncbi/decoy-{d['decoy']}.{query_tag(d['ncbi'], DECOY_SCOPE)}.faa.gz")
             paralogs |= over
         kept = [r for r in kept if r["accession"] not in paralogs]
         if len(kept) < MIN_MEMBERS:
@@ -600,7 +752,7 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
                                "decoy" if a in paralogs else "incomplete" if a not in complete else "other"))
         own_scores = sorted(own[r["accession"]] for r in kept)
         cutoff = CUTOFF_SHARE * own_scores[int(CUTOFF_QUANTILE * (len(own_scores) - 1))]
-        hmm = os.path.join(folder, "hmms", f"{m['locus']}.hmm")
+        hmm = os.path.join(new, "hmms", f"{m['locus']}.hmm")
         with open(hmm, "w", newline="\n") as fh:
             for i, k in enumerate(targets):  # a second target profile (actin's) named <locus>.2 ...
                 fh.write(renamed(open(os.path.join(folder, "kofam", f"{k}.hmm")).read(), profile_name(m["locus"], i)))
@@ -609,7 +761,7 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
             if got:
                 spans.append(f"{profile_name(m['locus'], i)}\t{statistics.median(got):.3f}\n")
         for k in m["decoys"]:
-            with open(os.path.join(folder, "decoys", f"{k}.hmm"), "w", newline="\n") as fh:
+            with open(os.path.join(new, "decoys", f"{k}.hmm"), "w", newline="\n") as fh:
                 fh.write(renamed(open(os.path.join(folder, "kofam", f"{k}.hmm")).read(), f"decoy-{k}"))
         cut_lines.append(f"{m['locus']}\t{cutoff:.1f}\n")
         names.append(f"{m['locus']}\t{m['name']}\n")
@@ -622,21 +774,23 @@ def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, dow
         log(f"markers: {m['locus']}: {len(kept)} species' proteins (of {len(assigned)} assigned, {len(complete)} "
             f"complete, {len(dropped)} foreign, {len(paralogs)} a decoy's; {dict(sources)}), cutoff {cutoff:.0f}")
     for name, lines in (("scores_cutoff", cut_lines), ("links_to_ODB12.txt", names), ("hmm_spans", spans)):
-        with open(os.path.join(folder, name), "w", newline="\n") as fh:
+        with open(os.path.join(new, name), "w", newline="\n") as fh:
             fh.writelines(lines)
-    with open(os.path.join(folder, "members.tsv"), "w", newline="\n") as fh:  # every candidate assigned, its fate
+    with open(os.path.join(new, "members.tsv"), "w", newline="\n") as fh:  # every candidate assigned, its fate
         fh.write("\t".join(MEMBER_COLUMNS) + "\n")
         fh.writelines("\t".join(map(str, r)) + "\n" for r in table_rows)
-    with util.bgzf_open(os.path.join(folder, "refseq_db.faa.gz"), level=util.WORK_LEVEL) as fh:
+    with util.bgzf_open(os.path.join(new, "refseq_db.faa.gz"), level=util.WORK_LEVEL) as fh:
         fh.writelines(f">{n}\n{s}\n" for n, s in records)
+    # recipe, inputs (since 2026-11-10): the rules and the files it is built of, which ready() holds it against
     state = dict(table_md5=util.md5(table), kofam_ko_list_md5=util.md5(listing), swissprot=release,
                  decoys_md5=util.md5(decoys) if decoys and os.path.isfile(decoys) else None,
                  ncbi=dict(scope=NCBI_SCOPE, per_taxon=PER_TAXON, fetched=from_ncbi), candidates=len(rows),
-                 markers=counts,
+                 markers=counts, recipe=recipe(),
+                 inputs={name: md5_or_none(os.path.join(folder, name)) for name in sorted(set(inputs))},
                  built=__import__("datetime").datetime.now().isoformat(timespec="seconds"))
-    with open(os.path.join(folder, STATE), "w", newline="\n") as fh:
+    with open(os.path.join(new, STATE), "w", newline="\n") as fh:  # the last file: a folder holding it is a whole set
         json.dump(state, fh, indent=1)
-    return folder
+    return new
 
 
 def sibling(binary, name):
@@ -647,8 +801,9 @@ def sibling(binary, name):
 
 
 def decoy_profile(row, marker, members_, member_scores, folder, kofam_db, hmmsearch="hmmsearch", threads=1,
-                  log=print):
-    """A decoy KEGG has no KO of (data/marker_decoys.tsv's row; since 2026-11-09) -> (folder/decoys/<decoy>.hmm, its
+                  log=print, out_dir=None):
+    """A decoy KEGG has no KO of (data/marker_decoys.tsv's row; since 2026-11-09) -> (<out_dir>/decoys/<decoy>.hmm
+    (out_dir: the set being built, since 2026-11-10; None: folder, which holds the caches), its
     profile named decoy-<decoy>, and dict(seeds, members_over), the members scoring it over their own target: a
     paralog's protein filed as the marker's, the build drops them: 2026-11-09, 8 green algae's and Salpingoeca's
     "EF-1a", EFL); (None, set()) where under DECOY_MIN seeds are found. Its seeds: NCBI's proteins of its query
@@ -657,7 +812,7 @@ def decoy_profile(row, marker, members_, member_scores, folder, kofam_db, hmmsea
     ways: not the marker's fragment), aligned to the marker's first target profile (hmmalign --trim) and built
     (hmmbuild)."""
     from .benchmarks import kmers  # noqa: PLC0415
-    tag = hashlib.md5(f"{row['ncbi']} {DECOY_SCOPE}".encode()).hexdigest()[:8]
+    tag = query_tag(row["ncbi"], DECOY_SCOPE)
     os.makedirs(os.path.join(folder, "ncbi"), exist_ok=True)
     got = ncbi_proteins(row["ncbi"], os.path.join(folder, "ncbi", f"decoy-{row['decoy']}.{tag}.faa.gz"), log,
                         DECOY_SCOPE)
@@ -678,8 +833,8 @@ def decoy_profile(row, marker, members_, member_scores, folder, kofam_db, hmmsea
     if len(seeds) < DECOY_MIN:
         log(f"WARNING: markers: {marker['locus']}'s decoy {row['decoy']} not built (under {DECOY_MIN} seeds)")
         return None, set()
-    out = os.path.join(folder, "decoys", f"{row['decoy']}.hmm")
-    with tempfile.TemporaryDirectory(dir=folder) as tmp:
+    out = os.path.join(out_dir or folder, "decoys", f"{row['decoy']}.hmm")
+    with tempfile.TemporaryDirectory(dir=out_dir or folder) as tmp:
         faa, sto, pair = (os.path.join(tmp, n) for n in ("seeds.faa", "seeds.sto", "pair.hmm"))
         with open(faa, "w") as fh:
             fh.writelines(f">{a}\n{s}\n" for a, s in seeds.items())
@@ -711,7 +866,10 @@ def recheck(folder, hmmsearch="hmmsearch", threads=1):
     """The marker copies' check by the marker set's profiles, decoys too (since 2026-11-09; a genome run before a decoy
     joined its marker, EFL EF-1a's, kept its calls) -> a function of ({(accession, locus): coding sequence}, genomes
     {accession: row with gencode}) -> the keys whose best profile is a decoy's (package.collect's `paralog`), or None
-    without a marker set."""
+    without a marker set. The search's scores are kept in the folder (since 2026-11-10: recheck.<digest>.tsv.gz, the
+    digest of the profiles and of the proteins searched; until then every package run searched every marker copy
+    again, a second run over the same genomes too); the last search's alone, and none where the folder is not to be
+    written (a shared sources folder): searched as before then."""
     if not folder:
         return None
 
@@ -722,15 +880,34 @@ def recheck(folder, hmmsearch="hmmsearch", threads=1):
         names = {f"p{i}": key for i, key in enumerate(sorted(cds))}
         proteins = {n: protein_of(cds[k], genomes.get(k[0], {}).get("gencode", 1))[0].replace("*", "X")
                     for n, k in names.items()}
-        with tempfile.TemporaryDirectory() as tmp:
-            db = os.path.join(tmp, "markers.hmm")
-            with open(db, "w") as out:
-                for sub in ("hmms", "decoys"):
-                    for f in sorted(os.listdir(os.path.join(folder, sub))):
-                        if f.endswith(".hmm"):
-                            with open(os.path.join(folder, sub, f)) as fh:
-                                out.write(fh.read())
-            got = score({n: p for n, p in proteins.items() if p}, db, hmmsearch, threads)
+        wanted = {n: p for n, p in proteins.items() if p}
+        profiles = []
+        for sub in ("hmms", "decoys"):
+            for f in sorted(os.listdir(os.path.join(folder, sub))):
+                if f.endswith(".hmm"):
+                    with open(os.path.join(folder, sub, f)) as fh:
+                        profiles.append(fh.read())
+        digest = hashlib.md5(("".join(profiles) + "\n" + "".join(f">{n}\n{p}\n" for n, p in wanted.items()))
+                             .encode()).hexdigest()[:16]
+        cache, got = os.path.join(folder, f"{RECHECK}{digest}.tsv.gz"), None
+        if os.path.isfile(cache):
+            try:
+                got = score({}, "", cache=cache)
+            except (OSError, ValueError, EOFError):  # not readable: searched again
+                got = None
+        if got is None:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = os.path.join(tmp, "markers.hmm")
+                with open(db, "w") as out:
+                    out.write("".join(profiles))
+                got = score(wanted, db, hmmsearch, threads)
+            try:
+                keep_scores(got, cache)
+                for f in os.listdir(folder):
+                    if f.startswith(RECHECK) and f.endswith(".tsv.gz") and f != os.path.basename(cache):
+                        os.remove(os.path.join(folder, f))
+            except OSError:
+                pass
         out = set()
         for n, s in got.items():
             if s and max(s, key=lambda k: s[k][0]).startswith("decoy-"):

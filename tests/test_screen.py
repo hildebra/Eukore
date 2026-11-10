@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Tests of the rRNA part screen (eukore/screen.py): a record whose 28S is another family's (a mosaic) is flagged at
 that part and rank; records whose parts agree with their lineages, and a matched record whose clade has no other
-genome, are not; parts cut from regions.
+genome, are not; parts cut from regions; a type's longest copy the one searched. And (RrnaNamesTest, 2026-11-10)
+rrna.py's name index and its titles of molecules that are not the nucleus'.
 
     python3 -m unittest discover -s tests -t tests
 """
@@ -112,12 +113,116 @@ class ScreenTest(unittest.TestCase):
             own = rrna.own_species(rows, ncbi, fx.vsearch(tmp))
             self.assertEqual({own[n][0] for n, _s, _r in array}, {"t"})  # (verdict, cross) since 2026-11-09
 
+    def test_a_types_longest_copy_searched(self):
+        # until 2026-11-10 the type's first name: a copy cut at a contig's end (one type with the whole copies, the
+        # identity over the shorter) was searched in their place
+        rng = random.Random(11)
+        whole = "".join(rng.choice("ACGT") for _ in range(1200))
+        other = "".join(rng.choice("ACGT") for _ in range(1200))
+        seqs = {"a_cut": whole[:500], "b_whole": whole, "c_whole": mutate(whole, 0.002, rng), "d_other": other,
+                "e_cut": other[300:], "z_alone": whole[:500]}
+        owner = dict.fromkeys(seqs, "g1") | {"z_alone": "g2"}
+        self.assertEqual(len(seqs["c_whole"]), len(whole))
+        self.assertEqual(screen.representatives(seqs, owner),
+                         {"b_whole": ["a_cut", "b_whole", "c_whole"],  # of the two longest the first by name
+                          "d_other": ["d_other", "e_cut"], "z_alone": ["z_alone"]})
+        # copies of one length: the first by name, as before
+        self.assertEqual(screen.representatives({"b": whole, "a": whole, "c": other}, dict.fromkeys("abc", "g1")),
+                         {"a": ["a", "b"], "c": ["c"]})
+
     def test_a_protist_without_a_phylum_is_tested_deeper(self):
         # NCBI names its class but no phylum: its clade at class is (kingdom, class), not None
         lineage = ["Eukaryota", None, "Someclass", "Someorder", None]
         self.assertEqual(screen.clade(lineage, 2), ("Eukaryota", "Someclass"))
         self.assertIsNone(screen.clade(lineage, 1))
         self.assertEqual(screen.agrees_to(lineage, ["Eukaryota", None, "Someclass", "Other", None]), 2)
+
+
+class RrnaNamesTest(unittest.TestCase):
+    """rrna.py's names and titles (2026-11-10; its other tests: test_build.py, test_core.py, test_resume.py)."""
+
+    def test_a_name_a_genus_and_its_subgenus_share(self):
+        # until 2026-11-10 rrna.name_index dropped every name two taxa share: NCBI names a genus and its nominate
+        # subgenus alike (Aedes, Culex, Anopheles), and EUKARYOME's records of such a genus had no label
+        from unittest import mock  # noqa: PLC0415
+        from eukore import rrna  # noqa: PLC0415
+        more = [(9900001, 33208, "genus", "Aedes"), (9900002, 9900001, "subgenus", "Aedes"),
+                (9900003, 9900002, "series", "Aedes"),  # three of one line (Anopheles: genus, subgenus, series)
+                (9900004, 9900003, "species", "Aedes aegypti"),
+                (9900005, 4751, "genus", "Morus"), (9900006, 33208, "genus", "Morus"),  # homonyms of two kingdoms
+                # a genus and its subgenus, and another kingdom's genus of the name (Drosophila the fly, the fungus)
+                (9900007, 33208, "genus", "Drosophila"), (9900008, 9900007, "subgenus", "Drosophila"),
+                (9900009, 4751, "genus", "Drosophila"),
+                (9900010, 951, "subgenus", "Mysteriella"), (9900011, 4930, "species", "Saccharomyces novus")]
+        synonyms = [(9900010, "Mysterium", "synonym"),  # a synonym the genus above holds as its name
+                    (9900011, "Kluyveromyces lactis", "synonym")]  # one another genus' species holds
+        self.assertFalse({t for t, *_x in more} & {t for t, *_x in fx.NODES})
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(fx, "NODES", fx.NODES + more), \
+                mock.patch.object(fx, "SYNONYMS", fx.SYNONYMS + synonyms):
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+        index = rrna.name_index(ncbi)
+        self.assertEqual((index["aedes"], index["mysterium"]), (9900001, 951))
+        self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Aedes;s__unclassified", index, ncbi),
+                         (9900001, "eukaryome_genus"))
+        self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Aedes;s__aegypti", index, ncbi),
+                         (9900004, "eukaryome_name"))
+        # unrelated taxa of one name: not in the index, as before, but its homonyms (since 2026-11-10)
+        for name in ("morus", "drosophila", "kluyveromyces lactis"):
+            self.assertNotIn(name, index)
+        self.assertEqual(index.homonyms["drosophila"], [9900007, 9900008, 9900009])  # the fly's subgenus too
+        # C12's rest (since 2026-11-10): the homonym whose lineage holds a name of the label's own; until then none
+        self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Drosophila;s__unclassified", index, ncbi),
+                         (9900007, "eukaryome_genus"))
+        self.assertEqual(rrna.eukaryome_taxid("k__Fungi;g__Drosophila;s__unclassified", index, ncbi),
+                         (9900009, "eukaryome_genus"))
+        # EUKARYOME's own homonym mark, g__Name(Kingdom): its bracket a name of the lineage; a label naming no rank
+        # NCBI holds (EUKARYOME's mitochondrion set, all unclassified) gets none
+        self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Drosophila(Metazoa);s__unclassified", index, ncbi),
+                         (9900007, "eukaryome_genus"))
+        self.assertEqual(rrna.eukaryome_taxid("k___mitochondrion;p__unclassified;f__unclassified;"
+                                              "g__Drosophila(Metazoa);s__unclassified", index, ncbi), (None, None))
+        # a bracketed genus NCBI holds once, in another lineage (Amphisiella the thraustochytrid, NCBI's the ciliate):
+        # none; the same genus unbracketed, NCBI's one taxon of the name, as before
+        self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Saccharomyces(Metazoa);s__unclassified", index, ncbi),
+                         (None, None))
+        self.assertEqual(rrna.eukaryome_taxid("k__Fungi;g__Saccharomyces(Fungi);s__unclassified", index, ncbi),
+                         (4930, "eukaryome_genus"))
+        self.assertEqual(rrna.eukaryome_taxid("k__Viridiplantae;g__Morus;s__alba", index, ncbi), (None, None))
+        self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Morus;s__unclassified", index, ncbi),
+                         (9900006, "eukaryome_genus"))
+        # a name of one taxon as it was
+        self.assertEqual((index["saccharomyces"], index["candida sphaerica"], index["mysteriella"]),
+                         (4930, 28985, 9900010))
+
+    def test_the_organelles_other_titles_are_not_the_nucleus(self):
+        # until 2026-11-10 a kinetoplast, a chromatophore, a cyanelle and DDBJ's "mitochondrial DNA" were read as the
+        # nucleus' (rrna.extract_genome's title test), their SSU an 18S
+        from eukore import rrna  # noqa: PLC0415
+        organelle = ["CP000001.1 Trypanosoma brucei kinetoplast, complete sequence",
+                     "M94286.1 Trypanosoma brucei maxicircle DNA", "X1 Crithidia fasciculata kinetoplast minicircle",
+                     "CP000815.1 Paulinella chromatophora chromatophore, complete genome",
+                     "U30821.1 Cyanophora paradoxa cyanelle, complete genome",
+                     "AB000001.1 Oryza sativa mitochondrial DNA, complete genome",
+                     "LC000001.1 Mus musculus mitochondrial DNA", "Z1 Candida albicans mitochondrial genome",
+                     "BK010421.1 Arabidopsis thaliana mitochondrion, complete genome",
+                     "CP000881.1 Guillardia theta nucleomorph chromosome 1"]
+        nuclear = ["CP002684.1 Arabidopsis thaliana chromosome 1 sequence",
+                   "CM000001.1 Paulinella chromatophora chromosome 3, whole genome shotgun sequence",
+                   "AB000002.1 Homo sapiens gene for mitochondrial ribosomal protein L3, complete cds",
+                   "AB000003.1 Mus musculus mitochondrial DNA polymerase gamma gene",
+                   "JA1 Candidatus Kinetoplastibacterium crithidii chromosome",
+                   "scaffold_12 Kinetoplastida sp. scaffold 12"]
+        self.assertEqual([t for t in organelle if not rrna.NOT_NUCLEAR.search(t)], [])
+        self.assertEqual([t for t in nuclear if rrna.NOT_NUCLEAR.search(t)], [])
+        # since 2026-11-10 one reading of the word (organelle_of, organelle.py's and metadata.py's): a kinetoplast a
+        # mitochondrion, not (as a pattern widened before would have) a plastid; and ORGANELLE_TITLE widened by the
+        # other organelles' words: a maxicircle, a chromatophore are organelle molecules (until then nuclear ones)
+        self.assertEqual([rrna.organelle_of(t) for t in organelle + nuclear],
+                         ["mitochondrion"] * 3 + ["plastid"] * 2 + [None] * 3 + ["mitochondrion", None] + [None] * 6)
+        self.assertEqual(rrna.organelle_of("X Toxoplasma gondii apicoplast, complete genome"), "plastid")
+        self.assertEqual(rrna.organelle_of("CM046929 Leishmania amazonensis strain PH8 kinetoplast maxicircle, "
+                                           "complete sequence, whole genome shotgun sequence"), "mitochondrion")
+        self.assertEqual([w for w in rrna.ORGANELLE_WORDS if not rrna.ORGANELLE_TITLE.search(f"X {w} DNA")], [])
 
 
 if __name__ == "__main__":

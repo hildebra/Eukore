@@ -50,6 +50,9 @@ def records(path):
             m_sizes = struct.unpack(f"{order}{masks}I", fh.read(4 * masks))
             fh.read(4)
             seq = bytearray(4 * ((size + 3) // 4))
+            # since 2026-11-10 named before the loop: a record of length 0 never enters it, and `del packed` below
+            # failed on the unbound name (UnboundLocalError), the whole genome's conversion with it
+            packed = b""
             for at in range(0, len(seq), PIECE):  # the packed bases read and unpacked a piece at a time: no copy
                 packed = fh.read(min(PIECE, len(seq) - at) // 4)
                 for i, plane in enumerate(PLANES):
@@ -67,7 +70,9 @@ def to_fasta(path, dest, chunk=LINE * 16384):
     """A .2bit file as dest (gzipped FASTA, LINE bases a line), written whole or not at all -> its bases. chunk: the
     bases lined and written at a time (a multiple of LINE), the sequence itself never copied."""
     total = 0
-    part = dest + ".part"
+    # this process' own partial name (since 2026-11-10; until then dest.part, which two runs converting one genome
+    # both wrote); it ends in .part still, so the fetch stage removes a killed conversion's
+    part = util.fetch_part(dest)
     with util.bgzf_open(part, "wb", util.WORK_LEVEL) as out:
         for name, seq in records(path):
             out.write(b">" + name.encode() + b"\n")

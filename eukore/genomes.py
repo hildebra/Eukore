@@ -18,13 +18,14 @@ genome has a RefSeq copy (gbrs_paired_asm), that copy is fetched: RefSeq screens
 "no_assembly": EukDetect2's genomes from EukProt and its Dientamoeba fragilis transcriptome, its only remnant).
 
 A genome is done when WORK/done/<accession>/done.json is written (last); a run calls and extracts only the genomes not
-done, so that one killed goes on where it stopped.
+done, so that one killed goes on where it stopped. Its results are a folder WORK/done/<accession>/ or, packed (since
+2026-11-10; store.py), the one file WORK/done/<accession>.zip: every read and change of them goes through store,
+which takes both.
 """
 
 import collections
 import concurrent.futures
 import contextlib
-import gzip
 import json
 import os
 import re
@@ -39,7 +40,7 @@ from . import annotation as annotation_mod
 from . import loci as loci_mod
 from . import metadata as metadata_mod
 from . import odb as odb_mod
-from . import placement, quality, species, util
+from . import placement, quality, species, store, util
 
 EXCLUDE = {"contaminated", "unverified source organism", "misassembled", "chimeric", "low quality sequence"} \
     | quality.EXCLUDE
@@ -462,8 +463,10 @@ def fetch_genome(job, path, **how):
         return util.fetch_file(url, path, **how)
     from . import twobit  # noqa: PLC0415
     # the .2bit in --local_tmp where given (since 2026-11-08: beside the genome, a killed conversion's left there for
-    # good; the fetch stage now deletes leftovers of a day)
-    raw = os.path.join(how.get("scratch") or os.path.dirname(path), os.path.basename(path) + ".2bit")
+    # good; the fetch stage now deletes leftovers of a day); this process' own name (since 2026-11-10: until then
+    # <genome>.2bit, which two runs fetching it both wrote and deleted)
+    raw = util.fetch_part(os.path.join(how.get("scratch") or os.path.dirname(path), os.path.basename(path)))[:-5] \
+        + ".2bit"
     why = util.fetch_file(url, raw, gzip_check=False, **{k: v for k, v in how.items() if k == "times"})
     if why:
         return why
@@ -593,21 +596,19 @@ def done_dir(work, accession):
 def searched(work, accession):
     """The BUSCOs a done genome was searched for (done.json's `searched`; in a run before format 4, which searched
     euk30's 30, its loci.tsv's loci, Missing ones too), or None where it is not done."""
-    try:
-        with open(os.path.join(done_dir(work, accession), "done.json")) as fh:
-            summary = json.load(fh)
-    except (OSError, ValueError):
+    summary = done_summary(work, accession)
+    if summary is None:
         return None
     if "searched" in summary:
         return set(summary["searched"])
-    return {r[0] for r in read_rows(os.path.join(done_dir(work, accession), "loci.tsv"))}
+    return {r[0] for r in store.rows(done_dir(work, accession), "loci.tsv")}
 
 
 def is_done(work, accession, loci=None):
     """Whether a genome's run is done; with loci, done for all of them (format 4 searches every BUSCO: a genome
     searched for euk30's 30 alone is run again)."""
     if loci is None:
-        return os.path.isfile(os.path.join(done_dir(work, accession), "done.json"))
+        return _summary_text(work, accession) is not None
     got = searched(work, accession)
     return got is not None and set(loci) <= got
 
@@ -627,7 +628,6 @@ def reversion(work, accession):
     """A done genome's done.json stamped with this Eukore's genome record, its calls kept as they are (--reversion;
     since 2026-11-09): `reversioned` notes the record it had and when -> that record, or None where it was not done or
     of this record already (or newer)."""
-    path = os.path.join(done_dir(work, accession), "done.json")
     summary = done_summary(work, accession)
     old = record_of(summary)
     if old is None or old >= GENOME_RECORD:
@@ -637,9 +637,7 @@ def reversion(work, accession):
     summary["genome_record"] = GENOME_RECORD
     summary.setdefault("reversioned", []).append(dict(
         record=old, to=GENOME_RECORD, eukore=__version__, at=datetime.datetime.now().isoformat(timespec="seconds")))
-    with open(util.part_of(path), "w", newline="\n") as fh:
-        json.dump(summary, fh, indent=1)
-    os.replace(util.part_of(path), path)
+    write_summary(work, accession, summary)
     return old
 
 
@@ -647,12 +645,10 @@ DONE_ELSEWHERE = "done by another build"  # finished by another build on the WOR
 
 
 def done_stamp(work, accession):
-    """A genome's done.json's modification time (ns), or None where it is not done: what a plan saw, so that its run
-    leaves a genome another build finished meanwhile alone (genomes.run)."""
-    try:
-        return os.stat(os.path.join(done_dir(work, accession), "done.json")).st_mtime_ns
-    except OSError:
-        return None
+    """A genome's done.json's checksum (store.stamp; until 2026-11-10 its modification time, which a pack of its
+    folder would change), or None where it is not done: what a plan saw, so that its run leaves a genome another
+    build finished meanwhile alone (genomes.run)."""
+    return store.stamp(done_dir(work, accession))
 
 
 _ODB = {}
@@ -691,20 +687,20 @@ def tiara_classes(windows_fasta, tiara, threads=1, folder=None):
 FCS_COLUMNS = ("window", "start", "end", "action", "division", "top_taxon")
 
 
-def fcs_screen(work, accession, taxid, gx_db, run_gx="run_gx", threads=1):
+def fcs_screen(work, accession, taxid, gx_db, run_gx="run_gx", threads=1, scratch=None):
     """NCBI's FCS-GX on a done genome's windows (since 2026-11-05; run_gx of bioconda's ncbi-fcs-gx, its database of
-    ~470 GB best in /dev/shm): each range it calls another organism's -> WORK/done/<accession>/fcs.tsv (FCS_COLUMNS:
+    ~470 GB best in /dev/shm): each range it calls another organism's -> the genome's fcs.tsv (FCS_COLUMNS:
     the window, the range on it 1-based, FCS-GX's action EXCLUDE/TRIM/FIX/REVIEW, its division and top taxon) -> the
-    ranges, or None where it could not run (no windows, run_gx failed)."""
+    ranges, or None where it could not run (no windows, run_gx failed). Its files while it runs: in scratch (default:
+    the system's temporary folder; until 2026-11-10 in the done folder)."""
     folder = done_dir(work, accession)
-    windows = os.path.join(folder, "windows.fna.gz")
-    if not os.path.isfile(windows):
+    windows = store.open_text(folder, "windows.fna.gz")
+    if windows is None:
         return None
-    import tempfile  # noqa: PLC0415
-    with tempfile.TemporaryDirectory(dir=folder) as tmp:
+    with tempfile.TemporaryDirectory(dir=scratch) as tmp:
         names, fasta = {}, os.path.join(tmp, "w.fna")
-        with gzip.open(windows, "rt") as src, open(fasta, "w") as out:
-            for line in src:  # short ids: FCS-GX reads NCBI-style ids with | as fields
+        with open(fasta, "w") as out:
+            for line in windows:  # short ids: FCS-GX reads NCBI-style ids with | as fields
                 if line.startswith(">"):
                     names[f"w{len(names)}"] = line[1:].strip()
                     out.write(f">w{len(names) - 1}\n")
@@ -725,11 +721,8 @@ def fcs_screen(work, accession, taxid, gx_db, run_gx="run_gx", threads=1):
                 if len(f) >= 5 and f[0] in names:
                     ranges.append(dict(window=names[f[0]], start=int(f[1]), end=int(f[2]), action=f[4],
                                        division=f[5] if len(f) > 5 else "-", top_taxon=f[7] if len(f) > 7 else "-"))
-    path = os.path.join(folder, "fcs.tsv")
-    with open(util.part_of(path), "w", newline="\n") as fh:
-        fh.write("\t".join(FCS_COLUMNS) + "\n")
-        fh.writelines("\t".join(str(r[c]) for c in FCS_COLUMNS) + "\n" for r in ranges)
-    os.replace(util.part_of(path), path)
+    store.put(folder, {"fcs.tsv": ("\t".join(FCS_COLUMNS) + "\n" + "".join(
+        "\t".join(str(r[c]) for c in FCS_COLUMNS) + "\n" for r in ranges)).encode()})
     return ranges
 
 
@@ -791,31 +784,70 @@ def claim_live(path):
     return age < CLAIM_STALE
 
 
+TAKE_STALE = 60  # a takeover's lock (claim) older than this is a killed process': removed for the next try
+
+
+def _claim_mine():
+    return f"{socket.gethostname()}\t{os.getpid()}\n"
+
+
+def _claim_new(path):
+    """This process' claim file made, where none is there (O_EXCL: one process alone can) -> whether it was."""
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w") as fh:
+        fh.write(_claim_mine())
+    return True
+
+
+def claim_own(path):
+    """Whether a claim file is this process' (its host and pid)."""
+    try:
+        with open(path) as fh:
+            return fh.read() == _claim_mine()
+    except OSError:
+        return False
+
+
 def claim(work, accession):
     """The genome claimed for this process (since 2026-11-08: two builds on one WORK, e.g. several nodes, never run the
     same genome; until then nothing stopped them) -> the claim's path, or None where another holds it. A claim of a
-    dead process (claim_live) is taken over."""
+    dead process (claim_live) is taken over, under a lock of its own (<claim>.take, made with O_EXCL; since
+    2026-11-10: two builds that both found a claim dead each removed what was there and made their own, the second
+    removing the first's new claim, and both ran the genome)."""
     path = claim_path(work, accession)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    for _ in range(2):
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
-            if claim_live(path):
-                return None
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(path)
-            continue
-        with os.fdopen(fd, "w") as fh:
-            fh.write(f"{socket.gethostname()}\t{os.getpid()}\n")
+    if _claim_new(path):
         return path
-    return None
+    if claim_live(path):
+        return None
+    lock = path + ".take"
+    try:
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+    except FileExistsError:  # another build takes it over this instant: its genome now
+        with contextlib.suppress(OSError):
+            if time.time() - os.path.getmtime(lock) > TAKE_STALE:
+                os.remove(lock)
+        return None
+    try:
+        if claim_live(path):  # taken over since it was found dead
+            return None
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+        return path if _claim_new(path) else None
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(lock)
 
 
 @contextlib.contextmanager
 def claimed(work, accession):
     """A genome claimed while the block runs (yields its claim's path, or None where another holds it), its claim
-    touched every CLAIM_BEAT seconds and removed after."""
+    touched every CLAIM_BEAT seconds and removed after: while it is this process' still (since 2026-11-10; a run
+    stalled longer than CLAIM_STALE, its claim taken over by another build, kept that build's claim alive and
+    removed it at its end)."""
     path = claim(work, accession)
     if path is None:
         yield None
@@ -824,8 +856,9 @@ def claimed(work, accession):
 
     def beat():
         while not stop.wait(CLAIM_BEAT):
-            with contextlib.suppress(OSError):
-                os.utime(path)
+            if claim_own(path):
+                with contextlib.suppress(OSError):
+                    os.utime(path)
     heart = threading.Thread(target=beat, daemon=True)
     heart.start()
     try:
@@ -833,21 +866,34 @@ def claimed(work, accession):
     finally:
         stop.set()
         heart.join()
-        with contextlib.suppress(OSError):
-            os.remove(path)
+        if claim_own(path):
+            with contextlib.suppress(OSError):
+                os.remove(path)
 
 
 def stale_partials(work):
-    """The killed runs' partial done folders under WORK/done (util.part_of's .<host>-<pid>.<accession>.partial), not
-    those of a run going on (since 2026-11-08: every one was deleted, another node's running genomes' too): a partial
-    is kept while a live claim (claim_live) names its genome."""
+    """The killed runs' partial done folders under WORK/done (util.part_of's .<host>-<pid>.<accession>.partial; a
+    packed genome's half-written zip, ...<accession>.zip.partial; a step's temporary folder, side_dir), not those of
+    a run going on (since 2026-11-08: every one was deleted, another node's running genomes' too): a partial is kept
+    while a live claim (claim_live) names its genome."""
     import glob  # noqa: PLC0415
     live = []
     for c in glob.glob(os.path.join(work, "done", ".*.claim")):
         if claim_live(c):
             live.append(os.path.basename(c)[1:-len(".claim")])
     return [p for p in glob.glob(os.path.join(work, "done", ".*.partial"))
-            if not any(os.path.basename(p).endswith(f".{a}.partial") for a in live)]
+            if not any(os.path.basename(p).endswith((f".{a}.partial", f".{a}{store.EXT}.partial")) for a in live)]
+
+
+def side_dir(settings, folder):
+    """A temporary folder for a step on a done genome (the backfill's): in settings["scratch"] (--local_tmp) where
+    given, else in WORK/done under a partial's name of its genome (until 2026-11-10 in the done folder, which a
+    packed genome has none of): a killed step's is removed with the killed runs' (stale_partials)."""
+    if settings.get("scratch"):
+        os.makedirs(settings["scratch"], exist_ok=True)
+        return tempfile.TemporaryDirectory(dir=settings["scratch"])
+    return tempfile.TemporaryDirectory(dir=os.path.dirname(folder), prefix=f".{socket.gethostname()}-{os.getpid()}.",
+                                       suffix=f".{os.path.basename(folder)}.partial")
 
 
 def run(args):
@@ -858,7 +904,8 @@ def run(args):
     dataset species' BUSCOs called again without its own proteins (settings["odb_own"], HELD_OUT), its assembly's
     metadata measured (metadata.describe: stats.json, organelle.fna.gz, and sketch.sig.gz by settings["sourmash"]),
     its results written into WORK/done/<accession>/ (copies.fna, loci.tsv, features.tsv, windows.fna.gz, then
-    done.json) -> (accession, summary or None, why it is not done or None).
+    done.json), packed into WORK/done/<accession>.zip with settings["pack"] or where the genome is packed already
+    (store.py) -> (accession, summary or None, why it is not done or None).
     The rRNA and the metadata, which read the genome alone on one core each, run beside the locus calls (since
     2026-11-08: after them, the job's other threads idle). A run again for better gene models alone (job["rerun"]
     "annotation") keeps the done folder's rRNA and held-out calls, which do not depend on them."""
@@ -907,9 +954,20 @@ def run(args):
             shutil.rmtree(tmp, ignore_errors=True)
             # its three alone (until 2026-11-09 _run's four: the build stopped at the first genome that failed)
             return got[:3]
-        if os.path.isdir(folder):
-            shutil.rmtree(folder)
-        os.replace(tmp, folder)
+        if settings.get("pack") or store.is_packed(folder):
+            # one rename puts the new results in the old ones' place (since 2026-11-10)
+            store.pack(tmp, folder)
+        elif os.path.isdir(folder):
+            # a run again: the old folder renamed aside, the new one into its place, then the old deleted (since
+            # 2026-11-10: deleted first, file by file, a kill meanwhile leaving half a folder). A kill between the
+            # two renames leaves no folder: the genome is run again, the old one removed with the killed runs'
+            aside = util.part_of(os.path.join(os.path.dirname(folder), "old." + os.path.basename(folder)))
+            shutil.rmtree(aside, ignore_errors=True)
+            os.replace(folder, aside)
+            os.replace(tmp, folder)
+            shutil.rmtree(aside, ignore_errors=True)
+        else:
+            os.replace(tmp, folder)
         gff, report = got[3]
         for used in (gff, report):  # annotation.none_file stays: a run again knows none has one
             if used and os.path.isfile(used):  # compared and taken: annotation.tsv holds what the benchmark needs
@@ -950,18 +1008,16 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
     rrna_job = None
     # records of a species without an assembly, a transcriptome (since 2026-11-07): no genome's rRNA
     if settings.get("rrna") and not job.get("path") and job.get("kind") != "transcriptome":
-        kept = os.path.join(folder, "rrna.tsv")
-        if before is not None and os.path.isfile(kept):  # a run for its gene models alone: its rRNA as it was
+        # a run for its gene models alone: its rRNA as it was
+        if before is not None and store.extract(folder, "rrna.tsv", os.path.join(tmp, "rrna.tsv")):
             from . import rrna as rrna_mod  # noqa: PLC0415
-            shutil.copyfile(kept, os.path.join(tmp, "rrna.tsv"))
             rrna_job = rrna_mod.counts(rrna_mod.load(tmp))
         else:
             rrna_job = side.submit(settings["rrna"], path, job, tmp)
     meta_job = None
     if not job.get("path"):  # the assembly's metadata while it is here (metadata.py); a failure the pass tries again
         for name in (metadata_mod.STATS, metadata_mod.ORGANELLE, metadata_mod.SKETCH):  # a run again: its own kept
-            if os.path.isfile(os.path.join(folder, name)):
-                shutil.copyfile(os.path.join(folder, name), os.path.join(tmp, name))
+            store.extract(folder, name, os.path.join(tmp, name))
         want = metadata_mod.missing(tmp, settings.get("sourmash"))
         if want:
             meta_job = side.submit(metadata_mod.describe, path, tmp, acc, job.get("fetch", acc),
@@ -969,11 +1025,13 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
     queries = odb.queries(job["lineage"], settings["odb_lineages"])
     gff, report, source = annotation_of(job, settings)
     taken = (gff, report)
+    # a genome called again for its hold-outs: miniprot's index of it made once, by this call (index_dir_of)
+    index_dir = index_dir_of(job, settings, path, scratch) if before is None else None
     try:
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
                             settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), scratch,
                             settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings),
-                            annotation=(gff, report, source) if gff else None)
+                            annotation=(gff, report, source) if gff else None, index_dir=index_dir)
     except (OSError, RuntimeError) as e:
         return acc, None, f"locus calling failed: {e}", taken
     if got["failed"]:
@@ -1031,22 +1089,27 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
                 tb.write("\t".join(map(str, [k] + row_of(locus, r, "-", "-"))) + "\n")
                 fa.write(f">{locus}|{k}\n{r['copy']}\n")
                 ft.writelines(f"{locus}\t{k}\t{kind}\t{s}\t{e}\n" for kind, s, e in r["features"])
-    rrna = rrna_job
+    rrna, rrna_failed = rrna_job, None
     if isinstance(rrna_job, concurrent.futures.Future):
         try:
             rrna = rrna_job.result()
         except (OSError, ValueError, EOFError, RuntimeError) as e:  # RuntimeError: barrnap's, ITSx's
-            return acc, None, f"rRNA extraction failed: {e}", taken
+            # the genome done without its rRNA (done.json's `rrna_failed`), which the backfill tries again (no
+            # rrna.tsv); until 2026-11-10 the genome failed, its locus calls (hours of a large genome) thrown away
+            # and made again by every run
+            rrna, rrna_failed = None, f"{type(e).__name__}: {e}"
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(tmp, "rrna.tsv"))
     seconds = round(time.time() - started, 1)
     own = own_of(job, settings) if job.get("kind") != "transcriptome" else []
     held = None
     if own:  # its species is in BUSCO's dataset: its BUSCOs called again without its own proteins (HELD_OUT)
-        kept = os.path.join(folder, HELD_OUT)
-        if before is not None and before.get("held_out") and {r[0] for r in read_rows(kept)} == set(odb.loci):
-            shutil.copyfile(kept, os.path.join(tmp, HELD_OUT))  # a run for its gene models alone: as it was
+        if before is not None and before.get("held_out") \
+                and {r[0] for r in store.rows(folder, HELD_OUT)} == set(odb.loci):
+            store.extract(folder, HELD_OUT, os.path.join(tmp, HELD_OUT))  # a run for its gene models alone: as it was
             held = before["held_out"]
         else:
-            why = held_out(path, job, settings, odb, own, tmp, scratch)
+            why = held_out(path, job, settings, odb, own, tmp, scratch, index_dir=index_dir)
             if why:
                 return acc, None, why, taken
             held = {"left_out": own, "seconds": round(time.time() - started - seconds, 1)}
@@ -1055,12 +1118,12 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
         clades = {}
         for rank in settings.get("held_out_ranks", HELD_OUT_RANKS):
             old = (before or {}).get("held_out", {}).get("ranks", {}).get(rank)
-            if old and (old.get("same_as") or os.path.isfile(os.path.join(folder, held_out_file(rank)))):
+            if old and (old.get("same_as") or store.has(folder, held_out_file(rank))):
                 clades[rank] = old  # a run for its gene models alone: as it was
                 if not old.get("same_as"):
-                    shutil.copyfile(os.path.join(folder, held_out_file(rank)), os.path.join(tmp, held_out_file(rank)))
+                    store.extract(folder, held_out_file(rank), os.path.join(tmp, held_out_file(rank)))
                 continue
-            record, why = clade_held_out(path, job, settings, odb, tmp, scratch, rank, clades)
+            record, why = clade_held_out(path, job, settings, odb, tmp, scratch, rank, clades, index_dir)
             if why:
                 return acc, None, why, taken
             clades[rank] = record
@@ -1083,6 +1146,8 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
                "tiara": tiara}  # done, failed (backfill tries again), none (no tiara), - (a transcriptome)
     if held is not None:
         summary["held_out"] = held
+    if rrna_failed:
+        summary["rrna_failed"] = rrna_failed
     if meta_job is not None:
         why = meta_job.result()
         if why:
@@ -1112,77 +1177,81 @@ def backfill(args):
     pool's task: (job, settings)) -> (accession, [steps made], why one failed or None):
     - tiara's classes of its windows, where its run had no tiara or tiara failed (done.json's `tiara`; a run before
       2026-11-08: its loci.tsv's window_class all `-`), into loci.tsv;
-    - its rRNA (settings["rrna"]), where its run had no barrnap (no rrna.tsv) and its genome is here;
+    - its rRNA (settings["rrna"]), where its run had no barrnap or its extraction failed (no rrna.tsv) and its
+      genome is here;
     - a dataset species' clade hold-out (clade_held_out; since 2026-11-09), the ranks its run did not make.
-    Its done.json says what was made. A genome another build holds is left alone."""
+    Its done.json says what was made, after each step (since 2026-11-10: at the end, a kill then losing the ranks
+    called before it). A genome another build holds is left alone; what is to make is looked at again once the
+    genome is claimed (since 2026-11-10: before only, so that two builds' passes, e.g. a SLURM array's tasks, each
+    made what the other had just made)."""
     job, settings = args
     acc = job["accession"]
     folder = done_dir(settings["work"], acc)
     summary = done_summary(settings["work"], acc)
-    if summary is None:
-        return acc, [], None
-    todo = backfill_needs(job, settings, summary)
-    if not todo:
+    if summary is None or not backfill_needs(job, settings, summary):
         return acc, [], None
     with claimed(settings["work"], acc) as held:
         if held is None:
             return acc, [], None
+        summary = done_summary(settings["work"], acc)
+        todo = backfill_needs(job, settings, summary) if summary else []
         made, why = [], None
+
+        def put(files=None):
+            store.put(folder, dict(files or {}, **{"done.json": json.dumps(summary, indent=1).encode()}))
+            _SUMMARIES.pop(folder, None)
         if "tiara" in todo:
-            with tempfile.TemporaryDirectory(dir=folder) as tmp:
-                with gzip.open(os.path.join(folder, "windows.fna.gz"), "rt") as fh:
-                    names = [line[1:].strip() for line in fh if line.startswith(">")]
+            fasta = store.text(folder, "windows.fna.gz")
+            names = [line[1:].strip() for line in fasta.splitlines() if line.startswith(">")]
+            with side_dir(settings, folder) as tmp:
                 windows = os.path.join(tmp, "windows.fna")
-                with gzip.open(os.path.join(folder, "windows.fna.gz"), "rb") as src, open(windows, "wb") as out:
-                    shutil.copyfileobj(src, out)
+                with open(windows, "w") as out:
+                    out.write(fasta)
                 classes = tiara_classes(windows, settings["tiara"], settings.get("threads", 1), tmp)
             if classes is None:
                 why = "tiara failed"
                 summary["tiara"] = "failed"
+                put()
             else:
                 window_of = {n.split("|", 1)[0]: n for n in names}
-                table = os.path.join(folder, "loci.tsv")
-                with open(table) as fh:
-                    lines = fh.readlines()
-                with open(util.part_of(table), "w", newline="\n") as fh:
-                    fh.write(lines[0])
-                    for line in lines[1:]:
-                        f = line.rstrip("\n").split("\t")
-                        if f[1] != "Missing":
-                            f[TIARA_COLUMN] = classes.get(window_of.get(f[0], ""), "-")
-                        fh.write("\t".join(f) + "\n")
-                os.replace(util.part_of(table), table)
+                lines = store.text(folder, "loci.tsv").splitlines()
+                table = [lines[0]]
+                for line in lines[1:]:
+                    f = line.split("\t")
+                    if f[1] != "Missing":
+                        f[TIARA_COLUMN] = classes.get(window_of.get(f[0], ""), "-")
+                    table.append("\t".join(f))
                 summary["tiara"] = "done"
+                put({"loci.tsv": ("\n".join(table) + "\n").encode()})
                 made.append("tiara")
         if "rrna" in todo:
             path = genome_file(settings["genomes"], acc)
-            with tempfile.TemporaryDirectory(dir=folder) as tmp:
+            with side_dir(settings, folder) as tmp:
                 try:
                     summary["rrna"] = settings["rrna"](path, job, tmp)
                 except (OSError, ValueError, EOFError, RuntimeError) as e:
                     why = why or f"rRNA extraction failed: {e}"
                 else:
-                    os.replace(os.path.join(tmp, "rrna.tsv"), os.path.join(folder, "rrna.tsv"))
+                    summary.pop("rrna_failed", None)
+                    put({"rrna.tsv": os.path.join(tmp, "rrna.tsv")})
                     made.append("rrna")
         if "held_out" in todo:  # the clade hold-out's missing ranks (since 2026-11-09)
             genome = job.get("path") or genome_file(settings["genomes"], acc)
             clades = summary["held_out"].setdefault("ranks", {})
-            with tempfile.TemporaryDirectory(dir=settings.get("scratch") or folder) as tmp:
-                for rank in settings.get("held_out_ranks", HELD_OUT_RANKS):
-                    if rank in clades:
-                        continue
-                    got, failed = clade_held_out(genome, job, settings, odb_of(settings), tmp, tmp, rank, clades)
+            ranks = [r for r in settings.get("held_out_ranks", HELD_OUT_RANKS) if r not in clades]
+            with side_dir(settings, folder) as tmp:
+                # several ranks to call: miniprot's index of the genome made once for them (index_dir_of)
+                index_dir = index_dir_of(job, settings, genome, tmp) if len(ranks) > 1 else None
+                for rank in ranks:
+                    got, failed = clade_held_out(genome, job, settings, odb_of(settings), tmp, tmp, rank, clades,
+                                                 index_dir)
                     if failed:
                         why = why or failed
                         break
-                    if os.path.isfile(os.path.join(tmp, held_out_file(rank))):
-                        os.replace(os.path.join(tmp, held_out_file(rank)), os.path.join(folder, held_out_file(rank)))
                     clades[rank] = got
+                    table = os.path.join(tmp, held_out_file(rank))
+                    put({held_out_file(rank): table} if os.path.isfile(table) else None)
                     made.append(f"held_out_{rank}")
-        path = os.path.join(folder, "done.json")
-        with open(util.part_of(path), "w", newline="\n") as fh:
-            json.dump(summary, fh, indent=1)
-        os.replace(util.part_of(path), path)
         return acc, made, why
 
 
@@ -1192,13 +1261,13 @@ def backfill_needs(job, settings, summary=None):
     summary = summary or done_summary(settings["work"], job["accession"]) or {}
     out = []
     if settings.get("tiara") and job.get("kind") != "transcriptome" \
-            and os.path.isfile(os.path.join(folder, "windows.fna.gz")) and summary.get("tiara") != "done":
-        called = [r for r in read_rows(os.path.join(folder, "loci.tsv")) if len(r) > TIARA_COLUMN and r[1] != "Missing"]
+            and summary.get("tiara") != "done" and store.has(folder, "windows.fna.gz"):
+        called = [r for r in store.rows(folder, "loci.tsv") if len(r) > TIARA_COLUMN and r[1] != "Missing"]
         state = summary.get("tiara")
         if called and (state in ("none", "failed") or (state is None and all(r[TIARA_COLUMN] == "-" for r in called))):
             out.append("tiara")
     if settings.get("rrna") and not job.get("path") and job.get("kind") != "transcriptome" \
-            and not os.path.isfile(os.path.join(folder, "rrna.tsv")) \
+            and not store.has(folder, "rrna.tsv") \
             and os.path.isfile(genome_file(settings["genomes"], job["accession"])):
         out.append("rrna")
     # a dataset species' clade hold-out (since 2026-11-09) where its run made the species' alone
@@ -1237,13 +1306,48 @@ def annotation_of(job, settings):
     return gff, report if os.path.isfile(report) else None, source or "-"
 
 
+_SUMMARIES = {}       # {done folder: its done.json's text or None}, filled while a plan reads (cached_summaries)
+_CACHING = [False]
+
+
+@contextlib.contextmanager
+def cached_summaries():
+    """While the block runs, each genome's done.json is read once by this process (since 2026-11-10: a plan asked
+    is_done, searched, the gene models' record, the rescue's and the genome record of each of some 30,000 genomes,
+    five to six reads each from the shared file system). For a plan alone: what another build writes meanwhile is
+    not seen; this process' own changes are (write_summary)."""
+    _SUMMARIES.clear()
+    _CACHING[0] = True
+    try:
+        yield
+    finally:
+        _CACHING[0] = False
+        _SUMMARIES.clear()
+
+
+def _summary_text(work, accession):
+    folder = done_dir(work, accession)
+    if not _CACHING[0]:
+        return store.text(folder, "done.json")
+    if folder not in _SUMMARIES:
+        _SUMMARIES[folder] = store.text(folder, "done.json")
+    return _SUMMARIES[folder]
+
+
 def done_summary(work, accession):
     """A done genome's done.json, or None."""
+    got = _summary_text(work, accession)
     try:
-        with open(os.path.join(done_dir(work, accession), "done.json")) as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
+        return None if got is None else json.loads(got)
+    except ValueError:
         return None
+
+
+def write_summary(work, accession, summary):
+    """A done genome's done.json written anew (store.put: whole, then renamed into place)."""
+    folder = done_dir(work, accession)
+    store.put(folder, {"done.json": json.dumps(summary, indent=1).encode()})
+    _SUMMARIES.pop(folder, None)
 
 
 def annotation_record(work, job):
@@ -1255,8 +1359,8 @@ def annotation_record(work, job):
         return None
     if "annotation" in summary:
         return summary["annotation"], set(summary.get("annotation_none") or ())
-    table = os.path.join(done_dir(work, job["accession"]), annotation_mod.TABLE)
-    empty = os.path.isfile(table) and not read_rows(table)
+    folder = done_dir(work, job["accession"])
+    empty = store.has(folder, annotation_mod.TABLE) and not store.rows(folder, annotation_mod.TABLE)
     if summary.get("annotated") and not (empty and not summary.get("ncbi_models")):
         return "ncbi", set()
     return "-", {"ncbi"} if empty and annotation_mod.gff_url(job) else set()
@@ -1292,10 +1396,7 @@ def note_annotation_none(work, job, sources):
         from_old = annotation_record(work, job)
         summary["annotation"], summary["annotation_none"] = from_old[0], sorted(from_old[1])
     summary["annotation_none"] = sorted(set(summary.get("annotation_none") or ()) | set(sources))
-    path = os.path.join(done_dir(work, job["accession"]), "done.json")
-    with open(util.part_of(path), "w", newline="\n") as fh:
-        json.dump(summary, fh, indent=1)
-    os.replace(util.part_of(path), path)
+    write_summary(work, job["accession"], summary)
 
 
 def rerun_for_annotation(work, job, genomes_folder, may_fetch):
@@ -1333,11 +1434,14 @@ def supersede(work, job_map):
         fh.write("species_taxid\taccession\n" + "".join(f"{sp}\t{a}\n" for sp, a in sorted(chosen.items())))
     os.replace(util.part_of(path), path)
     if changed:
+        # written whole and renamed (since 2026-11-10: appended in place, two builds' lines one into the other, a
+        # killed build's last line cut); a pair another build added the same instant is added by its next plan
         table = os.path.join(work, SUPERSEDED)
-        new = not os.path.isfile(table)
-        with open(table, "a", newline="\n") as fh:
-            fh.write("old\tnew\n" if new else "")
-            fh.writelines(f"{old}\t{acc}\n" for old, acc in changed)
+        rows = [tuple(f[:2]) for f in read_rows(table) if len(f) >= 2]
+        rows += [pair for pair in changed if pair not in set(rows)]
+        with open(util.part_of(table), "w", newline="\n") as fh:
+            fh.write("old\tnew\n" + "".join(f"{old}\t{acc}\n" for old, acc in rows))
+        os.replace(util.part_of(table), table)
     return changed
 
 
@@ -1374,11 +1478,28 @@ def own_of(job, settings):
 
 def held_out_missing(work, job, settings):
     """Whether a done genome of a dataset species lacks its held-out calls (a run before 2026-11-06)."""
-    return bool(own_of(job, settings)) and not os.path.isfile(os.path.join(done_dir(work, job["accession"]),
-                                                                           HELD_OUT))
+    return bool(own_of(job, settings)) and not store.has(done_dir(work, job["accession"]), HELD_OUT)
 
 
-def held_out(path, job, settings, odb, own, folder, scratch=None, rank=None):
+INDEX_DIR = "mpi"         # miniprot's saved index of a genome called more than once, in the run's scratch
+INDEX_MAX_BASES = 4e9     # a larger genome's index (some 4-8 bytes a base) is not kept on a node's local disk
+
+
+def index_dir_of(job, settings, path, scratch):
+    """Where miniprot's index of a genome is kept between its calls (loci.call's index_dir; since 2026-11-10: each of
+    a dataset species' up to five calls, its own and its hold-outs', built the index anew, most of a call's time), or
+    None: a genome called once (no dataset species', a transcriptome), no --local_tmp (settings["scratch"]: the
+    index, gigabytes, is for a node's local disk, never the shared WORK), a genome over INDEX_MAX_BASES."""
+    if not settings.get("scratch") or job.get("kind") == "transcriptome" or not own_of(job, settings):
+        return None
+    try:
+        bases = job.get("size") or os.path.getsize(path) / placement.GZIP_BYTES_PER_BASE
+    except OSError:
+        return None
+    return os.path.join(scratch, INDEX_DIR) if bases <= INDEX_MAX_BASES else None
+
+
+def held_out(path, job, settings, odb, own, folder, scratch=None, rank=None, index_dir=None):
     """A dataset species' genome's BUSCOs called again with its own proteins (own: their dataset taxids; or, rank
     given, a clade's: clade_left_out) left out of the queries, into folder/held_out_file(rank) (HELD_OUT_COLUMNS; cds:
     the call's coding sequence): the OrthoDB benchmark compares these with OrthoDB's gene models, which the build's
@@ -1388,7 +1509,8 @@ def held_out(path, job, settings, odb, own, folder, scratch=None, rank=None):
     try:
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
                             settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), scratch or folder,
-                            settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings))
+                            settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings),
+                            index_dir=index_dir)
     except (OSError, RuntimeError) as e:
         return f"held-out locus calling failed: {e}"
     if got["failed"]:
@@ -1403,7 +1525,7 @@ def held_out(path, job, settings, odb, own, folder, scratch=None, rank=None):
     return None
 
 
-def clade_held_out(path, job, settings, odb, folder, scratch, rank, earlier=None):
+def clade_held_out(path, job, settings, odb, folder, scratch, rank, earlier=None, index_dir=None):
     """A dataset species' genome's held-out call at `rank` (clade_left_out; since 2026-11-09) into
     folder/held_out_file(rank) -> (its record for done.json's held_out.ranks: left_out (dataset species left out),
     nearest (nearest_kept's depth), seconds; same_as: the rank below where it leaves out no more, not run; no_taxon:
@@ -1421,7 +1543,7 @@ def clade_held_out(path, job, settings, odb, folder, scratch, rank, earlier=None
     if left == below:
         return dict(left_out=len(left), nearest=nearest, same_as=below_name), None
     started = time.time()
-    why = held_out(path, job, settings, odb, sorted(left), folder, scratch, rank)
+    why = held_out(path, job, settings, odb, sorted(left), folder, scratch, rank, index_dir)
     if why:
         return None, why
     return dict(left_out=len(left), nearest=nearest, seconds=round(time.time() - started, 1)), None

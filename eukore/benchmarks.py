@@ -37,7 +37,7 @@ import time
 
 from . import odb as odb_mod
 from . import genomes as genomes_mod
-from . import gencode, package, qc, rrna, util
+from . import gencode, package, qc, rrna, store, util
 
 FOLDER = "benchmarks"
 KMER = 5
@@ -211,10 +211,10 @@ def held_out_calls(work, acc, rank=None):
     """A genome's held-out calls (WORK/done/<accession>/held_out.tsv; or, rank given, its clade hold-out's at that rank,
     held_out_<rank>.tsv) -> {locus: its row (status, query, cds; contig, start, end and rescued since a later run)},
     None without."""
-    path = os.path.join(genomes_mod.done_dir(work, acc), genomes_mod.held_out_file(rank)) if work else None
-    if not path or not os.path.isfile(path):
+    folder, name = genomes_mod.done_dir(work, acc) if work else None, genomes_mod.held_out_file(rank)
+    if not folder or not store.has(folder, name):
         return None
-    return {r["locus"]: r for r in rows_of(path)}
+    return {r["locus"]: r for r in store.table(folder, name)}
 
 
 HOLDOUT_LEVELS = ("species",) + genomes_mod.HELD_OUT_RANKS
@@ -474,15 +474,10 @@ def label_rows(species):
 
 def runtime_rows(work, genomes, species):
     """runtime.tsv's rows: each species' genome's run (its done.json), those timed (run since 2026-11-06)."""
-    from .genomes import done_dir  # noqa: PLC0415
     out = []
     for acc, g in sorted(genomes.items()):
-        try:
-            with open(os.path.join(done_dir(work, acc), "done.json")) as fh:
-                done = json.load(fh)
-        except (OSError, ValueError):
-            continue
-        if done.get("seconds") is None:
+        done = genomes_mod.done_summary(work, acc)
+        if done is None or done.get("seconds") is None:
             continue
         out.append(dict(accession=acc, species_taxid=g["species_taxid"],
                         supergroup=species.get(g["species_taxid"], {}).get("supergroup", "-"),
@@ -636,7 +631,7 @@ def annotation_rows(work, genomes, species, distance):
     for acc, g in sorted(genomes.items()):
         sp = int(g["species_taxid"])
         near, own = distance.get(sp, ("-", "-"))
-        for r in rows_of(os.path.join(done_dir(work, acc), ann.TABLE)):
+        for r in store.table(done_dir(work, acc), ann.TABLE):
             out.append(dict(r, accession=acc, species_taxid=sp, odb_nearest=near, odb_self=own,
                             supergroup=species.get(str(sp), {}).get("supergroup", "-")))
     return out

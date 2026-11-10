@@ -115,6 +115,10 @@ class MarkerTest(unittest.TestCase):
 
     def test_member_checks(self):
         self.assertEqual([markers.source_rank(a) for a in ("P04050", "NP_000928.1", "XP_1.1", "EAA1.1")], [0, 1, 2, 3])
+        # since 2026-11-10: Swiss-Prot's by UniProt's accession pattern; NCBI's records without a version (a PDB
+        # chain, PIR's, PRF's) are no curated ones (until then rank 0: trusted, the basis of the median length)
+        self.assertEqual([markers.source_rank(a) for a in ("A0A0B4J2F0", "Q9SAJ6", "4CBU_A", "S66116", "2209341A")],
+                         [0, 0, 3, 3, 3])
         rows = [dict(accession="XP_9.1", organism_id="9606", sequence="M" * 100),
                 dict(accession="NP_1.1", organism_id="9606", sequence="M" * 100),
                 dict(accession="EAA1.1", organism_id="5833", sequence="M" * 100),
@@ -242,6 +246,241 @@ class RecheckTest(unittest.TestCase):
             self.assertEqual(check(cds, {"G1": {"gencode": 1}, "G2": {"gencode": 1}}), {("G1", "TEF1")})
             self.assertEqual(check({}, {}), set())
             self.assertIsNone(markers.recheck(None))
+
+    def test_the_scores_are_kept(self):
+        # since 2026-11-10: the same copies against the same profiles are not searched again (until then at every
+        # package run); other copies, or other profiles, are, and the calls are the same either way
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = os.path.join(tmp, "eukore_markers")
+            for sub, name in (("hmms", "TEF1"), ("decoys", "EFL")):
+                os.makedirs(os.path.join(folder, sub))
+                with open(os.path.join(folder, sub, f"{name}.hmm"), "w") as fh:
+                    fh.write(f"HMMER3/f [3.4]\nNAME  {'decoy-' * (sub == 'decoys')}{name}\nLENG  100\n//\n")
+            calls = os.path.join(tmp, "calls")
+            binary = fx.tool(tmp, "hmmsearch", RECHECK_HMMSEARCH + f'open({calls!r}, "a").write("x")\n')
+            check = markers.recheck(folder, binary)
+            cds = {("G1", "TEF1"): fx.cds_of("MSRQV" + "A" * 40), ("G2", "TEF1"): fx.cds_of("MGKEK" + "A" * 40)}
+            rows = {"G1": {"gencode": 1}, "G2": {"gencode": 1}}
+
+            def searches():
+                with open(calls) as fh:
+                    return len(fh.read())
+
+            def caches():
+                return [f for f in os.listdir(folder) if f.startswith("recheck.")]
+            self.assertEqual((check(cds, rows), searches(), len(caches())), ({("G1", "TEF1")}, 1, 1))
+            self.assertEqual((check(cds, rows), searches()), ({("G1", "TEF1")}, 1))  # read, not searched
+            self.assertEqual((markers.recheck(folder, "no-hmmsearch")(cds, rows)), {("G1", "TEF1")})
+            more = {**cds, ("G3", "TEF1"): fx.cds_of("MSRQV" + "C" * 40)}
+            self.assertEqual((check(more, rows), searches()), ({("G1", "TEF1"), ("G3", "TEF1")}, 2))
+            self.assertEqual(len(caches()), 1)  # the last search's alone
+            with open(os.path.join(folder, "decoys", "EFL.hmm"), "a") as fh:  # another profile set: searched
+                fh.write("HMMER3/f [3.4]\nNAME  decoy-EFL2\nLENG  100\n//\n")
+            self.assertEqual((check(more, rows), searches()), ({("G1", "TEF1"), ("G3", "TEF1")}, 3))
+            from unittest import mock  # noqa: PLC0415
+            with mock.patch.object(markers, "keep_scores", side_effect=PermissionError("read-only")):
+                self.assertEqual((check(cds, rows), searches()), ({("G1", "TEF1")}, 4))  # a folder not to be written
+
+
+def eutils_of(replies, summaries=(("XP_1.1", "9606", 12), ("XP_2.1", "4932", 12))):
+    """markers.eutils' stand-in: an esearch of these summaries [(accession, taxid, length)], and efetch's replies in
+    their order (the last one again where they run out) -> (the function, the list of efetch's calls' ids)."""
+    asked = []
+
+    def eutils(endpoint, **params):
+        if endpoint == "esearch.fcgi":
+            return f"<Count>{len(summaries)}</Count><WebEnv>E</WebEnv><QueryKey>1</QueryKey>"
+        if endpoint == "esummary.fcgi":
+            return "<eSummaryResult>" + "".join(
+                f'<DocSum><Item Name="AccessionVersion">{a}</Item><Item Name="TaxId">{t}</Item>'
+                f'<Item Name="Length">{n}</Item></DocSum>' for a, t, n in summaries) + "</eSummaryResult>"
+        asked.append(params["id"])
+        return replies[min(len(asked), len(replies)) - 1]
+    return eutils, asked
+
+
+WHOLE = ">XP_1.1 5'->3' exoribonuclease 2 [Homo sapiens]\nMKVLAA\nGGSSTT\n>XP_2.1 a protein [yeast]\nMKVLAAGGSSTT\n"
+
+
+class NcbiProteinsTest(unittest.TestCase):
+    """markers.ncbi_proteins' cache (since 2026-11-10): written only of whole answers."""
+
+    def fetched(self, tmp, replies):
+        from unittest import mock  # noqa: PLC0415
+        eutils, asked = eutils_of(replies)
+        with mock.patch.object(markers, "eutils", eutils):
+            return markers.ncbi_proteins("a query", os.path.join(tmp, "q.faa.gz"), log=lambda *a: None), asked
+
+    def test_a_reply_in_part_is_asked_for_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # the first reply ends after its first record, the second inside its last record's sequence
+            got, asked = self.fetched(tmp, [WHOLE.split(">XP_2.1")[0], WHOLE[:-7] + "\n", WHOLE])
+            self.assertEqual(asked, ["XP_1.1,XP_2.1"] * 3)
+            self.assertEqual([(r["accession"], r["organism_id"], r["sequence"]) for r in got],
+                             [("XP_1.1", "9606", "MKVLAAGGSSTT"), ("XP_2.1", "4932", "MKVLAAGGSSTT")])
+            # a title's ">" starts no record (until 2026-11-10 XP_1.1 was cached with an empty sequence)
+            self.assertEqual(markers.fasta_records(WHOLE)[0], ("XP_1.1 5'->3' exoribonuclease 2 [Homo sapiens]",
+                                                               "MKVLAAGGSSTT"))
+            self.assertEqual(self.fetched(tmp, ["no reply"])[0], got)  # the cache read, NCBI not asked
+
+    def test_no_cache_of_a_reply_that_stays_in_part(self):
+        for reply in (WHOLE.split(">XP_2.1")[0], WHOLE[:-7] + "\n", ""):
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(OSError, "answered in part 3 times"):
+                    self.fetched(tmp, [reply])
+                self.assertEqual(os.listdir(tmp), [])  # no cache a later build would read as whole, no half file
+
+
+BUILD_HMMSEARCH = RECHECK_HMMSEARCH.replace('"TEF1"', '"K1"').replace('"decoy-EFL"', '"K2"')
+SPECIES = (4932, 27291, 28985, 5476, 40410, 6253, 9606)  # fixtures' taxdump's
+
+
+class BuildTest(unittest.TestCase):
+    """markers.build (since 2026-11-10): the set written beside the folder and put in its place when whole, and what
+    ready() holds it against."""
+
+    def world(self, tmp):
+        """A sources folder whose marker folder holds the build's inputs (nothing is fetched): KOfam's list and the
+        profiles K1 (the marker MK1's) and K2 (its decoy), a Swiss-Prot of seven species' MK1 -> (sources, the
+        marker table with the decoy, the one without, a decoy table that is not there, hmmsearch's stand-in)."""
+        import random  # noqa: PLC0415
+        src = os.path.join(tmp, "sources")
+        folder = os.path.join(src, "eukore_markers")
+        os.makedirs(os.path.join(folder, "kofam"))
+        fx.taxdump(os.path.join(src, "taxdump.tar.gz"))
+        tables = []
+        for name, decoys in (("with.tsv", "K2"), ("without.tsv", "")):
+            tables.append(os.path.join(tmp, name))
+            with open(tables[-1], "w") as fh:
+                fh.write(f"locus\tname\ttargets\tdecoys\tkind\nMK1\ta marker\tK1\t{decoys}\tclean\n")
+        with gzip.open(os.path.join(folder, "ko_list.gz"), "wt") as fh:
+            fh.write("knum\tthreshold\tscore_type\tdefinition\nK1\t100\tfull\tthe marker\nK2\t100\tfull\tits paralog\n")
+        for ko in ("K1", "K2"):
+            with open(os.path.join(folder, "kofam", f"{ko}.hmm"), "w") as fh:
+                fh.write(f"HMMER3/f [3.4]\nNAME  {ko}\nLENG  100\n//\n")
+        rnd = random.Random(3)
+        with gzip.open(os.path.join(folder, "uniprot_sprot.fasta.gz"), "wt") as fh:
+            for i, taxid in enumerate(SPECIES):
+                seq = "MGKEK" + "".join(rnd.choice("ACDEFGHIKLMNPQRSTVWY") for _ in range(100))
+                fh.write(f">sp|P0000{i}|MK1_X A marker OS=a species OX={taxid} PE=1 SV=1\n{seq}\n")
+        with open(os.path.join(folder, "profiles.tar.gz"), "w") as fh:  # a copy of KOfam's archive: kept
+            fh.write("x")
+        binary = fx.tool(tmp, "hmmsearch", BUILD_HMMSEARCH)
+        return src, tables[0], tables[1], os.path.join(tmp, "no_decoys.tsv"), binary
+
+    def build(self, src, table, binary, decoys):
+        from unittest import mock  # noqa: PLC0415
+        with mock.patch.object(markers, "MIN_MEMBERS", 3), mock.patch.object(markers, "release_of",
+                                                                             return_value="2026_04"):
+            return markers.build(src, table, binary, 1, lambda *a: None, lambda url, dest: self.fail(url), decoys)
+
+    def ready(self, src, table, decoys=None):
+        from unittest import mock  # noqa: PLC0415
+        with mock.patch.object(markers, "MIN_MEMBERS", 3):
+            return markers.ready(src, table, decoys)
+
+    @staticmethod
+    def text(*path):
+        with open(os.path.join(*path)) as fh:
+            return fh.read()
+
+    def test_the_set_is_put_in_place_whole(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, table, _without, decoys, binary = self.world(tmp)
+            folder = self.build(src, table, binary, decoys)
+            self.assertEqual(folder, os.path.join(src, "eukore_markers"))
+            self.assertEqual(sorted(os.listdir(src)), ["eukore_markers", "taxdump.tar.gz"])  # nothing left beside it
+            self.assertTrue(set(markers.SET) <= set(os.listdir(folder)))
+            # the caches are the new folder's: the next build fetches nothing
+            self.assertTrue({"ko_list.gz", "kofam", "kofam.hmm", "uniprot_sprot.fasta.gz", "profiles.tar.gz",
+                             "ncbi"} <= set(os.listdir(folder)))
+            self.assertTrue(any(f.startswith("scores.") for f in os.listdir(folder)))
+            self.assertIn("NAME  MK1\n", self.text(folder, "hmms", "MK1.hmm"))
+            self.assertIn("NAME  decoy-K2\n", self.text(folder, "decoys", "K2.hmm"))
+            self.assertEqual(self.text(folder, "scores_cutoff"), "MK1\t250.0\n")
+            self.assertEqual(markers.kinds(folder), {"MK1": "clean"})
+            self.assertEqual(markers.state_of(folder)["markers"]["MK1"]["members"], len(SPECIES))
+            self.assertEqual((self.ready(src, table), self.ready(src, table, decoys)), (folder, folder))
+
+    def test_a_build_that_fails_leaves_the_old_set(self):
+        # until 2026-11-10 hmms/ and decoys/ were emptied in the folder itself before the new set was made: a build
+        # that failed after it left the old markers.json over no profiles, which ready() took
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            src, table, without, decoys, binary = self.world(tmp)
+            folder = self.build(src, table, binary, decoys)
+            was = {name: self.text(folder, *name.split("/")) for name in ("hmms/MK1.hmm", "decoys/K2.hmm",
+                                                                         "scores_cutoff", "markers.json")}
+            with mock.patch.object(markers, "foreign", side_effect=RuntimeError("killed")):
+                with self.assertRaisesRegex(RuntimeError, "killed"):
+                    self.build(src, without, binary, decoys)
+            self.assertEqual({name: self.text(folder, *name.split("/")) for name in was}, was)
+            self.assertEqual(sorted(os.listdir(src)), ["eukore_markers", "taxdump.tar.gz"])  # no half set left
+            self.assertEqual((self.ready(src, table), self.ready(src, without)), (folder, None))
+            self.assertTrue({"ko_list.gz", "kofam", "uniprot_sprot.fasta.gz"} <= set(os.listdir(folder)))
+            self.build(src, without, binary, decoys)  # and one that ends: the new table's set, its decoy gone
+            self.assertEqual((os.listdir(os.path.join(folder, "decoys")), self.ready(src, table),
+                              self.ready(src, without, decoys)), ([], None, folder))
+            self.assertTrue({"ko_list.gz", "kofam", "uniprot_sprot.fasta.gz", "profiles.tar.gz"}
+                            <= set(os.listdir(folder)))
+
+    def test_stale_by_the_rules_and_the_inputs(self):
+        # until 2026-11-10 the table's (and the decoy table's) MD5 alone: another PER_TAXON or threshold, another
+        # Swiss-Prot, did not make the set stale. The other stages (no decoys given) take it as before
+        import json  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            src, table, _without, decoys, binary = self.world(tmp)
+            folder = self.build(src, table, binary, decoys)
+            for name, value in (("PER_TAXON", 5), ("NCBI_SCOPE", "refseq[filter]"), ("CUTOFF_SHARE", 0.4),
+                                ("RECIPE", markers.RECIPE + 1)):
+                with mock.patch.object(markers, name, value):
+                    self.assertEqual((self.ready(src, table, decoys), self.ready(src, table)), (None, folder), name)
+            self.assertEqual(self.ready(src, table, decoys), folder)
+            sprot = os.path.join(folder, "uniprot_sprot.fasta.gz")
+            with gzip.open(sprot, "at") as fh:  # another release put there
+                fh.write(">sp|P00009|MK1_Y A marker OS=a species OX=952 PE=1 SV=1\nMGKEKAAAA\n")
+            self.assertEqual((self.ready(src, table, decoys), self.ready(src, table)), (None, folder))
+            self.assertEqual(self.build(src, table, binary, decoys), folder)  # built from it
+            self.assertEqual(self.ready(src, table, decoys), folder)
+            os.remove(sprot)  # an input deleted: fetched and built from at the next fetch stage
+            self.assertEqual((self.ready(src, table, decoys), self.ready(src, table)), (None, folder))
+            state = json.loads(self.text(folder, "markers.json"))
+            with open(os.path.join(folder, "markers.json"), "w") as fh:  # a set of before: neither recipe nor inputs
+                json.dump({k: v for k, v in state.items() if k not in ("recipe", "inputs")}, fh)
+            self.assertEqual((self.ready(src, table, decoys), self.ready(src, table)), (None, folder))
+
+    def test_what_a_cut_build_left(self):
+        from eukore import util  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            src, table, _without, decoys, binary = self.world(tmp)
+            folder = self.build(src, table, binary, decoys)
+
+            def dead(name, n=1):  # a run's folder on a host that is heard of no more
+                return os.path.join(src, f".gone-{n}.{name}.partial")
+
+            def aged(path):
+                os.utime(path, (0, 0))
+                return path
+            # cut between the swap's two renames: no folder, the new set whole beside it, and the old one
+            os.makedirs(os.path.join(dead("eukore_markers.old"), "hmms"))
+            os.rename(folder, dead("eukore_markers"))
+            aged(dead("eukore_markers"))
+            aged(dead("eukore_markers.old"))
+            markers.recover(src, lambda *a: None)
+            self.assertEqual(sorted(os.listdir(src)), ["eukore_markers", "taxdump.tar.gz"])
+            self.assertEqual(self.ready(src, table, decoys), folder)
+            # cut while the caches moved into the new set: they are taken back, the half swap's folder removed
+            os.makedirs(os.path.join(dead("eukore_markers", 2), "hmms"))
+            os.rename(os.path.join(folder, "ko_list.gz"), os.path.join(dead("eukore_markers", 2), "ko_list.gz"))
+            aged(dead("eukore_markers", 2))
+            mine = util.part_of(folder)  # a build going on (this process's): not touched
+            os.makedirs(mine)
+            markers.recover(src, lambda *a: None)
+            self.assertEqual(sorted(os.listdir(src)), sorted(["eukore_markers", "taxdump.tar.gz",
+                                                              os.path.basename(mine)]))
+            self.assertIn("ko_list.gz", os.listdir(folder))
+            self.assertEqual(self.ready(src, table, decoys), folder)
 
 
 if __name__ == "__main__":
