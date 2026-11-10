@@ -307,6 +307,72 @@ class RunTest(unittest.TestCase):
             self.assertEqual(sorted(kept), sorted([(YEAST, size, "kept"), (other, size, "deleted")]))
 
 
+    def test_the_package_read_by_a_pool_is_the_same(self):
+        # since 2026-11-10 collect and write read the done genomes `threads` at once in a pool of processes
+        # (package.genome_part, genome_files): the package byte for byte the one of the genomes read one after another
+        from eukore import store  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            root = fx.odb_world(tmp)
+            odb = odb_mod.Odb(root, fx.LOCI)
+            seq, gff, _spans = fx.genome()
+            genomes_dir = os.path.join(tmp, "out", "genomes")
+            os.makedirs(genomes_dir)
+            work = os.path.join(tmp, "work")
+            settings = dict(work=work, genomes=genomes_dir, miniprot=fx.miniprot(tmp, gff),
+                            hmmsearch=fx.hmmsearch(tmp), threads=1, staged_only=True, odb=root, loci=fx.LOCI,
+                            hmm_db=odb.hmm_db(os.path.join(tmp, "loci.hmm")),
+                            odb_lineages=odb_mod.species_lineages(odb, ncbi), tiara=None, rrna=None,
+                            vsearch=fx.vsearch(tmp))
+            gb = sources.read_assemblies([fx.assembly_table(os.path.join(tmp, "genbank_fungi.txt"), fx.GENBANK)])
+            jobs = genomes.jobs(ncbi, gb)
+            for i, acc in enumerate((YEAST, "GCA_000000013.1")):
+                with gzip.open(genomes.genome_file(genomes_dir, acc), "wt") as fh:
+                    fh.write(f">c1\n{seq}\n")
+                # one genome packed, one a folder: both forms read alike
+                self.assertIsNone(genomes.run((jobs[acc], dict(settings, pack=bool(i))))[2])
+            self.assertTrue(store.is_packed(genomes.done_dir(work, "GCA_000000013.1")))
+            loci = [dict(locus=l, name=odb.names.get(l, "-"), cutoff=odb.cutoff[l], hmm_length=odb.length[l])
+                    for l in odb.loci]
+            files = {}
+            for threads in (1, 3):
+                collected = package.collect(ncbi, jobs, gb, work, fx.vsearch(tmp), threads)
+                package.genetics(collected, ncbi, odb.hmm, fx.hmmalign(tmp), work, log=lambda *_: None)
+                out = package.write(os.path.join(tmp, f"out{threads}", "Eukore_2026.11"), "2026.11", ncbi,
+                                    collected, loci, None, genomes_dir, {"test": True}, threads=threads)
+                self.assertIsNone(package.check(out, deep=True))
+                got = {}
+                for top, _dirs, names in os.walk(out):
+                    for n in names:
+                        with open(os.path.join(top, n), "rb") as fh:
+                            got[os.path.relpath(os.path.join(top, n), out)] = fh.read()
+                manifest = json.loads(got.pop(package.MANIFEST))
+                got["files"] = json.dumps(manifest["files"]).encode()  # its time of building differs
+                files[threads] = got
+                store.close()
+            self.assertEqual(sorted(files[1]), sorted(files[3]))
+            for name in files[1]:
+                self.assertEqual(files[1][name], files[3][name], name)
+            self.assertGreater(len(package.read_copies(out, "1at2759")), 1)
+            # C11's rest (since 2026-11-10): a BGZF file cut before its MD5 was taken (its manifest agreeing) is not
+            # whole for check(deep); a package's gzip of before BGZF is not judged so
+            from eukore import util  # noqa: PLC0415
+            rel = "busco/copies/1at2759.fna.gz"
+            path = os.path.join(out, rel)
+            with open(path, "rb") as fh:
+                data = fh.read()
+            for content, why in ((data[:-len(util.BGZF_EOF)], "cut short"), (gzip.compress(b">a\nACGT\n"), None)):
+                with open(path, "wb") as fh:
+                    fh.write(content)
+                with open(os.path.join(out, package.MANIFEST)) as fh:
+                    manifest = json.load(fh)
+                manifest["files"][rel] = [len(content), util.md5(path)]
+                with open(os.path.join(out, package.MANIFEST), "w") as fh:
+                    json.dump(manifest, fh)
+                self.assertIsNone(package.check(out))
+                got = package.check(out, deep=True)
+                self.assertTrue(got is None if why is None else why in got, got)
+
     def test_a_genome_with_its_ncbi_annotation(self):
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))

@@ -717,6 +717,33 @@ def process_pool(workers):
         pool.shutdown(wait=True, cancel_futures=True)
 
 
+def ordered(task, items, workers=1, ahead=None):
+    """task(item) of each item -> the results in the items' order (since 2026-11-10: the package's reading of every
+    done genome, until then one after another): in this process where workers is 1, else in a process_pool of
+    `workers`, at most `ahead` (default 4 x workers) submitted beyond the result awaited, so that the parent holds a
+    few items' results, not all. task: a module's function (a worker imports it); an item's error is raised here."""
+    if workers <= 1:
+        for item in items:
+            yield task(item)
+        return
+    import gc  # noqa: PLC0415
+    ahead = max(1, ahead or 4 * workers)
+    # the parent's objects (the package's tens of GB) out of the collector's reach while workers fork from it: a
+    # collection in a worker would touch every one of them, and copy their pages into each worker (Python's gc docs)
+    gc.freeze()
+    try:
+        with process_pool(workers) as pool:
+            pending = collections.deque()
+            for item in items:
+                pending.append(pool.submit(task, item))
+                if len(pending) > ahead:
+                    yield pending.popleft().result()
+            while pending:
+                yield pending.popleft().result()
+    finally:
+        gc.unfreeze()
+
+
 def descendants(pids, proc="/proc"):
     """The processes under pids (their children, and theirs), by /proc's parents -> their pids; [] without /proc."""
     try:

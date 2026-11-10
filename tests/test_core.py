@@ -24,6 +24,13 @@ def _slow(x):  # a pool's task (util.unordered)
     return 2 * x
 
 
+def _jitter(x):  # a pool's task (util.ordered): the later items finish first
+    if x < 0:
+        raise ValueError(x)
+    time.sleep(0.05 * (7 - x) / 7)
+    return 2 * x
+
+
 def _killed(x):  # a pool's task whose worker is killed, as by the OOM killer
     if x == 2:
         os.kill(os.getpid(), signal.SIGKILL)
@@ -280,6 +287,17 @@ class ProgressTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             with util.process_pool(2) as pool:
                 list(util.unordered(pool, _killed, [1, 2, 3], poll=0.05))
+
+    def test_results_in_their_order(self):
+        # util.ordered (since 2026-11-10, the package's reading of the done genomes): the items' order whatever the
+        # workers' speeds, in this process for one worker; a task's error raised to the caller, the collector on again
+        import gc  # noqa: PLC0415
+        items = [5, 1, 4, 2, 3, 0, 6]
+        self.assertEqual(list(util.ordered(_jitter, items, 1)), [2 * x for x in items])
+        self.assertEqual(list(util.ordered(_jitter, items, 3, ahead=2)), [2 * x for x in items])
+        with self.assertRaises(ValueError):
+            list(util.ordered(_jitter, [1, -1, 2], 2))
+        self.assertEqual(gc.get_freeze_count(), 0)
 
     def test_usage_of_the_process_tree(self):
         tick, page = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE")

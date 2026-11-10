@@ -294,6 +294,50 @@ def lineage_rank(check):
     return 1 if check["own_species"] == "-" and check.get("cross") else LINEAGE_RANK[check["own_species"]]
 
 
+def genome_part(args):
+    """One done genome's share of collect (since 2026-11-10 a function of its own, so that a pool of processes reads
+    the genomes, `threads` at once; until then one after another, ~30,000 of them from the shared file system, and
+    their coding sequences, introns and proteins made in the one process): args (work, accession, its genetic code)
+    -> None where the genome is not done, else dict(loci (its copies' count), rrna ((counts, element_counts) or None),
+    molecules, searched, record, copies [(copy row, coding sequence, (protein, internal stops), intron rows)] in its
+    loci.tsv's order, alternates [(locus, alt, coding sequence, protein length)]). Its copies whole and its features
+    are not returned: write reads them again (the memory bound of 2026-11-08)."""
+    from . import introns as introns_mod, rrna as rrna_mod  # noqa: PLC0415
+    from .genomes import done_dir, done_summary, is_done, record_of  # noqa: PLC0415
+    work, acc, table = args
+    folder = done_dir(work, acc)
+    got = done_copies(work, acc)
+    # a done genome without a BUSCO called (a divergent protist) is still the species' genome: its rRNA and
+    # organelle records name it (until 2026-11-06 it was left out of genomes.tsv, their accession dangling)
+    if not got and not is_done(work, acc):
+        return None
+    rrna = None
+    if store.has(folder, "rrna.tsv"):
+        rrna_rows = rrna_mod.load(folder)
+        rrna = (rrna_mod.counts(rrna_rows), rrna_mod.element_counts(rrna_rows))
+    own = collections.defaultdict(list)  # this genome's features by locus
+    for f in done_table(work, acc, "features.tsv"):
+        own[f["locus"]].append((f["kind"], int(f["start"]), int(f["end"])))
+    fcs = [dict(f, start=int(f["start"]), end=int(f["end"])) for f in done_table(work, acc, "fcs.tsv")]
+    screened = store.has(folder, "fcs.tsv")
+    searched = done_table(work, acc, "loci.tsv")
+    copies = []
+    for r in searched:
+        if r["status"] != "Missing":
+            row = copy_row(r, acc, fcs if screened else None, len(gap_runs(got.get(r["locus"], ""))))
+            cds = qc.spliced(got.get(r["locus"], ""), own[r["locus"]])
+            # its introns (introns.py), their HMM places set by genetics
+            introns = introns_mod.of_copy(got[r["locus"]], own[r["locus"]]) if got.get(r["locus"]) else []
+            copies.append((row, cds, gencode.protein_of(cds, table), introns))
+    # a Duplicated locus' other complete copies (since 2026-11-09, genome record 2): their coding sequences checked
+    # beside the copies, for the choice by lineage; their copies read again where one is taken
+    alternates = [(a["locus"], a["alt"], qc.spliced(a["copy"], a["features"]), int(a["protein_length"]))
+                  for a in done_alternates(work, acc)]
+    return dict(loci=len(got), rrna=rrna, molecules=organelle_molecules_of(folder),
+                searched={r["locus"] for r in searched}, record=record_of(done_summary(work, acc)) or "-",
+                copies=copies, alternates=alternates)
+
+
 def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None, paralogs_of=None):
     """What the package holds of the BUSCO genes -> dict(genomes {accession: row}, copy_rows [COPY_COLUMNS dicts],
     taxids, cds and proteins {(accession, locus): sequence}, intron_rows (introns.of_copy's, accession and locus set),
@@ -303,20 +347,22 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     copies); the copies' checks across species (qc.check). kinds: {marker locus: clean or family} (markers.kinds): a
     genome's duplication is read on its BUSCOs alone, a family marker's Duplicated is no flag. paralogs_of: a function
     of the marker copies' coding sequences {(accession, locus): cds} and the genomes -> the keys whose best profile is
-    a decoy's (markers.recheck; since 2026-11-09: the decoys a marker set gained since a genome's run, EFL's)."""
+    a decoy's (markers.recheck; since 2026-11-09: the decoys a marker set gained since a genome's run, EFL's).
+    threads: the genomes read `threads` at once by a pool of processes (genome_part; since 2026-11-10), the result
+    the same as one after another; vsearch's threads too."""
     from . import introns as introns_mod  # noqa: PLC0415
-    from .genomes import done_summary, record_of  # noqa: PLC0415
     kinds = kinds or {}
     by_accession = {r["accession"]: r for r in assemblies}
     genomes, copy_rows, cds, intron_rows, done, count = {}, [], {}, [], [], 0
     alt_cds, alt_length = {}, {}  # a Duplicated locus' other copies' (since 2026-11-09)
-    from .genomes import is_done  # noqa: PLC0415
-    for acc, job in sorted(job_map.items()):
-        got = done_copies(work, acc)
-        # a done genome without a BUSCO called (a divergent protist) is still the species' genome: its rRNA and
-        # organelle records name it (until 2026-11-06 it was left out of genomes.tsv, their accession dangling)
-        if not got and not is_done(work, acc):
+    made = {}  # {(accession, locus): (protein, internal stops)} of the copies as read (genome_part)
+    jobs = sorted(job_map.items())
+    parts = util.ordered(genome_part, [(work, acc, job.get("gencode", 1)) for acc, job in jobs],
+                         max(1, min(threads, len(jobs))))
+    for (acc, job), part in zip(jobs, parts):
+        if part is None:
             continue
+        got_n = part["loci"]
         row = by_accession.get(acc, {})
         genomes[acc] = dict(accession=acc, fetched=job.get("fetch", acc), species_taxid=job["species_taxid"],
                             taxid=job.get("taxid") or job["species_taxid"],
@@ -325,47 +371,31 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                                 "level", ""), genome_size=row.get("size") or job.get("size"),
                             contigs=row.get("contigs"), category=row.get("category") or job.get("category", ""),
                             flags=",".join(job.get("flags") or ()) or "-", ftp=row.get("ftp"), source=job["why"][0],
-                            representative="t", loci=len(got), gencode=job.get("gencode", 1),
+                            representative="t", loci=got_n, gencode=job.get("gencode", 1),
                             type_material=type_material_of(row))
-        from . import rrna as rrna_mod  # noqa: PLC0415
-        from .genomes import done_dir  # noqa: PLC0415
-        if store.has(done_dir(work, acc), "rrna.tsv"):
-            rrna_rows = rrna_mod.load(done_dir(work, acc))
-            n = rrna_mod.counts(rrna_rows)
+        if part["rrna"] is not None:
+            n, elements = part["rrna"]
             genomes[acc].update(rrna_18s=n["18S"], rdna_units=n["rDNA"], rdna_complete=n["rDNA_complete"],
                                 rdna_contigs=n["rDNA_contigs"])
-            genomes[acc]["_rrna_copies"] = rrna_mod.element_counts(rrna_rows)  # copy_numbers.tsv's (no column)
-        genomes[acc]["_organelle_molecules"] = organelle_molecules_of(done_dir(work, acc))
+            genomes[acc]["_rrna_copies"] = elements  # copy_numbers.tsv's (no column)
+        genomes[acc]["_organelle_molecules"] = part["molecules"]
         # its copies and features read here and again by write, never all held (since 2026-11-08: every copy, introns
         # and all, and every feature as a dict were, ~1 KB a feature: tens of GB for all eukaryotes)
         done.append(acc)
-        count += len(got)
-        own = collections.defaultdict(list)  # this genome's features by locus
+        count += got_n
         name = sys.intern(acc)
-        for f in done_table(work, acc, "features.tsv"):
-            own[f["locus"]].append((f["kind"], int(f["start"]), int(f["end"])))
-        gap_of = {locus: len(gap_runs(seq)) for locus, seq in got.items()}
-        fcs = [dict(f, start=int(f["start"]), end=int(f["end"])) for f in done_table(work, acc, "fcs.tsv")]
-        screened = store.has(done_dir(work, acc), "fcs.tsv")
-        searched = done_table(work, acc, "loci.tsv")
-        genomes[acc]["_searched"] = {r["locus"] for r in searched}  # Missing ones too: copy_numbers.tsv's zeros
-        genomes[acc]["genome_record"] = record_of(done_summary(work, acc)) or "-"  # since 2026-11-09
-        for r in searched:
-            if r["status"] != "Missing":
-                row = copy_row(r, name, fcs if screened else None, gap_of.get(r["locus"], 0))
-                for k in SHARED_VALUES:  # a few values, many rows: one string each
-                    if isinstance(row.get(k), str):
-                        row[k] = sys.intern(row[k])
-                copy_rows.append(row)
-                cds[(name, row["locus"])] = qc.spliced(got.get(r["locus"], ""), own[r["locus"]])
-                if got.get(r["locus"]):  # its introns (introns.py), their HMM places set by genetics
-                    intron_rows.extend(dict(i, accession=name, locus=row["locus"])
-                                       for i in introns_mod.of_copy(got[r["locus"]], own[r["locus"]]))
-        # a Duplicated locus' other complete copies (since 2026-11-09, genome record 2): their coding sequences
-        # checked beside the copies, for the choice by lineage below; their copies read again where one is taken
-        for a in done_alternates(work, acc):
-            key = (name, a["locus"], a["alt"])
-            alt_cds[key], alt_length[key] = qc.spliced(a["copy"], a["features"]), int(a["protein_length"])
+        genomes[acc]["_searched"] = part["searched"]  # Missing ones too: copy_numbers.tsv's zeros
+        genomes[acc]["genome_record"] = part["record"]  # since 2026-11-09
+        for row, seq, protein, introns in part["copies"]:
+            row["accession"] = name
+            for k in SHARED_VALUES:  # a few values, many rows: one string each (in this process: a worker's are not)
+                if isinstance(row.get(k), str):
+                    row[k] = sys.intern(row[k])
+            copy_rows.append(row)
+            cds[(name, row["locus"])], made[(name, row["locus"])] = seq, protein
+            intron_rows.extend(dict(i, accession=name, locus=row["locus"]) for i in introns)
+        for locus, k, seq, length in part["alternates"]:
+            alt_cds[(name, locus, k)], alt_length[(name, locus, k)] = seq, length
         for other in job.get("others", ()):
             o = by_accession.get(other)
             if o and other not in genomes:
@@ -424,8 +454,11 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             r["transcript"] = "t"
         if key in paralogs:  # a marker copy whose best profile is a decoy's (markers.recheck; since 2026-11-09)
             r["paralog"] = "t"
-        # its protein before its tier (since 2026-11-09: a stop inside it is a flag)
-        proteins[key], r["internal_stops"] = gencode.protein_of(cds[key], genomes[r["accession"]].get("gencode", 1))
+        # its protein before its tier (since 2026-11-09: a stop inside it is a flag); made by genome_part, again for a
+        # copy taken by lineage
+        swapped = r["locus"] in swaps.get(r["accession"], ())
+        proteins[key], r["internal_stops"] = made[key] if not swapped else gencode.protein_of(
+            cds[key], genomes[r["accession"]].get("gencode", 1))
         r["confidence"], r["flags"] = copy_confidence(r, kinds.get(r["locus"]) == "family")
     by_genome, all_rows = collections.defaultdict(list), collections.defaultdict(list)
     for r in copy_rows:
@@ -467,6 +500,20 @@ def genome_features(work, accession, copies=None, swaps=None):
                  if swaps.get(a["locus"]) == a["alt"] for kind, s, e in a["features"]]
     rows += [(locus, a, "gap", b) for locus, seq in copies.items() for a, b in gap_runs(seq)]
     return [dict(accession=accession, locus=lo, kind=k, start=s, end=e) for lo, s, k, e in sorted(rows)]
+
+
+def genome_files(args):
+    """A done genome's lines of write's files (since 2026-11-10 a function of its own: a pool of processes reads the
+    genomes): args (work, accession, swaps: done_copies') -> ([(locus, its copy's FASTA record)], [(locus, its
+    features.tsv lines joined)]), in write's order: genome_features' rows are by locus, a locus' lines one string (a
+    few strings a genome to pass between the processes, not one a feature)."""
+    work, acc, swaps = args
+    got = done_copies(work, acc, swaps)
+    feats = {}
+    for f in genome_features(work, acc, got, swaps):
+        feats.setdefault(f["locus"], []).append("\t".join(str(f[c]) for c in FEATURE_COLUMNS) + "\n")
+    return ([(locus, f">{acc}\n{seq.upper()}\n") for locus, seq in got.items() if seq],
+            [(locus, "".join(lines)) for locus, lines in feats.items()])
 
 
 def genetics(collected, ncbi, hmm_of, hmmalign="hmmalign", work=None, log=print, threads=1):
@@ -525,7 +572,7 @@ def loci_rows(loci, collected, ncbi):
 
 
 def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None, organelle=None,
-          references=(), before_manifest=None, metadata=None, tables=(), writers=()):
+          references=(), before_manifest=None, metadata=None, tables=(), writers=(), threads=1):
     """The package into `out` (written beside it and renamed into place; the manifest last) -> its folder.
     before_manifest: a function of the unfinished package's folder, run once its tables are written (the build's
     benchmarks: benchmarks.run), whose result (a dict) the manifest keeps as `benchmarks`.
@@ -535,7 +582,9 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
     metadata: a function of (the unfinished folder, the genomes' rows) writing the assemblies' metadata
     (metadata.write: metadata/, organelle/molecules.fna.gz), its counts the manifest's `metadata`; tables: further
     tables [(path in the package, columns, rows)] (since 2026-11-07: rrna/regions.tsv, the amplicons); writers:
-    functions of the unfinished folder writing further files (since 2026-11-07: intraspecific/)."""
+    functions of the unfinished folder writing further files (since 2026-11-07: intraspecific/); threads: the done
+    genomes' copies and features read `threads` at once by a pool of processes (genome_files; since 2026-11-10), the
+    files the same as one after another."""
     part = util.part_of(out)
     shutil.rmtree(part, ignore_errors=True)
     # each locus' set: busco/ (BUSCO's), markers/ (Eukore's own, markers.py; since 2026-11-07), the same files in each
@@ -575,16 +624,18 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
     try:
         for fh in feature_files.values():
             fh.write("\t".join(FEATURE_COLUMNS) + "\n")
-        for acc in sorted(collected.get("done", ())):
-            swaps = collected.get("swaps", {}).get(acc)  # a Duplicated locus' copy taken by lineage (collect)
-            got = done_copies(collected["work"], acc, swaps)
-            for locus, seq in got.items():
-                if locus in copy_files and seq:
-                    copy_files[locus].write(f">{acc}\n{seq.upper()}\n")
-            for f in genome_features(collected["work"], acc, got, swaps):
-                s = set_of.get(f["locus"], "busco")
+        # a Duplicated locus' copy taken by lineage (collect's swaps); the genomes read `threads` at once (since
+        # 2026-11-10: genome_files), written here in their order
+        done = sorted(collected.get("done", ()))
+        items = [(collected["work"], acc, collected.get("swaps", {}).get(acc)) for acc in done]
+        for got, feats in util.ordered(genome_files, items, max(1, min(threads, len(items)))):
+            for locus, text in got:
+                if locus in copy_files:
+                    copy_files[locus].write(text)
+            for locus, lines in feats:
+                s = set_of.get(locus, "busco")
                 if s in feature_files:
-                    feature_files[s].write("\t".join(str(f[c]) for c in FEATURE_COLUMNS) + "\n")
+                    feature_files[s].write(lines)
     finally:
         for fh in list(copy_files.values()) + list(feature_files.values()):
             fh.close()
@@ -721,7 +772,8 @@ def read(folder):
 
 def check(folder, deep=False):
     """Why a package is not whole (no manifest, another format, a file missing or of another size; deep: or another
-    MD5), or None."""
+    MD5, or, since 2026-11-10, a BGZF file without its end block: cut short before its MD5 was taken, a node that
+    went down after its rename), or None. A .gz of a package before BGZF (2026-11-09) is not BGZF: not judged so."""
     manifest = read(folder)
     if manifest is None:
         return f"{folder}: no Eukore package (no {MANIFEST})"
@@ -733,6 +785,8 @@ def check(folder, deep=False):
             return f"{folder}: {rel} is missing"
         if os.path.getsize(path) != size or (deep and util.md5(path) != digest):
             return f"{folder}: {rel} is not the file its manifest names"
+        if deep and rel.endswith(".gz") and util.is_bgzf(path) and not util.bgzf_whole(path):
+            return f"{folder}: {rel} is cut short (no BGZF end block)"
     return None
 
 
