@@ -107,7 +107,7 @@ python3 -m unittest discover -s tests -t tests      # ~80 tests with stand-in to
 A trial builds the package of a few clades on one machine, all stages in one run:
 
 ```bash
-python3 eukore_build.py --work work --out out --groups fungi --species 4930 -t 8
+python3 eukore_build.py --build_dir work --out out --groups fungi --species 4930 -t 8
 ```
 
 `--species` takes NCBI taxids (here *Saccharomyces*, 4930), comma-separated or a file of one per line. Only the species
@@ -124,21 +124,44 @@ On a cluster, the stage that needs the network runs where the network is, and th
 
 ```bash
 # a node with internet: the sources, then every species' genome
-python3 eukore_build.py --work WORK --out OUT --stage fetch --groups fungi,protozoa
+python3 eukore_build.py --build_dir WORK --out OUT --stage fetch --groups fungi,protozoa
 
 # compute nodes, no network: each genome's BUSCOs and rRNA, then the organelle genes
-python3 eukore_build.py --work WORK --out OUT --stage process --groups fungi,protozoa -t 64 -j 16
+python3 eukore_build.py --build_dir WORK --out OUT --stage process --groups fungi,protozoa -t 64 -j 16
 
 # then the package: the checks across species, the published rRNA, the prune, the package, the release
-python3 eukore_build.py --work WORK --out OUT --stage package --groups fungi,protozoa -t 64 --keep_gb 1000 \
+python3 eukore_build.py --build_dir WORK --out OUT --stage package --groups fungi,protozoa -t 64 --keep_gb 1000 \
     [--fcs_gx_db /dev/shm/gxdb/all] [--tiara .../bin/tiara] [--ksgp_tax .../KSGP_v4.4_plus2.tax]
 
 # only the release again (the website's data, the downloads) of a finished package
-python3 eukore_build.py --work WORK --out OUT --stage release --version 2026.11 -t 64
+python3 eukore_build.py --build_dir WORK --out OUT --stage release --version 2026.11 -t 64
 ```
 
-Give every stage the same `--work`, `--out`, `--groups` and `--species`: each stage plans the same genome set from
-them. `--stage all` (the default) runs the three in turn on one machine with internet.
+Give every stage the same `--build_dir`, `--out`, `--genomes`, `--groups` and `--species`: each stage plans the same
+genome set from them. `--build_dir` is the build's own state, kept for every rerun (the sources, each genome's
+results, the caches); `--out` what it makes (the package, the release); `--local_tmp` a node's throwaway temporary
+files. Until 2026-11-09 `--build_dir` was `--work` and `--local_tmp` `--scratch`: both old names are still taken, as
+they were. The genomes go into `OUT/genomes` unless `--genomes DIR` puts them in a folder of their own (since
+2026-11-09), e.g. a download area apart from the package; to move a build's genomes there, move the folder's files
+(the genomes, their gene models, assembly reports and `.annotation_none` notes, `manifest.tsv`) with it.
+`--stage all` (the default) runs the three in turn on one machine with internet.
+
+The process stage may run on several nodes at once, e.g. a SLURM array: each run claims the genomes it takes, so the
+runs share them out without a split. With `--genomes_only` (since 2026-11-09) each runs its genomes and stops; one
+process run without it, after them all, makes the passes after the genomes over every one of them, then the package:
+
+```bash
+# eukore.sh: process, or package once the array's tasks have all ended well
+#   jid=$(sbatch --parsable --array=1-8 eukore.sh process)
+#   sbatch --dependency=afterok:$jid eukore.sh package
+B=(python3 eukore_build.py --build_dir WORK --out OUT --groups fungi,protozoa)
+if [[ $1 == process ]]; then
+    "${B[@]}" --stage process --genomes_only --local_tmp $SLURM_LOCAL_SCRATCH -t $SLURM_CPUS_PER_TASK
+else
+    "${B[@]}" --stage process --local_tmp $SLURM_LOCAL_SCRATCH -t $SLURM_CPUS_PER_TASK  # no genome left: the passes
+    "${B[@]}" --stage package -t $SLURM_CPUS_PER_TASK --keep_gb 1000
+fi
+```
 
 Each run opens with a banner on STDOUT (since 2026-11-08): Eukore's version, the date, host and Python, the command
 (a `--veupathdb_key` on it hidden), then what each of its stages will do and with what: the groups and species, the
@@ -182,7 +205,8 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   e.g. one per node (since 2026-11-08): each genome is claimed by the run that takes it (`WORK/done/.<accession>.claim`;
   touched every minute, a claim of a killed job or a node that died is taken over after 5 minutes untouched, so a
   restart runs the genomes its killed job held), a genome another run finished after this one planned is left alone
-  (since 0.2.2: run again), and each run then makes the passes below too. A worker process that dies (the OOM killer,
+  (since 0.2.2: run again), and each run then makes the passes below too, unless `--genomes_only` leaves them to one
+  run after them all (since 2026-11-09; above). A worker process that dies (the OOM killer,
   a crash) stops the stage with a message; a rerun goes on (since 0.2.2: the stage waited for it forever). A genome
   over 4 Gb is aligned in pieces of 4 Gb at most, a chromosome over that alone (since 0.2.2: a piece took one more
   whole chromosome past it, over the memory the scheduler reserved). Then it
@@ -226,25 +250,29 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 
 | option | default | |
 |---|---|---|
-| `--work DIR` | required | the build's work folder: sources, each genome's results, caches |
-| `--out DIR` | required | where `Eukore_<version>/`, `release/` and `genomes/` go |
+| `--build_dir WORK` | required | the build's own folder, kept for the whole build and every rerun: the sources (`WORK/sources`), each genome's results (`WORK/done/<accession>/`: a full build's weeks of runs), the package stage's caches; not a scratch folder (`--work` before 2026-11-09, still taken) |
+| `--out DIR` | required | where `Eukore_<version>/`, `release/` and `genomes/` (unless `--genomes`) go |
+| `--genomes DIR` | `OUT/genomes` | the genomes' folder: the fetch stage downloads each species' genome, its gene models and NCBI's assembly report into it, the process stage reads them from it, the package stage cuts it back to `--keep_gb`; the same for every stage (since 2026-11-09) |
 | `--stage` | `all` | `fetch`, `process`, `package` or `all` (the three in turn); `release`: `OUT/release/` again of a finished `OUT/Eukore_<version>/` (since 2026-11-09) |
+| `--genomes_only` | | with `--stage process`: run the genomes and stop, the passes after them (backfill, intraspecific panel, metadata, organelle genes, gene models) left to a process run without it; for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages); since 2026-11-09) |
 | `--no_release` | | the package stage writes no `OUT/release/` (the website's data and the downloads, a second copy of the package: since 2026-11-09 written last by default) |
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
-| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.2, is in the manifest's `eukore`) |
+| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.3, is in the manifest's `eukore`) |
 | `-V` | | print Eukore's own version and exit |
 | `--keep_gb` | none: no genome deleted | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept); with it, a superseded assembly's and the intraspecific panel's genome files are deleted once done too (until 2026-11-08 the default was 1000) |
 | `-t`, `--threads` | 8 | threads in all; since 2026-11-09 also those that compress every `.gz` file the build writes (BGZF: the package's and the release's at level 9, the work folder's at 6) |
 | `-j`, `--jobs` | threads / 4 | genomes at a time at most, `-t / -j` threads each; fewer where `--memory_gb` holds fewer, each then with more threads (since 0.2.1) |
 | `--memory_gb` | SLURM's allocation, else the cgroup's limit, else the node's memory available; 85% of it | the process stage's memory: a genome is begun where its run's estimate (~7.5 bytes a base, of 4 Gb at most, and 3 GB) fits in what the running ones leave, the largest first, a smaller one in the room a larger one does not fit (since 0.2.1; until then `-j` at once whatever their sizes) |
 | `--downloads` | 8 | the fetch stage's genomes and annotations downloaded at a time, by `curl` where it is on the PATH (one NCBI connection: ~30–40 MB/s by curl, ~10 by Python's urllib); their gzip checks run in one process of their own, a second core, by ISA-L's `igzip` where it is on the PATH (conda-forge's `isa-l`; ~3.5x Python's), else `pigz`, else Python |
-| `--scratch DIR` | beside `OUT/genomes`; `TMPDIR` | a node's local disk (or a scratch file system without backups) for temporary files: the fetch stage's unfinished downloads (`.part` files) and their gzip checks, each file copied into `OUT/genomes` once whole; since 0.2.1 the process stage's too: each genome run's copy of its genome (read there by every step, not from `OUT` some six times), miniprot's pieces of a genome over 4 Gb, the rescue's ORFs, tiara's and vsearch's files, and `TMPDIR`'s (barrnap's, ITSx's); only the results are written to `WORK`. Room: up to ~3 times a genome's size per genome running (a few GB; ~10–20 GB for a mammal's, ~45 GB for a 30 Gb genome's pieces) |
+| `--local_tmp DIR` | beside `OUT/genomes`; `TMPDIR` | a node's local disk (or a scratch file system without backups) for temporary files: the fetch stage's unfinished downloads (`.part` files) and their gzip checks, each file copied into `OUT/genomes` once whole; since 0.2.1 the process stage's too: each genome run's copy of its genome (read there by every step, not from `OUT` some six times), miniprot's pieces of a genome over 4 Gb, the rescue's ORFs, tiara's and vsearch's files, and `TMPDIR`'s (barrnap's, ITSx's); only the results are written to `WORK`. Room: up to ~3 times a genome's size per genome running (a few GB; ~10–20 GB for a mammal's, ~45 GB for a 30 Gb genome's pieces); `--scratch` before 2026-11-09, still taken |
 | `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and the process stage's passes, after a report every minute of each one's first 10 (items left, time left; in the process stage the cores, memory and disk used) |
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
 | `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
+| `--held_out_ranks` | `genus,family,order` | the OrthoDB benchmark's clade hold-out: a BUSCO dataset species' genome called again without its genus', family's and order's dataset species in turn, one more BUSCO search each ([benchmarks.md](benchmarks.md); `none`: its own species' hold-out alone; since 2026-11-09) |
+| `--reversion` | off | stamp every done genome of an older genome record with the build's, its calls kept, so that it is not run again ([Resuming and rebuilding](#resuming-and-rebuilding); since 2026-11-09) |
 | `--organelle_models` | `miniprot` | the assemblies' organelle protein-coding genes: `nhmmer`'s hits alone, or with `miniprot`'s exons by the organelle's code where nhmmer joined several hits (a gene with introns; measured: [methods.md](methods.md); format 5) |
 | `--intraspecific` | 3 | further assemblies of each species of `data/intraspecific_panel.tsv` run for the barcode gap (`intraspecific/`); 0: none |
 | `--no_markers` | markers on | no Eukore marker loci (`data/markers.tsv`: RPB1, RPB2, EF-2, EF-1α, ...), the BUSCOs alone |
@@ -279,6 +307,24 @@ Every stage is resumable: a rerun does only what is not done.
 - A species whose genome changed since the last plan (`WORK/genome_set.tsv`: TOGA2's assembly in its place; NCBI's
   newer assembly or version, after `--refresh`) gets the new one fetched and run; the old file (and its annotation)
   is deleted once the new one is done (`WORK/superseded.tsv`), its done folder kept.
+- A done genome of an older genome record than the build's is run again (since 2026-11-09; the fetch stage fetches
+  it again where the prune deleted it). The genome record (`genomes.GENOME_RECORD`, `done.json`'s `genome_record`)
+  names what made a genome's calls: it is raised only where a change to Eukore's calls should not be mixed with older
+  runs' in one package, not at every version (1: runs before 2026-11-09; 2: the coding sequences checked and recovered,
+  a Duplicated locus' other copies kept for the choice by lineage: [methods.md](methods.md#checks-and-choices-format-6-since-2026-11-09)).
+  `--reversion` stamps every done genome of an older record with the build's instead and keeps its calls, so that
+  a build whose genomes were run by an earlier Eukore goes on without running them again: their copies keep the best
+  HMM score's choice and their coding sequences unchecked (the package stage still checks each one's protein for
+  stops and its lineage across species). Its `done.json` notes `reversioned` (the record it had, when, by which
+  Eukore). The package stage says how many genomes are of an older record; `genomes.tsv`'s `genome_record` says each
+  one's.
+
+On a build begun before 2026-11-09 (every done genome of record 1), run the next stage with `--reversion` once to keep
+its genomes' calls, or without it to run them all again with the checked coding sequences and the alternates:
+
+```bash
+python3 eukore_build.py --build_dir WORK --out OUT --stage process --reversion -t 120 -j 30 --memory_gb 200
+```
 
 `--refresh` (with the fetch stage, or `all`) fetches again what chooses the genomes and their gene models: NCBI's
 assembly tables, its FCS-GX and ANI reports, and Ensembl's, VEuPathDB's and TOGA2's indexes (each old one kept where

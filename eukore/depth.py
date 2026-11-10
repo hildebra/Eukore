@@ -75,7 +75,7 @@ DEPTH_COLUMNS = ("accession", "species_taxid", "runs", "run_source", "platform",
                  "rdna_copies_reads", "rdna_18s_copies", "mt_genes", "mt_copies_reads", "pt_genes",
                  "pt_copies_reads", "flags")
 GENE_REGIONS = ("18S", "5.8S", "28S")
-CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2, "-": 1}
+CONFIDENCE_RANK = {"high": 0, "unverified": 1, "medium": 2, "low": 3, "-": 2}  # unverified: format 6
 
 
 # --- package tables -----------------------------------------------------------------------------------------------

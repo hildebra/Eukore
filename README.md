@@ -33,7 +33,7 @@ Eukore is two things:
 
 It is made for tools that detect and profile eukaryotes in metagenomes (protal reads it as its eukaryote reference),
 and for anyone needing clean eukaryote marker genes: phylogenetics, primer design, contamination screens. Eukore's
-version is 0.2.2 (package format 5); it was named EUKDB until 2026-11-06.
+version is 0.2.3 (package format 6); it was named EUKDB until 2026-11-06.
 
 <p align="center">
   <img src="docs/figures/overview_slide.png" alt="Eukore at a glance: 21 sources, the build's three stages, the package's parts" width="860">
@@ -50,7 +50,7 @@ version is 0.2.2 (package format 5); it was named EUKDB until 2026-11-06.
 | **assembly metadata** | its genome's size, contiguity, gaps, GC and its spread, soft-masking, CpG, duplicates, telomeres, organelle molecules, tetranucleotides, a sourmash sketch; NCBI's own summary | measured while the genome is on disk, before the build deletes it | in the package's `metadata/` |
 | **taxonomy** | NCBI's lineage (and with its empty ranks filled), supergroup (Obazoa, TSAR, ...) and group; its lineage in PR2, EUKARYOME, KSGP, SILVA, UNITE (and MIDORI2); its Open Tree, GBIF, WoRMS, IRMNG, UNITE SH (and BOLD BIN) ids; its genome's type material | NCBI's taxdump, cut to the package | tied to no GTDB release |
 | **barcode gap** | for a panel of 40 well-sampled species, each marker's variation within the species beside its distance to the nearest other species | 3 further assemblies of each (other strains) | `intraspecific/` |
-| **checks** | per copy and record: own-species agreement, 99% collapses, length outliers, contig ends, assembly gaps, tiara's and FCS-GX's contamination screens, an rRNA chimera screen; a `high`/`medium`/`low` tier with its reasons | Eukore's checks across species | flagged, never silently dropped |
+| **checks** | per copy and record: own-species agreement (the owner of a sequence two clades' genomes share told), 99% collapses, length outliers, contig ends, assembly gaps, coding sequences against the proteins confirmed, tiara's and FCS-GX's contamination screens, an rRNA chimera screen, each 18S a nucleus'; a `high`/`unverified`/`medium`/`low` tier with its reasons | Eukore's checks across species | flagged, never silently dropped |
 | **benchmarks** | completeness, agreement with OrthoDB's gene models, marker resolution, rRNA completeness, naming, primer coverage, the barcode gap, run time | measured by each build | in the package's `benchmarks/` |
 
 All eukaryote groups of NCBI are covered: fungi, protists, plants, invertebrates and vertebrates (on NCBI's tables
@@ -60,7 +60,7 @@ FCS-GX and ANI screens find contaminated or misidentified where a better one exi
 (ENA's TSA sets: some 5,000 species, most animals and plants) has its BUSCOs called in it (`species.tsv`'s `source` `tsa`).
 
 A package is plain TSV and gzipped FASTA with a `manifest.json` of checksums; its format is
-[docs/FORMAT.md](docs/FORMAT.md) (format 5). Every `.gz` file is BGZF (blocked gzip, since 2026-11-09): any gzip
+[docs/FORMAT.md](docs/FORMAT.md) (format 6). Every `.gz` file is BGZF (blocked gzip, since 2026-11-09): any gzip
 reader reads it, `bgzip -d -@` decompresses it on many threads.
 
 ```
@@ -170,16 +170,16 @@ python3 -m unittest discover -s tests -t tests            # ~140 tests with stan
 A **trial** builds a few clades on one machine (here *Saccharomyces*, taxid 4930); its manifest marks it partial:
 
 ```bash
-python3 eukore_build.py --work work --out out --groups fungi --species 4930 -t 8
+python3 eukore_build.py --build_dir work --out out --groups fungi --species 4930 -t 8
 ```
 
 The **full reference** is built in three stages, the first where the network is, the rest on compute nodes:
 
 ```bash
-python3 eukore_build.py --work WORK --out OUT --stage fetch                  # sources and genomes (~6.5 TB, pruned as it goes)
-python3 eukore_build.py --work WORK --out OUT --stage process -t 64 \
-    [--memory_gb 200] [--scratch /local/disk]                                # each genome's genes and rRNA
-python3 eukore_build.py --work WORK --out OUT --stage package -t 64 \
+python3 eukore_build.py --build_dir WORK --out OUT --stage fetch             # sources and genomes (~6.5 TB, pruned as it goes)
+python3 eukore_build.py --build_dir WORK --out OUT --stage process -t 64 \
+    [--memory_gb 200] [--local_tmp /local/disk]                              # each genome's genes and rRNA
+python3 eukore_build.py --build_dir WORK --out OUT --stage package -t 64 \
     [--fcs_gx_db /dev/shm/gxdb/all] [--tiara .../bin/tiara]                  # checks, rRNA, labels, package, benchmarks,
                                                                              # the release (OUT/release/)
 ```
@@ -276,7 +276,7 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 
 ## Status and limitations
 
-- Version 0.2.2. The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built.
+- Version 0.2.3. The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built; format 6 (2026-11-09: the four confidence tiers, coding sequences checked and recovered, a Duplicated locus' copy chosen by lineage, the owner of a shared sequence told, the 18S checked to be a nucleus', the genome record) is tested on stand-ins and four trial genomes, not yet on a built package.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
 - The organelle genes have checks across species and a confidence tier since 0.2, measured on a trial without RefSeq's organelle release (assembly molecules alone). In assemblies, a protein-coding gene with introns takes miniprot's exons (median F1 0.96-0.99 against RefSeq's, against nhmmer's joined hits' 0.27-0.60), one without nhmmer's single hit ([methods.md](docs/methods.md)); a few splice sites stay off by some bases.
 - The genetic code check judges only the stop codons and CTG, where seen often enough at conserved positions (CTG-clade yeasts avoid CTG: not judged); a transcriptome's BUSCO copies (TSA, a species without a genome) have no introns and are at most `medium`.

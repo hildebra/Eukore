@@ -191,7 +191,7 @@ def _float(text):
 
 
 def _confidence(counter):
-    return {k: counter.get(k, 0) for k in ("high", "medium", "low")}
+    return {k: counter.get(k, 0) for k in ("high", "unverified", "medium", "low")}  # unverified: format 6
 
 
 RRNA_REGIONS = ("18S", "ITS1", "5.8S", "ITS2", "28S", "5S")

@@ -2,7 +2,7 @@
 stage measures them as it builds (into the package's benchmarks/, before its manifest, which keeps summary.json's
 figures as `benchmarks`); any package can be measured again afterwards:
 
-    python3 -m eukore.benchmarks OUT/Eukore_2026.11 --work WORK -t 8     # into OUT/Eukore_2026.11/benchmarks/
+    python3 -m eukore.benchmarks OUT/Eukore_2026.11 --build_dir WORK -t 8    # into OUT/Eukore_2026.11/benchmarks/
 
 docs/benchmarks.md describes them, docs/benchmarks/plot_benchmarks.py draws them. Each is a table of benchmarks/:
 - completeness.tsv: per species' genome its BUSCOs Single, Duplicated, Fragmented and Missing, its copies'
@@ -47,13 +47,14 @@ DEPTHS = ("none", "phylum", "class", "order", "family", "genus")  # qc.depth's 0
 QUANTILES = (("q05", 0.05), ("q25", 0.25), ("median", 0.5), ("q75", 0.75), ("q95", 0.95))
 SSU_MIN = 1000      # an 18S this long at least, for resolution.tsv (a read's fragment would understate identity)
 REGIONS = ("18S", "ITS1", "5.8S", "ITS2", "28S", "5S")
-TIERS = ("high", "medium", "low")
+TIERS = package.TIERS  # high, unverified, medium, low (format 6; a format-5 package has no unverified: 0)
 MATCHES = ("taxid", "species", "synonym", "genus", "-")  # taxid: MIDORI2's own (since format 5)
 REFERENCES = package.REFERENCES
 ALL_BUSCOS = "BUSCO (all)"
 
 COMPLETENESS_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "source", "level", "genome_size",
                         "contigs", "loci", "single", "duplicated", "fragmented", "missing", "complete", "high",
+                        "unverified",
                         "medium", "low", "rrna_18s", "rdna_units", "rdna_complete")
 ORTHODB_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "locus", "status", "odb_proteins",
                    "odb_length", "protein_length", "recall", "precision", "guided", "verdict")
@@ -142,6 +143,9 @@ def compare(cds, table, references):
     return recall, precision, length, len(protein.rstrip("*")), verdict(recall, precision)
 
 
+compare_cds = compare  # run()'s parameter `compare` (another reference) hides the name there
+
+
 def verdict(recall, precision):
     """A call's verdict from its k-mer recall and precision against its reference protein (the one rule of compare,
     marker_rows and tools/validate_markers.py)."""
@@ -203,13 +207,78 @@ def orthodb_row(acc, species_taxid, locus, call, cds, references, ncbi, held=Non
     return row
 
 
-def held_out_calls(work, acc):
-    """A genome's held-out calls (WORK/done/<accession>/held_out.tsv) -> {locus: its row (status, query, cds; contig,
-    start, end and rescued since a later run)}, None without."""
-    path = os.path.join(genomes_mod.done_dir(work, acc), genomes_mod.HELD_OUT) if work else None
+def held_out_calls(work, acc, rank=None):
+    """A genome's held-out calls (WORK/done/<accession>/held_out.tsv; or, rank given, its clade hold-out's at that rank,
+    held_out_<rank>.tsv) -> {locus: its row (status, query, cds; contig, start, end and rescued since a later run)},
+    None without."""
+    path = os.path.join(genomes_mod.done_dir(work, acc), genomes_mod.held_out_file(rank)) if work else None
     if not path or not os.path.isfile(path):
         return None
     return {r["locus"]: r for r in rows_of(path)}
+
+
+HOLDOUT_LEVELS = ("species",) + genomes_mod.HELD_OUT_RANKS
+DEPTH_NAMES = ("none", "phylum", "class", "order", "family", "genus")  # qc.depth's 0 .. 5
+HOLDOUT_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "level", "left_out", "nearest", "loci", "called",
+                   "concordant", "similar", "discordant", "missed", "same_gene", "span_90")
+
+
+def clade_levels(work, acc):
+    """A dataset species' genome's held-out calls at each level (since 2026-11-09: its species', then its genus',
+    family's, order's left out; genomes.clade_held_out) -> {level: (calls (held_out_calls'), record (left_out, nearest:
+    the depth its lineage shares with the nearest dataset species kept))}, {} without."""
+    summary = genomes_mod.done_summary(work, acc) if work else None
+    held = (summary or {}).get("held_out")
+    out = {}
+    if not held:
+        return out
+    calls = held_out_calls(work, acc)
+    if calls:
+        out["species"] = (calls, dict(left_out=len(held.get("left_out") or ()), nearest=held.get("nearest")))
+    for rank in genomes_mod.HELD_OUT_RANKS:
+        rec = (held.get("ranks") or {}).get(rank)
+        if not rec or rec.get("no_taxon"):
+            continue
+        source = rec.get("same_as") or rank
+        calls = held_out_calls(work, acc, None if source == "species" else source)
+        if calls:
+            out[rank] = (calls, rec)
+    return out
+
+
+def holdout_rows(tallies, records, species):
+    """holdout.tsv's rows: per genome and level, its held-out calls against OrthoDB's gene models (tallies:
+    {(accession, species taxid, level): Counter of verdicts, same_gene, span_90, loci}; records: {(accession,
+    level): clade_levels' record})."""
+    out = []
+    for (acc, sp, level), t in sorted(tallies.items(), key=lambda kv: (kv[0][0], HOLDOUT_LEVELS.index(kv[0][2]))):
+        rec = records[(acc, level)]
+        info = species.get(str(sp), {})
+        nearest = rec.get("nearest")
+        out.append(dict(accession=acc, species_taxid=sp, name=info.get("name", "-"),
+                        supergroup=info.get("supergroup", "-"), level=level, left_out=rec.get("left_out", "-"),
+                        nearest="-" if nearest is None else DEPTH_NAMES[int(nearest)], loci=t["loci"],
+                        called=t["loci"] - t["missed"], concordant=t["concordant"], similar=t["similar"],
+                        discordant=t["discordant"], missed=t["missed"], same_gene=t["same_gene"],
+                        span_90=t["span_90"]))
+    return out
+
+
+def holdout_summary(rows):
+    """summary.json's orthodb.clade_hold_out: per level, its genomes and loci, the share called, the share of those
+    OrthoDB's gene model (concordant), the share on the package's call's gene, and the nearest dataset species kept
+    (the genomes per shared rank)."""
+    out = {}
+    for level in HOLDOUT_LEVELS:
+        rs = [r for r in rows if r["level"] == level]
+        if not rs:
+            continue
+        loci, called = sum(r["loci"] for r in rs), sum(r["called"] for r in rs)
+        out[level] = dict(genomes=len(rs), loci=loci, called=round(called / loci, 4) if loci else None,
+                          concordant_of_called=round(sum(r["concordant"] for r in rs) / called, 4) if called else None,
+                          same_gene_of_called=round(sum(r["same_gene"] for r in rs) / called, 4) if called else None,
+                          nearest=dict(collections.Counter(r["nearest"] for r in rs)))
+    return out
 
 
 def verdict_summary(rows, prefix=""):
@@ -795,6 +864,9 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
                 busco_nearest[locus].append(found)
     need = compared | (set(genomes) if search else set())
     held = {a: held_out_calls(work, a) for a in compared}
+    # the clade hold-out (since 2026-11-09): each level's held-out calls against OrthoDB's gene models
+    levels = {a: clade_levels(work, a) for a in compared}
+    clade_tallies, clade_records = collections.defaultdict(collections.Counter), {}
     for locus in loci:
         cds = {}
         if need and os.path.isfile(os.path.join(folder, "busco", "copies", f"{locus}.fna.gz")):
@@ -805,6 +877,20 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
             if references:
                 odb_rows.append(orthodb_row(acc, species_of[acc], locus, calls.get((acc, locus)), cds.get(acc, ""),
                                             references, ncbi, held[acc].get(locus) if held[acc] else None))
+                table = ncbi.code_of(species_of[acc])
+                for level, (level_calls, record) in levels[acc].items():
+                    t = clade_tallies[(acc, species_of[acc], level)]
+                    clade_records[(acc, level)] = record
+                    t["loci"] += 1
+                    h = level_calls.get(locus)
+                    if not h or h["status"] == "Missing":
+                        t["missed"] += 1
+                        continue
+                    t[compare_cds(h["cds"], table, references)[4]] += 1
+                    place, span = place_of(calls.get((acc, locus)), h) if calls.get((acc, locus)) else ("-", "-")
+                    if place == "same":
+                        t["same_gene"] += 1
+                        t["span_90"] += float(span) >= 0.9
         if search:
             got = qc.check({(a, locus): s for a, s in cds.items()}, species_of, ncbi, vsearch, threads)
             busco_nearest[locus] = [(c["nearest_id"], c["nearest_depth"]) for c in got.values()]
@@ -822,7 +908,17 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
             log(f"benchmarks: held-out calls of {summary['orthodb']['held_out']['species']} species "
                 f"({summary['orthodb']['held_out']['verdicts']}; {summary['orthodb']['held_out']['place']})")
         elif compared:
-            summary["left_out"]["orthodb_held_out"] = "no held-out calls (genomes run before 2026-11-06, or no --work)"
+            summary["left_out"]["orthodb_held_out"] = "no held-out calls (genomes run before 2026-11-06, or no --build_dir)"
+        rows = holdout_rows(clade_tallies, clade_records, species)
+        if any(r["level"] != "species" for r in rows):  # the clade hold-out (since 2026-11-09)
+            write(out, "holdout.tsv", HOLDOUT_COLUMNS, rows)
+            summary["orthodb"]["clade_hold_out"] = holdout_summary(rows)
+            log(f"benchmarks: clade hold-out of {len({r['accession'] for r in rows})} genomes: "
+                + ", ".join(f"{lv} {s['concordant_of_called']} of {s['called']} called"
+                            for lv, s in summary["orthodb"]["clade_hold_out"].items()))
+        elif compared:
+            summary["left_out"]["clade_hold_out"] = "no clade hold-out calls (genomes run before 2026-11-09, or " \
+                                                    "--held_out_ranks none)"
 
     if vsearch:
         markers = dict(busco_nearest)
@@ -893,7 +989,7 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
         else:
             summary["left_out"]["runtime"] = "no genome timed (genomes run before 2026-11-06)"
     else:
-        summary["left_out"]["runtime"] = "no work folder (--work)"
+        summary["left_out"]["runtime"] = "no build folder (--build_dir)"
     paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside, reads, flags,
           {a: tuple(v) for a, v in gene_bases.items()}, threads, summary, log, databases)
     if stages is not None:
@@ -908,7 +1004,9 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("package", help="a package folder (Eukore_<version>/)")
-    p.add_argument("--work", help="the build's work folder: runtime.tsv, and the defaults of --odb and --taxdump")
+    p.add_argument("--build_dir", "--work", dest="work", metavar="WORK",
+                   help="the build's folder (eukore_build.py --build_dir; --work before 2026-11-09): runtime.tsv, and "
+                        "the defaults of --odb and --taxdump")
     p.add_argument("--odb", help="BUSCO's dataset the package was called with (default WORK/sources/eukaryota_odb12): "
                                  "orthodb.tsv")
     p.add_argument("--taxdump", help="NCBI's taxdump (default WORK/sources/taxdump.tar.gz, else the package's "

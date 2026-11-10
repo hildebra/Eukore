@@ -18,8 +18,11 @@ from . import qc
 from . import util
 from . import __version__
 
-FORMAT = 5
-READABLE = (4, 5)  # the formats a reader of this one takes (5 adds files and columns, and regroups supergroup)
+FORMAT = 6
+# the formats a reader of this one takes (5 adds files and columns, and regroups supergroup; 6, since 2026-11-09, adds
+# columns and the confidence tier `unverified`, which format 5 counted as medium)
+READABLE = (4, 5, 6)
+TIERS = ("high", "unverified", "medium", "low")  # confidence, best first (format 6; until then high, medium, low)
 LOCUS_SETS = ("busco", "markers")  # the loci's folders: BUSCO's, Eukore's own markers (markers.py; since 2026-11-07)
 MANIFEST = "manifest.json"
 LOCI_COLUMNS = ("locus", "name", "cutoff", "hmm_length", "species", "called", "duplicated", "fragmented", "call_rate",
@@ -31,12 +34,19 @@ GENOME_COLUMNS = ("accession", "fetched", "species_taxid", "taxid", "organism", 
                   # BUSCOs' introns (introns.py); its code checked (codecheck.py)
                   "gencode", "duplicated_share", "dup_identity_median", "duplication", "introns",
                   "introns_per_kb_cds", "median_intron_length", "gencode_check", "gencode_codons", "best_table",
-                  "type_material")
+                  "type_material",
+                  # since 2026-11-09 (format 6): what made its calls (genomes.GENOME_RECORD); its copies another
+                  # clade's and the LCA of those clades (qc.cross_summary)
+                  "genome_record", "foreign_copies", "foreign_source")
 COPY_COLUMNS = ("accession", "locus", "status", "contig", "contig_length", "start", "end", "strand", "length",
                 "cds_length", "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies",
                 "query", "rescued", "model", "protein_length", "window_class", "fcs", "own_species", "same_as", "length_check",
                 "contig_edge", "gaps", "confidence", "flags",
-                "internal_stops", "dup_identity")  # since 2026-11-07 (format 5)
+                "internal_stops", "dup_identity",  # since 2026-11-07 (format 5)
+                # since 2026-11-09 (format 6): its coding sequence against the protein confirmed (loci.cds_state);
+                # the other clade's species it is shared with (qc.verdict); how it was chosen among a Duplicated
+                # locus' copies: hmm (the best HMM score), lineage (another, whose lineage fits: collect)
+                "cds_check", "cross", "choice")
 DUP_LOCI_MIN = 20   # duplication_of: a genome with fewer BUSCOs called says nothing of its duplication
 DUP_SHARE = 0.15    # this share of its called BUSCOs Duplicated: a duplicated genome
 HAPLOTYPE_ID = 99.5  # its duplicated BUSCOs' copies this alike (median, %): an assembly's two haplotypes
@@ -71,14 +81,26 @@ def gap_runs(seq, min_run=GAP_MIN):
         i = j
 
 
+def tier(low, medium, unverified):
+    """A tier from its reasons (format 6): low where one says another organism's or not the gene, medium where one
+    says something may be wrong, unverified where nothing is wrong but a check could not be made, else high -> (tier,
+    flags: the reasons in that order, or -)."""
+    name = "low" if low else "medium" if medium else "unverified" if unverified else "high"
+    return name, ",".join(low + medium + unverified) or "-"
+
+
 def copy_confidence(r, family=False):
-    """A copy's tier and why (busco/copies.tsv's confidence and flags): low where a check calls it another organism's
-    (own_species f, FCS-GX's EXCLUDE/TRIM/FIX, tiara's prokaryote window); medium where something may be wrong
-    (Fragmented, Duplicated, called by the rescue pass, its protein's length in the locus' outer 5%, an assembly gap in
-    it, at a contig's end, its own-species check undecided, an organelle window, FCS-GX's REVIEW); else high.
-    family: a multigene family's marker (markers.py's kind family: actin, tubulins, ...), whose Duplicated is its
-    nature, no flag."""
-    low, medium = [], []
+    """A copy's tier and why (busco/copies.tsv's confidence and flags; tier()): low where a check calls it another
+    organism's or not the locus (own_species f, FCS-GX's EXCLUDE/TRIM/FIX, tiara's prokaryote window, a marker copy
+    whose best profile is a decoy's: `paralog`, since 2026-11-09); medium where something may be wrong (Fragmented,
+    Duplicated, called by the rescue pass, its protein's length off its relatives', an assembly gap in it, at a
+    contig's end, an organelle window, FCS-GX's REVIEW, a transcriptome's; since 2026-11-09 a stop inside its protein
+    (`internal_stops`), a coding sequence not reading as the protein checked (`cds_mismatch`), a sequence shared with
+    another clade's genome, its owner undecided (`cross_shared`)); unverified where nothing is wrong but its
+    own-species check could not decide (no relative near enough; until 2026-11-09 medium, as if something were); else
+    high. family: a multigene family's marker (markers.py's kind family: actin, tubulins, ...), whose Duplicated is
+    its nature, no flag."""
+    low, medium, unverified = [], [], []
     if r.get("own_species") == "f":
         low.append("own_species")
     fcs = str(r.get("fcs", "-")).split(":")[0]
@@ -86,6 +108,8 @@ def copy_confidence(r, family=False):
         low.append("fcs")
     if r.get("window_class", "-") in FOREIGN_WINDOW:
         low.append("window_prokaryote")
+    if r.get("paralog") == "t":  # markers.recheck: its best profile a decoy's (EFL as EF-1a)
+        low.append("paralog")
     if r.get("transcript") == "t":  # a transcriptome's copy (TSA): no introns, its Duplicated its isoforms
         medium.append("transcript")
     if r.get("status") == "Fragmented" or (r.get("status") == "Duplicated" and r.get("transcript") != "t"
@@ -99,13 +123,20 @@ def copy_confidence(r, family=False):
         medium.append("gap")
     if r.get("contig_edge") not in (None, "-") and int(r["contig_edge"]) < EDGE:
         medium.append("contig_edge")
-    if r.get("own_species") in ("-", None):
-        medium.append("own_species_undecided")
     if r.get("window_class") == "organelle":
         medium.append("window_organelle")
     if fcs == "REVIEW":
         medium.append("fcs_review")
-    return ("low" if low else "medium" if medium else "high"), ",".join(low + medium) or "-"
+    if int(r.get("internal_stops") or 0) or r.get("cds_check") == "stops":
+        medium.append("internal_stops")
+    if r.get("cds_check") == "mismatch":
+        medium.append("cds_mismatch")
+    if r.get("own_species") in ("-", None):
+        if r.get("cross") not in (None, "-", ""):
+            medium.append("cross_shared")
+        else:
+            unverified.append("own_species_undecided")
+    return tier(low, medium, unverified)
 
 
 def type_material_of(row):
@@ -223,28 +254,68 @@ def done_table(work, accession, name):
     return read_table(folder, name) if os.path.isfile(os.path.join(folder, name)) else []
 
 
-def done_copies(work, accession):
-    """A genome's copies (WORK/done/<accession>/copies.fna) -> {locus: copy}."""
+def done_copies(work, accession, swaps=None):
+    """A genome's copies (WORK/done/<accession>/copies.fna) -> {locus: copy}; swaps: {locus: alt}, the loci whose
+    copy is one of its alternates (collect's choice by lineage, since 2026-11-09)."""
     from .genomes import done_dir  # noqa: PLC0415
     path = os.path.join(done_dir(work, accession), "copies.fna")
     if not os.path.isfile(path):
         return {}
     with open(path) as fh:
         lines = [line.strip() for line in fh]
-    return {lines[i][1:]: lines[i + 1] for i in range(0, len(lines) - 1, 2)}
+    out = {lines[i][1:]: lines[i + 1] for i in range(0, len(lines) - 1, 2)}
+    if swaps:
+        alts = {(a["locus"], a["alt"]): a for a in done_alternates(work, accession)}
+        out.update({locus: alts[(locus, k)]["copy"] for locus, k in swaps.items() if (locus, k) in alts})
+    return out
 
 
-def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None):
+def done_alternates(work, accession):
+    """A genome's alternates (genomes.ALTERNATES: a Duplicated locus' other complete copies whole; since 2026-11-09)
+    -> [loci.tsv-like row dicts with alt (int), copy and features [(kind, start, end)]], [] for none."""
+    from .genomes import ALTERNATES, done_dir  # noqa: PLC0415
+    folder = done_dir(work, accession)
+    table, fasta, features = (os.path.join(folder, n) for n in ALTERNATES)
+    if not os.path.isfile(table):
+        return []
+    rows = read_table(folder, ALTERNATES[0])
+    with open(fasta) as fh:
+        lines = [line.strip() for line in fh]
+    copies = {lines[i][1:]: lines[i + 1] for i in range(0, len(lines) - 1, 2)}
+    feats = collections.defaultdict(list)
+    for f in read_table(folder, ALTERNATES[2]):
+        feats[(f["locus"], int(f["alt"]))].append((f["kind"], int(f["start"]), int(f["end"])))
+    for r in rows:
+        r["alt"] = int(r["alt"])
+        r["copy"], r["features"] = copies.get(f"{r['locus']}|{r['alt']}", ""), feats[(r["locus"], r["alt"])]
+    return rows
+
+
+LINEAGE_RANK = {"t": 3, "-": 2, "f": 0}  # own_species, best first; an undecided copy shared with another clade: 1
+
+
+def lineage_rank(check):
+    """A copy's own-species verdict as a rank (collect's choice among a Duplicated locus' copies): t, then undecided,
+    then undecided but shared with another clade's genome, then another clade's."""
+    return 1 if check["own_species"] == "-" and check.get("cross") else LINEAGE_RANK[check["own_species"]]
+
+
+def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None, paralogs_of=None):
     """What the package holds of the BUSCO genes -> dict(genomes {accession: row}, copy_rows [COPY_COLUMNS dicts],
     taxids, cds and proteins {(accession, locus): sequence}, intron_rows (introns.of_copy's, accession and locus set),
-    work and done (the genomes whose copies and features write reads from WORK/done), copy_count). Each species'
+    work and done (the genomes whose copies and features write reads from WORK/done), copy_count, swaps {accession:
+    {locus: alt}}: the copies taken by lineage among a Duplicated locus' alternates, since 2026-11-09). Each species'
     genome (its job) with the copies its run called; the species' other assemblies listed (source "assembly", no
     copies); the copies' checks across species (qc.check). kinds: {marker locus: clean or family} (markers.kinds): a
-    genome's duplication is read on its BUSCOs alone, a family marker's Duplicated is no flag."""
+    genome's duplication is read on its BUSCOs alone, a family marker's Duplicated is no flag. paralogs_of: a function
+    of the marker copies' coding sequences {(accession, locus): cds} and the genomes -> the keys whose best profile is
+    a decoy's (markers.recheck; since 2026-11-09: the decoys a marker set gained since a genome's run, EFL's)."""
     from . import introns as introns_mod  # noqa: PLC0415
+    from .genomes import done_summary, record_of  # noqa: PLC0415
     kinds = kinds or {}
     by_accession = {r["accession"]: r for r in assemblies}
     genomes, copy_rows, cds, intron_rows, done, count = {}, [], {}, [], [], 0
+    alt_cds, alt_length = {}, {}  # a Duplicated locus' other copies' (since 2026-11-09)
     from .genomes import is_done  # noqa: PLC0415
     for acc, job in sorted(job_map.items()):
         got = done_copies(work, acc)
@@ -263,7 +334,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                             representative="t", loci=len(got), gencode=job.get("gencode", 1),
                             type_material=type_material_of(row))
         from . import rrna as rrna_mod  # noqa: PLC0415
-        from .genomes import done_dir, fcs_of_copy  # noqa: PLC0415
+        from .genomes import done_dir  # noqa: PLC0415
         if os.path.isfile(os.path.join(done_dir(work, acc), "rrna.tsv")):
             rrna_rows = rrna_mod.load(done_dir(work, acc))
             n = rrna_mod.counts(rrna_rows)
@@ -284,13 +355,10 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         screened = os.path.isfile(os.path.join(done_dir(work, acc), "fcs.tsv"))
         searched = done_table(work, acc, "loci.tsv")
         genomes[acc]["_searched"] = {r["locus"] for r in searched}  # Missing ones too: copy_numbers.tsv's zeros
+        genomes[acc]["genome_record"] = record_of(done_summary(work, acc)) or "-"  # since 2026-11-09
         for r in searched:
             if r["status"] != "Missing":
-                edge = min(int(r["start"]) - 1, int(r["contig_length"]) - int(r["end"])) \
-                    if str(r.get("contig_length", "")).isdigit() and str(r.get("start", "")).isdigit() else "-"
-                row = dict(r, accession=name, fcs=fcs_of_copy(fcs, r["locus"], r["contig"], r["start"],
-                                                               r["end"]) if screened else "-",
-                           contig_edge=edge, gaps=gap_of.get(r["locus"], 0))
+                row = copy_row(r, name, fcs if screened else None, gap_of.get(r["locus"], 0))
                 for k in SHARED_VALUES:  # a few values, many rows: one string each
                     if isinstance(row.get(k), str):
                         row[k] = sys.intern(row[k])
@@ -299,6 +367,11 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                 if got.get(r["locus"]):  # its introns (introns.py), their HMM places set by genetics
                     intron_rows.extend(dict(i, accession=name, locus=row["locus"])
                                        for i in introns_mod.of_copy(got[r["locus"]], own[r["locus"]]))
+        # a Duplicated locus' other complete copies (since 2026-11-09, genome record 2): their coding sequences
+        # checked beside the copies, for the choice by lineage below; their copies read again where one is taken
+        for a in done_alternates(work, acc):
+            key = (name, a["locus"], a["alt"])
+            alt_cds[key], alt_length[key] = qc.spliced(a["copy"], a["features"]), int(a["protein_length"])
         for other in job.get("others", ()):
             o = by_accession.get(other)
             if o and other not in genomes:
@@ -309,35 +382,95 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                                       flags=",".join(o.get("flags") or ()) or "-", ftp=o["ftp"], source="assembly",
                                       type_material=type_material_of(o),
                                       representative="f", loci=0)
+    lengths = {(r["accession"], r["locus"]): int(r["protein_length"]) for r in copy_rows}
     checks = qc.check(cds, {a: g["species_taxid"] for a, g in genomes.items()}, ncbi, vsearch, threads,
-                      {(r["accession"], r["locus"]): int(r["protein_length"]) for r in copy_rows})
+                      {**lengths, **alt_length}, alt_cds)
+    # the choice by lineage (since 2026-11-09; until then the best HMM score's copy, a contaminant's where it scored
+    # best): a Duplicated locus whose copy's own-species verdict ranks below one of its other copies' (lineage_rank:
+    # another clade's, or undecided where the other agrees with the lineage) takes that one, its row, coding sequence
+    # and introns, and write its copy and features (`choice` lineage)
+    swaps, best_alt = collections.defaultdict(dict), {}
+    for (acc, locus, k) in sorted(alt_cds):
+        c = checks[(acc, locus, k)]
+        if (acc, locus) in checks and (lineage_rank(c), -k) > best_alt.get((acc, locus), (-1, 0))[:2]:
+            best_alt[(acc, locus)] = (lineage_rank(c), -k, c)
+    taken = {key: (-negk, c) for key, (rank, negk, c) in best_alt.items() if rank > lineage_rank(checks[key])}
+    if taken:
+        from .genomes import done_dir  # noqa: PLC0415
+        by_key = {(r["accession"], r["locus"]): i for i, r in enumerate(copy_rows)}
+        new_introns = []
+        for acc in sorted({a for a, _l in taken}):
+            alts = {(a["locus"], a["alt"]): a for a in done_alternates(work, acc)}
+            screened = os.path.isfile(os.path.join(done_dir(work, acc), "fcs.tsv"))
+            fcs = [dict(f, start=int(f["start"]), end=int(f["end"]))
+                   for f in done_table(work, acc, "fcs.tsv")] if screened else None
+            for locus, (k, c) in sorted((lo, v) for (a_, lo), v in taken.items() if a_ == acc):
+                if (locus, k) not in alts:
+                    continue
+                alt, old = alts[(locus, k)], copy_rows[by_key[(acc, locus)]]
+                row = copy_row(dict(alt, dup_identity=old.get("dup_identity", "-")), old["accession"], fcs,
+                               len(gap_runs(alt["copy"])))
+                row["choice"] = "lineage"
+                copy_rows[by_key[(acc, locus)]] = row
+                cds[(acc, locus)], checks[(acc, locus)] = alt_cds[(acc, locus, k)], c
+                swaps[acc][locus] = k
+                new_introns.extend(dict(i, accession=old["accession"], locus=locus)
+                                   for i in introns_mod.of_copy(alt["copy"], alt["features"]))
+        swapped = {(a, lo) for a, s in swaps.items() for lo in s}
+        intron_rows = [i for i in intron_rows if (i["accession"], i["locus"]) not in swapped] + new_introns
+    paralogs = paralogs_of({k: v for k, v in cds.items() if k[1] in kinds}, genomes) if paralogs_of and kinds else set()
     proteins = {}
     for r in copy_rows:
         key = (r["accession"], r["locus"])
         c = checks[key]
         r.update(own_species=c["own_species"], same_as=c["same_as"], length_check=c["length"],
+                 cross=c["cross"] if c.get("cross") else "-",
                  nearest_id=c["nearest_id"], nearest_depth=c["nearest_depth"])  # the last two: benchmarks', no columns
         if genomes[r["accession"]].get("source") == "tsa":  # since 2026-11-07: a transcriptome's copy
             r["transcript"] = "t"
-        r["confidence"], r["flags"] = copy_confidence(r, kinds.get(r["locus"]) == "family")
+        if key in paralogs:  # a marker copy whose best profile is a decoy's (markers.recheck; since 2026-11-09)
+            r["paralog"] = "t"
+        # its protein before its tier (since 2026-11-09: a stop inside it is a flag)
         proteins[key], r["internal_stops"] = gencode.protein_of(cds[key], genomes[r["accession"]].get("gencode", 1))
-    by_genome = collections.defaultdict(list)
+        r["confidence"], r["flags"] = copy_confidence(r, kinds.get(r["locus"]) == "family")
+    by_genome, all_rows = collections.defaultdict(list), collections.defaultdict(list)
     for r in copy_rows:
+        all_rows[r["accession"]].append(r)
         if r["locus"] not in kinds:  # the BUSCOs' (single-copy by their choice): the markers' are not
             by_genome[r["accession"]].append(r)
     for acc, g in genomes.items():
         if g["representative"] == "t" and g.get("source") != "tsa":  # a transcriptome's isoforms are no duplication
             g.update(duplication_of(by_genome.get(acc, [])))
-    taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"}
+        if g["representative"] == "t":  # its copies another clade's (since 2026-11-09: cross-contamination)
+            g["foreign_copies"], g["foreign_source"] = qc.cross_summary(all_rows.get(acc, []), ncbi)
+    taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"} \
+        | {int(g["foreign_source"]) for g in genomes.values() if str(g.get("foreign_source", "-")).isdigit()}
     return dict(genomes=genomes, copy_rows=copy_rows, taxids=taxids, cds=cds, proteins=proteins,
-                intron_rows=intron_rows, work=work, done=done, copy_count=count)
+                intron_rows=intron_rows, work=work, done=done, copy_count=count, swaps=dict(swaps))
 
 
-def genome_features(work, accession, copies=None):
+def copy_row(r, accession, fcs, gaps):
+    """A copy's row of busco/copies.tsv from its done genome's loci.tsv row (or an alternate's): its FCS-GX call (fcs:
+    the genome's ranges, None where it was not screened), its distance to its contig's end, its assembly gaps."""
+    from .genomes import fcs_of_copy  # noqa: PLC0415
+    edge = min(int(r["start"]) - 1, int(r["contig_length"]) - int(r["end"])) \
+        if str(r.get("contig_length", "")).isdigit() and str(r.get("start", "")).isdigit() else "-"
+    out = {k: v for k, v in r.items() if k not in ("alt", "copy", "features")}
+    return dict(out, accession=accession, fcs=fcs_of_copy(fcs, r["locus"], r["contig"], r["start"], r["end"])
+                if fcs is not None else "-", contig_edge=edge, gaps=gaps, cds_check=r.get("cds_check") or "-",
+                choice="hmm")
+
+
+def genome_features(work, accession, copies=None, swaps=None):
     """A done genome's features (features.tsv, and its copies' assembly gaps: gap_runs) as features.tsv rows
-    (FEATURE_COLUMNS), in the package's order (locus, start, kind). copies: done_copies' (read where not given)."""
-    copies = done_copies(work, accession) if copies is None else copies
-    rows = [(f["locus"], int(f["start"]), f["kind"], int(f["end"])) for f in done_table(work, accession, "features.tsv")]
+    (FEATURE_COLUMNS), in the package's order (locus, start, kind). copies: done_copies' (read where not given);
+    swaps: {locus: alt} whose copy is an alternate's (done_copies), its features the alternate's."""
+    copies = done_copies(work, accession, swaps) if copies is None else copies
+    rows = [(f["locus"], int(f["start"]), f["kind"], int(f["end"])) for f in done_table(work, accession, "features.tsv")
+            if not swaps or f["locus"] not in swaps]
+    if swaps:
+        rows += [(a["locus"], s, kind, e) for a in done_alternates(work, accession)
+                 if swaps.get(a["locus"]) == a["alt"] for kind, s, e in a["features"]]
     rows += [(locus, a, "gap", b) for locus, seq in copies.items() for a, b in gap_runs(seq)]
     return [dict(accession=accession, locus=lo, kind=k, start=s, end=e) for lo, s, k, e in sorted(rows)]
 
@@ -449,11 +582,12 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
         for fh in feature_files.values():
             fh.write("\t".join(FEATURE_COLUMNS) + "\n")
         for acc in sorted(collected.get("done", ())):
-            got = done_copies(collected["work"], acc)
+            swaps = collected.get("swaps", {}).get(acc)  # a Duplicated locus' copy taken by lineage (collect)
+            got = done_copies(collected["work"], acc, swaps)
             for locus, seq in got.items():
                 if locus in copy_files and seq:
                     copy_files[locus].write(f">{acc}\n{seq.upper()}\n")
-            for f in genome_features(collected["work"], acc, got):
+            for f in genome_features(collected["work"], acc, got, swaps):
                 s = set_of.get(f["locus"], "busco")
                 if s in feature_files:
                     feature_files[s].write("\t".join(str(f[c]) for c in FEATURE_COLUMNS) + "\n")

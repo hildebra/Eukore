@@ -292,7 +292,7 @@ class Release(unittest.TestCase):
             cats = {c["key"]: c for c in stats["markers"]}
             self.assertEqual(list(cats), ["busco", "markers", "rrna", "mitochondrion", "plastid"])
             self.assertEqual((cats["busco"]["loci"], cats["busco"]["sequences"], cats["busco"]["species"]), (2, 4, 3))
-            self.assertEqual(cats["busco"]["confidence"], {"high": 1, "medium": 2, "low": 1})
+            self.assertEqual(cats["busco"]["confidence"], {"high": 1, "unverified": 0, "medium": 2, "low": 1})
             self.assertEqual(sum(i["sequences"] for i in cats["busco"]["items"]), 2)  # the loci by call rate
             self.assertEqual(cats["markers"]["items"], [dict(name="RPB1", locus="RPB1", sequences=1, species=1)])
             rrna_items = {i["name"]: i for i in cats["rrna"]["items"]}
@@ -373,7 +373,7 @@ class Release(unittest.TestCase):
             toy_package(os.path.join(tmp, "out", "Eukore_2026.11"), sketches=False)
             printed = io.StringIO()
             with contextlib.redirect_stdout(printed):
-                self.assertEqual(eukore_build.main(["--work", os.path.join(tmp, "work"), "--out",
+                self.assertEqual(eukore_build.main(["--build_dir", os.path.join(tmp, "work"), "--out",
                                                     os.path.join(tmp, "out"), "--stage", "release",
                                                     "--version", "2026.11", "-t", "2"]), 0)
             self.assertIn("OUT/release/ of OUT/Eukore_2026.11/", printed.getvalue())  # the banner

@@ -145,6 +145,33 @@ class LociTest(unittest.TestCase):
         joined = copy[0:10] + copy[20:40]
         self.assertEqual(qc.spliced(copy, [("exon", s, e) for s, e in exons] + feats), loci.in_frame(joined, [(9, 2)]))
 
+    def test_the_coding_sequence_checked(self):
+        # since 2026-11-09: a copy's coding sequence as it ships, against the protein its HMM confirmed
+        protein = "MKLVWHGTEERRASDPLLKKEQWTYV"
+        cds = fx.cds_of(protein)  # its stop codon last
+        self.assertEqual(loci.cds_state(cds, protein), "clean")
+        self.assertEqual(loci.cds_state(cds[:-3], protein), "clean")  # without the stop that ends it
+        self.assertEqual(loci.cds_state(cds[:30] + "TAA" + cds[30:], protein), "stops")  # one inside
+        self.assertNotEqual(loci.cds_state(cds[:12] + cds[13:], protein), "clean")  # out of frame after a base
+        self.assertEqual(loci.cds_state(fx.cds_of("MKLVWHGTCCCCCCCCCCPLLKKEQWTYV"), protein), "mismatch")
+        self.assertEqual(loci.cds_state(cds, ""), "clean")  # nothing to set it beside: its stops alone
+        # a region's clean alignment before its best HMM score's broken one (a base lost: out of frame); complete
+        # where that is
+        contigs = {"c1": "A" * 30 + cds + "A" * 30}
+        broken = dict(contig="c1", start=31, end=30 + len(cds), strand="+", exons=[(31, 40), (42, 30 + len(cds))],
+                      protein=protein, hmm_score=90.0, score=50.0, hmm_coverage=0.9)
+        good = dict(broken, exons=[(31, 30 + len(cds))], hmm_score=80.0)
+        fragment = dict(good, hmm_score=85.0, hmm_coverage=0.5)
+        got = loci.cleanest(dict(broken, alts=[fragment, good]), contigs, 1)
+        self.assertEqual((got["cds_check"], got["hmm_score"], got["exons"]), ("recovered", 80.0, good["exons"]))
+        self.assertEqual(loci.cleanest(dict(good, alts=[broken]), contigs, 1)["cds_check"], "clean")
+        alone = loci.cleanest(dict(broken, alts=[fragment]), contigs, 1)  # no complete clean one: as it was
+        self.assertEqual(alone["hmm_score"], 90.0)
+        self.assertIn(alone["cds_check"], ("stops", "mismatch"))
+        # the locus' copy: a clean one before a broken one of a higher score
+        chosen, statuses = loci.choose({"1": [alone, dict(good, cds_check="clean")]}, ["1", "2"])
+        self.assertEqual((chosen["1"]["hmm_score"], statuses["1"][0], len(statuses["1"][1])), (80.0, "Duplicated", 1))
+
     def test_an_annotated_transcript_read_whole(self):
         # miniprot's span 1000-5000 misses NCBI's first exon (500-600): the transcript keeps it; one off the spans not
         from eukore import annotation  # noqa: PLC0415

@@ -414,12 +414,156 @@ class QcTest(unittest.TestCase):
             self.assertEqual(got[("A", "1")]["own_species"], "f")  # Ascaris' nearest: yeasts, another kingdom
             self.assertEqual(got[("A", "1")]["same_as"], "2759")  # 99% to the yeast: their common ancestor
             self.assertEqual(got[("K", "1")]["own_species"], "-")  # no hit
+            # lengths against the locus' median (since 2026-11-09: no copy is an outlier by its rank alone)
             lengths = {(str(i), "1"): 100 + i for i in range(40)}
+            lengths.update({("0", "1"): 40, ("39", "1"): 300})
             flags = qc.check({k: "A" * 3 for k in lengths}, {str(i): 4932 for i in range(40)}, ncbi, None, 1, lengths)
-            self.assertEqual((flags[("0", "1")]["length"], flags[("39", "1")]["length"], flags[("20", "1")]["length"]),
-                             ("short", "long", "ok"))
+            self.assertEqual((flags[("0", "1")]["length"], flags[("39", "1")]["length"], flags[("20", "1")]["length"],
+                              flags[("1", "1")]["length"]), ("short", "long", "ok", "ok"))
             self.assertEqual(qc.lca(ncbi, [4932, 27291]), 4930)
             self.assertEqual(qc.depth(ncbi, 4932, 28985), 4)  # to the family
+
+    def test_cross_contamination_told(self):
+        # since 2026-11-09: of a sequence two clades' genomes hold, the clade whose other species hold it nearer is
+        # its owner; until then both genomes' copies were another clade's (f), the yeast's own one too
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            cache = {}
+            members = qc.families(ncbi, [4932, 27291, 28985, 6253, 40410, 952], cache)
+            yeast_relatives = [(93.0, 27291), (85.0, 28985)]
+            # Ascaris' assembly holds the yeast's copy: the yeast's is its own (t), Ascaris' another clade's (f)
+            self.assertEqual(qc.verdict(4932, [(100.0, 6253)] + yeast_relatives, ncbi, cache, members)[:2],
+                             ("t", None))
+            self.assertEqual(qc.verdict(6253, [(100.0, 4932)] + yeast_relatives, ncbi, cache, members)[:2],
+                             ("f", 4932))
+            # neither clade has another species holding the locus: undecided, shared (the cross_shared flag)
+            self.assertEqual(qc.verdict(952, [(100.0, 40410)], ncbi, cache, members)[:2], ("-", 40410))
+            # the yeast's family holds the locus, none near this copy, and Cryptococcus' clade cannot tell: the
+            # yeast's copy is Cryptococcus' (f); Cryptococcus' own one is not the yeast's (-, unverified)
+            self.assertEqual(qc.verdict(4932, [(100.0, 40410)], ncbi, cache, members)[:2], ("f", 40410))
+            self.assertEqual(qc.verdict(40410, [(100.0, 4932)], ncbi, cache, members)[:2], ("-", None))
+            # under FOREIGN_ID, or a relative near: no verdict against it
+            self.assertEqual(qc.verdict(4932, [(85.0, 6253)], ncbi, cache, members)[0], "-")
+            self.assertEqual(qc.verdict(4932, [(99.0, 27291), (99.5, 6253)], ncbi, cache, members)[0], "t")
+            # a contaminated genome: three copies another clade's of one phylum make its undecided ones so too
+            rows = [dict(own_species="f", cross="4932")] * 3 + [dict(own_species="t", cross="-")]
+            self.assertEqual(qc.cross_summary(rows, ncbi), (3, 4932))
+
+    def test_lineages_apart(self):
+        # since 2026-11-09: two species are another clade's only where a phylum or class differs, or (naming none to
+        # compare) their groups do: sister protists NCBI ranks the genera of alone are not (qc.depth gives them 0)
+        self.assertTrue(qc.apart(self.ncbi, 4932, 40410))  # Ascomycota, Basidiomycota
+        self.assertFalse(qc.apart(self.ncbi, 4932, 28985))  # one family
+        self.assertFalse(qc.apart(self.ncbi, 4932, 5476))  # one class, two families: not apart at the class
+
+        class Stub:  # protists of two genera, no other rank, in Stramenopiles (two) and Alveolata (one)
+            merged = {}
+            lineages = {1: [1, 11, 33634, 2759], 2: [2, 12, 33634, 2759], 3: [3, 13, 33630, 2759]}
+
+            def ancestors(self, t):
+                return self.lineages[t]
+
+            def rank_ids(self, t):
+                return {"species": t, "genus": self.lineages[t][1]}
+        stub = Stub()
+        self.assertEqual(qc.depth(stub, 1, 2), 0)
+        self.assertFalse(qc.apart(stub, 1, 2))
+        self.assertTrue(qc.apart(stub, 1, 3))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(cls.tmp.name, "taxdump.tar.gz")))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+
+def mutated(seq, n, seed):
+    rng = __import__("random").Random(seed)
+    s = list(seq)
+    for i in rng.sample(range(len(s)), n):
+        s[i] = "A" if s[i] != "A" else "C"
+    return "".join(s)
+
+
+def done_genome(work, acc, copies, alternates=()):
+    """A done genome's folder as genomes.run leaves it, its copies {locus: sequence} one exon each, its alternates
+    [(locus, alt, sequence)] (genomes.ALTERNATES)."""
+    folder = genomes.done_dir(work, acc)
+    os.makedirs(folder)
+
+    def row(locus, seq):
+        return [locus, "Duplicated" if any(a[0] == locus for a in alternates) else "Single", "c1", 10000, 1,
+                len(seq), "+", len(seq), len(seq), 1, "0.9", "1.000", "100.0", "50.0", "1.000", 1, "q",
+                len(seq) // 3, "-", "f", "miniprot", "-", "clean"]
+    with open(os.path.join(folder, "loci.tsv"), "w") as fh:
+        fh.write("\t".join(genomes.LOCI_COLUMNS) + "\n")
+        fh.writelines("\t".join(map(str, row(lo, s))) + "\n" for lo, s in copies.items())
+    with open(os.path.join(folder, "copies.fna"), "w") as fh:
+        fh.writelines(f">{lo}\n{s}\n" for lo, s in copies.items())
+    with open(os.path.join(folder, "features.tsv"), "w") as fh:
+        fh.write("locus\tkind\tstart\tend\n" + "".join(f"{lo}\texon\t0\t{len(s)}\n" for lo, s in copies.items()))
+    if alternates:
+        table, fasta, features = (os.path.join(folder, n) for n in genomes.ALTERNATES)
+        with open(table, "w") as tb, open(fasta, "w") as fa, open(features, "w") as ft:
+            tb.write("\t".join(("alt",) + genomes.LOCI_COLUMNS) + "\n")
+            ft.write("locus\talt\tkind\tstart\tend\n")
+            for lo, k, s in alternates:
+                tb.write("\t".join(map(str, [k] + row(lo, s))) + "\n")
+                fa.write(f">{lo}|{k}\n{s}\n")
+                ft.write(f"{lo}\t{k}\texon\t0\t{len(s)}\n")
+    with open(os.path.join(folder, "done.json"), "w") as fh:
+        json.dump(dict(accession=acc, genome_record=genomes.GENOME_RECORD), fh)
+
+
+class LineageChoiceTest(unittest.TestCase):
+    def test_a_duplicated_locus_copy_taken_by_lineage(self):
+        # since 2026-11-09: the yeast's assembly holds a nematode's copy of the locus (its best HMM score) and its own;
+        # the package takes its own, whose lineage fits, and writes it
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            rng = __import__("random").Random(5)
+            worm, yeast = ("".join(rng.choice("ACGT") for _ in range(300)) for _ in range(2))
+            work = os.path.join(tmp, "work")
+            done_genome(work, "Y", {"1at2759": worm}, [("1at2759", 1, mutated(yeast, 3, 1))])
+            done_genome(work, "P", {"1at2759": mutated(yeast, 9, 2)})
+            done_genome(work, "K", {"1at2759": mutated(yeast, 24, 3)})
+            done_genome(work, "A", {"1at2759": worm})
+            jobs = {a: dict(accession=a, species_taxid=sp, taxid=sp, why=["ncbi"], others=[], gencode=1)
+                    for a, sp in (("Y", 4932), ("P", 27291), ("K", 28985), ("A", 6253))}
+            collected = package.collect(ncbi, jobs, [], work, fx.vsearch(tmp), 1)
+            rows = {r["accession"]: r for r in collected["copy_rows"]}
+            self.assertEqual((rows["Y"]["choice"], rows["Y"]["own_species"]), ("lineage", "t"))
+            self.assertEqual(collected["cds"][("Y", "1at2759")], mutated(yeast, 3, 1))
+            self.assertEqual(collected["swaps"], {"Y": {"1at2759": 1}})
+            # the nematode's own copy, the same sequence: its clade cannot tell, the yeast's holds the locus otherwise
+            self.assertEqual((rows["A"]["choice"], rows["A"]["own_species"]), ("hmm", "-"))
+            self.assertEqual(package.done_copies(work, "Y", collected["swaps"]["Y"]), {"1at2759": mutated(yeast, 3, 1)})
+            self.assertEqual(package.done_copies(work, "Y"), {"1at2759": worm})  # the run's own files as they were
+            feats = package.genome_features(work, "Y", swaps=collected["swaps"]["Y"])
+            self.assertEqual([(f["kind"], f["start"], f["end"]) for f in feats], [("exon", 0, 300)])
+            self.assertEqual(collected["genomes"]["Y"]["genome_record"], genomes.GENOME_RECORD)
+            self.assertEqual((collected["genomes"]["Y"]["foreign_copies"], collected["genomes"]["A"]["foreign_copies"]),
+                             (0, 0))
+
+
+class ConfidenceTest(unittest.TestCase):
+    def test_four_tiers(self):
+        # since 2026-11-09 (format 6): unverified apart from medium; a stop, a mismatch, a shared copy and a marker's
+        # paralog flagged
+        base = dict(status="Single", own_species="t", fcs="-", window_class="eukarya", length_check="ok", gaps=0,
+                    contig_edge="5000", rescued="f", cross="-", cds_check="clean", internal_stops=0)
+        self.assertEqual(package.copy_confidence(base), ("high", "-"))
+        self.assertEqual(package.copy_confidence(dict(base, own_species="-")), ("unverified", "own_species_undecided"))
+        self.assertEqual(package.copy_confidence(dict(base, own_species="-", cross="6253")), ("medium", "cross_shared"))
+        self.assertEqual(package.copy_confidence(dict(base, internal_stops=2)), ("medium", "internal_stops"))
+        self.assertEqual(package.copy_confidence(dict(base, cds_check="mismatch")), ("medium", "cds_mismatch"))
+        self.assertEqual(package.copy_confidence(dict(base, paralog="t")), ("low", "paralog"))
+        self.assertEqual(package.copy_confidence(dict(base, own_species="-", status="Fragmented")),
+                         ("medium", "fragmented,own_species_undecided"))
+        self.assertEqual(package.TIERS, ("high", "unverified", "medium", "low"))
 
     def test_duplication(self):
         def rows(single, dups):

@@ -15,11 +15,11 @@ manifest (`--no_benchmarks` skips them). A benchmark whose inputs are missing is
 Any package can be measured again afterwards, and the figures drawn:
 
 ```bash
-python3 -m eukore.benchmarks OUT/Eukore_2026.11 --work WORK -t 8      # into OUT/Eukore_2026.11/benchmarks/
+python3 -m eukore.benchmarks OUT/Eukore_2026.11 --build_dir WORK -t 8      # into OUT/Eukore_2026.11/benchmarks/
 python3 docs/benchmarks/plot_benchmarks.py OUT/Eukore_2026.11         # into docs/benchmarks/figures/
 ```
 
-`--work` gives BUSCO's dataset (`WORK/sources/eukaryota_odb12`, for the OrthoDB benchmark), NCBI's whole taxonomy
+`--build_dir` gives BUSCO's dataset (`WORK/sources/eukaryota_odb12`, for the OrthoDB benchmark), NCBI's whole taxonomy
 (`WORK/sources/taxdump.tar.gz`, else the package's own `taxonomy/`) and the genomes' run times (`WORK/done/`); each
 can also be given alone (`--odb`, `--taxdump`). `--out` writes the tables elsewhere (a measured-again package's
 manifest does not list them). The plots need matplotlib (in `envs/eukore.yaml`); `--format svg` or `pdf` for print.
@@ -79,6 +79,33 @@ The held-out calls cost one more BUSCO search for each of the ~450 dataset speci
 where its genome is still on disk (never fetched again for it); a package measured without them says so in
 `summary.json`'s `left_out`.
 
+**The clade hold-out** (`holdout.tsv`, `summary.json`'s `orthodb.clade_hold_out`; since 2026-11-09). The species'
+hold-out keeps its congeners' proteins (*S. mikatae*'s calls are queried with *S. cerevisiae*'s), so it says little of
+a genome far from every dataset species, the lineages a eukaryote reference is most needed for. A dataset species'
+genome is called again without every dataset species of its genus, then of its family, then of its order
+(`--held_out_ranks`, default all three; a rank that leaves out no more species than the one below is not called
+again), and each level's calls are set beside OrthoDB's gene models as above. Each level names the rank its lineage
+shares with the nearest dataset species it kept (`nearest`): the curve of concordance against that distance is the
+measure of the reach. Each level costs one more BUSCO search of each dataset species' genome; a genome run before
+2026-11-09 gets its levels from the process stage's backfill where its genome is on disk.
+
+**The annotation swap** (`tools/annotation_swap.py`; since 2026-11-09). A copy takes its genome's own annotated model
+where the HMM confirms it, and the build's `annotation.tsv` lays miniprot's model on that same annotation: circular
+for the copies that take it. The tool calls a genome's BUSCOs with one annotation (the swap's source) and lays
+miniprot's model and the copy shipped on another, independent one (the truth): exact introns, the whole intron chain
+exact, coding-base F1, and per swapped copy `better`, `same` or `worse`. On *Takifugu rubripes* (fTakRub1.2,
+2026-11-09; RefSeq's annotation, NCBI's pipeline, as the truth, Ensembl's genebuild of 2019 swapped in): 119 of 128
+copies took Ensembl's model, 24 better, 73 the same, 22 worse; whole chains exact 85 (miniprot) and 88 (shipped);
+coding-base F1 0.990 and 0.988. The other way round (Ensembl's as the truth, RefSeq's swapped in, the build's order:
+NCBI's first): 127 took RefSeq's, 28 better, 93 the same, 6 worse; chains 75 and 88, F1 0.980 and 0.982. So RefSeq's
+models agree with Ensembl's more often than miniprot's do, Ensembl's 2019 models with RefSeq's about as often: the
+swap helps with NCBI's annotation and is neutral with Ensembl's own genebuild. Of the 592 assemblies Ensembl annotates
+by BRAKER or Helixer, two have a RefSeq annotation to be the truth (2026-11-09: the coral *Stylophora pistillata*, the
+jellyfish *Rhopilema esculentum*); the rest are why Ensembl is asked. On the jellyfish (ASM1307630v1, far from BUSCO's
+dataset species; Ensembl's BRAKER run of 2023 swapped in, RefSeq's as the truth) 96 of 128 copies took BRAKER's model,
+57 better, 25 the same, 14 worse; whole chains exact 49 (miniprot) and 74 (shipped); F1 0.949 and 0.965. The farther a
+genome is from the dataset, the more the swap is worth.
+
 ![Calls against OrthoDB's own gene models](benchmarks/figures/orthodb.png)
 
 ### Resolution (`resolution.tsv`)
@@ -97,11 +124,14 @@ relative.
 
 ### Confidence (`completeness.tsv`, `rrna.tsv`)
 
-The copies' and records' tiers (`high`, `medium`, `low`), the sum of the checks that set them
-([FORMAT.md](FORMAT.md)): another organism's sequence (`own_species`, FCS-GX, tiara), a duplicated or fragmented
-call, a length in its locus' outer 5%, a contig end, an assembly gap; for rRNA, ambiguous bases, homopolymers, the part
-screen, a partial 28S, a read labelled by its genus. Published reads are mostly `medium`: their own-species check has
-little to compare them with in a trial, and a read labelled by its genus is never `high`.
+The copies' and records' tiers (`high`, `unverified`, `medium`, `low`; `unverified` since format 6, 2026-11-09), the
+sum of the checks that set them ([FORMAT.md](FORMAT.md#confidence-tiers-format-6)): another organism's sequence
+(`own_species`, FCS-GX, tiara, a bacterium's SSU as an 18S), a duplicated or fragmented call, a length off its
+relatives', a contig end, an assembly gap, a stop inside the protein; for rRNA, ambiguous bases, homopolymers, the
+part screen, a partial 28S, a read labelled by its genus. A sequence its own-species check could not decide is
+`unverified` (until format 6 `medium`): published reads mostly, whose own-species check is not made, and a trial's
+species with no relative of their family in it. The figure below is of a format-5 trial: its `medium` holds what
+format 6 calls `unverified`.
 
 ![Confidence tiers](benchmarks/figures/confidence.png)
 
@@ -185,6 +215,37 @@ What the trial shows:
 | species named in PR2 by name or synonym | 30.2% |
 | genome run (BUSCOs, rRNA, tiara; before the rescue pass), median | 2.3 min on 2 threads, 93 min per Gb of genome |
 
+## The methods review's changes against the code before them (2026-11-09)
+
+The 7-clade trial built twice from the same genomes and sources: by the code before the methods review (1e8a782) and
+by 0.2.3 with the four additions above (the marker scope fixed, the clade hold-out, the harder read benchmark), one
+after the other on 6 threads (`--intraspecific 2`, `--read_genomes 10`).
+
+| | before | after |
+|---|---|---|
+| process stage, wall | 21.5 min | 23.9 min (+11%: the clade hold-out's calls, 270 s, and its species' hold-out 37 s more) |
+| genome runs (calls, rRNA), summed | 3,429 s | 3,562 s (+4%; per genome median ×1.04) |
+| a genome's BUSCO calls alone, idle machine (6 genomes, 6 threads) | | the same within run-to-run noise (±7%), but +11% CPU in *Blastocystis* sp. RusS, whose 22 copies of 100 were recovered |
+| package stage, wall; CPU | 9.9 min; 2,118 s | 12.0 min; 2,683 s (rRNA checks +111 s: the 18S's SSU models; BUSCO checks +25 s) |
+| peak memory | 13.5 GB | 13.6 GB |
+| BUSCO copies Single, Duplicated, Fragmented | 2,973, 314, 605 | 2,975, 314, 603 (two fragments recovered whole) |
+| copies with a stop inside the protein | 203 | 34 |
+| tiers high, unverified, medium, low | 1,994, -, 1,865, 33 | 2,050, 568, 1,241, 33 |
+| OrthoDB, own proteins: called, concordant | 96.6%, 84.5% | 96.6%, 84.5% |
+| OrthoDB, held out: called, concordant | 94.7%, 75.3% | 94.7%, 75.0% (228 of 321 against 229) |
+| copies under 99% to any other species | 65.9% | 65.7% |
+| marker calls (285): identical, another exon end, another gene | | 206, 72, 2 (*Blastocystis* ST6's HSP90 and GAPDH; the HSP90 now the right gene) |
+| reads, `in`: species recall, precision | 0.577, 0.990 | 0.577, 0.989 |
+| detection, `in`, F1 at 1,000 / 5,000 / 20,000 reads (3 seeds' mean) | 0.80 / 0.77 / 0.67 | 0.80 / 0.75 / 0.66 (seed to seed: up to 0.07) |
+
+New figures (the after side alone): the clade hold-out keeps every call on the right gene (100%), its concordance
+from the species' level to the family's 95% to 77% in *S. paradoxus*, 95% to 83% in *S. mikatae*; with the order left
+out (`novel`) 0.9% of a test's marker reads are still placed, below its class and wrong, and 1 and 7 wrong taxa
+detected at 5,000 and 20,000 reads; human chromosome 21's reads (17,185) are placed nowhere; one EUKARYOME "18S"
+(28 kb, filed as *Blastocystis*: likely its mitochondrion-related organelle's genome, by its bacterial-type SSU) is
+`ssu_prokaryote`. No copy changed its choice by lineage nor was called cross-shared: the trial holds no contaminated
+genome, so those two are tested by their unit tests alone.
+
 ## Earlier: against EukDetect2 (2026-11-05)
 
 Before the benchmarks, the first trial (the same seven clades, 30 BUSCOs) was compared with EukDetect2's database:
@@ -221,6 +282,12 @@ holds a trial's, with `index.md` captioning each and naming its tables):
   a taxon with 3 reads or more, and 1% or more of the reads placed at its rank, is detected. Per reference: F1 of detecting the right species (it in the reference)
   and genus (held out), and the samples missed, split into taxa the reference does not hold and those it holds but
   placed too few reads to.
+  Since 2026-11-09 a harder test: the mode `novel` leaves the test species' whole order out of the reference (a
+  metagenome's eukaryote of a lineage no genome holds), its reads right at their class at best and wrong at their
+  order or below, detection scored at the class; and the background holds a eukaryote's DNA, human chromosome 21 (the
+  host of a gut or skin metagenome, its repeats and all: `data/read_background.tsv`'s rows of a taxid), whose reads
+  are right on its own lineage and wrong elsewhere (in a trial package, which holds no human, every placement of
+  them below Eukaryota's ranks is wrong), and whose own taxon in a sample is no false detection.
 - **The checks** (`flags.tsv`), **rRNA regions' and mitochondrial genes' lengths** (`rrna_regions.tsv`),
   **organelle coverage** (`organelle.tsv`), **rRNA copies per genome as assembled** (`rrna_copies.tsv`).
 - **Other databases** (`overlap.tsv`): the species of PR2, EUKARYOME's long reads, KSGP, ROD, BUSCO's OrthoDB
@@ -235,5 +302,6 @@ python3 docs/paper/plot_paper.py OUT/Eukore_2026.11          # Figure 1 and the 
 - **Read assignment.** Reads simulated from held-out genomes, profiled against the package by a read profiler
   (protal): the end-to-end measure, which needs a profiler and so is not part of Eukore's build.
 - **Divergent genomes.** OrthoDB's gene models exist only for the dataset's species; how far from them a call stays
-  right is seen indirectly, in completeness per supergroup.
+  right is seen in the clade hold-out (since 2026-11-09: the dataset species' genomes without their genus', family's
+  and order's), not on a genome of a lineage the dataset holds no species of at all.
 - **The organelle genes.** They have no checks across species yet, and so no benchmark.

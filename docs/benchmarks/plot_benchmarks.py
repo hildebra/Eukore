@@ -41,7 +41,7 @@ SURFACE, INK, INK2, MUTED, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#8a8984", "#
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a"]
 BLUE = {100: "#cde2fb", 250: "#86b6ef", 400: "#3987e5", 550: "#1c5cab", 700: "#0d366b"}
 NONE = "#d6d5d0"  # missing, unnamed: a gray, not a series
-TIER_COLORS = {"high": BLUE[550], "medium": BLUE[400], "low": BLUE[250]}
+TIER_COLORS = {"high": BLUE[700], "unverified": BLUE[550], "medium": BLUE[400], "low": BLUE[250]}  # format 6
 SEQUENTIAL = LinearSegmentedColormap.from_list("blue", ["#f3f7fd", BLUE[100], BLUE[250], BLUE[400], BLUE[550],
                                                         BLUE[700]])
 # the groups in order (data/supergroups.tsv's, format 5), then a format-4 package's SAR and Haptista
@@ -306,18 +306,18 @@ def confidence(bench, out, fmt):
     rows = []
     copies = read(os.path.join(bench, "completeness.tsv"))
     if copies:
-        rows.append(("BUSCO copies", {t: sum(int(r[t]) for r in copies) for t in TIER_COLORS}))
+        rows.append(("BUSCO copies", {t: sum(int(r.get(t) or 0) for r in copies) for t in TIER_COLORS}))
     by = collections.defaultdict(collections.Counter)
     for r in read(os.path.join(bench, "rrna.tsv")):
         for t in TIER_COLORS:
-            by[r["source"]][t] += int(r[t])
+            by[r["source"]][t] += int(r.get(t) or 0)
     rows += [(f"rRNA: {s}", c) for s, c in sorted(by.items(), key=lambda kv: -sum(kv[1].values()))]
     if not rows:
         return None
     rows = [(f"{n} ({sum(c.values()):,})", c) for n, c in rows]
     fig, ax = plt.subplots(figsize=(7.5, 0.42 * len(rows) + 1.5))
     handles, labels = stacked(ax, rows, tuple(TIER_COLORS), list(TIER_COLORS.values()))
-    legend_below(ax, handles, labels, ncol=3)
+    legend_below(ax, handles, labels, ncol=4)
     ax.set_title("Confidence tiers (docs/FORMAT.md: the checks that set them)")
     return save(fig, out, "confidence", fmt)
 

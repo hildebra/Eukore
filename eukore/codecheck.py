@@ -102,9 +102,11 @@ def run(collected, states, hmm_of):
     """Every genome's code checked (collected's cds and genomes; states {(accession, locus): match states}; hmm_of
     {locus: HMM path}) -> (codon rows (CODON_COLUMNS), {accession: dict(gencode_check, best_table, gencode_codons)})."""
     emissions = {locus: align_mod.read_emissions(path) for locus, path in hmm_of.items() if path}
+    # not a copy a check calls another organism's (since 2026-11-09: a contaminant's codons are its own code's)
+    low = {(r["accession"], r["locus"]) for r in collected.get("copy_rows", ()) if r.get("confidence") == "low"}
     pairs = collections.defaultdict(list)
     for (acc, locus), cds in collected.get("cds", {}).items():
-        if (acc, locus) in states:
+        if (acc, locus) in states and (acc, locus) not in low:
             pairs[acc].append((cds, states[(acc, locus)], locus))
     rows, per_genome = [], {}
     for acc, g in sorted(collected["genomes"].items()):

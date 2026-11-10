@@ -412,7 +412,8 @@ class Format5Test(unittest.TestCase):
         organelle.check(records, ncbi)  # no vsearch: no own-species check
         y = records[0][2]
         self.assertEqual((y["protein"], y["internal_stops"]), ("M" + "W" * 20 + "K" * 20, 0))  # yeast's code: W
-        self.assertEqual((y["confidence"], y["flags"]), ("medium", "own_species_undecided"))  # no vsearch: undecided
+        # no vsearch: undecided, unverified (since 2026-11-09; medium until then)
+        self.assertEqual((y["confidence"], y["flags"]), ("unverified", "own_species_undecided"))
         self.assertEqual(organelle.confidence(dict(y, internal_stops=2, partial="t"))[1],
                          "internal_stops,partial,own_species_undecided")
 

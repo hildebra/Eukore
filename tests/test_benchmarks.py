@@ -183,5 +183,57 @@ class PackageTest(unittest.TestCase):
             self.assertFalse(os.path.isfile(os.path.join(again, "stages.tsv")))
 
 
+class CladeHoldOutTest(unittest.TestCase):
+    def test_the_clade_left_out_rank_by_rank(self):
+        # since 2026-11-09: a dataset species' genome called again without its genus', family's, order's species
+        ranks = {4932: dict(genus=4930, family=4893, order=4892, **{"class": 4891}, phylum=4890),
+                 559292: dict(genus=4930, family=4893, order=4892, **{"class": 4891}, phylum=4890),
+                 27291: dict(genus=4930, family=4893, order=4892, **{"class": 4891}, phylum=4890),
+                 28985: dict(genus=4910, family=4893, order=4892, **{"class": 4891}, phylum=4890),
+                 5476: dict(genus=5475, family=1535326, order=4892, **{"class": 4891}, phylum=4890),
+                 6253: dict(genus=6251, phylum=6231)}
+        job = dict(accession="Y", species_taxid=4932, ranks=ranks[4932])
+        settings = dict(odb_own={4932: [559292]}, odb_ranks={t: r for t, r in ranks.items() if t != 4932},
+                        held_out_ranks=list(genomes.HELD_OUT_RANKS))
+        left = {r: genomes.clade_left_out(job, settings, r) for r in genomes.HELD_OUT_RANKS}
+        self.assertEqual(left, {"genus": {559292, 27291}, "family": {559292, 27291, 28985},
+                                "order": {559292, 27291, 28985, 5476}})
+        self.assertEqual([genomes.nearest_kept(job, settings, s) for s in ({559292}, *left.values())], [5, 4, 3, 0])
+        # an order that leaves out no more than the family: not run again; a lineage without an order: none
+        settings["odb_ranks"].pop(5476)
+        got, why = genomes.clade_held_out("-", job, settings, None, "-", "-", "order")
+        self.assertEqual((got, why), (dict(left_out=3, nearest=0, same_as="family"), None))
+        self.assertEqual(genomes.clade_held_out("-", dict(job, ranks={}), settings, None, "-", "-", "order")[0],
+                         dict(left_out=0, no_taxon=True))
+        self.assertEqual(genomes.held_out_file("genus"), "held_out_genus.tsv")
+        self.assertEqual(genomes.held_out_file(), genomes.HELD_OUT)
+
+    def test_the_levels_measured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = genomes.done_dir(tmp, "Y")
+            os.makedirs(folder)
+            with open(os.path.join(folder, "done.json"), "w") as fh:
+                json.dump({"held_out": {"left_out": [559292], "nearest": 5, "ranks": {
+                    "genus": {"left_out": 2, "nearest": 4}, "family": {"left_out": 2, "nearest": 4, "same_as": "genus"},
+                    "order": {"left_out": 0, "no_taxon": True}}}}, fh)
+            for name in ("held_out.tsv", "held_out_genus.tsv"):
+                with open(os.path.join(folder, name), "w") as fh:
+                    fh.write("\t".join(genomes.HELD_OUT_COLUMNS) + "\n1at2759\tSingle\tq\tc1\t1\t90\tf\tATG\n")
+            levels = benchmarks.clade_levels(tmp, "Y")
+            self.assertEqual(sorted(levels), ["family", "genus", "species"])  # the family's: the genus' calls
+            self.assertEqual(levels["family"][0]["1at2759"]["status"], "Single")
+        tallies = {("Y", 4932, "species"): dict(loci=10, missed=1, concordant=8, similar=1, same_gene=9, span_90=8),
+                   ("Y", 4932, "genus"): dict(loci=10, missed=4, concordant=3, similar=2, discordant=1, same_gene=5,
+                                              span_90=3)}
+        import collections  # noqa: PLC0415
+        tallies = {k: collections.Counter(v) for k, v in tallies.items()}
+        rows = benchmarks.holdout_rows(tallies, {("Y", "species"): dict(left_out=1, nearest=5),
+                                                 ("Y", "genus"): dict(left_out=2, nearest=4)}, {})
+        self.assertEqual([(r["level"], r["nearest"], r["called"]) for r in rows],
+                         [("species", "genus", 9), ("genus", "family", 6)])
+        summary = benchmarks.holdout_summary(rows)
+        self.assertEqual((summary["genus"]["called"], summary["genus"]["concordant_of_called"]), (0.6, 0.5))
+
+
 if __name__ == "__main__":
     unittest.main()

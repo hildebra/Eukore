@@ -19,16 +19,19 @@ The references, each aligned to by minimap2 (-x sr, secondary alignments kept):
   clades in a trial package.
 
 A read's hits covering MIN_COVER of it, MIN_ID identical or more and within NEAR of its best hit name the lowest
-common ancestor of their taxa: its assignment. Each read is assigned twice: with its own species in the reference
-(`in`), and with its own species' records left out (`held_out`: a species new to the reference, to be placed by its
-relatives). Per rank (species .. phylum) an assignment is correct (its taxon there is the read's), wrong, or above
-it (an assignment of a higher rank, which is right but says less).
+common ancestor of their taxa: its assignment. Each read is assigned three times: with its own species in the
+reference (`in`), with its own species' records left out (`held_out`: a species new to the reference, to be placed by
+its relatives), and with its whole order's left out (`novel`, since 2026-11-09: a lineage no genome holds, right at its
+class at best). Per rank (species .. phylum) an assignment is correct (its taxon there is the read's), wrong, or above
+it (an assignment of a higher rank, which is right but says less). A background read is a prokaryote's (wrong wherever
+placed) or, given its taxid (since 2026-11-09: human chromosome 21, the host), a eukaryote's, scored as a test's.
 """
 
 import bisect
 import collections
 import os
 import random
+import shutil
 import subprocess
 
 from . import labels, package, qc, rrna, util
@@ -48,7 +51,10 @@ MIN_ID = 0.90
 MIN_COVER = 0.8
 NEAR = 0.01
 RANKS = ("species", "genus", "family", "order", "class", "phylum")
-MODES = ("in", "held_out")
+# novel (since 2026-11-09): the test species' whole order out of the reference, a lineage the reference holds none of
+# (a metagenome's unknown eukaryote): its reads are right at its class at best, wrong at its order and below
+NOVEL_RANK = "order"
+MODES = ("in", "held_out", "novel")
 REFERENCES = ("Eukore", "Eukore exons", "Eukore 18S")
 COLUMNS = ("test", "kind", "species_taxid", "supergroup", "congeners", "reference", "mode", "reads", "n",
            "assigned") + tuple(f"{r}_{x}" for r in RANKS for x in ("correct", "wrong"))
@@ -60,7 +66,7 @@ COLUMNS = ("test", "kind", "species_taxid", "supergroup", "congeners", "referenc
 MIN_READS = 3
 MIN_SHARE = 0.01
 DEPTHS = (1_000, 5_000, 20_000)
-DETECT_RANK = {"in": "species", "held_out": "genus"}
+DETECT_RANK = {"in": "species", "held_out": "genus", "novel": "class"}
 DETECT_COLUMNS = ("test", "species_taxid", "supergroup", "congeners", "reference", "mode", "rank", "depth",
                   "in_reference", "true_reads", "detected", "false_taxa")
 BASES = "ACGT"
@@ -256,11 +262,14 @@ def paf_groups(path):
         yield read, hits
 
 
-def assign(hits, taxa, ncbi, leave_out=None):
+def assign(hits, taxa, ncbi, leave_out=None, clade=None, cache=None):
     """A read's hits [(identity, target)] -> the taxon of their lowest common ancestor, or None; leave_out: a species
-    whose records are out of the reference (held out)."""
+    whose records are out of the reference (held out); clade: (rank, taxid) whose records are out of it (novel)."""
     if leave_out is not None:
         hits = [(i, t) for i, t in hits if t in taxa and ncbi.species_of(taxa[t]) != leave_out]
+    if clade is not None:
+        cache = {} if cache is None else cache
+        hits = [(i, t) for i, t in hits if t in taxa and ranks_of(ncbi, taxa[t], cache).get(clade[0]) != clade[1]]
     hits = [(i, t) for i, t in hits if t in taxa]
     if not hits:
         return None
@@ -300,30 +309,36 @@ def score(truth, taxon, ncbi, cache):
 # --- detection -----------------------------------------------------------------------------------------------------
 
 def holdings(taxa, ncbi, cache):
-    """A reference's taxa {record: taxid} -> (its species, {genus: its species})."""
+    """A reference's taxa {record: taxid} -> (its species, {genus: its species}, {class: its orders})."""
     species = {ncbi.species_of(t) for t in set(taxa.values())} - {None}
-    genera = collections.defaultdict(set)
+    genera, orders = collections.defaultdict(set), collections.defaultdict(set)
     for sp in species:
-        g = ranks_of(ncbi, sp, cache).get("genus")
-        if g:
-            genera[g].add(sp)
-    return species, genera
+        at = ranks_of(ncbi, sp, cache)
+        if at.get("genus"):
+            genera[at["genus"]].add(sp)
+        if at.get("class") and at.get(NOVEL_RANK):
+            orders[at["class"]].add(at[NOVEL_RANK])
+    return species, genera, orders
 
 
 def in_reference(sp, mode, held, ncbi, cache):
-    """Whether a reference (holdings) can place a test species right: holds it (in), or another species of its
-    genus (held out)."""
-    species, genera = held
+    """Whether a reference (holdings) can place a test species right: holds it (in), another species of its genus
+    (held out), another order of its class (novel)."""
+    species, genera, orders = held
     if mode == "in":
         return sp in species
-    g = ranks_of(ncbi, sp, cache).get("genus")
+    at = ranks_of(ncbi, sp, cache)
+    if mode == "novel":
+        return bool(at.get("class") and orders.get(at["class"], set()) - {at.get(NOVEL_RANK)})
+    g = at.get("genus")
     return bool(g and genera.get(g, set()) - {sp})
 
 
-def detect(placed, test, sp, rank, depth, background, ncbi, cache):
+def detect(placed, test, sp, rank, depth, background, ncbi, cache, present=()):
     """A sample: the test's first `depth` reads placed ({source: {read index: taxon}}) and depth / len(background) of
     each background genome's -> (reads placed to its right taxon at rank, whether it is detected, other taxa
-    detected): detected with MIN_READS reads and MIN_SHARE of the reads placed at rank."""
+    detected): detected with MIN_READS reads and MIN_SHARE of the reads placed at rank. present: taxa at rank the
+    sample truly holds besides the test (a eukaryote background's, the host: since 2026-11-09), no false detection."""
     counts = collections.Counter()
     per = depth // max(1, len(background))
     for source, upto in [(test, depth)] + [(b, per) for b in background]:
@@ -335,7 +350,7 @@ def detect(placed, test, sp, rank, depth, background, ncbi, cache):
     floor = max(MIN_READS, MIN_SHARE * sum(counts.values()))
     truth = ranks_of(ncbi, sp, cache).get(rank)
     right = counts.pop(truth, 0) if truth else 0
-    return right, right >= floor, sum(1 for n in counts.values() if n >= floor)
+    return right, right >= floor, sum(1 for t, n in counts.items() if n >= floor and t not in present)
 
 
 def detection_summary(rows):
@@ -391,12 +406,14 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
                 counts[(acc, kind)] = len(reads)
                 fh.writelines(f">{acc}|{kind}|{i}\n{s}\n" for i, s in enumerate(reads))
             log(f"  reads of {acc}: {len(marker):,} from its markers, {len(anywhere):,} from anywhere")
-        for name, path in background:
+        for name, path, *taxid in background:  # (name, FASTA[, NCBI taxid: a eukaryote's, since 2026-11-09])
             _m, anywhere = simulate(path, [], rng, n_background)
-            meta[name] = ("background", 0)
+            meta[name] = ("background", int(taxid[0]) if taxid and taxid[0] else 0)
             counts[(name, "genome")] = len(anywhere)
             fh.writelines(f">{name}|genome|{i}\n{s}\n" for i, s in enumerate(anywhere))
     cache = {}
+    # novel: each test's order, out of the reference (a test without an order has no novel mode)
+    novel = {acc: ranks_of(ncbi, sp, cache).get(NOVEL_RANK) for acc, (what, sp) in meta.items() if what == "eukaryote"}
     rows = []
     for ref, (fasta, taxa) in refs.items():
         if not taxa:
@@ -419,14 +436,20 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
             test, kind, i = read.rsplit("|", 2)
             what, sp = meta[test]
             for mode in MODES:
-                taxon = assign(hits, taxa, ncbi, sp if mode == "held_out" and what == "eukaryote" else None)
+                clade = None
+                if mode == "novel" and what == "eukaryote":
+                    if not novel.get(test):
+                        continue
+                    clade = (NOVEL_RANK, novel[test])
+                taxon = assign(hits, taxa, ncbi, sp if mode == "held_out" and what == "eukaryote" else None, clade,
+                               cache)
                 if taxon is None:
                     continue
                 if kind == "genome":
                     placed[mode][test][int(i)] = taxon
                 t = tally[(test, kind, mode)]
                 t["assigned"] += 1
-                if what == "eukaryote":
+                if sp:  # a test's read, or a eukaryote background's (the host's: right on its own lineage)
                     for r, verdict in score(sp, taxon, ncbi, cache).items():
                         if verdict in ("correct", "wrong"):
                             t[f"{r}_{verdict}"] += 1
@@ -438,7 +461,7 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
         for (test, kind), n in sorted(counts.items()):
             what, sp = meta[test]
             for mode in MODES:
-                if what == "background" and mode == "held_out":
+                if (what == "background" and mode != "in") or (mode == "novel" and not novel.get(test)):
                     continue
                 t = tally[(test, kind, mode)]
                 g = genus_of(ncbi, sp) if sp else None
@@ -448,15 +471,19 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
                                  assigned=t["assigned"], **{c: t[c] for c in COLUMNS[10:]}))
         if detections is not None:
             held = holdings(taxa, ncbi, cache)
-            names = [name for name, _p in background]
+            names = [b[0] for b in background]
+            hosts = [meta[n][1] for n in names if meta[n][1]]  # the eukaryote background's: truly in every sample
             depths = [d for d in DEPTHS if d <= n_genome] or [n_genome]
             for test in tests:
                 sp = meta[test][1]
                 g = genus_of(ncbi, sp)
                 for mode in MODES:
+                    if mode == "novel" and not novel.get(test):
+                        continue
+                    present = {ranks_of(ncbi, h, cache).get(DETECT_RANK[mode]) for h in hosts} - {None}
                     for depth in depths:
                         right, found, wrong = detect(placed[mode], test, sp, DETECT_RANK[mode], depth, names, ncbi,
-                                                     cache)
+                                                     cache, present)
                         detections.append(dict(
                             test=test, species_taxid=sp, supergroup=species.get(sp, {}).get("supergroup", "-"),
                             congeners=genus_size[g] - 1 if g else 0, reference=ref, mode=mode,
@@ -470,8 +497,10 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
     return rows
 
 
-def read_background(table, folder):
-    """data/read_background.tsv's genomes in folder (fetched by the fetch stage) -> [(name, path)] of those there."""
+def background_rows(table):
+    """data/read_background.tsv's rows -> [(accession, assembly, organism, NCBI taxid or None)]: a eukaryote's taxid
+    (since 2026-11-09) makes its reads right on its own lineage (the host's), a prokaryote's are wrong wherever
+    placed."""
     out = []
     if not os.path.isfile(table):
         return out
@@ -480,30 +509,49 @@ def read_background(table, folder):
             f = line.rstrip("\n").split("\t")
             if line.startswith("#") or len(f) < 3 or f[0] == "accession":
                 continue
-            path = os.path.join(folder, f"{f[0]}.fna.gz")
-            if os.path.isfile(path):
-                out.append((f[2].replace(" ", "_"), path))
+            out.append((f[0], f[1], f[2], int(f[3]) if len(f) > 3 and f[3].strip().isdigit() else None))
+    return out
+
+
+def read_background(table, folder):
+    """data/read_background.tsv's genomes in folder (fetched by the fetch stage) -> [(name, path, taxid or None)] of
+    those there."""
+    out = []
+    for acc, _assembly, organism, taxid in background_rows(table):
+        path = os.path.join(folder, f"{acc}.fna.gz")
+        if os.path.isfile(path):
+            out.append((organism.replace(" ", "_"), path, taxid))
     return out
 
 
 def background_url(accession, assembly):
-    """An NCBI genome's FTP URL from its accession and assembly name (GCF_000005845.2, ASM584v2)."""
+    """An NCBI genome's FTP URL from its accession and assembly name (GCF_000005845.2, ASM584v2); a sequence's
+    (NC_000021.9: one chromosome, since 2026-11-09) E-utilities FASTA."""
+    if not accession.startswith(("GCF_", "GCA_")):
+        return f"{EUTILS}/efetch.fcgi?db=nuccore&id={accession}&rettype=fasta&retmode=text"
     digits = accession.split("_")[1].split(".")[0]
     full = f"{accession}_{assembly}"
     return (f"https://ftp.ncbi.nlm.nih.gov/genomes/all/{accession[:3]}/{digits[:3]}/{digits[3:6]}/{digits[6:9]}/"
             f"{full}/{full}_genomic.fna.gz")
 
 
+EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
+
 def fetch_background(table, folder, log=print):
-    """data/read_background.tsv's genomes into folder (kept when there)."""
+    """data/read_background.tsv's genomes into folder (kept when there); a sequence's plain FASTA compressed there."""
     os.makedirs(folder, exist_ok=True)
-    with open(table) as fh:
-        for line in fh:
-            f = line.rstrip("\n").split("\t")
-            if line.startswith("#") or len(f) < 3 or f[0] == "accession":
-                continue
-            path = os.path.join(folder, f"{f[0]}.fna.gz")
-            if not os.path.isfile(path):
-                why = util.fetch_file(background_url(f[0], f[1]), path)
-                if why:
-                    log(f"WARNING: read background {f[0]} ({f[2]}): {why}")
+    for acc, assembly, organism, _taxid in background_rows(table):
+        path = os.path.join(folder, f"{acc}.fna.gz")
+        if os.path.isfile(path):
+            continue
+        plain = not acc.startswith(("GCF_", "GCA_"))
+        got = path[:-len(".gz")] + ".part" if plain else path
+        why = util.fetch_file(background_url(acc, assembly), got, gzip_check=not plain)
+        if why:
+            log(f"WARNING: read background {acc} ({organism}): {why}")
+        elif plain:
+            with open(got, "rb") as src, util.bgzf_open(util.part_of(path), "wb") as out:
+                shutil.copyfileobj(src, out, 1 << 24)
+            os.replace(util.part_of(path), path)
+            os.remove(got)

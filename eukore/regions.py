@@ -6,6 +6,7 @@ position or after to the last at its last position or before (inserts between in
 record holds bases within SLACK positions of both its ends. The alignments are cached by sequence under WORK/cmalign/.
 """
 
+import collections
 import glob
 import hashlib
 import os
@@ -26,22 +27,93 @@ BATCH = 500  # sequences per cmalign run (an alignment's width grows with its in
 REGION_COLUMNS = ("record", "region", "start", "end", "length", "complete")
 
 
+# Rfam's SSU models an 18S is scored by (since 2026-11-09, ssu_models): barrnap's eukaryote models alone call a
+# bacterium's or a mitochondrion's SSU an 18S, and an assembly's bacterial contig, a NUMT, an endosymbiont's insertion
+# then gave the species a "18S" (and the universal motifs rrna.py seeds by find them). The model of the best score names
+# it; a prokaryote model's score must pass the eukaryote models' best by SSU_MARGIN bits.
+SSU_MODELS = (("RF01960", "eukarya"), ("RF02542", "eukarya"),  # SSU_rRNA_eukarya, SSU_rRNA_microsporidia
+              ("RF00177", "bacteria"), ("RF01959", "archaea"))  # SSU_rRNA_bacteria (a mitochondrion's, a plastid's)
+SSU_MARGIN = 20.0
+SSU_MODELS_FILE = "ssu_models.cm"
+
+
 def cm_path(src_dir):
     return os.path.join(src_dir, "rfam", f"{SSU_CM[0]}.cm")
 
 
+def models_path(src_dir):
+    """The SSU models' file (SSU_MODELS, one Infernal file; ssu_models)."""
+    return os.path.join(src_dir, "rfam", SSU_MODELS_FILE)
+
+
 def fetch(src_dir, download, log=print):
     """Rfam's SSU model into src_dir/rfam (kept when there and an Infernal model: a page saved in its place, e.g. a
-    proxy's, is fetched again; since 2026-11-08 it was kept, and every package stage then stopped)."""
+    proxy's, is fetched again; since 2026-11-08 it was kept, and every package stage then stopped), and (since
+    2026-11-09) SSU_MODELS' joined into models_path's file."""
     path = cm_path(src_dir)
-    if not is_cm(path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        log(f"Rfam: fetching {SSU_CM[0]}")
-        download(SSU_CM[1], path)
-        if not is_cm(path):
-            os.remove(path)
-            raise OSError(f"{SSU_CM[1]}: not an Infernal model")
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    for acc, _kind in SSU_MODELS:
+        one = os.path.join(folder, f"{acc}.cm")
+        if not is_cm(one):
+            log(f"Rfam: fetching {acc}")
+            url = f"https://rfam.org/family/{acc}/cm"
+            download(url, one)
+            if not is_cm(one):
+                os.remove(one)
+                raise OSError(f"{url}: not an Infernal model")
+    joined = models_path(src_dir)
+    if not is_cm(joined):
+        with open(util.part_of(joined), "w", newline="\n") as out:
+            for acc, _kind in SSU_MODELS:
+                with open(os.path.join(folder, f"{acc}.cm")) as fh:
+                    out.write(fh.read())
+        os.replace(util.part_of(joined), joined)
     return path
+
+
+def ssu_models(seqs, cm, cmsearch="cmsearch", threads=1, tmp=None):
+    """Each sequence's SSU model of the best score ({name: its 18S} -> {name: eukarya, bacteria, archaea, or - where
+    none scores it}; since 2026-11-09): cmsearch of SSU_MODELS (cm: models_path's file) by their profile HMMs alone
+    (--hmmonly: an HMM search's speed), each distinct sequence once; a prokaryote model's call needs its score over
+    the eukaryote models' best by SSU_MARGIN bits."""
+    kind_of = dict(SSU_MODELS)
+    distinct = {}
+    for name, seq in seqs.items():
+        if seq:
+            distinct.setdefault(seq.upper(), []).append(name)
+    if not distinct:
+        return {}
+    best = collections.defaultdict(dict)  # sequence index -> {kind: best score}
+    order = list(distinct)
+    with tempfile.TemporaryDirectory(dir=tmp) as work:
+        fasta, table = os.path.join(work, "s.fna"), os.path.join(work, "hits.tbl")
+        with open(fasta, "w") as fh:
+            fh.writelines(f">s{i}\n{seq}\n" for i, seq in enumerate(order))
+        run = subprocess.run([cmsearch, "--hmmonly", "--noali", "-Z", "1", "--cpu", str(max(1, threads)), "--tblout",
+                              table, "-o", os.devnull, cm, fasta], capture_output=True, text=True, check=False)
+        if run.returncode != 0:
+            raise RuntimeError(f"cmsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+        with open(table) as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                f = line.split()
+                kind, score = kind_of.get(f[3]), float(f[14])
+                if kind and score > best[int(f[0][1:])].get(kind, float("-inf")):
+                    best[int(f[0][1:])][kind] = score
+    out = {}
+    for i, seq in enumerate(order):
+        scores = best.get(i)
+        if not scores:
+            kind = "-"
+        else:
+            kind = max(scores, key=scores.get)
+            if kind != "eukarya" and scores[kind] < scores.get("eukarya", float("-inf")) + SSU_MARGIN:
+                kind = "eukarya"
+        for name in distinct[seq]:
+            out[name] = kind
+    return out
 
 
 def is_cm(path):

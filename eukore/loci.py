@@ -19,10 +19,24 @@ own copies, in place of EukDetect1's and EukDetect2's.
 6. the gene model (annotated(), since 2026-11-06): in a genome with its own gene models (annotation.py: NCBI's, else
    Ensembl's, else TOGA2's), a copy takes the annotated transcript sharing the most coding bases with miniprot's model
    where the locus' HMM confirms its translation at ANNOTATION_SHARE of miniprot's score or more (`model` the source:
-   ncbi, ensembl, toga2), else keeps miniprot's.
+   ncbi, ensembl, toga2), else keeps miniprot's. Since 2026-11-09 not a model with a stop inside its protein where
+   miniprot's has none, nor one whose protein is over ANNOTATION_LONGER times miniprot's and the profile's (a fusion
+   of two genes, which the HMM's score does not see).
 
 A copy's coding sequence (`spliced`) leaves out the bases of miniprot's frameshifts (its CIGAR's F and G), which its
 GFF keeps inside the CDS; they are `frameshift` features of the copy.
+
+The coding sequence checked (since 2026-11-09; until then the HMM confirmed miniprot's own translation and the package
+shipped the exons joined, unchecked: a call's frame lost by a misread of miniprot's output went out as a protein of
+stops). Each confirmed alignment's coding sequence, as its copy would ship it, is translated and set beside the
+protein the HMM confirmed (cds_state): `clean` where no stop is inside it and CDS_AGREE of its 5-mers are in that
+protein, else `stops` or `mismatch`. A region's confirmed alignments are taken clean first (cleanest), complete before
+a fragment as the best is, by HMM score; a locus' regions too (choose: a Duplicated locus' gene before its pseudogene
+copy). A copy still not clean is aligned again on its place with RECOVER_RUNS' miniprot settings (recover), and a clean
+model the HMMs confirm there takes its place: `recovered`. One that stays unclean ships as it is, its cds_check saying
+why (the package flags it). A Duplicated locus' other complete copies, the ALTERNATES best, are kept whole beside it
+(`alternates`): the package takes one of them where the chosen copy's lineage does not fit and theirs does
+(package.collect).
 
 A copy is the genome from the gene's first codon to its last on its own strand, introns and all, uncut and in upper
 case (copies.whole, no length cap), with its features on it: exons and introns, the assembly's soft-masked runs of
@@ -76,7 +90,15 @@ RESCUE_MAX_BASES = 1_000_000_000  # a genome over this is not rescued (its six-f
 # intron) for 81% of Drosophila's and Arabidopsis' BUSCOs and 38% of C. elegans'; all their annotated models pass the
 # cutoff. Blastocystis hominis' 2011 annotation is weaker: miniprot's model outscores it by 5% or more in 23 of 94.
 ANNOTATION_SHARE = 0.95
+ANNOTATION_LONGER = 1.5  # an annotated model's protein over this times miniprot's and the profile's: a fusion, not taken
 STATUS = ("Single", "Duplicated", "Fragmented", "Missing")
+# The coding sequence checked (since 2026-11-09; module docstring)
+CDS_AGREE = 0.9          # of a copy's translated 5-mers, this share in the protein its HMM confirmed: not a mismatch
+CDS_KMER = 5
+CDS_STATES = ("clean", "recovered", "stops", "mismatch")
+RECOVER_FLANK = 2_000    # an unclean copy's bases each side aligned again
+RECOVER_RUNS = ((), ("-J", "15"), tuple(RESCUE_OPTIONS))  # miniprot's: as it is, a cheaper intron, sensitive seeding
+ALTERNATES = 3           # a Duplicated locus' other complete copies kept whole, the best HMM scores first
 
 
 def frameshifts(cigar):
@@ -363,25 +385,143 @@ def align(target, queries, miniprot, threads, table, work, options=None):
 
 def confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work):
     """The alignments' regions the HMMs confirm (steps 2-3) -> {locus: [each region's confirmed alignment of the best
-    HMM score, with hmm_score and hmm_coverage]}; lengths: {query: its protein's length}."""
+    HMM score, with hmm_score and hmm_coverage, and its region's other confirmed alignments in `alts` (since
+    2026-11-09: cleanest's choice), by HMM score]}; lengths: {query: its protein's length}."""
     found = regions(alignments, lengths)
     candidates = {f"c{i}": (j, a) for i, (j, a) in enumerate(
         ((locus, j), a) for locus, rs in found.items() for j, r in enumerate(rs) for a in r["top"])}
     scores = hmmsearch({n: a["protein"] for n, (_j, a) in candidates.items()}, hmm_db, hmmsearch_bin, threads, work)
-    by_region = {}  # (locus, region) -> its confirmed alignment of the best HMM score
+    by_region = collections.defaultdict(list)  # (locus, region) -> its confirmed alignments
     for name, (key, r) in candidates.items():
         got = odb.by_locus(scores.get(name, {}))
         if not got:
             continue
         best_hmm = max(got, key=lambda h: got[h][0])
         s, cov = got.get(r["locus"], (0.0, 0.0))
-        if best_hmm == r["locus"] and s >= odb.cutoff[r["locus"]] and (
-                key not in by_region or (s, r["score"]) > (by_region[key]["hmm_score"], by_region[key]["score"])):
-            by_region[key] = dict(r, hmm_score=s, hmm_coverage=cov)
+        if best_hmm == r["locus"] and s >= odb.cutoff[r["locus"]]:
+            by_region[key].append(dict(r, hmm_score=s, hmm_coverage=cov))
     confirmed = collections.defaultdict(list)
-    for (locus, _j), r in sorted(by_region.items()):
-        confirmed[locus].append(r)
+    for (locus, _j), rs in sorted(by_region.items()):
+        rs.sort(key=lambda a: (a["hmm_score"], a["score"]), reverse=True)  # stable: of equal ones, the first found
+        confirmed[locus].append(dict(rs[0], alts=rs[1:]))
     return confirmed
+
+
+def _kmers(protein, k=CDS_KMER):
+    return {protein[i:i + k] for i in range(len(protein) - k + 1)
+            if "*" not in protein[i:i + k] and "X" not in protein[i:i + k]}
+
+
+def cds_state(cds, protein, table=1):
+    """A copy's coding sequence as it ships (its exons joined, frameshifts out) against the protein its HMM confirmed
+    -> `clean`, `stops` (a stop inside its translation by the genome's table) or `mismatch` (under CDS_AGREE of its
+    5-mers in that protein: the exons do not read as the protein checked)."""
+    from .gencode import translate  # noqa: PLC0415
+    p = translate(cds, table)
+    p = p[:-1] if p.endswith("*") else p
+    if "*" in p:
+        return "stops"
+    mine, checked_ = _kmers(p), _kmers((protein or "").upper())
+    if mine and checked_ and len(mine & checked_) < CDS_AGREE * len(mine):
+        return "mismatch"
+    return "clean"
+
+
+def coding_of(a, contigs):
+    """An alignment's coding sequence as its copy would ship it (copies.whole's exons joined, frameshifts out)."""
+    seq = contigs[a["contig"]]
+    return in_frame(copies_mod.whole(seq, a["start"], a["end"], a["strand"], a["exons"])["spliced"], a.get("shifts"))
+
+
+def checked(a, contigs, table):
+    """An alignment with its cds_check (cds_state of coding_of) set, measured once -> a."""
+    if "cds_check" not in a:
+        a["cds_check"] = cds_state(coding_of(a, contigs), a.get("protein"), table)
+    return a
+
+
+def is_clean(a):
+    return a.get("cds_check") in ("clean", "recovered")
+
+
+def cleanest(r, contigs, table):
+    """A region's alignment to take (r: confirm's, the best HMM score, its region's others in r["alts"]): r where its
+    coding sequence is clean, else the region's clean one of the best HMM score, complete where r is (`recovered`),
+    else r."""
+    checked(r, contigs, table)
+    if is_clean(r):
+        return r
+    whole = r["hmm_coverage"] >= COMPLETE
+    clean = [a for a in (checked(a, contigs, table) for a in r.get("alts", ()))
+             if is_clean(a) and (a["hmm_coverage"] >= COMPLETE or not whole)]
+    if not clean:
+        return r
+    best = max(clean, key=lambda a: (a["hmm_score"], a["score"]))
+    return dict(best, cds_check="recovered", alts=r.get("alts", ()), rescued=r.get("rescued", False))
+
+
+def choose(confirmed, loci):
+    """Each locus' copy among its confirmed regions -> ({locus: alignment}, {locus: (status, the other complete
+    regions' alignments, the best HMM scores first)}): a complete one before a fragment, then (since 2026-11-09) a
+    clean coding sequence before one that is not (a Duplicated locus' gene before a pseudogene's copy), then the best
+    HMM score. Single: one complete; Duplicated: more; Fragmented: fragments alone."""
+    chosen, statuses = {}, {}
+    for locus in loci:
+        rs = confirmed.get(locus, [])
+        if not rs:
+            continue
+        complete = [r for r in rs if r["hmm_coverage"] >= COMPLETE]
+        best = max(complete or rs, key=lambda r: (is_clean(r), r["hmm_score"], r["score"]))
+        chosen[locus] = best
+        others = sorted((r for r in complete if r is not best), key=lambda r: (r["hmm_score"], r["score"]),
+                        reverse=True)
+        statuses[locus] = ("Single" if len(complete) == 1 else "Duplicated" if complete else "Fragmented", others)
+    return chosen, statuses
+
+
+def recover(unclean, contigs, queries, odb, miniprot, hmmsearch_bin, threads, table, hmm_db, work, intron):
+    """The copies whose coding sequence is not clean (unclean: {locus: alignment}) aligned again on their place: each
+    one's span and RECOVER_FLANK bases each side, by its locus' queries, with each of RECOVER_RUNS' miniprot settings
+    (introns as long as `intron`); the HMMs confirm as in the first pass -> {locus: the clean confirmed alignment of the
+    best HMM score on the copy's contig and strand, overlapping it, complete where it is (`recovered`)}."""
+    target, starts = os.path.join(work, "recover.fna"), {}
+    with open(target, "w") as fh:
+        for locus, a in sorted(unclean.items()):
+            seq = contigs[a["contig"]]
+            lo, hi = max(1, a["start"] - RECOVER_FLANK), min(len(seq), a["end"] + RECOVER_FLANK)
+            name = f"r{len(starts)}"
+            starts[name] = (locus, a["contig"], lo)
+            fh.write(f">{name}\n{seq[lo - 1:hi]}\n")
+    q = {n: p for n, p in queries.items() if n.split("~", 1)[0] in unclean}
+    lengths = {n: len(p) for n, p in q.items()}
+    found = collections.defaultdict(list)
+    for k, options in enumerate(RECOVER_RUNS):
+        folder = os.path.join(work, f"recover{k}")
+        os.makedirs(folder, exist_ok=True)
+        alignments, failed = align(target, q, miniprot, threads, table, folder, ["-G", str(intron), *options])
+        if failed:
+            continue
+        kept = []
+        for a in alignments:  # back on the genome; another locus' alignment in a window is not its recovery
+            locus, contig, lo = starts.get(a["contig"], (None, None, 0))
+            if locus is not None and a["locus"] == locus:
+                shift = lo - 1
+                kept.append(dict(a, contig=contig, start=a["start"] + shift, end=a["end"] + shift,
+                                 exons=[(x + shift, y + shift) for x, y in a["exons"]]))
+        for locus, rs in confirm(kept, lengths, odb, hmm_db, hmmsearch_bin, threads, folder).items():
+            for r in rs:
+                found[locus] += [r, *r.pop("alts", ())]
+    out = {}
+    for locus, a in unclean.items():
+        whole = a["hmm_coverage"] >= COMPLETE
+        good = [checked(c, contigs, table) for c in found.get(locus, ())
+                if (c["contig"], c["strand"]) == (a["contig"], a["strand"]) and c["start"] <= a["end"]
+                and c["end"] >= a["start"] and (c["hmm_coverage"] >= COMPLETE or not whole)]
+        good = [c for c in good if is_clean(c)]
+        if good:
+            best = max(good, key=lambda c: (c["hmm_score"], c["score"]))
+            out[locus] = dict(best, cds_check="recovered", rescued=a.get("rescued", False))
+    return out
 
 
 def orf_pieces(seq, a, b):
@@ -609,11 +749,12 @@ def frameshift_features(exons, shifts):
 
 def annotated_transcripts(chosen, annotation):
     """The annotation's transcripts sharing coding bases with the calls' spans (annotation_mod.read_cds), chosen:
-    {locus: alignment}; annotation: (its GFF, NCBI's assembly report or None, its source)."""
+    {locus: alignment} or the alignments (since 2026-11-09: every region's, read before the copy is chosen);
+    annotation: (its GFF, NCBI's assembly report or None, its source)."""
     from . import annotation as annotation_mod  # noqa: PLC0415
     gff, report = (tuple(annotation) + (None,))[:2]
     spans = collections.defaultdict(list)
-    for a in chosen.values():
+    for a in (chosen.values() if isinstance(chosen, dict) else chosen):
         spans[a["contig"]].append((a["start"], a["end"]))
     return annotation_mod.read_cds(gff, spans, annotation_mod.aliases(report, gff))
 
@@ -655,10 +796,15 @@ def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hm
         if not got or max(got, key=lambda h: got[h][0]) != locus:
             continue
         s, cov = got[locus]
-        a = chosen[locus]
-        if s >= odb.cutoff[locus] and s >= ANNOTATION_SHARE * a["hmm_score"]:
+        a, p = chosen[locus], proteins[locus]
+        # since 2026-11-09: not a model of a stop inside where miniprot's has none, nor a fusion (its protein over
+        # ANNOTATION_LONGER times miniprot's and the profile's: the HMM's score does not see a second gene)
+        clean = "*" not in p
+        if s >= odb.cutoff[locus] and s >= ANNOTATION_SHARE * a["hmm_score"] and (clean or not is_clean(a)) \
+                and len(p) <= ANNOTATION_LONGER * max(len((a.get("protein") or "").rstrip("*")), odb.length[locus]):
             out[locus] = dict(a, exons=m["exons"], start=m["start"], end=m["end"], shifts=[], hmm_score=s,
-                              hmm_coverage=cov, protein=proteins[locus], model=source, transcript=m["transcript"],
+                              hmm_coverage=cov, protein=p, model=source, transcript=m["transcript"],
+                              cds_check="clean" if clean else "stops",
                               miniprot=dict(start=a["start"], end=a["end"], exons=a["exons"]))
     return out
 
@@ -669,8 +815,10 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
     features [(kind, start, end)],
     contig, start, end, strand, identity, coverage, score, hmm_score, hmm_coverage, cutoff, copies, query, protein,
     rescued, model (miniprot, or the annotation's source: ncbi, ensembl, toga2), miniprot (its model: start, end, exons),
-    others (the coding sequences of the locus' other complete copies, since 2026-11-07: dup_identity))}, failed (why the genome could not be
-    called, or None), windows {name: sequence} of the copies' flanks).
+    others (the coding sequences of the locus' other complete copies, since 2026-11-07: dup_identity), cds_check
+    (cds_state's, `recovered`; since 2026-11-09), alternates (the ALTERNATES best other complete copies as copy_record
+    makes them; since 2026-11-09))}, failed (why the genome could not be called, or None), windows {name: sequence} of
+    the copies' flanks).
     rescue_missing: the rescue pass (step 5) of the loci left Missing, in a genome of RESCUE_MAX_BASES or less;
     annotation: (the genome's GFF, NCBI's assembly report or None, its source) for step 6 (annotated()), or None."""
     lengths = {q: len(p) for q, p in queries.items()}
@@ -685,24 +833,26 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
                 and shutil.which(translate)):
             confirmed.update(rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads, table,
                                     hmm_db, work, translate))
-        chosen, statuses = {}, {}
-        for locus in odb.loci:
-            rs = confirmed.get(locus, [])
-            complete = [r for r in rs if r["hmm_coverage"] >= COMPLETE]
-            if rs:
-                chosen[locus] = max(complete or rs, key=lambda r: (r["hmm_score"], r["score"]))
-                statuses[locus] = ("Single" if len(complete) == 1 else "Duplicated" if complete else "Fragmented",
-                                   [r for r in complete if r is not chosen[locus]])
-        transcripts = annotated_transcripts(chosen, annotation) if annotation and annotation[0] and chosen else None
-        # the genome's bases read: each copy's and its other copies' spans, the annotated models', WINDOW each side
-        # (since 2026-11-08 these alone: every contig with a call was held whole, a chromosome-level genome whole)
+        reps = [r for rs in confirmed.values() for r in rs]
+        transcripts = annotated_transcripts(reps, annotation) if annotation and annotation[0] and reps else None
+        # the genome's bases read once: every confirmed alignment's span (since 2026-11-09: their coding sequences
+        # checked before a copy is chosen, a recovery's windows), the annotated models', WINDOW each side (since
+        # 2026-11-08 these alone: every contig with a call was held whole, a chromosome-level genome whole)
         need = collections.defaultdict(list)
-        for locus, best in chosen.items():
-            for r in [best] + statuses[locus][1]:
-                need[r["contig"]].append((r["start"] - WINDOW, r["end"] + WINDOW))
+        for r in reps:  # RECOVER_FLANK more: a recovered model lies that far around its copy, its flanks WINDOW
+            for a in [r, *r.get("alts", ())]:
+                need[a["contig"]].append((a["start"] - WINDOW - RECOVER_FLANK, a["end"] + WINDOW + RECOVER_FLANK))
         for t in (transcripts or {}).values():
             need[t["contig"]].append((t["cds"][0][0] - WINDOW, max(b for _a, b in t["cds"]) + WINDOW))
         contigs = placement.read_spans(genome_path, need)
+        for locus, rs in confirmed.items():  # each region's clean alignment first (cleanest)
+            confirmed[locus] = [cleanest(r, contigs, table) for r in rs]
+        chosen, statuses = choose(confirmed, odb.loci)
+        unclean = {locus: a for locus, a in chosen.items() if not is_clean(a)}
+        if unclean:  # aligned again on their place (recover); one that stays unclean ships flagged
+            intron = int(3.6 * placement.genome_bases(genome_path) ** 0.5)
+            chosen.update(recover(unclean, contigs, queries, odb, miniprot, hmmsearch_bin, threads, table, hmm_db,
+                                  work, intron))
         if transcripts is not None:
             chosen = annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hmm_db, table,
                                transcripts)
@@ -714,27 +864,36 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
         best = chosen[locus]
         status, others = statuses[locus]
         seq = contigs[best["contig"]]
-        fitted = copies_mod.whole(seq, best["start"], best["end"], best["strand"], best["exons"])
-        raw = seq[best["start"] - 1:best["end"]]
-        feats = list(fitted["features"])
-        feats += frameshift_features([(s, e) for k, s, e in feats if k == "exon"], best.get("shifts"))
-        feats += [("soft_masked", a, b) for a, b in on_copy(soft_runs(raw), best["start"], best["end"], best["strand"])]
-        feats += [("low_complexity", a, b) for a, b in dust(fitted["copy"])]
-        loci[locus] = dict(status=status, copy=fitted["copy"], spliced=in_frame(fitted["spliced"], best.get("shifts")),
-                           features=sorted(
-            feats, key=lambda f: (f[1], f[0])), contig=best["contig"], contig_length=len(seq), start=best["start"],
-            end=best["end"], strand=best["strand"], identity=best["identity"], coverage=best["coverage"],
-            score=best["score"], hmm_score=best["hmm_score"], hmm_coverage=best["hmm_coverage"],
-            cutoff=odb.cutoff[locus], copies=len(others) + (status != "Fragmented"),
-            others=[in_frame(copies_mod.whole(contigs[o["contig"]], o["start"], o["end"], o["strand"],
-                                              o["exons"])["spliced"], o.get("shifts")) for o in others],
-            query=best["query"].split("~", 1)[1],
-            protein=best["protein"], exons=best["exons"], rescued=bool(best.get("rescued")),
-            model=best.get("model", "miniprot"), transcript=best.get("transcript", "-"),
-            miniprot=best.get("miniprot") or dict(start=best["start"], end=best["end"], exons=best["exons"]))
+        loci[locus] = dict(copy_record(best, contigs, odb.cutoff[locus], table), status=status,
+                           copies=len(others) + (status != "Fragmented"),
+                           others=[coding_of(o, contigs) for o in others],
+                           # the best other complete copies whole (since 2026-11-09): the package's choice by lineage
+                           alternates=[copy_record(o, contigs, odb.cutoff[locus], table) for o in others[:ALTERNATES]])
         w1, w2 = max(1, best["start"] - WINDOW), min(len(seq), best["end"] + WINDOW)
         windows[f"{locus}|{best['contig']}|{w1}-{w2}"] = seq[w1 - 1:w2].upper()
     return dict(loci=loci, failed=None, windows=windows)
+
+
+def copy_record(best, contigs, cutoff, table=1):
+    """A chosen alignment's copy (call's loci values but status, copies, others, alternates): the copy whole and its
+    coding sequence, its features (exons, introns, frameshifts, soft-masked and low-complexity runs), its place and
+    scores, its cds_check (checked)."""
+    seq = contigs[best["contig"]]
+    fitted = copies_mod.whole(seq, best["start"], best["end"], best["strand"], best["exons"])
+    raw = seq[best["start"] - 1:best["end"]]
+    feats = list(fitted["features"])
+    feats += frameshift_features([(s, e) for k, s, e in feats if k == "exon"], best.get("shifts"))
+    feats += [("soft_masked", a, b) for a, b in on_copy(soft_runs(raw), best["start"], best["end"], best["strand"])]
+    feats += [("low_complexity", a, b) for a, b in dust(fitted["copy"])]
+    return dict(copy=fitted["copy"], spliced=in_frame(fitted["spliced"], best.get("shifts")),
+                features=sorted(feats, key=lambda f: (f[1], f[0])), contig=best["contig"], contig_length=len(seq),
+                start=best["start"], end=best["end"], strand=best["strand"], identity=best["identity"],
+                coverage=best["coverage"], score=best["score"], hmm_score=best["hmm_score"],
+                hmm_coverage=best["hmm_coverage"], cutoff=cutoff, query=best["query"].split("~", 1)[1],
+                protein=best["protein"], exons=best["exons"], rescued=bool(best.get("rescued")),
+                model=best.get("model", "miniprot"), transcript=best.get("transcript", "-"),
+                cds_check=checked(best, contigs, table)["cds_check"],
+                miniprot=best.get("miniprot") or dict(start=best["start"], end=best["end"], exons=best["exons"]))
 
 
 DUP_MIN_ID = 0.5  # a duplicated copy's other copies compared down to this identity (below it: "<50")

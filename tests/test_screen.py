@@ -22,6 +22,49 @@ def mutate(seq, rate, rng):
     return "".join(rng.choice("ACGT".replace(c, "")) if rng.random() < rate else c for c in seq)
 
 
+CMSEARCH = '''#!/bin/sh
+# cmsearch --tblout's stand-in: s0 scored best by the eukaryote model, s1 by the bacterial one by 40 bits, s2 by the
+# bacterial one by 10 bits (under the margin: still eukaryote), s3 by none
+while [ "$#" -gt 0 ]; do [ "$1" = "--tblout" ] && out=$2; shift; done
+cat > "$out" <<EOT
+#target name accession query name accession mdl mdl from mdl to seq from seq to strand trunc pass gc bias score ...
+s0 - SSU_rRNA_eukarya RF01960 hmm 1 1800 1 1800 + - 6 0.5 0 1500.0 0 ! -
+s0 - SSU_rRNA_bacteria RF00177 hmm 1 1500 1 1500 + - 6 0.5 0 900.0 0 ! -
+s1 - SSU_rRNA_eukarya RF01960 hmm 1 1800 1 1500 + - 6 0.5 0 700.0 0 ! -
+s1 - SSU_rRNA_bacteria RF00177 hmm 1 1500 1 1500 + - 6 0.5 0 740.0 0 ! -
+s2 - SSU_rRNA_eukarya RF01960 hmm 1 1800 1 1500 + - 6 0.5 0 700.0 0 ! -
+s2 - SSU_rRNA_bacteria RF00177 hmm 1 1500 1 1500 + - 6 0.5 0 710.0 0 ! -
+EOT
+'''
+
+
+class SsuModelTest(unittest.TestCase):
+    def test_an_18s_told_from_a_bacterial_ssu(self):
+        # since 2026-11-09 (regions.ssu_models): a bacterium's or an organelle's SSU is no nucleus' 18S
+        from eukore import regions, rrna  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            cmsearch = fx.tool(tmp, "cmsearch", CMSEARCH)
+            seqs = {"euk": "ACGT" * 10, "bac": "CCGT" * 10, "near": "GCGT" * 10, "none": "TCGT" * 10,
+                    "twin": "ACGT" * 10}
+            got = regions.ssu_models(seqs, os.path.join(tmp, "x.cm"), cmsearch)
+            self.assertEqual(got, {"euk": "eukarya", "twin": "eukarya", "bac": "bacteria", "near": "eukarya",
+                                   "none": "-"})
+        row = dict(kind="18S", own_species="t", screen="-", ambiguous="0", gaps=0, ssu_model="bacteria")
+        self.assertEqual(rrna.confidence(row), ("low", "ssu_prokaryote"))
+        self.assertEqual(rrna.confidence(dict(row, ssu_model="eukarya")), ("high", "-"))
+        self.assertEqual(rrna.confidence(dict(row, ssu_model="-", own_species="-")),
+                         ("unverified", "own_species_undecided"))
+
+    def test_an_assembly_one_genome_whatever_its_copy(self):
+        # since 2026-11-09: ROD's operons of the assembly a record comes from (another version, RefSeq's copy) are
+        # that genome's, no confirmation of it
+        self.assertEqual(screen.genome_of("a", {"accession": "GCF_000146045.2"}),
+                         screen.genome_of("b", {"accession": "GCA_000146045.1"}))
+        self.assertNotEqual(screen.genome_of("a", {"accession": "GCA_000146045.2"}),
+                            screen.genome_of("b", {"accession": "GCA_000146046.2"}))
+        self.assertEqual(screen.genome_of("EUK_1", {"accession": "-"}), "EUK_1")
+
+
 class ScreenTest(unittest.TestCase):
     def test_parts(self):
         seq = "A" * 4000
@@ -67,7 +110,7 @@ class ScreenTest(unittest.TestCase):
             from eukore import rrna  # noqa: PLC0415
             rows = [(n, s, dict(r, source="genome", kind="rDNA")) for n, s, r in records[:-1] + array]
             own = rrna.own_species(rows, ncbi, fx.vsearch(tmp))
-            self.assertEqual({own[n] for n, _s, _r in array}, {"t"})
+            self.assertEqual({own[n][0] for n, _s, _r in array}, {"t"})  # (verdict, cross) since 2026-11-09
 
     def test_a_protist_without_a_phylum_is_tested_deeper(self):
         # NCBI names its class but no phylum: its clade at class is (kingdom, class), not None
