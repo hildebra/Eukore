@@ -197,8 +197,9 @@ So that a user (protal's build) has what it needs without computing it again:
 - **Coding sequences and proteins.** Each copy's exons joined (miniprot's frameshift bases left out) and translated by
   the genome's NCBI table (`eukore/gencode.py` holds every NCBI table; until 0.2 the nuclear ones alone):
   `busco/cds/`, `busco/proteins/`. A stop inside a protein stays `*` and is counted (`internal_stops`).
-- **Places on the HMM.** hmmalign (HMMER) aligns each locus' proteins to BUSCO's HMM of it (`eukore/align.py`; cached
-  under WORK/align/). A residue's match state is a position shared across species; the alignments are not shipped.
+- **Places on the HMM.** hmmalign (HMMER) aligns each locus' proteins to BUSCO's HMM of it (`eukore/align.py`; each
+  distinct protein's row on the HMM cached under WORK/align/). A residue's match state is a position shared across
+  species; the alignments are not shipped.
 - **Introns** (`eukore/introns.py`). Each intron's phase, splice-site dinucleotides and class, a U12 look (the minor
   spliceosome's 5' end and branch point), and the match state of the residue it falls in or before. Introns of one
   locus and phase a match state apart are one site; `intron_sites.tsv` gives how widely each site is held, overall and

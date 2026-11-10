@@ -7,11 +7,9 @@ record holds bases within SLACK positions of both its ends. The alignments are c
 """
 
 import collections
-import glob
 import hashlib
 import os
 import shutil
-import socket
 import subprocess
 import tempfile
 
@@ -82,30 +80,6 @@ def fetch(src_dir, download, log=print):
     return path
 
 
-def _cache_read(stem):
-    """A cache's lines {key: value}: of all its files (stem.<host>-<pid>.tsv, one a process), a line a killed run cut
-    (no line end, not its two fields) left out."""
-    cache = {}
-    for path in sorted(glob.glob(glob.escape(stem) + "*.tsv")):
-        with open(path) as fh:
-            for line in fh:
-                f = line.rstrip("\n").split("\t")
-                if line.endswith("\n") and len(f) == 2:
-                    cache[f[0]] = f[1]
-    return cache
-
-
-def _cache_open(stem):
-    """This process' own file of a cache, opened to add lines (after a line a killed run cut: a line end first)."""
-    path = f"{stem}.{socket.gethostname()}-{os.getpid()}.tsv"
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    cut = os.path.isfile(path) and os.path.getsize(path) and not util.ends_in_newline(path)
-    out = open(path, "a", newline="\n")
-    if cut:
-        out.write("\n")
-    return out
-
-
 def _digest(seq):
     return hashlib.md5(seq.encode()).hexdigest()
 
@@ -131,7 +105,7 @@ def ssu_models(seqs, cm, cmsearch="cmsearch", threads=1, tmp=None, work=None):
     if folder and os.path.isfile(cm):
         key = hashlib.md5("\n".join([util.md5(cm), repr(SSU_MODELS), str(SSU_MARGIN)]).encode())
         stem = os.path.join(folder, "cmalign", f"models.{key.hexdigest()[:10]}")
-    cache = _cache_read(stem) if stem else {}
+    cache = util.cache_read(stem) if stem else {}
     order = [seq for seq in distinct if _digest(seq) not in cache]
     if order:
         best = collections.defaultdict(dict)  # sequence index -> {kind: best score}
@@ -164,7 +138,7 @@ def ssu_models(seqs, cm, cmsearch="cmsearch", threads=1, tmp=None, work=None):
             new[_digest(seq)] = kind
         cache.update(new)
         if stem:
-            with _cache_open(stem) as out:
+            with util.cache_open(stem) as out:
                 out.writelines(f"{k}\t{v}\n" for k, v in sorted(new.items()))
     return {name: cache[_digest(seq)] for seq, names in distinct.items() for name in names}
 
@@ -304,7 +278,7 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
     # appended to one, their lines interleaved), all read
     key = hashlib.md5("\n".join([util.md5(cm), util.md5(REGIONS), reference(), str(SLACK), str(MAX_SSU)]).encode())
     stem = os.path.join(work, "cmalign", f"ssu.{key.hexdigest()[:10]}") if work else None
-    cache = _cache_read(stem) if stem else {}  # a line a killed run cut: aligned again
+    cache = util.cache_read(stem) if stem else {}  # a line a killed run cut: aligned again
     # the 18S this cmalign failed on (since 2026-11-10, a cache of their own: every run aligned them again, each
     # failing batch in its halves, to fail again): kept under the digest of the model, the matrix limit and the
     # program (its file, size and time: another cmalign tries them again), and only where cmalign said so itself of
@@ -313,7 +287,7 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
     if work:
         failed_key = hashlib.md5("\n".join([util.md5(cm), str(MXSIZE), _program(cmalign_bin)]).encode())
         failed_stem = os.path.join(work, "cmalign", f"unaligned.{failed_key.hexdigest()[:10]}")
-    unaligned = _cache_read(failed_stem) if failed_stem else {}
+    unaligned = util.cache_read(failed_stem) if failed_stem else {}
     ssu = {}
     for name, seq, row in records:
         got = ssu_of(seq, row)
@@ -327,7 +301,7 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
         todo = {key: s for key, s in todo.items() if key not in unaligned}
     if todo:
         log(f"18S variable regions: {len(todo)} distinct 18S to align (cmalign)")
-        out = _cache_open(stem) if stem else None
+        out = util.cache_open(stem) if stem else None
         failures = {}
 
         def keep(aligned):
@@ -344,7 +318,7 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
             if out:
                 out.close()
         if failures and failed_stem and cmalign(cm, {"reference": reference()}, cmalign_bin, threads, work):
-            with _cache_open(failed_stem) as fh:
+            with util.cache_open(failed_stem) as fh:
                 fh.writelines(f"{k}\t{' '.join(why.split()) or '-'}\n" for k, why in sorted(failures.items()))
     out = []
     for name, (_s, offset, key) in sorted(ssu.items()):

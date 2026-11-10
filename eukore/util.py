@@ -278,6 +278,31 @@ def ends_in_newline(path):
         return fh.read(1) == b"\n"
 
 
+def cache_read(stem):
+    """A cache's lines {key: value}: of all its files (stem.<host>-<pid>.tsv, one a process), a line a killed run cut
+    (no line end, not its two fields) left out (since 2026-11-10 here, shared by regions and align: until then
+    regions' own)."""
+    cache = {}
+    for path in sorted(glob.glob(glob.escape(stem) + "*.tsv")):
+        with open(path) as fh:
+            for line in fh:
+                f = line.rstrip("\n").split("\t")
+                if line.endswith("\n") and len(f) == 2:
+                    cache[f[0]] = f[1]
+    return cache
+
+
+def cache_open(stem):
+    """This process' own file of a cache, opened to add lines (after a line a killed run cut: a line end first)."""
+    path = f"{stem}.{socket.gethostname()}-{os.getpid()}.tsv"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cut = os.path.isfile(path) and os.path.getsize(path) and not ends_in_newline(path)
+    out = open(path, "a", newline="\n")
+    if cut:
+        out.write("\n")
+    return out
+
+
 def md5(path):
     digest = hashlib.md5()
     with open(path, "rb") as fh:
