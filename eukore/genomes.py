@@ -1176,7 +1176,11 @@ def backfill(args):
                         why = why or failed
                         break
                     if os.path.isfile(os.path.join(tmp, held_out_file(rank))):
-                        os.replace(os.path.join(tmp, held_out_file(rank)), os.path.join(folder, held_out_file(rank)))
+                        # moved, not renamed (since 2026-11-10): --local_tmp is another file system than WORK, where
+                        # os.replace fails (EXDEV), after the whole call, on every rerun
+                        table = os.path.join(folder, held_out_file(rank))
+                        shutil.move(os.path.join(tmp, held_out_file(rank)), util.part_of(table))
+                        os.replace(util.part_of(table), table)
                     clades[rank] = got
                     made.append(f"held_out_{rank}")
         path = os.path.join(folder, "done.json")

@@ -1,0 +1,27 @@
+# Settings of tools/eukore.sh (bash, sourced by it on the login node and inside every job): copy to
+# local/eukore.conf of the checkout (git ignores local/), or to the file $EUKORE_CONF names.
+
+PDIR=/path/to/Eukore                  # the checkout: eukore_build.py
+WORK=/path/to/build/Eukore            # --build_dir: the build's own state, on a file system that keeps its files
+OUT=/path/to/DB/Eukore                # --out: the package and its release
+GEN=/path/to/DB/genomes               # --genomes: the genomes' folder (empty: OUT/genomes)
+LOGS=$PDIR/runs                       # the jobs' STDOUT and STDERR (empty: sbatch's own, the folder of the call)
+VERSION=2026.11                       # --version, fixed: its default is the month of each run's day, and a build
+                                      # that crosses a month's end would write a second Eukore_<version>
+MAMBA_ENV=eukore                      # the micromamba environment with Eukore's tools
+TASKS=8                               # process jobs of the array (`build N` gives another number)
+
+# a node's local disk for temporary files (--local_tmp); read inside the job, where SLURM names it
+SCR=${SLURM_LOCAL_SCRATCH:+$SLURM_LOCAL_SCRATCH/Eukore}
+
+# eukore_build.py's options: every stage's (the same --groups, --species, --ksgp_tax for each), the fetch job's,
+# the final job's (-t is the job's --cpus-per-task)
+BUILD_OPTS=(--ksgp_tax /path/to/KSGP_v4.5_plus2.tax)
+FETCH_OPTS=(--downloads 12)
+FINAL_OPTS=(--keep_gb 1000)
+
+# sbatch's options: every job's, then each kind's
+SBATCH_ALL=(--time=124:00:00)
+SBATCH_FETCH=(-p download --cpus-per-task=2 --mem=8G)
+SBATCH_PROCESS=(-p medium --cpus-per-task=64 --mem=200G --localscratch=ssd:500)
+SBATCH_FINAL=(-p largemem --cpus-per-task=92 --mem=839000 --localscratch=ssd:500)

@@ -494,5 +494,293 @@ class RerunTest(unittest.TestCase):
             self.assertFalse(os.path.isfile(genomes.claim_path(opts.work, "new")))  # its claim released
 
 
+class Steps:
+    """A pass's progress, its reports unsaid."""
+    def step(self, *_args, **_kwargs):
+        pass
+
+    tick = step
+
+
+class ChainTest(unittest.TestCase):
+    """A cluster's build as one chain after the download (since 2026-11-10): the process runs of a SLURM array
+    (--genomes_only), then one run of --stage process,package (tools/eukore.sh)."""
+
+    def test_stages_that_follow_one_another(self):
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        for text, stages in (("all", ("fetch", "process", "package")), ("process", ("process",)),
+                             ("process,package", ("process", "package")), ("fetch,process", ("fetch", "process")),
+                             ("fetch, process ,package", ("fetch", "process", "package")), ("release", ("release",)),
+                             ("fetch,package", None), ("package,process", None), ("process,process", None),
+                             ("process,release", None), ("all,package", None), ("", None), ("pack", None)):
+            self.assertEqual(eukore_build.stages_of(text), stages, text)
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(SystemExit):
+            eukore_build.main(["--build_dir", tmp, "--out", tmp, "--stage", "fetch,package"])
+        self.assertIn("stages that follow one another", err.getvalue())
+
+    def run_main(self, tmp, stage, waiting=()):
+        """main() of --stage, its plan empty and its passes stand-ins -> (its exit, or "package" where it came to
+        the package stage; the stand-ins by name; its STDOUT)."""
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        passes = ("backfill_pass", "intraspecific_pass", "describe_pass", "drop_superseded", "organelle_genes",
+                  "annotate_pass")
+        args = ["--build_dir", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"), "--stage", stage,
+                "--local_tmp", os.path.join(tmp, "local")]
+        with contextlib.ExitStack() as stack:
+            out = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            stack.enter_context(mock.patch.dict(os.environ))  # main sets TMPDIR
+            stack.enter_context(mock.patch.object(tempfile, "tempdir", None))
+            stack.enter_context(mock.patch.object(eukore_build.ncbi_mod, "Ncbi"))
+            called = {name: stack.enter_context(mock.patch.object(eukore_build, name, return_value=value))
+                      for name, value in (("inside_of", None), ("plan", ({}, {})), ("extras_of", {}),
+                                          ("settings_of", {}), ("run_genomes", (list(waiting), [])))}
+            stack.enter_context(mock.patch.object(eukore_build.shutil, "which", side_effect=lambda t: "/x/" + t))
+            stack.enter_context(mock.patch.object(eukore_build.rrna, "check_itsx", return_value=None))
+            called.update({n: stack.enter_context(mock.patch.object(eukore_build, n)) for n in passes})
+            # the package stage's first step after its leftovers
+            stack.enter_context(mock.patch.object(eukore_build, "called_loci", side_effect=RuntimeError("package")))
+            try:
+                got = eukore_build.main(args)
+            except RuntimeError as e:
+                got = str(e)
+            tmpdir = os.environ.get("TMPDIR")
+        return got, called, out.getvalue(), tmpdir
+
+    def test_process_and_package_in_one_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got, called, text, tmpdir = self.run_main(tmp, "process,package")
+            self.assertEqual(got, "package")  # on to the package stage in the same run
+            self.assertIn("stage     process,package: process -> package", text)
+            self.assertEqual(called["plan"].call_count, 1)  # one plan for both
+            self.assertEqual(called["backfill_pass"].call_count, 1)  # the process stage's, not the package's own too
+            self.assertTrue(called["settings_of"].call_args.kwargs["staged_only"])  # no fetch stage: nothing fetched
+            self.assertFalse(called["annotate_pass"].call_args.kwargs["may_fetch"])
+            # the package stage alone: its own backfill, and --local_tmp its tools' TMPDIR too
+            got, called, text, tmpdir = self.run_main(tmp, "package")
+            self.assertEqual((got, called["backfill_pass"].call_count, called["run_genomes"].call_count),
+                             ("package", 1, 0))
+            self.assertEqual(tmpdir, os.path.join(tmp, "local"))
+            # genomes not fetched: a run that cannot fetch them packages without them; the process stage alone stops
+            waiting = [("GCA_1.1", "not fetched yet")]
+            got, _called, text, _tmpdir = self.run_main(tmp, "process,package", waiting)
+            self.assertEqual(got, "package")
+            self.assertIn("1 genomes not fetched yet, 0 downloads to try again", text)
+            self.assertIn("the package is written without them", text)
+            got, _called, text, _tmpdir = self.run_main(tmp, "process", waiting)
+            self.assertEqual(got, 0)
+            self.assertIn("run again (--stage fetch first on a cluster)", text)
+
+    def test_a_run_waits_for_another_builds_genomes(self):
+        # the final job after an array: a genome another build's claim holds is waited for, then run here where that
+        # build left it (until 2026-11-10 the run went on, and the package was written, without it)
+        import contextlib  # noqa: PLC0415
+        import types  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from eukore import genomes  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        jobs = {a: {"accession": a, "size": 1e6} for a in ("held", "done_there", "mine")}
+        for only, rounds in ((False, 2), (True, 1)):
+            with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+                opts = types.SimpleNamespace(work=tmp, genomes=tmp, scratch=None, genomes_only=only, report_minutes=1)
+                seen, to_run = [], [[(j, {}) for j in jobs.values()], [(jobs["held"], {})]]
+
+                def planned(_opts, job_map, _settings):
+                    seen.append(sorted(job_map))
+                    return (to_run[0] if len(job_map) == 3 else [it for it in to_run[1] if it[0]["accession"]
+                                                                 in job_map]), 0
+
+                def scheduled(_opts, todo, _sizes, _progress, _note):
+                    if len(todo) == 3:
+                        yield "held", None, genomes.RUNNING_ELSEWHERE
+                        yield "done_there", None, genomes.DONE_ELSEWHERE
+                        yield "mine", {}, None
+                    else:
+                        yield "held", {}, None
+                stack.enter_context(mock.patch.object(eukore_build, "say"))
+                stack.enter_context(mock.patch.object(eukore_build, "progress_of", return_value=Steps()))
+                stack.enter_context(mock.patch.object(eukore_build, "genomes_to_run", side_effect=planned))
+                schedule = stack.enter_context(mock.patch.object(eukore_build, "schedule", side_effect=scheduled))
+                ended = stack.enter_context(mock.patch.object(eukore_build, "others_end"))
+                self.assertEqual(eukore_build.run_genomes(opts, jobs, {"tiara": None}), ([], []))
+                self.assertEqual(schedule.call_count, rounds)
+                if only:  # one of the array's runs: the other's genome is the other's
+                    ended.assert_not_called()
+                else:  # waited for the held genome alone (not the one done there), then asked what is left of it
+                    ended.assert_called_once_with(opts, ["held"])  # (and of the panel's assemblies: none held)
+                    self.assertEqual(seen, [sorted(jobs), ["held"], []])
+
+    def test_another_builds_claims_end(self):
+        import threading  # noqa: PLC0415
+        import time  # noqa: PLC0415
+        import types  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from eukore import genomes  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(eukore_build, "say") as said:
+            opts = types.SimpleNamespace(work=tmp, report_minutes=0)
+            os.makedirs(os.path.join(tmp, "done"))
+
+            def claim(acc, age=0):
+                path = genomes.claim_path(tmp, acc)
+                with open(path, "w") as fh:
+                    fh.write("another-node\t4242\n")
+                os.utime(path, (time.time() - age,) * 2)
+                return path
+            claim("killed", age=genomes.CLAIM_STALE + 60)  # its heartbeat stopped: a job killed at its time limit
+            began = time.time()
+            eukore_build.others_end(opts, ["killed", "no_claim"], poll=0.05)
+            self.assertLess(time.time() - began, 2)
+            live = claim("running")  # another node's, touched now: waited for until that run ends (its claim removed)
+            timer = threading.Timer(0.4, os.remove, [live])
+            timer.start()
+            began = time.time()
+            eukore_build.others_end(opts, ["running", "killed"], poll=0.05)
+            timer.join()
+            self.assertGreaterEqual(time.time() - began, 0.3)
+            self.assertFalse(os.path.exists(live))
+            self.assertTrue(any("still run by another build" in str(c) for c in said.call_args_list))
+
+    def test_the_backfill_runs_as_its_memory_fits(self):
+        # a clade hold-out is a call of the whole genome: begun by the scheduler with a genome run's memory, the
+        # other steps with a worker's alone (until 2026-11-10 -j at once whatever the genomes' sizes)
+        import types  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        jobs = {a: {"accession": a, "size": 3e9} for a in ("hold_out", "tiara", "whole", "not_done")}
+        needs = {"hold_out": ["held_out"], "tiara": ["tiara", "rrna"], "whole": []}
+
+        def scheduled(_opts, todo, sizes, _progress, _note, task=None):
+            self.assertIs(task, eukore_build.backfill_one)
+            self.assertEqual(sorted(j["accession"] for j, _s in todo), ["hold_out", "tiara"])
+            self.assertEqual(sizes, {"hold_out": 3e9, "tiara": 0})
+            yield "hold_out", ["held_out_genus"], None
+            yield "tiara", ["tiara"], "rRNA extraction failed: x"
+        opts = types.SimpleNamespace(work="WORK", genomes="GENOMES")
+        with mock.patch.object(eukore_build, "say") as said, \
+                mock.patch.object(eukore_build, "progress_of", return_value=Steps()), \
+                mock.patch.object(eukore_build.genomes, "is_done", side_effect=lambda _w, a: a != "not_done"), \
+                mock.patch.object(eukore_build.genomes, "backfill_needs",
+                                  side_effect=lambda j, _s: needs[j["accession"]]), \
+                mock.patch.object(eukore_build, "schedule", side_effect=scheduled) as schedule:
+            eukore_build.backfill_pass(opts, jobs, {})
+            self.assertEqual(schedule.call_count, 1)
+            self.assertIn("{'held_out_genus': 1, 'tiara': 1} made, 1 failed", said.call_args_list[-1].args[0])
+            self.assertLess(eukore_build.run_memory(0), eukore_build.run_memory(3e9) / 5)
+            schedule.reset_mock()
+            needs["hold_out"] = needs["tiara"] = []
+            eukore_build.backfill_pass(opts, jobs, {})  # nothing left out: no pool
+            schedule.assert_not_called()
+
+    def test_a_backfilled_hold_out_comes_from_the_local_disk(self):
+        # --local_tmp is another file system than WORK: the hold-out's table is moved from it, not renamed (until
+        # 2026-11-10 os.replace failed there after the whole call, and on every rerun)
+        import errno  # noqa: PLC0415
+        import json  # noqa: PLC0415
+        from eukore import genomes  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        replace = os.replace
+
+        def one_file_system(src, dst):
+            if os.path.commonpath([src, local]) == local and os.path.commonpath([dst, local]) != local:
+                raise OSError(errno.EXDEV, "Invalid cross-device link")
+            replace(src, dst)
+
+        def held_out(_genome, _job, _settings, _odb, folder, _scratch, rank, _earlier):
+            with open(os.path.join(folder, genomes.held_out_file(rank)), "w") as fh:
+                fh.write("its calls\n")
+            return {"left_out": 3}, None
+        with tempfile.TemporaryDirectory() as tmp:
+            work, local = os.path.join(tmp, "work"), os.path.join(tmp, "local")
+            os.makedirs(local)
+            folder = genomes.done_dir(work, "GCA_1.1")
+            os.makedirs(folder)
+            with open(os.path.join(folder, "done.json"), "w") as fh:
+                json.dump({"held_out": {"calls": 5}}, fh)
+            job = {"accession": "GCA_1.1", "path": os.path.join(tmp, "genome.fna.gz")}
+            settings = {"work": work, "genomes": tmp, "scratch": local, "held_out_ranks": ("genus",)}
+            with mock.patch.object(genomes, "backfill_needs", return_value=["held_out"]), \
+                    mock.patch.object(genomes, "clade_held_out", side_effect=held_out), \
+                    mock.patch.object(genomes, "odb_of", return_value=None), \
+                    mock.patch.object(genomes.os, "replace", side_effect=one_file_system):
+                self.assertEqual(genomes.backfill((job, settings)), ("GCA_1.1", ["held_out_genus"], None))
+            with open(os.path.join(folder, genomes.held_out_file("genus"))) as fh:
+                self.assertEqual(fh.read(), "its calls\n")
+            self.assertEqual(genomes.done_summary(work, "GCA_1.1")["held_out"]["ranks"], {"genus": {"left_out": 3}})
+            self.assertEqual(os.listdir(local), [])  # its folder there removed
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "bash, and stand-ins on the PATH")
+    def test_the_slurm_chain(self):
+        # tools/eukore.sh with stand-ins of sbatch, micromamba and python3: `build` submits the array and the final
+        # job after it (afterany), each job's step makes one call of the build
+        import stat  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415
+        script = os.path.join(os.path.dirname(HERE), "tools", "eukore.sh")
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir, log = os.path.join(tmp, "bin"), os.path.join(tmp, "calls")
+            os.makedirs(bin_dir)
+            # sbatch --parsable says "<job id>;<cluster>"
+            sbatch = 'echo "sbatch $*" >> "$CALLS"; n=$(grep -c ^sbatch "$CALLS"); echo "$((100 + n));cluster"'
+            python3 = 'echo "python3 $*" >> "$CALLS"'
+            for name, body in (("sbatch", sbatch), ("micromamba", "true"), ("python3", python3)):
+                with open(os.path.join(bin_dir, name), "w", newline="\n") as fh:
+                    fh.write("#!/bin/bash\n" + body + "\n")
+                os.chmod(os.path.join(bin_dir, name), stat.S_IRWXU)
+            conf = os.path.join(tmp, "eukore.conf")
+            with open(conf, "w", newline="\n") as fh:
+                fh.write(f"PDIR=/p\nWORK=/w\nOUT=/o\nGEN=/g\nVERSION=2026.11\nLOGS={tmp}/runs\nTASKS=3\n"
+                         "SCR=${SLURM_LOCAL_SCRATCH:+$SLURM_LOCAL_SCRATCH/Eukore}\nBUILD_OPTS=(--groups fungi)\n"
+                         "FINAL_OPTS=(--keep_gb 1000)\nFETCH_OPTS=(--downloads 12)\nSBATCH_ALL=(--time=1:00:00)\n"
+                         "SBATCH_PROCESS=(--mem=200G)\nSBATCH_FINAL=(--mem=800G)\n")
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "EUKORE_")) and k != "AFTER"}
+            env.update(PATH=bin_dir + os.pathsep + env["PATH"], CALLS=log, EUKORE_CONF=conf)
+
+            def run(*args, **more):
+                got = subprocess.run(["bash", script, *args], env=dict(env, **more), capture_output=True, text=True)
+                calls = []
+                if os.path.isfile(log):
+                    with open(log) as fh:
+                        calls = fh.read().splitlines()
+                    os.remove(log)
+                return got, calls
+            got, calls = run("build")
+            self.assertEqual(got.returncode, 0, got.stderr)
+            self.assertEqual(len(calls), 2)
+            for said in ("-J Eukore-process", "--time=1:00:00", "--mem=200G", "--array=1-3", f"{script} _process",
+                         f"-o {tmp}/runs/eukore.%j.otxt"):
+                self.assertIn(said, calls[0])
+            self.assertNotIn("--dependency", calls[0])
+            for said in ("-J Eukore-final", "--mem=800G", "--dependency=afterany:101 ", f"{script} _final"):
+                self.assertIn(said, calls[1])
+            self.assertIn("array job 101, 3 tasks", got.stdout)
+            self.assertIn("job 102", got.stdout)
+            # after a fetch job: both wait for it to end well, and are cancelled where it did not
+            got, calls = run("build", "5", AFTER="77")
+            self.assertIn("--array=1-5 --dependency=afterok:77 --kill-on-invalid-dep=yes", calls[0])
+            self.assertIn("--dependency=afterany:101,afterok:77 --kill-on-invalid-dep=yes", calls[1])
+            # inside the jobs: one call of the build each
+            job = dict(SLURM_JOB_ID="101", SLURM_CPUS_PER_TASK="64", SLURM_LOCAL_SCRATCH="/ssd", EUKORE_SH=script)
+            common = "python3 /p/eukore_build.py --build_dir /w --out /o --version 2026.11 --stage "
+            got, calls = run("_process", **job)
+            self.assertEqual(calls, [common + "process --genomes /g --groups fungi -t 64 --genomes_only "
+                                     "--local_tmp /ssd/Eukore"], got.stderr)
+            got, calls = run("_final", REVERSION="1", **job)
+            self.assertEqual(calls, [common + "process,package --genomes /g --reversion --groups fungi -t 64 "
+                                     "--local_tmp /ssd/Eukore --keep_gb 1000"], got.stderr)
+            got, calls = run("_fetch", **dict(job, SLURM_LOCAL_SCRATCH=""))  # no local disk there: beside the genomes
+            self.assertEqual(calls, [common + "fetch --genomes /g --groups fungi -t 64 --downloads 12"], got.stderr)
+            got, calls = run("_process", **dict(job, SLURM_LOCAL_SCRATCH=""))  # the process stage needs one
+            self.assertEqual((got.returncode, calls), (1, []))
+            self.assertIn("no local temporary folder", got.stderr)
+            got, calls = run("build", EUKORE_CONF=os.path.join(tmp, "none.conf"))
+            self.assertEqual((got.returncode, calls), (1, []))
+            self.assertIn("no settings at", got.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

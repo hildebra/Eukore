@@ -15,6 +15,7 @@ htmlcov/
 .venv/
 venv/
 envs/mamba*
+local/
 
 # the build's downloads in progress
 *.partial

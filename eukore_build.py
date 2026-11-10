@@ -5,6 +5,7 @@
     python3 eukore_build.py --build_dir WORK --out OUT --stage fetch -t 8    # a cluster: the node with internet,
     python3 eukore_build.py --build_dir WORK --out OUT --stage process -t 32 #   then any node (nothing fetched),
     python3 eukore_build.py --build_dir WORK --out OUT --stage package       #   then the package
+    python3 eukore_build.py --build_dir WORK --out OUT --stage process,package -t 32  # or both in one run
 
 Stages:
 - fetch: the sources into WORK/sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
@@ -20,8 +21,10 @@ Stages:
   model species' and the smallest kept first; without it no genome file is deleted), then OUT/Eukore_<version>/ and,
   unless --no_release, OUT/release/: the website's data (website/) and the downloads, BGZF (eukore/release.py);
 - release: OUT/release/ again of a finished OUT/Eukore_<version>/.
-`all` runs fetch, process and package in turn. Every stage is resumable: a rerun does only what is not done. Every
-compressed file is BGZF (gzip in blocks: bgzip -@ decompresses it on many threads), compressed on -t threads.
+`all` runs fetch, process and package in turn; stages that follow one another may be given together (since
+2026-11-10: `--stage process,package`, a cluster's last job after the process runs of a SLURM array; tools/eukore.sh
+submits the chain). Every stage is resumable: a rerun does only what is not done. Every compressed file is BGZF
+(gzip in blocks: bgzip -@ decompresses it on many threads), compressed on -t threads.
 """
 
 import argparse
@@ -165,7 +168,7 @@ def plan(opts, src_dir, ncbi):
 
     def kept(url, name):  # a small file of the genome comparison, kept in SRC (the fetch stage's: every stage the same)
         path = os.path.join(sizes_dir, name)
-        if url and not os.path.isfile(path) and opts.stage in ("all", "fetch"):
+        if url and not os.path.isfile(path) and "fetch" in opts.stages:
             os.makedirs(sizes_dir, exist_ok=True)
             util.fetch_file(url, path, gzip_check=False)
         return path
@@ -353,14 +356,15 @@ def panel_settings(settings):
 def run_genomes(opts, job_map, settings, extras=None):
     """Every genome of job_map to run, and of extras (the intraspecific panel's further assemblies, panel_settings: in
     the same pool since 2026-11-08, until then a pool of their own after it, each pool's last genomes leaving the
-    cores idle), run by schedule -> job_map's genomes (waiting: not fetched yet, failed: [(accession, why)])."""
+    cores idle), run by schedule -> job_map's genomes (waiting: not fetched yet, failed: [(accession, why)]).
+    A run that makes the passes after the genomes (no --genomes_only) waits for the genomes another build holds
+    (others_end) and runs those that build left (since 2026-11-10: it went on without them, so that the last job
+    after a SLURM array made its passes, and the package, without the genomes of a task still running or killed
+    within genomes.CLAIM_STALE)."""
+    extras = extras or {}
     todo, again = genomes_to_run(opts, job_map, settings)
     panel = genomes_to_run(opts, extras, panel_settings(settings))[0] if extras else []
-    # largest first (since 2026-11-08; until then by accession, a 30 Gb genome begun last kept the other workers
-    # idle for hours at the end)
-    sizes = {j["accession"]: genome_size(opts, j) for j, _s in todo + panel}
-    todo = sorted(todo + panel, key=lambda it: (-sizes[it[0]["accession"]], it[0]["accession"]))
-    say(f"genomes to run: {len(todo) - len(panel)} of {len(job_map)}"
+    say(f"genomes to run: {len(todo)} of {len(job_map)}"
         + (f", {again} of them again for better gene models" if again else "")
         + (f", and {len(panel)} of the intraspecific panel's further assemblies" if panel else "")
         + ("" if settings["tiara"] else " (no tiara: windows not classified)"))
@@ -369,22 +373,55 @@ def run_genomes(opts, job_map, settings, extras=None):
     for leftover in genomes.stale_partials(opts.work) + (genomes.stale_scratch(opts.work, opts.scratch)
                                                           if opts.scratch else []):
         shutil.rmtree(leftover, ignore_errors=True)
-    # every --report_minutes, whether a genome finished or not: genomes left and the time left, by their sizes (a
-    # genome not fetched yet is no work), and the cores, memory and disk used (progress_of)
-    progress = progress_of(opts, "genomes run", [sizes[j["accession"]] for j, _s in todo])
-    elsewhere = 0
+    todo += panel
+    while todo:
+        # largest first (since 2026-11-08; until then by accession, a 30 Gb genome begun last kept the other workers
+        # idle for hours at the end)
+        sizes = {j["accession"]: genome_size(opts, j) for j, _s in todo}
+        todo = sorted(todo, key=lambda it: (-sizes[it[0]["accession"]], it[0]["accession"]))
+        # every --report_minutes, whether a genome finished or not: genomes left and the time left, by their sizes (a
+        # genome not fetched yet is no work), and the cores, memory and disk used (progress_of)
+        progress = progress_of(opts, "genomes run", [sizes[j["accession"]] for j, _s in todo])
+        held, elsewhere = [], 0
 
-    def note():
-        return (f", {len(waiting):,} not fetched yet" if waiting else "") \
-            + (f", {elsewhere:,} run by another build" if elsewhere else "")
-    for acc, _summary, why in schedule(opts, todo, sizes, progress, note):
-        skipped = why in ("not fetched yet", genomes.RUNNING_ELSEWHERE, genomes.DONE_ELSEWHERE)
-        if why in (genomes.RUNNING_ELSEWHERE, genomes.DONE_ELSEWHERE):
-            elsewhere += 1
-        elif why and acc in job_map:  # the panel's: a later run tries again, the package goes on without
-            (waiting if why == "not fetched yet" else failed).append((acc, why))
-        progress.step(sizes[acc], failed=bool(why) and not skipped, skipped=skipped, note=note())
+        def note():
+            return (f", {len(waiting):,} not fetched yet" if waiting else "") \
+                + (f", {elsewhere:,} run by another build" if elsewhere else "")
+        for acc, _summary, why in schedule(opts, todo, sizes, progress, note):
+            skipped = why in ("not fetched yet", genomes.RUNNING_ELSEWHERE, genomes.DONE_ELSEWHERE)
+            if why in (genomes.RUNNING_ELSEWHERE, genomes.DONE_ELSEWHERE):
+                elsewhere += 1
+                if why == genomes.RUNNING_ELSEWHERE:
+                    held.append(acc)
+            elif why and acc in job_map:  # the panel's: a later run tries again, the package goes on without
+                (waiting if why == "not fetched yet" else failed).append((acc, why))
+            progress.step(sizes[acc], failed=bool(why) and not skipped, skipped=skipped, note=note())
+        if opts.genomes_only or not held:  # --genomes_only: those genomes are the other builds', as are the passes
+            break
+        others_end(opts, held)
+        # what the other builds left of them (a task killed at its time limit, a genome that failed there): run here
+        todo = genomes_to_run(opts, {a: job_map[a] for a in held if a in job_map}, settings)[0] \
+            + genomes_to_run(opts, {a: extras[a] for a in held if a in extras}, panel_settings(settings))[0]
+        say(f"  the other builds' {len(held):,} genomes ended: {len(todo):,} of them left to run here")
     return waiting, failed
+
+
+def others_end(opts, held, poll=60):
+    """Waits until no other build holds a genome of held (accessions whose run met another build's claim): its claim
+    gone (the genome done, or failed there), or no longer live (genomes.claim_live: a killed job's, its heartbeat
+    stopped, after genomes.CLAIM_STALE)."""
+    say(f"{len(held):,} genomes are run by another build (e.g. {sorted(held)[:3]}): waiting for them before the "
+        "passes after the genomes")
+    began = said = time.time()
+    while True:
+        live = [a for a in held if genomes.claim_live(genomes.claim_path(opts.work, a))]
+        if not live:
+            return
+        if time.time() - said >= opts.report_minutes * 60:
+            said = time.time()
+            say(f"  {len(live):,} genomes still run by another build after {util.duration(said - began)} (e.g. "
+                f"{sorted(live)[:3]})")
+        time.sleep(poll)
 
 
 MINIPROT_BYTES_PER_BASE = 7.5  # miniprot's index: ~22 GB for a 3 Gb genome (in placement.CHUNK_BASES pieces at most)
@@ -408,8 +445,9 @@ def genome_threads(opts, memory):
     return max(base, min(MAX_GENOME_THREADS, opts.threads, round(opts.threads * memory / opts.memory)))
 
 
-def schedule(opts, todo, sizes, progress, note, poll=60):
-    """genomes.run of each (job, settings) in todo (largest first), at most -j at once, each begun when its memory
+def schedule(opts, todo, sizes, progress, note, poll=60, task=None):
+    """genomes.run (run_one; or task, a pool's function of (job, settings) that gives such a triple: backfill_one)
+    of each (job, settings) in todo (largest first), at most -j at once, each begun when its memory
     (run_memory) fits in what --memory_gb leaves and -t / -j threads are free (since 2026-11-08: -j at once whatever
     their sizes, a node's memory over-run by its largest genomes) -> (accession, summary, why) as they finish. A
     genome whose memory does not fit lets a smaller one that does go first; one larger than --memory_gb runs alone.
@@ -427,7 +465,7 @@ def schedule(opts, todo, sizes, progress, note, poll=60):
         settings = dict(settings, threads=threads,
                         rrna=functools.partial(settings["rrna"], threads=threads) if settings.get("rrna") else None)
         running[job["accession"]] = (memory, threads)
-        futures[pool.submit(run_one, (job, settings))] = job["accession"]
+        futures[pool.submit(task or run_one, (job, settings))] = job["accession"]
 
     with util.process_pool(opts.jobs) as pool:
         while pending or running:
@@ -481,21 +519,25 @@ def running(opts, progress, workers=None):
 
 
 def backfill_pass(opts, job_map, settings):
-    """The done genomes' steps a tool missing at their run left out (genomes.backfill: tiara's classes, the rRNA),
-    made now the tool is here (since 2026-11-08: never)."""
-    todo = [(j, settings) for a, j in sorted(job_map.items()) if genomes.is_done(opts.work, a)
-            and genomes.backfill_needs(j, settings)]
+    """The done genomes' steps a tool missing at their run left out (genomes.backfill: tiara's classes, the rRNA,
+    a dataset species' clade hold-out), made now the tool is here (since 2026-11-08: never). Run by schedule (since
+    2026-11-10: a pool of -j whatever the genomes' sizes): a clade hold-out is a call of the whole genome, with a
+    genome run's memory, the other steps take a worker's alone."""
+    needs = {a: genomes.backfill_needs(j, settings) for a, j in sorted(job_map.items())
+             if genomes.is_done(opts.work, a)}
+    todo = [(job_map[a], settings) for a, steps in needs.items() if steps]
     if not todo:
         return
     say(f"backfill: {len(todo)} done genomes lack tiara's classes, their rRNA or their clade hold-out, made now")
     made, failed = collections.Counter(), []
+    # schedule's sizes: the genome's bases where it is called again, 0 (a run's other memory alone) where not
+    sizes = {j["accession"]: genome_size(opts, j) if "held_out" in needs[j["accession"]] else 0 for j, _s in todo}
     progress = progress_of(opts, "genomes backfilled", [1] * len(todo), "", 1)
-    with util.process_pool(opts.jobs) as pool:
-        for acc, steps, why in util.unordered(pool, backfill_one, todo, progress, lambda: running(opts, progress)):
-            made.update(steps)
-            if why:
-                failed.append((acc, why))
-            progress.step(1, failed=bool(why))
+    for acc, steps, why in schedule(opts, todo, sizes, progress, lambda: "", task=backfill_one):
+        made.update(steps or [])
+        if why:
+            failed.append((acc, why))
+        progress.step(1, failed=bool(why))
     say(f"  backfill: {dict(made)} made, {len(failed)} failed{' (e.g. ' + str(failed[:2]) + ')' if failed else ''}")
 
 
@@ -883,7 +925,7 @@ def separate_genomes(opts):
 def banner(opts, argv, whence):
     """The run's opening lines on STDOUT (since 2026-11-08): Eukore's version, where and when, the command, what each
     stage of the run will do and with what (the folders, the genome set, the cores, memory and downloads)."""
-    stages = ("fetch", "process", "package") if opts.stage == "all" else (opts.stage,)
+    stages = opts.stages
     package_dir = f"Eukore_{opts.version}"
     does = {
         "fetch": "the sources" + (" (their tables fetched again: --refresh)" if opts.refresh else "")
@@ -902,7 +944,7 @@ def banner(opts, argv, whence):
         taxids = sorted(opts.wanted)
         species = (f"a trial: the clades of {len(taxids)} taxids ({', '.join(map(str, taxids[:5]))}"
                    + (", ..." if len(taxids) > 5 else "") + ")")
-    rows = [("stage", opts.stage + (": " + " -> ".join(stages) if opts.stage == "all" else ""))]
+    rows = [("stage", opts.stage + (": " + " -> ".join(stages) if len(stages) > 1 else ""))]
     rows += [(f"  {s}", does[s]) for s in stages]
     rows += [("groups", ", ".join(opts.groups)), ("species", species),
              ("loci", (f"the BUSCOs of --loci {opts.loci}" if opts.loci else f"every BUSCO of {odb_mod.LINEAGE}")
@@ -948,6 +990,25 @@ def banner(opts, argv, whence):
 RENAMED = {"--work": "--build_dir", "--scratch": "--local_tmp"}
 
 
+STAGES = ("fetch", "process", "package")  # in the build's order
+
+
+def stages_of(text):
+    """--stage's stages, in the build's order: `all` (every one), one stage, or stages that follow one another
+    (`process,package`, `fetch,process`; since 2026-11-10), or `release` alone -> a tuple; None where it is none of
+    these (`fetch,package`, `package,process`, a name unknown)."""
+    names = tuple(s.strip() for s in text.split(","))
+    if names == ("all",):
+        return STAGES
+    if names == ("release",):
+        return names
+    if names[0] in STAGES:
+        first = STAGES.index(names[0])
+        if names == STAGES[first:first + len(names)]:
+            return names
+    return None
+
+
 def renamed(argv):
     """argv with the flags' old names (RENAMED) as their new ones, `--work=DIR` too."""
     out = []
@@ -973,14 +1034,18 @@ def main(argv=None):
                    help="the genomes' folder: the fetch stage downloads each species' genome, its gene models and "
                         "NCBI's assembly report into it, the process stage reads them from it, the package stage cuts "
                         "it back to --keep_gb (default OUT/genomes). Give every stage the same")
-    p.add_argument("--stage", choices=("all", "fetch", "process", "package", "release"), default="all",
-                   help="all: fetch, process and package in turn; release: OUT/release/ (the website's data and the "
-                        "downloads) of a finished OUT/Eukore_<version>/ again, which the package stage writes last")
+    p.add_argument("--stage", default="all", metavar="STAGE[,STAGE]",
+                   help="fetch, process or package; all (the default): the three in turn; stages that follow one "
+                        "another, comma-separated, in one run (process,package: a cluster's last job, one plan for "
+                        "both; since 2026-11-10); release: OUT/release/ (the website's data and the downloads) of a "
+                        "finished OUT/Eukore_<version>/ again, which the package stage writes last")
     p.add_argument("--genomes_only", action="store_true",
                    help="with --stage process: run the genomes and stop, the passes after them (backfill, organelle "
                         "genes, intraspecific panel, metadata, gene models) left to a process run without it. For "
                         "several runs on one WORK (a SLURM array: the genome claims share them out), so that each does "
-                        "not make those passes over the genomes done so far; one run without it after them all")
+                        "not make those passes over the genomes done so far; one run without it after them all "
+                        "(--stage process,package: it waits for the genomes the others still run, runs what they "
+                        "left, then makes the passes and the package; tools/eukore.sh submits both)")
     p.add_argument("--no_release", action="store_true",
                    help="the package stage writes no OUT/release/ (the website's data and the downloads: a second "
                         "copy of the package, compressed)")
@@ -1097,12 +1162,16 @@ def main(argv=None):
     unknown = set(opts.groups) - set(sources.ASSEMBLY_GROUPS)
     if unknown:
         p.error(f"--groups: {sorted(unknown)} (known: {', '.join(sources.ASSEMBLY_GROUPS)})")
-    if opts.genomes_only and opts.stage != "process":  # `all` would package without the passes
+    opts.stages = stages_of(opts.stage)
+    if opts.stages is None:
+        p.error(f"--stage {opts.stage}: all, release, one of {', '.join(STAGES)}, or stages that follow one another "
+                "(fetch,process or process,package)")
+    if opts.genomes_only and opts.stages != ("process",):  # `all` would package without the passes
         p.error("--genomes_only: with --stage process alone")
     warning = None  # said after the banner
     if opts.scratch:  # checked now, not after the minutes of planning (since 2026-11-08)
         why = scratch_problem(opts.scratch)
-        if why and opts.stage == "fetch":  # its .part files beside the genomes then, as without --local_tmp
+        if why and opts.stages == ("fetch",):  # its .part files beside the genomes then, as without --local_tmp
             warning = f"WARNING: --local_tmp {why}: the .part files beside the genomes instead"
             opts.scratch = None
         elif why:  # the process stage's temporary files would load WORK's file system: stop
@@ -1123,7 +1192,7 @@ def main(argv=None):
         say(warning)
     # every compressed file BGZF, its blocks compressed on the run's threads (since 2026-11-09)
     util.compression_threads(opts.threads)
-    if opts.stage == "release":  # the website's data and the downloads of a finished package (since 2026-11-09)
+    if opts.stages == ("release",):  # the website's data and the downloads of a finished package (since 2026-11-09)
         release_mod.write(os.path.join(opts.out, f"Eukore_{opts.version}"), os.path.join(opts.out, "release"), say)
         return 0
     os.makedirs(opts.work, exist_ok=True)
@@ -1132,7 +1201,7 @@ def main(argv=None):
     opts.usage = util.Usage([("WORK", opts.work), ("GENOMES" if separate_genomes(opts) else "OUT", opts.genomes)],
                             opts.threads)
     src_dir = os.path.join(opts.work, "sources")
-    if opts.stage in ("all", "fetch"):
+    if "fetch" in opts.stages:
         fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh, opts.threads)
     ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
     opts.inside = inside_of(ncbi, wanted)
@@ -1146,7 +1215,7 @@ def main(argv=None):
                if stamped else ": none was of an older one"))
     # the genomes and their annotations fetched (--downloads at a time, through --local_tmp), by `all` too (until
     # 2026-11-06 `all` left them to the process stage's workers, --local_tmp and --downloads unused)
-    if opts.stage in ("all", "fetch"):
+    if "fetch" in opts.stages:
         loci = called_loci(opts, src_dir)  # the BUSCOs and the markers: a genome not searched for one is fetched again
         # a done genome no longer here is fetched again where better gene models than its run took are there
         # (genomes.better_annotation): the process stage runs it again with them
@@ -1254,7 +1323,7 @@ def main(argv=None):
             except OSError as e:
                 progress.step(1, failed=True, note=f" ({e})")
         checker.shutdown()
-        if opts.stage == "fetch":
+        if opts.stages == ("fetch",):
             return 0
     if shutil.which("barrnap") and shutil.which("ITSx"):
         why = rrna.check_itsx(shutil.which("ITSx"))
@@ -1270,11 +1339,14 @@ def main(argv=None):
             sys.exit(f"{tool}: not found (bioconda's miniprot and hmmer)")
     if not opts.no_rescue and not shutil.which("esl-translate"):
         say("WARNING: no esl-translate (hmmer's easel tools): no rescue pass of the BUSCOs miniprot missed")
-    if opts.stage in ("all", "process"):
-        settings = settings_of(opts, src_dir, ncbi, staged_only=opts.stage == "process")
-        if opts.scratch:  # the tools' and Python's temporary files there too (the workers inherit it)
-            os.makedirs(opts.scratch, exist_ok=True)
-            os.environ["TMPDIR"] = tempfile.tempdir = os.path.abspath(opts.scratch)
+    # the tools' and Python's temporary files in --local_tmp too (the workers inherit it); the package stage's as
+    # well (since 2026-11-10: the process stage's alone, a run of the package stage by itself wrote them to /tmp)
+    if opts.scratch:
+        os.makedirs(opts.scratch, exist_ok=True)
+        os.environ["TMPDIR"] = tempfile.tempdir = os.path.abspath(opts.scratch)
+    if "process" in opts.stages:
+        # a run without the fetch stage fetches nothing: a genome not here waits for a later run
+        settings = settings_of(opts, src_dir, ncbi, staged_only="fetch" not in opts.stages)
         began = time.time()
         say(f"process stage: {opts.jobs} genomes at a time, {opts.threads_per_genome} threads each, progress every "
             f"{opts.report_minutes:g} minutes" + opts.usage.line())
@@ -1287,7 +1359,7 @@ def main(argv=None):
             describe_pass(opts, job_map)
             drop_superseded(opts, job_map)
             organelle_genes(opts, src_dir, job_map, ncbi)
-            annotate_pass(opts, job_map, may_fetch=opts.stage == "all")
+            annotate_pass(opts, job_map, may_fetch="fetch" in opts.stages)
         say(f"process stage: took {util.duration(time.time() - began)}"
             + (" (--genomes_only: the passes after the genomes left to a process run without it)"
                if opts.genomes_only else "") + opts.usage.line())
@@ -1298,14 +1370,20 @@ def main(argv=None):
         if failed:
             say(f"{len(failed)} genomes failed (e.g. {failed[:3]})")
         if retry:
+            # a run that fetches (`all`) stops here, its rerun fetches them; one that does not (a cluster's
+            # process,package, since 2026-11-10) can not mend them and packages without them, as --stage package does
+            onward = "package" in opts.stages and "fetch" not in opts.stages
             say(f"{len(waiting)} genomes not fetched yet, {len(retry) - len(waiting)} downloads to try again (e.g. "
-                f"{retry[:3]}): run again (--stage fetch first on a cluster), or --stage package to write the "
-                "package without them")
-            return 0 if opts.stage == "process" else 1
+                f"{retry[:3]}): " + ("the package is written without them (--stage fetch, then this run again, "
+                                     "adds them)" if onward else
+                                     "run again (--stage fetch first on a cluster), or --stage package to write the "
+                                     "package without them"))
+            if not onward:
+                return 0 if opts.stages == ("process",) else 1
     stages = []  # the package stage's steps and their seconds (benchmarks' stages.tsv)
-    if opts.stage == "package":  # a tool missing at a genome's run, here now (`all`: the process stage's pass)
+    if opts.stages == ("package",):  # a tool missing at a genome's run, here now (else the process stage's pass)
         backfill_pass(opts, job_map, settings_of(opts, src_dir, ncbi, staged_only=True))
-    if opts.stage in ("all", "package") and opts.fcs_gx_db:
+    if "package" in opts.stages and opts.fcs_gx_db:
         todo = [a for a in sorted(job_map) if genomes.is_done(opts.work, a)
                 and not os.path.isfile(os.path.join(genomes.done_dir(opts.work, a), "fcs.tsv"))]
         # several genomes at once, FCS_THREADS cores each (since 2026-11-08: one at a time on every thread, each
@@ -1321,7 +1399,7 @@ def main(argv=None):
                 failed += done.result() is None
                 if i % max(1, len(todo) // 20) == 0 or i == len(todo):
                     say(f"  {i}/{len(todo)} screened ({failed} failed)")
-    if opts.stage in ("all", "package"):
+    if "package" in opts.stages:
         vsearch = shutil.which("vsearch")
         if not vsearch:
             say("WARNING: no vsearch: no checks across species (own_species, same_as, the rRNA part screen), every "
@@ -1408,7 +1486,7 @@ def main(argv=None):
             inputs["partial"] = {"species_clades": sorted(wanted)}  # a trial package: these clades only
         # every genome is called and extracted: the kept ones cut back to the budget, then the package names those kept
         firsts = {a for r in species.read_table() for a in species.accessions(r)}
-        annotate_pass(opts, job_map, may_fetch=opts.stage == "all")
+        annotate_pass(opts, job_map, may_fetch="fetch" in opts.stages)
         # the read benchmark's genomes (reads.py), chosen while all are on disk and kept through the prune
         reps = {a: (int(g["species_taxid"]), genomes.genome_file(opts.genomes, a))
                 for a, g in collected["genomes"].items() if g["representative"] == "t" and not job_map[a].get("path")}
