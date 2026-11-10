@@ -53,7 +53,7 @@ from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sou
 from eukore import annotation, benchmarks, labels, metadata as metadata_mod, organelle as organelle_mod  # noqa: E402
 from eukore import groups as groups_mod, intraspecific as intraspecific_mod, markers as markers_mod, quality  # noqa: E402
 from eukore import placement, primers as primers_mod, reads as reads_mod, regions as regions_mod  # noqa: E402
-from eukore import release as release_mod  # noqa: E402
+from eukore import refscreen, release as release_mod  # noqa: E402
 from eukore import __version__  # noqa: E402
 from eukore import store  # noqa: E402
 
@@ -891,6 +891,48 @@ def timed(stages, step):
     stages.append((step, time.time() - started))
 
 
+def reference_screen(opts, src_dir, ncbi):
+    """The reference screen of the user's MIDORI2 files (eukore/refscreen.py; since 2026-11-10): their records that
+    are another organism's gene, a chimera of two organisms' or another gene, told by their windows against RefSeq's
+    organelle genes and the other species' records -> (calls, counts), or None where it is not run (no --midori2,
+    --no_reference_screen, no minimap2 or vsearch). Kept in WORK/reference_screen/<key>/ (calls.tsv, KSGP's lists
+    drop.tsv, trim.tsv and review.tsv, counts.json), the key the files', RefSeq's release's, the taxdump's and the
+    screen's version: a rerun reads it."""
+    if not opts.midori2 or opts.no_reference_screen:
+        return None
+    minimap2, vsearch = shutil.which(opts.minimap2), shutil.which("vsearch")
+    if not minimap2 or not vsearch:
+        say(f"WARNING: no {opts.minimap2 if not minimap2 else 'vsearch'}: MIDORI2's records not screened "
+            "(eukore/refscreen.py), every one names its species")
+        return None
+    release = os.path.join(organelle_mod.folder_of(src_dir), "release.txt")
+    stamp = [refscreen.VERSION, util.md5(os.path.join(src_dir, "taxdump.tar.gz")),
+             util.md5(release) if os.path.isfile(release) else "-"] + [util.md5(p) for p in opts.midori2]
+    folder = os.path.join(opts.work, "reference_screen", hashlib.md5(",".join(stamp).encode()).hexdigest()[:10])
+    kept = os.path.join(folder, "counts.json")
+    if os.path.isfile(kept):
+        with open(kept) as fh:
+            counts = json.load(fh)
+        calls = refscreen.read_calls(os.path.join(folder, "calls.tsv"))
+        say(f"reference screen: {folder} is there ({counts.get('action_drop', 0):,} records dropped)")
+        return calls, counts
+    rows = organelle_mod.refseq_genes(src_dir, os.path.join(opts.work, "organelle"), ncbi, say)
+    if not rows:
+        say("WARNING: no RefSeq organelle release (--stage fetch fetches it): MIDORI2's records are screened against "
+            "one another alone")
+    os.makedirs(folder, exist_ok=True)
+    calls, counts = refscreen.screen([refscreen.midori2_source(p) for p in opts.midori2],
+                                     list(refscreen.trusted_records(rows)), ncbi, minimap2, vsearch, opts.threads,
+                                     tmp=folder, log=say)
+    refscreen.write_lists(folder, calls)
+    for line in refscreen.summary(calls, counts, opts.midori2).splitlines():
+        say(line)
+    with open(util.part_of(kept), "w", newline="\n") as fh:
+        json.dump(dict(counts), fh, indent=1)
+    os.replace(util.part_of(kept), kept)
+    return calls, dict(counts)
+
+
 def databases_of(src_dir, ncbi, references, inside=None):
     """{name: NCBI species} of the other references the build read, for overlap.tsv: PR2, EUKARYOME's long reads and
     KSGP (labels.references, by their species names) and ROD (by its taxids)."""
@@ -1222,8 +1264,14 @@ def _main(argv, held):
                         "docs/methods.md)")
     p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives (protal's "
                                       f"KSGP, e.g. 4.4 or 5.2; default KSGP's served {labels.KSGP_VERSION}, fetched)")
-    p.add_argument("--midori2", help="a MIDORI2 RAW FASTA (its COI, e.g. MIDORI2_UNIQ_NUC_GB<release>_CO1_RAW.fasta.gz, "
-                                     "from reference-midori.info) whose lineages species.tsv gives, by NCBI taxid")
+    p.add_argument("--midori2", action="append",
+                   help="a MIDORI2 RAW FASTA (its COI, e.g. MIDORI2_UNIQ_NUC_GB<release>_CO1_RAW.fasta.gz, from "
+                        "reference-midori.info) whose lineages species.tsv gives, by NCBI taxid; given again for its "
+                        "other genes' files (since 2026-11-10). Its records are screened (eukore/refscreen.py, with "
+                        "minimap2 and vsearch): one that is another organism's gene or another gene names no species "
+                        "(reference_screen.tsv)")
+    p.add_argument("--no_reference_screen", action="store_true",
+                   help="--midori2's records not screened: every one names its species (until 2026-11-10)")
     p.add_argument("--bold_tsv", help="a BOLD data package's TSV (its bin_uri and species columns): its BINs in "
                                       "crossrefs.tsv")
     p.add_argument("--no_benchmarks", action="store_true", help="write the package without its benchmarks/ "
@@ -1262,6 +1310,9 @@ def _main(argv, held):
             p.error(f"--read_compare {spec}: NAME=FASTA,TABLE, both files there, a name of its own")
         compare.append((name, fasta, table))
     opts.read_compare = compare
+    for path in opts.midori2 or ():
+        if not os.path.isfile(path):
+            p.error(f"--midori2 {path}: no such file")
     unknown = set(opts.groups) - set(sources.ASSEMBLY_GROUPS)
     if unknown:
         p.error(f"--groups: {sorted(unknown)} (known: {', '.join(sources.ASSEMBLY_GROUPS)})")
@@ -1625,9 +1676,17 @@ def _main(argv, held):
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB ("
             + ("no --keep_gb: none deleted)" if opts.keep_gb is None else
                f"--keep_gb {opts.keep_gb:g}), {sum(st == 'deleted' for *_x, st in rows_kept)} deleted"))
+        screened = None
+        if opts.midori2 and not opts.no_reference_screen:  # since 2026-11-10: MIDORI2's misnamed, chimeric records
+            with timed(stages, "reference screen"):
+                screened = reference_screen(opts, src_dir, ncbi)
+            if screened:
+                extra_tables.append(("reference_screen.tsv", refscreen.TABLE_COLUMNS,
+                                     refscreen.table_rows("MIDORI2", screened[0])))
         with timed(stages, "reference labels"):
-            references = labels.references(src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say,
-                                           opts.midori2)
+            references = labels.references(
+                src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say, opts.midori2,
+                (refscreen.dropped(screened[0]), refscreen.stamp(screened[1])) if screened else None)
             held_species = {int(g["species_taxid"]) for g in collected["genomes"].values()
                             if g["representative"] == "t"} | {int(r["species_taxid"]) for _n, _s, r in records}
             extra_tables.append(("crossrefs.tsv", labels.CROSSREF_COLUMNS, labels.crossrefs(

@@ -49,6 +49,7 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 | [`taxonomy/`](#taxonomy) | NCBI's taxonomy cut to the package; nuclear, mitochondrial and plastid genetic codes | codes: 5 |
 | [`species.tsv`](#speciestsv) | one row per species: its genome, supergroup and group, NCBI lineage (and filled), lineages in PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2, type material | 4, more in 5 |
 | [`crossrefs.tsv`](#crossrefstsv-format-5) | each species' ids in Open Tree, GBIF, WoRMS, IRMNG, Index Fungorum, UNITE (SH), BOLD (BIN) | 5 |
+| [`reference_screen.tsv`](#reference_screentsv-optional) | the records of the MIDORI2 files the build was given that are another organism's gene, a chimera, another gene, or doubtful (optional) | |
 | [`genomes.tsv`](#genomestsv) | each genome: accession, flags, rRNA copies, genetic code and its check, duplication, introns, type material, genome record, copies another clade's | 4, more in 5 and 6 |
 | [`copy_numbers.tsv.gz`](#copy_numberstsvgz-format-5) | each genome's copies of every BUSCO and marker locus, rRNA gene and unit, organelle molecule and gene; by reads where measured | 5 |
 | [`busco/loci.tsv`](#busco) | each BUSCO's call rate, overall and per group | 4 |
@@ -74,7 +75,9 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
 references species.tsv's lineages come from (`references`: PR2's, EUKARYOME's, KSGP's version, file, MD5 and the
-species and genera it names), Eukore's marker set (`markers`, since 2026-11-07: `data/markers.tsv`'s, KOfam's
+species and genera it names; since 2026-11-10 MIDORI2's further `files` and its `screen`: the screen's version, the
+records screened and flagged, those called `misnamed`, `chimera`, `other_gene` and `weak`, and those `dropped`,
+`cut` and for `review`), Eukore's marker set (`markers`, since 2026-11-07: `data/markers.tsv`'s, KOfam's
 `ko_list`'s and the members table's MD5s, Swiss-Prot's release, NCBI's query scope and proteins fetched per marker, when
 it was built, and per marker its kind, members, cutoff and members dropped as foreign; `null` without one), ENA's list
 of TSA transcriptome sets (`tsa`, since 2026-11-07: its file, MD5, date fetched and sets; `null` without one or with
@@ -116,7 +119,7 @@ One row per NCBI species the package holds:
 | `ksgp`, `ksgp_match` | its lineage in KSGP (`k__` .. `s__`, as KSGP writes it; its eukaryote nuclear records) |
 | `silva`, `silva_match` | its lineage in SILVA's SSU Ref NR99 (138.2; format 5): its eukaryote records' path, of any depth, then the species (`Saccharomyces_cerevisiae`; the organism's first two words where they name one) |
 | `unite`, `unite_match` | its lineage in UNITE's general release of all eukaryotes (10.0, 2025-02-19; `k__` .. `s__`; format 5); its species hypotheses are in `crossrefs.tsv` |
-| `midori2`, `midori2_match` | its lineage in a MIDORI2 COI release (root;domain;phylum;class;order;family;genus;species), where the build was given one (`--midori2`; format 5): MIDORI2 names each record's NCBI taxid, so a species is found by it (`taxid`) before its name |
+| `midori2`, `midori2_match` | its lineage in a MIDORI2 release (root;domain;phylum;class;order;family;genus;species; a rank MIDORI2 does not give empty), where the build was given its COI file or several of its genes' (`--midori2`; format 5): MIDORI2 names each record's NCBI taxid, so a species is found by it (`taxid`) before its name. Since 2026-11-10 a record the reference screen drops ([`reference_screen.tsv`](#reference_screentsv-optional): another organism's gene, another gene) names no species |
 | `type_material` | NCBI's relation of its genome to the species' type material (`assembly from type material`, `assembly from synonym type material`, `assembly designated as neotype`, ...; `genomes.tsv`'s), `-` for none (format 5) |
 
 A species is found in a reference by name: `species` (NCBI's scientific name), `synonym` (one of NCBI's synonyms, an
@@ -137,6 +140,32 @@ Each species' ids in other taxonomies and databases, one row per id: `taxid` (th
 - `UNITE`: UNITE's species hypotheses (SH codes) of the species' name or a synonym (`name`).
 - `BOLD`: BOLD's BINs of the species' name or a synonym (`name`), where the build was given a BOLD data package
   (`--bold_tsv`; BOLD's bulk downloads need a login).
+
+## reference_screen.tsv (optional)
+Since 2026-11-10, where the build was given MIDORI2 files (`--midori2`) and has minimap2 and vsearch: the records of
+those files the reference screen calls (`eukore/refscreen.py`; [methods.md](methods.md#the-reference-screen-since-2026-11-10)),
+one row per record and gene file. A record with `action` `drop` names no species in `species.tsv`; the others do. A
+reader takes a package with or without the table. `tools/screen_reference.py` writes the same calls as KSGP's lists
+(`drop.tsv`, `trim.tsv`, `review.tsv`) and the files without the dropped records, for a user of MIDORI2 itself.
+
+| column | meaning |
+|---|---|
+| `reference` | `MIDORI2` |
+| `record` | the record's name in its file (`MG559732.1.<1.>690`: accession, version, span) |
+| `gene` | its file's gene, by the organelle genes' names (`COX1`, `CYTB`, `SSU`, `LSU`, ...; `organelle/genes.tsv`'s) |
+| `taxid`, `species_taxid` | the NCBI taxid MIDORI2 gives it; its species |
+| `length` | its bases |
+| `call` | `misnamed` (another clade's gene under its name: a contaminant, a misidentified specimen), `chimera` (a piece of another clade's gene in it), `other_gene` (another gene, whole or a piece), `weak` (doubtful: one of two records is misnamed and which is not told, or a piece that is not certain) |
+| `action` | `drop` (left out), `trim` (cut to `keep_start`-`keep_end`: its own part), `review` (kept as it is) |
+| `keep_start`, `keep_end` | the part kept of a cut record (1-based, inclusive), else `-` |
+| `clade` | the clade its sequence is another's: NCBI's first rank of phylum, class and order at which it parts from the record's (`order Lepidoptera`); the other gene of an `other_gene` |
+| `label_clade` | the record's own clade at that rank |
+| `identity` | the identity (%) of its nearest record of that clade (or gene), over a window of 300 bases |
+| `relatives`, `own_clade` | over the windows that clade claims: the mean identity of that clade's relatives (its second-best species under 97%), and of the record's own clade's nearest record; `-` for an `other_gene` |
+| `windows` | its windows (300 bases every 50) by what they are: `foreign`, `undecided`, `own`, `gene`, `none` |
+| `layout` | the stretches of windows in the record's order (`own:0-600 foreign:450-900`: 0-based starts and ends) |
+| `targets` | the records nearest its foreign stretches (RefSeq's as `<accession>_<gene>`, else MIDORI2's names) |
+| `reason` | the call in words |
 
 ## genomes.tsv
 The species' genomes and their other assemblies:
@@ -595,6 +624,10 @@ them). `genomes.tsv`'s
   and its flags `ssu_prokaryote` and `cross_shared`; `organelle/genes.tsv`'s `cross`, its `internal_stops` `medium`
   (until 6 `low`); `intraspecific/barcode_gap.tsv`'s `inter_rank`, `resolved` `t` against a congener alone. A reader
   of format 5 reads format 6 but for the tier `unverified`, which it may read as `medium`.
+- 2026-11-10, no new format (optional): `reference_screen.tsv` and the manifest's `inputs.references.MIDORI2.screen`
+  (and `files`), where the build was given MIDORI2 files; `species.tsv`'s `midori2` no longer names a species by a
+  record the screen drops. MIDORI2's later header layout (GB273's: a tab, every NCBI rank as `rank_Name_taxid`) is
+  read: until then such a file named no species (every `midori2` `-`).
 - 2026-11-06, no new format (optional, added to a built package): `depth.tsv`, `genomes.tsv`'s `rdna_copies_reads`,
   `mt_copies_reads` and `pt_copies_reads`, the manifest's `inputs.read_depth` (`tools/rdna_depth.py`). A reader
   takes a package with or without them.

@@ -283,6 +283,8 @@ So that a user (protal's build) has what it needs without computing it again:
   KSGP, by the same name match. `crossrefs.tsv`: Open Tree Taxonomy 3.7.3's taxon of each species found by its NCBI
   taxid (no name matched), and the GBIF, WoRMS, IRMNG and Index Fungorum ids Open Tree gives it; UNITE's SH codes and,
   given a BOLD data package, BOLD's BINs by name.
+- **The reference screen** (since 2026-11-10): MIDORI2's records are screened before they name species; see
+  [below](#the-reference-screen-since-2026-11-10).
 - **Type material.** NCBI's `relation_to_type_material` of each genome (`genomes.tsv`, `species.tsv`); the genome
   ranking does not use it.
 
@@ -467,3 +469,66 @@ of frame shipped as `high`, the true owner of a contaminant's sequence called an
   out (a contaminant's codons are its own code's); the barcode gap's `resolved` is `t` against a congener alone
   (`inter_rank`; until 2026-11-09 `t` where the package held no congener of the species) and its pairs align over 80%
   of their query.
+
+## The reference screen (since 2026-11-10)
+
+KSGP 4.5 and 5.2 found records in their 16S and 18S that hold pieces of two phyla's genes, or another phylum's gene
+under a name (`chimera_screen.py`: windows against GTDB genomes' 16S). MIDORI2, the mitochondrial reference the build
+can name species by (`--midori2`), takes GenBank's records as they are named, so it carries such records too: a
+contaminant's COI under its host's name, a specimen misidentified across orders, two genes joined. The same screen,
+on NCBI's lineages and for any gene (`eukore/refscreen.py`), runs on MIDORI2's files before they name species; a
+record it drops names none (`species.tsv`'s `midori2`), and `reference_screen.tsv` lists every call.
+`tools/screen_reference.py` writes the calls as KSGP's lists (`drop.tsv`, `trim.tsv`, `review.tsv`) and the files
+screened, for a user of MIDORI2 itself.
+
+- **Windows and references.** Each record is cut into 300-base windows (every 150 bases in the first pass, every 50
+  in the check). They are set beside RefSeq's organelle genes (trusted: curated genomes, every gene of them, so that
+  another gene shows) and one record of each other species of the files (its longest).
+- **First pass** (minimap2 `asm20`): a record is flagged where a window is 95% or more identical to a record of
+  another gene or of a species NCBI's lineage parts from its own at the order or above (the first of phylum, class,
+  order both name and differ in).
+- **The check.** Each window's copies (97% or more; minimap2) and relatives (80% or more; vsearch), and, where a
+  window looks another clade's, its own clade's records searched alone (a large clade's relatives fill a search's
+  hits). A window is claimed by another clade where a record of it is a copy and 5 points nearer than the window's own
+  clade's nearest record; nearer than that, a window tells the two clades apart no better than a conserved stretch
+  does (plants' mitochondrial genes are 97-100% alike across orders).
+- **Whose a sequence is.** A copy does not say: the copy may be the misnamed record, and so may several copies be (a
+  batch of contaminated specimens are copies of their source under wrong names; KSGP's second-genome rule). A clade
+  holds a sequence where it holds relatives of it: the other clade's second-best species under 97% (a RefSeq record
+  counting as two) against the record's own clade's nearest record, averaged over the consecutive windows the clade
+  claims (single windows' relatives at 80-90% differ by chance). 3 points nearer, and no third clade holding half the
+  windows about as well, the stretch is foreign; 3 points the other way, it is the record's own (the copy is the
+  misnamed one); else undecided.
+- **Calls.** A foreign stretch of 2 windows or more (or one at 99%) is certain. With 2 windows of its own clade or
+  more the record is a `chimera`, cut to its longest own part where 300 bases stay, else dropped; without, `misnamed`
+  and dropped where the stretches are half its windows or more. Another gene's windows (RefSeq's other gene 5 points
+  nearer than any of its own gene) make `other_gene` alike. Undecided stretches and uncertain pieces are `weak`: kept,
+  listed for review.
+- **What it does not see.** Clades NCBI does not part at the order or above (a misidentified congener, a chimera of
+  two species of one order); a contaminant of a clade the references hold no relatives of; a batch of contaminated
+  specimens under several names of the record's own clade.
+
+On MIDORI2 GB273's LONGEST files of COI, CYTB, lrRNA and srRNA (511,981 records; RefSeq's organelle release of
+2026-11-06; 2026-11-10, ~2 hours on 6 cores):
+
+| gene | records | misnamed | chimera (cut) | other gene (cut) | for review |
+|---|---|---|---|---|---|
+| COX1 | 242,986 | 118 | 11 (9) | 6 (1) | 98 |
+| CYTB | 71,358 | 29 | 12 (11) | 1 | 32 |
+| lrRNA | 119,217 | 52 | 9 (7) | 3,768 (242) | 205 |
+| srRNA | 78,420 | 75 | 19 (12) | 173 (95) | 100 |
+
+3,896 records are dropped and 377 cut. Most of the drops are one fault of MIDORI2's: 9,185 records sit in both its
+srRNA and its lrRNA file, and of their lrRNA copies 3,367 are SSU by RefSeq's genes (98-100% to a RefSeq SSU; their
+srRNA copies pass), mostly fungal mitochondrial SSU, the barcode of Agaricomycetes (1,299) and Lecanoromycetes
+(1,084), and plants'. The misnamed COI are of the kinds the screen is for: a Coleoptera record that is a hemipteran's
+COI, Lepidoptera records that are dipterans', arthropods' that are vertebrates', a fish's that is a
+cichlid's; the chimeras mostly long records whose one end is another phylum's or order's (an arthropod COI ending in a
+vertebrate's, a rodent COI starting as an artiodactyl's).
+
+Checked with records planted in the COI file (200 records' genes under the name of a species of another order, 200
+records whose second half is another order's record's; 2026-11-10): of the misnamed, 170 dropped (162 `misnamed`, 8
+`chimera`), 28 for review, 2 not flagged; of the chimeras, 104 caught (80 cut, the cut a median 29 bases from the
+join; 24 dropped), 55 for review, 41 not (the other record's second half often covers another stretch of the gene,
+which the record's windows do not meet). None of the 800 records the planted ones were made from was dropped, nor
+any record the screen of the file alone keeps: the true owner of a sequence is not taken for its contaminant.
