@@ -116,7 +116,11 @@ GZIP_BYTES_PER_BASE = 0.3
 
 
 def genome_bases(path):
-    """A genome's bases, estimated from its file's size (GZIP_BYTES_PER_BASE for a gzipped one)."""
+    """A genome's bases, estimated from its file's size (GZIP_BYTES_PER_BASE for a gzipped one). Where nothing
+    better is known: against the true length the estimate was 0.98 to 1.07 times it for the 2026-11 trial's 34
+    genomes, and falls with the share of N (an assembly's gaps compress to nothing: the yeast's genome with 29% of
+    it made N, 0.79 times; with 55%, 0.51); loci.call takes the true size where its caller has it (since
+    2026-11-10)."""
     return os.path.getsize(path) / (GZIP_BYTES_PER_BASE if path.endswith(".gz") else 1)
 
 
@@ -136,31 +140,105 @@ def contig_lengths(path):
     return out
 
 
-def chunks(genome_path, folder, max_bases=None):
+# A contig over CHUNK_BASES cut into windows (since 2026-11-10, the audit's C8: it was alone in its piece, whole, and
+# its index over the memory the build reserves, for CHUNK_BASES at most: eukore_build.run_memory; lungfish
+# chromosomes are several Gb). A window reaches CHUNK_OVERLAP bases into the one before, so that a gene up to that
+# long is whole in one of the two: miniprot's -I allows an intron of 300 kb at most (its manual), 5 Mb are 16 such.
+CHUNK_OVERLAP = 5_000_000
+WINDOW_MARK = "|eukore_window@"  # a window's name: its contig's, the mark, its first base's 0-based place
+# miniprot's index holds a sequence's k-mers by blocks of 256 bases (-b 8), counted from its first base on the
+# forward strand and from its last on the reverse: a window cut between two of the contig's blocks seeds a little
+# otherwise far from its ends too (a made-up contig of 2.9 Mb with 48 C. elegans genes: its first 100, 1,000 or
+# 5,000 bases left off, 3 to 8 of 971 alignments other than the whole contig's; its last 100, 128 or 300 off, 2 to 3,
+# all on the reverse strand; 256, 512, 768, 1,024 or 65,536 off either end: none). So a window begins a multiple
+# of 256 bases from the contig's start and ends one from its end.
+WINDOW_GRID = 256
+
+
+def windows(length, max_bases, overlap):
+    """A contig's windows -> [(start, end)] 0-based, end excluded: itself where it is max_bases or shorter (or no
+    overlap is given: not cut), else windows of max_bases or up to WINDOW_GRID - 1 bases less, each `overlap` bases
+    or a little more into the one before, the last to the contig's end; each begins and ends on the contig's
+    multiples of WINDOW_GRID from either end (where the sizes allow: not a made-up tiny one)."""
+    if not overlap or length <= max_bases:
+        return [(0, length)]
+    size = max_bases - (max_bases - length) % WINDOW_GRID
+    size = size if size > overlap else max_bases
+    step = (size - overlap) // WINDOW_GRID * WINDOW_GRID or size - overlap
+    out, start = [], 0
+    while True:
+        out.append((start, min(length, start + size)))
+        if out[-1][1] == length:
+            return out
+        start += step
+
+
+def window_of(name):
+    """A sequence's name in a piece (chunks) -> (its contig, the window's first base's 0-based place on it); (name, 0)
+    for a contig that was not cut."""
+    contig, mark, start = name.rpartition(WINDOW_MARK)
+    return (contig, int(start)) if mark and start.isdigit() else (name, 0)
+
+
+def chunks(genome_path, folder, max_bases=None, overlap=0, bases=None):
     """A genome as miniprot takes it: itself, or where it is over max_bases (CHUNK_BASES: a 3 Gb genome's index takes
-    ~22 GB, a lungfish's 40 Gb ~300) its contigs in order in pieces of max_bases at most, plain FASTA in folder (a
-    contig longer than that alone in its own) -> [paths]. A piece is closed before a contig that would take it past
-    max_bases (its length from a first pass; until 2026-11-08 a piece took a whole further contig past it: chromosomes
-    of 3 Gb made pieces of 6, ~45 GB of index where the build reserved ~33)."""
+    ~22 GB, a lungfish's 40 Gb ~300) its contigs in order in pieces of max_bases at most, plain FASTA in folder
+    -> [paths]. A piece is closed before a contig that would take it past max_bases (its length from a first pass;
+    until 2026-11-08 a piece took a whole further contig past it: chromosomes of 3 Gb made pieces of 6, ~45 GB of
+    index where the build reserved ~33).
+    A contig longer than max_bases is alone in its own piece (overlap 0: the six-frame ORFs' pieces, which no memory
+    bound hangs on), or (overlap given; since 2026-11-10) cut into windows of max_bases, each `overlap` bases (half
+    a piece at most) into the one before and each in a piece of its own, the last with the contigs after it; a
+    window is named by window_of's rule, and loci.align puts its alignments back on the contig.
+    bases: the genome's bases where the caller knows them (since 2026-11-10; NCBI's total length), else estimated
+    from the file's size (genome_bases)."""
     max_bases = max_bases or CHUNK_BASES
-    if genome_bases(genome_path) <= max_bases:
+    if (bases or genome_bases(genome_path)) <= max_bases:
         return [genome_path]
+    overlap = min(overlap, max_bases // 2)
     lengths = iter(contig_lengths(genome_path))
     paths, out, held = [], None, 0
-    with (gzip.open(genome_path, "rt") if genome_path.endswith(".gz") else open(genome_path)) as fh:
-        for line in fh:
-            if line.startswith(">"):
-                n = next(lengths)[1]
-                if out is None or (held and held + n > max_bases):
-                    if out:
-                        out.close()
-                    paths.append(os.path.join(folder, f"piece{len(paths)}.fna"))
-                    out, held = open(paths[-1], "w"), 0
-                held += n
-            if out is not None:  # (bases before any title: none of a contig)
-                out.write(line)
-    if out:
-        out.close()
+    cut, k, pos = [], 0, 0  # a cut contig's windows [(start, end, its piece's file)], the first not yet passed
+    try:
+        with (gzip.open(genome_path, "rt") if genome_path.endswith(".gz") else open(genome_path)) as fh:
+            for line in fh:
+                if line.startswith(">"):
+                    for _a, _b, piece in cut:
+                        if piece is not out:
+                            piece.close()
+                    name, n = next(lengths)
+                    wins = windows(n, max_bases, overlap)
+                    cut, k, pos = [], 0, 0
+                    for start, end in wins:
+                        if out is None or (held and held + end - start > max_bases):
+                            if out is not None and not cut:  # (a window's piece is closed once it is written)
+                                out.close()
+                            paths.append(os.path.join(folder, f"piece{len(paths)}.fna"))
+                            out, held = open(paths[-1], "w"), 0
+                        held += end - start
+                        out.write(line if len(wins) == 1 else f">{name}{WINDOW_MARK}{start}\n")
+                        cut.append((start, end, out))
+                    if len(wins) == 1:
+                        cut = []  # whole: its lines as they are
+                elif cut:
+                    s = line.strip()
+                    a, b = pos, pos + len(s)
+                    while k < len(cut) and cut[k][1] <= a:
+                        if cut[k][2] is not out:
+                            cut[k][2].close()
+                        k += 1
+                    for start, end, piece in cut[k:]:
+                        if start >= b:
+                            break
+                        piece.write(s[max(start, a) - a:min(end, b) - a] + "\n")
+                    pos = b
+                elif out is not None:  # (bases before any title: none of a contig)
+                    out.write(line)
+    finally:
+        for _a, _b, piece in cut:
+            piece.close()
+        if out:
+            out.close()
     return paths
 
 
@@ -168,22 +246,22 @@ INDEX_SUFFIX = ".mpi"
 _INDEX_LOCKS, _INDEX_GUARD = {}, threading.Lock()
 
 
-def index_file(index_dir, genome_path, key, piece=None, max_bases=None):
+def index_file(index_dir, genome_path, key, piece=None, max_bases=None, overlap=0):
     """The file in index_dir of miniprot's saved index of a genome (piece None) or of one of its pieces (its number in
-    chunks()' order, of max_bases at most). Its name holds all that shapes the index: the genome (its path, size and
-    time: another file under that name is another genome), the piece, and key (the tool and its indexing options:
-    loci.split_options')."""
+    chunks()' order, of max_bases at most, a longer contig's windows `overlap` into each other). Its name holds all
+    that shapes the index: the genome (its path, size and time: another file under that name is another genome), the
+    piece, and key (the tool and its indexing options: loci.split_options')."""
     stat = os.stat(genome_path)
     what = [os.path.abspath(genome_path), stat.st_size, stat.st_mtime_ns, *key]
     stem = os.path.basename(genome_path)
     if piece is not None:
-        what += ["piece", max_bases or CHUNK_BASES, piece]
+        what += ["piece", max_bases or CHUNK_BASES, piece, *(["overlap", overlap] if overlap else [])]
         stem += f".piece{piece}"
     digest = hashlib.sha1("\n".join(str(x) for x in what).encode()).hexdigest()[:16]
     return os.path.join(index_dir, f"{stem}.{digest}{INDEX_SUFFIX}")
 
 
-def saved_indexes(genome_path, folder, index_dir, key, build, max_bases=None):
+def saved_indexes(genome_path, folder, index_dir, key, build, max_bases=None, overlap=0, bases=None):
     """A genome as miniprot takes it where it is aligned more than once (since 2026-11-10: a dataset species' genome is
     called up to five times a run, the main call and its hold-outs, and each call made miniprot's index, most of a
     large genome's time, again): the saved indexes of its pieces (chunks()) in index_dir, each made once (index_file
@@ -193,14 +271,15 @@ def saved_indexes(genome_path, folder, index_dir, key, build, max_bases=None):
     build at a time a genome in this process (threads); two processes at worst build twice, neither reads half a
     file. The pieces are written into folder and each deleted once its index is there; their number is noted beside
     the indexes, so a later call does not cut the genome again. Nothing is kept outside index_dir, which is the
-    caller's to delete (~7.5 bytes a base)."""
+    caller's to delete (~7.5 bytes a base). overlap, bases: chunks()' (since 2026-11-10: a contig over max_bases in
+    windows, each window's piece its own index; the genome's bases where the caller knows them)."""
     max_bases = max_bases or CHUNK_BASES
     os.makedirs(index_dir, exist_ok=True)
 
     def names(n):
-        return [index_file(index_dir, genome_path, key, i if n > 1 else None, max_bases) for i in range(n)]
+        return [index_file(index_dir, genome_path, key, i if n > 1 else None, max_bases, overlap) for i in range(n)]
 
-    noted = index_file(index_dir, genome_path, ["pieces", max_bases])[:-len(INDEX_SUFFIX)] + ".pieces"
+    noted = index_file(index_dir, genome_path, ["pieces", max_bases, overlap])[:-len(INDEX_SUFFIX)] + ".pieces"
     with _INDEX_GUARD:
         lock = _INDEX_LOCKS.setdefault((os.path.abspath(index_dir), os.path.abspath(genome_path)), threading.Lock())
     with lock:
@@ -211,7 +290,7 @@ def saved_indexes(genome_path, folder, index_dir, key, build, max_bases=None):
             paths = []
         if paths and all(os.path.isfile(p) for p in paths):
             return paths, None
-        parts = chunks(genome_path, folder, max_bases)
+        parts = chunks(genome_path, folder, max_bases, overlap, bases)
         paths = names(len(parts))
         for part, dest in zip(parts, paths):
             if not os.path.isfile(dest):

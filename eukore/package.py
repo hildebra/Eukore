@@ -51,6 +51,17 @@ COPY_COLUMNS = ("accession", "locus", "status", "contig", "contig_length", "star
 DUP_LOCI_MIN = 20   # duplication_of: a genome with fewer BUSCOs called says nothing of its duplication
 DUP_SHARE = 0.15    # this share of its called BUSCOs Duplicated: a duplicated genome
 HAPLOTYPE_ID = 99.5  # its duplicated BUSCOs' copies this alike (median, %): an assembly's two haplotypes
+# duplication_of's `haplotigs` (since 2026-11-10; the audit's B3): the alleles of an outbred diploid are under
+# HAPLOTYPE_ID alike (1-4% heterozygosity: coding sequences 96-99.5%), as a recent polyploid's copies are; what tells
+# them is where the copies lie: an assembly's second haplotype on contigs far shorter than the ones its collapsed
+# (Single) genes lie on, a polyploid's on chromosomes like any gene.
+HAPLOTIG_ID = 95.0   # alleles are this alike at least (a contaminant's copies, on short contigs too, are not)
+SHORT_CONTIG = 0.25  # a contig under this share of the Single copies' median contig is short
+SHORT_EXCESS = 0.25  # the Duplicated loci with a copy on a short contig, over the share chance gives: haplotigs
+SHORT_NOISE = 3.0    # and that excess this many times its sampling error at least
+SHORT_SINGLE_MIN = 10  # Single copies with a contig length, to say what a short contig is
+# duplication_of's classes of a genome that holds its BUSCOs twice: a Duplicated copy is no flag there (collect)
+DUPLICATED_GENOME = ("haplotypes", "haplotigs", "wgd_or_polyploid")
 FEATURE_COLUMNS = ("accession", "locus", "kind", "start", "end")
 SPECIES_COLUMNS = ("taxid", "name", "representative", "source", "loci", "rrna_records", "organelle_genes",
                    "supergroup", "group", "ncbi_lineage", "ncbi_lineage_filled", "pr2", "pr2_match", "eukaryome",
@@ -90,7 +101,7 @@ def tier(low, medium, unverified):
     return name, ",".join(low + medium + unverified) or "-"
 
 
-def copy_confidence(r, family=False):
+def copy_confidence(r, family=False, duplicated_genome=False):
     """A copy's tier and why (busco/copies.tsv's confidence and flags; tier()): low where a check calls it another
     organism's or not the locus (own_species f, FCS-GX's EXCLUDE/TRIM/FIX, tiara's prokaryote window, a marker copy
     whose best profile is a decoy's: `paralog`, since 2026-11-09); medium where something may be wrong (Fragmented,
@@ -100,7 +111,9 @@ def copy_confidence(r, family=False):
     another clade's genome, its owner undecided (`cross_shared`)); unverified where nothing is wrong but its
     own-species check could not decide (no relative near enough; until 2026-11-09 medium, as if something were); else
     high. family: a multigene family's marker (markers.py's kind family: actin, tubulins, ...), whose Duplicated is
-    its nature, no flag."""
+    its nature, no flag. duplicated_genome (since 2026-11-10; the audit's B3): the copy's genome holds its BUSCOs
+    twice genome-wide (duplication_of's haplotypes, haplotigs or wgd_or_polyploid): two copies are that genome's
+    truth, a Duplicated copy no flag there either (its status and `copies` still say so)."""
     low, medium, unverified = [], [], []
     if r.get("own_species") == "f":
         low.append("own_species")
@@ -114,7 +127,7 @@ def copy_confidence(r, family=False):
     if r.get("transcript") == "t":  # a transcriptome's copy (TSA): no introns, its Duplicated its isoforms
         medium.append("transcript")
     if r.get("status") == "Fragmented" or (r.get("status") == "Duplicated" and r.get("transcript") != "t"
-                                           and not family):
+                                           and not family and not duplicated_genome):
         medium.append(r["status"].lower())
     if r.get("rescued") == "t":  # loci.py's rescue pass: its span may fall short of the gene's ends
         medium.append("rescued")
@@ -219,24 +232,54 @@ def copy_numbers(genomes, copy_rows, loci, set_of, organelle=()):
     return out
 
 
-def duplication_of(rows):
+def duplication_of(rows, alternates=None):
     """A genome's duplicated BUSCOs (its copies.tsv rows; since 2026-11-07) -> dict(duplicated_share (of those called
-    Single or Duplicated), dup_identity_median (the Duplicated ones' dup_identity, "<50" read as 50), duplication):
-    `haplotypes` where many are duplicated and their copies are HAPLOTYPE_ID% alike or more (an assembly holding both
-    haplotypes of a diploid, or a recent hybrid), `wgd_or_polyploid` where many are duplicated and less alike (a whole
-    genome duplication, a polyploid, an old hybrid), `low` where few are, `-` where too few are called. A heuristic:
-    a reader weighs it with the genome's size and the species' biology."""
+    Single or Duplicated), dup_identity_median (the Duplicated ones' dup_identity, "<50" read as 50), duplication,
+    dup_short_contigs): `haplotypes` where many are duplicated and their copies are HAPLOTYPE_ID% alike or more (an
+    assembly holding both haplotypes of a diploid, or a recent hybrid), `wgd_or_polyploid` where many are duplicated
+    and less alike (a whole genome duplication, a polyploid, an old hybrid), `low` where few are, `-` where too few
+    are called. A heuristic: a reader weighs it with the genome's size and the species' biology.
+
+    Since 2026-11-10 `haplotigs`, a class of its own: many duplicated, HAPLOTIG_ID to HAPLOTYPE_ID alike, and their
+    copies on short contigs (under SHORT_CONTIG of the Single copies' median contig) SHORT_EXCESS more often than
+    chance gives (the share of the Single copies on such contigs; with two copies seen, either's): an assembly not
+    purged of an outbred diploid's second haplotype. Until then `wgd_or_polyploid`, which still is every genome whose
+    copies are less alike than HAPLOTYPE_ID and not told so: a polyploid, and two haplotypes assembled equally long.
+    alternates: the genome's other complete copies' rows (its alternates.tsv: locus, contig_length), where the caller
+    has them; without them the chosen copies' contigs alone are seen, half of them the first haplotype's.
+    dup_short_contigs: `<share of the Duplicated loci on a short contig>/<the share chance gives>`, - where not
+    told (no column of genomes.tsv yet)."""
     called = [r for r in rows if r.get("status") in ("Single", "Duplicated")]
     ids = sorted(float(str(r["dup_identity"]).lstrip("<")) for r in called
                  if r["status"] == "Duplicated" and r.get("dup_identity") not in (None, "", "-"))
     if len(called) < DUP_LOCI_MIN:
-        return dict(duplicated_share="-", dup_identity_median="-", duplication="-")
+        return dict(duplicated_share="-", dup_identity_median="-", duplication="-", dup_short_contigs="-")
     share = sum(r["status"] == "Duplicated" for r in called) / len(called)
     median = ids[len(ids) // 2] if ids else None
+
+    def length(r):
+        return int(r["contig_length"]) if str(r.get("contig_length", "")).isdigit() else None
+    single = sorted(n for n in (length(r) for r in called if r["status"] == "Single") if n)
+    others = collections.defaultdict(list)
+    for a in alternates or ():
+        if length(a):
+            others[a["locus"]].append(length(a))
+    seen = [[length(r)] + others.get(r.get("locus"), []) for r in called if r["status"] == "Duplicated" and length(r)]
+    short, chance, noise = None, None, 0.0
+    if len(single) >= SHORT_SINGLE_MIN and seen:
+        limit = SHORT_CONTIG * single[len(single) // 2]
+        by_chance = sum(n < limit for n in single) / len(single)
+        short = sum(min(ns) < limit for ns in seen) / len(seen)
+        chance = sum(1 - (1 - by_chance) ** len(ns) for ns in seen) / len(seen)
+        # both shares' sampling error (a genome nearly all Duplicated has few Single copies to say what chance is)
+        slope = sum(len(ns) * (1 - by_chance) ** (len(ns) - 1) for ns in seen) / len(seen)
+        noise = (short * (1 - short) / len(seen) + slope ** 2 * by_chance * (1 - by_chance) / len(single)) ** 0.5
     kind = ("low" if share < DUP_SHARE else "-" if median is None else
-            "haplotypes" if median >= HAPLOTYPE_ID else "wgd_or_polyploid")
+            "haplotypes" if median >= HAPLOTYPE_ID else
+            "haplotigs" if median >= HAPLOTIG_ID and short is not None
+            and short - chance >= max(SHORT_EXCESS, SHORT_NOISE * noise) else "wgd_or_polyploid")
     return dict(duplicated_share=f"{share:.3f}", dup_identity_median="-" if median is None else f"{median:.1f}",
-                duplication=kind)
+                duplication=kind, dup_short_contigs="-" if short is None else f"{short:.2f}/{chance:.2f}")
 
 
 def _tsv(path, columns, rows):
@@ -300,8 +343,8 @@ def genome_part(args):
     their coding sequences, introns and proteins made in the one process): args (work, accession, its genetic code)
     -> None where the genome is not done, else dict(loci (its copies' count), rrna ((counts, element_counts) or None),
     molecules, searched, record, copies [(copy row, coding sequence, (protein, internal stops), intron rows)] in its
-    loci.tsv's order, alternates [(locus, alt, coding sequence, protein length)]). Its copies whole and its features
-    are not returned: write reads them again (the memory bound of 2026-11-08)."""
+    loci.tsv's order, alternates [(locus, alt, coding sequence, protein length, contig length)]). Its copies whole and
+    its features are not returned: write reads them again (the memory bound of 2026-11-08)."""
     from . import introns as introns_mod, rrna as rrna_mod  # noqa: PLC0415
     from .genomes import done_dir, done_summary, is_done, record_of  # noqa: PLC0415
     work, acc, table = args
@@ -331,8 +374,8 @@ def genome_part(args):
             copies.append((row, cds, gencode.protein_of(cds, table), introns))
     # a Duplicated locus' other complete copies (since 2026-11-09, genome record 2): their coding sequences checked
     # beside the copies, for the choice by lineage; their copies read again where one is taken
-    alternates = [(a["locus"], a["alt"], qc.spliced(a["copy"], a["features"]), int(a["protein_length"]))
-                  for a in done_alternates(work, acc)]
+    alternates = [(a["locus"], a["alt"], qc.spliced(a["copy"], a["features"]), int(a["protein_length"]),
+                   a.get("contig_length")) for a in done_alternates(work, acc)]
     return dict(loci=len(got), rrna=rrna, molecules=organelle_molecules_of(folder),
                 searched={r["locus"] for r in searched}, record=record_of(done_summary(work, acc)) or "-",
                 copies=copies, alternates=alternates)
@@ -355,6 +398,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     by_accession = {r["accession"]: r for r in assemblies}
     genomes, copy_rows, cds, intron_rows, done, count = {}, [], {}, [], [], 0
     alt_cds, alt_length = {}, {}  # a Duplicated locus' other copies' (since 2026-11-09)
+    alt_contigs = collections.defaultdict(list)  # the BUSCOs' other copies' contigs (duplication_of's haplotigs)
     made = {}  # {(accession, locus): (protein, internal stops)} of the copies as read (genome_part)
     jobs = sorted(job_map.items())
     parts = util.ordered(genome_part, [(work, acc, job.get("gencode", 1)) for acc, job in jobs],
@@ -394,8 +438,10 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             copy_rows.append(row)
             cds[(name, row["locus"])], made[(name, row["locus"])] = seq, protein
             intron_rows.extend(dict(i, accession=name, locus=row["locus"]) for i in introns)
-        for locus, k, seq, length in part["alternates"]:
+        for locus, k, seq, length, contig in part["alternates"]:
             alt_cds[(name, locus, k)], alt_length[(name, locus, k)] = seq, length
+            if locus not in kinds:
+                alt_contigs[name].append(dict(locus=locus, contig_length=contig))
         for other in job.get("others", ()):
             o = by_accession.get(other)
             if o and other not in genomes:
@@ -443,6 +489,16 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         swapped = {(a, lo) for a, s in swaps.items() for lo in s}
         intron_rows = [i for i in intron_rows if (i["accession"], i["locus"]) not in swapped] + new_introns
     paralogs = paralogs_of({k: v for k, v in cds.items() if k[1] in kinds}, genomes) if paralogs_of and kinds else set()
+    # each genome's duplication before its copies' tiers (since 2026-11-10; after them until then): a Duplicated copy
+    # of a genome that holds its BUSCOs twice is no flag (copy_confidence). With its other copies' contigs, which
+    # tell an unpurged diploid's haplotigs (duplication_of; until then the chosen copies' alone)
+    by_genome = collections.defaultdict(list)
+    for r in copy_rows:
+        if r["locus"] not in kinds:  # the BUSCOs' (single-copy by their choice): the markers' are not
+            by_genome[r["accession"]].append(r)
+    for acc, g in genomes.items():
+        if g["representative"] == "t" and g.get("source") != "tsa":  # a transcriptome's isoforms are no duplication
+            g.update(duplication_of(by_genome.get(acc, []), alt_contigs.get(acc)))
     proteins = {}
     for r in copy_rows:
         key = (r["accession"], r["locus"])
@@ -459,15 +515,13 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         swapped = r["locus"] in swaps.get(r["accession"], ())
         proteins[key], r["internal_stops"] = made[key] if not swapped else gencode.protein_of(
             cds[key], genomes[r["accession"]].get("gencode", 1))
-        r["confidence"], r["flags"] = copy_confidence(r, kinds.get(r["locus"]) == "family")
-    by_genome, all_rows = collections.defaultdict(list), collections.defaultdict(list)
+        r["confidence"], r["flags"] = copy_confidence(
+            r, kinds.get(r["locus"]) == "family",
+            genomes[r["accession"]].get("duplication") in DUPLICATED_GENOME)
+    all_rows = collections.defaultdict(list)
     for r in copy_rows:
         all_rows[r["accession"]].append(r)
-        if r["locus"] not in kinds:  # the BUSCOs' (single-copy by their choice): the markers' are not
-            by_genome[r["accession"]].append(r)
     for acc, g in genomes.items():
-        if g["representative"] == "t" and g.get("source") != "tsa":  # a transcriptome's isoforms are no duplication
-            g.update(duplication_of(by_genome.get(acc, [])))
         if g["representative"] == "t":  # its copies another clade's (since 2026-11-09: cross-contamination)
             g["foreign_copies"], g["foreign_source"] = qc.cross_summary(all_rows.get(acc, []), ncbi)
     taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"} \
@@ -539,12 +593,26 @@ def loci_rows(loci, collected, ncbi):
     species hold it: species with a genome searched for it, called (Single or Duplicated), duplicated, fragmented, the
     call rate over all and per supergroup (groups.GROUPS), the median copy, coding and protein lengths. A genome run
     before a locus was (a marker added later: collect's _searched) counts for it nowhere (until 2026-11-08 as one not
-    calling it: its call rates too low)."""
+    calling it: its call rates too low).
+
+    Since 2026-11-10 (the audit's B5) also the call rates over the genomes alone: `species`, `called`, `call_rate`
+    and `call_<group>` count every species' record, a transcriptome (source tsa) and EukDetect2's records
+    (no_assembly) with the assemblies, and a BUSCO a transcriptome misses is a gene not expressed (or not assembled),
+    not one the species lost. Further columns, the old ones as they were: `genomes` and `genome_call_rate` (the
+    species whose record is an assembly, searched for the locus; of them called), `genome_call_<group>` (per group
+    with such a species), `transcriptomes` and `transcriptome_call_rate`; `-` where there is none to rate. None
+    starts with `call_`: a reader takes those for the groups."""
     from . import groups  # noqa: PLC0415
     genomes = collected["genomes"]
     reps = {a: g for a, g in genomes.items() if g.get("representative") == "t"}
     group = {a: groups.group_of(ncbi, g["species_taxid"]) for a, g in reps.items()}
     names = sorted(set(group.values()))
+    kind = {a: {"tsa": "transcriptome", "no_assembly": "records"}.get(g.get("source"), "genome")
+            for a, g in reps.items()}
+    genome_names = sorted({group[a] for a in reps if kind[a] == "genome"})
+
+    def rate(n, of):
+        return f"{n / of:.3f}" if of else "-"
     by_locus = collections.defaultdict(list)
     for r in collected["copy_rows"]:
         if r["accession"] in reps:
@@ -567,8 +635,47 @@ def loci_rows(loci, collected, ncbi):
                    median_cds_length=median("cds_length"), median_protein_length=median("protein_length"))
         for name in names:
             row[f"call_{name}"] = f"{per_group[name] / max(sizes[name], 1):.3f}"
+        of = collections.Counter(kind[a] for a in searched)
+        got = collections.Counter(kind[r["accession"]] for r in called)
+        row.update(genomes=of["genome"], genome_call_rate=rate(got["genome"], of["genome"]),
+                   transcriptomes=of["transcriptome"],
+                   transcriptome_call_rate=rate(got["transcriptome"], of["transcriptome"]))
+        of = collections.Counter(group[a] for a in searched if kind[a] == "genome")
+        got = collections.Counter(group[r["accession"]] for r in called if kind[r["accession"]] == "genome")
+        for name in genome_names:
+            row[f"genome_call_{name}"] = rate(got[name], of[name])
         out.append(row)
-    return out, [f"call_{name}" for name in names]
+    return out, [f"call_{name}" for name in names] + ["genomes", "genome_call_rate", "transcriptomes",
+                                                      "transcriptome_call_rate"] + [f"genome_call_{name}"
+                                                                                    for name in genome_names]
+
+
+def unverified_alone(copy_rows, genomes, ncbi, set_of=None):
+    """The copies of tier `unverified` and, of them, those of a lone lineage (since 2026-11-10; the audit's B4) ->
+    {locus set: dict(copies, alone_in_family)}. A copy's own-species check passes only where a species of its family
+    (or genus) holds the locus as its nearest (qc.verdict); a species alone in its family among the package's
+    holders of the locus (its genus, where NCBI names it no family; neither: alone) has no one to agree with, and
+    its copies are `unverified` by the package's sampling, not by anything in them. The manifest's
+    `counts.copy_unverified`; release.stats' `unverified_alone`. genomes: {accession: row with species_taxid};
+    set_of: {locus: busco or markers}."""
+    cache, holders, unverified = {}, collections.defaultdict(set), []
+
+    def clade(sp):
+        if sp not in cache:
+            ranks = ncbi.rank_ids(sp)
+            cache[sp] = ranks.get("family") or ranks.get("genus")
+        return cache[sp]
+    for r in copy_rows:
+        sp = int(genomes[r["accession"]]["species_taxid"])
+        holders[(r["locus"], clade(sp))].add(sp)
+        if r.get("confidence") == "unverified":
+            unverified.append((r["locus"], sp))
+    out = {}
+    for locus, sp in unverified:
+        n = out.setdefault((set_of or {}).get(locus, "busco"), dict(copies=0, alone_in_family=0))
+        n["copies"] += 1
+        n["alone_in_family"] += clade(sp) is None or len(holders[(locus, clade(sp))]) < 2
+    return out
 
 
 def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None, organelle=None,
@@ -737,6 +844,8 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                            "marker_loci": sum(1 for s in set_of.values() if s == "markers"),
                            "copy_confidence": dict(collections.Counter(r["confidence"] for r in collected["copy_rows"]
                                                                        if r.get("confidence"))),
+                           # of the unverified, the lone lineages' (since 2026-11-10)
+                           "copy_unverified": unverified_alone(collected["copy_rows"], genomes, ncbi, set_of),
                            "rrna_confidence": dict(collections.Counter(row.get("confidence", "-")
                                                                        for _n, _s, row in rrna or ())),
                            "labels": {ref.lower(): dict(collections.Counter(r[f"{ref.lower()}_match"] for r in rows))

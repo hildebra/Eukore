@@ -32,7 +32,7 @@ worse tiers first):
   family or deeper), and nothing says something may be wrong;
 - `unverified`: nothing says something may be wrong, but its own-species check could not decide
   (`own_species_undecided`: no other species of its family near enough, often a protist lineage the package holds
-  few species of; for a published read, not made);
+  few species of; for a published read, no genome of its family; until 2026-11-10 a published read's was not made);
 - `medium`: something may be wrong (a fragment, a duplicate, a short span, an assembly gap, a contig's end, a stop
   inside its protein, a sequence shared with another clade's genome whose owner is undecided, ...);
 - `low`: a check calls it another organism's, or not the gene (a contaminant, a bacterium's or an organelle's SSU as
@@ -49,9 +49,10 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 | [`taxonomy/`](#taxonomy) | NCBI's taxonomy cut to the package; nuclear, mitochondrial and plastid genetic codes | codes: 5 |
 | [`species.tsv`](#speciestsv) | one row per species: its genome, supergroup and group, NCBI lineage (and filled), lineages in PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2, type material | 4, more in 5 |
 | [`crossrefs.tsv`](#crossrefstsv-format-5) | each species' ids in Open Tree, GBIF, WoRMS, IRMNG, Index Fungorum, UNITE (SH), BOLD (BIN) | 5 |
+| [`reference_screen.tsv`](#reference_screentsv-optional) | the records of the MIDORI2 files the build was given that are another organism's gene, a chimera, another gene, or doubtful (optional) | |
 | [`genomes.tsv`](#genomestsv) | each genome: accession, flags, rRNA copies, genetic code and its check, duplication, introns, type material, genome record, copies another clade's | 4, more in 5 and 6 |
 | [`copy_numbers.tsv.gz`](#copy_numberstsvgz-format-5) | each genome's copies of every BUSCO and marker locus, rRNA gene and unit, organelle molecule and gene; by reads where measured | 5 |
-| [`busco/loci.tsv`](#busco) | each BUSCO's call rate, overall and per group | 4 |
+| [`busco/loci.tsv`](#busco) | each BUSCO's call rate, overall and per group, and over the genomes alone | 4 |
 | [`busco/copies/`, `cds/`, `proteins/`](#busco) | each BUSCO's copies whole (introns and all), their coding sequences, their proteins | cds, proteins: 5 |
 | [`busco/copies.tsv`](#busco) | each copy's call, checks, confidence, internal stops, duplicated copies' identity, coding sequence check, how it was chosen | 4, more in 5 and 6 |
 | [`busco/features.tsv`](#busco) | each copy's exons, introns, frameshifts, masked runs, gaps | 4 |
@@ -74,7 +75,9 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
 references species.tsv's lineages come from (`references`: PR2's, EUKARYOME's, KSGP's version, file, MD5 and the
-species and genera it names), Eukore's marker set (`markers`, since 2026-11-07: `data/markers.tsv`'s, KOfam's
+species and genera it names; since 2026-11-10 MIDORI2's further `files` and its `screen`: the screen's version, the
+records screened and flagged, those called `misnamed`, `chimera`, `other_gene` and `weak`, and those `dropped`,
+`cut` and for `review`), Eukore's marker set (`markers`, since 2026-11-07: `data/markers.tsv`'s, KOfam's
 `ko_list`'s and the members table's MD5s, Swiss-Prot's release, NCBI's query scope and proteins fetched per marker, when
 it was built, and per marker its kind, members, cutoff and members dropped as foreign; `null` without one), ENA's list
 of TSA transcriptome sets (`tsa`, since 2026-11-07: its file, MD5, date fetched and sets; `null` without one or with
@@ -82,7 +85,9 @@ of TSA transcriptome sets (`tsa`, since 2026-11-07: its file, MD5, date fetched 
 `inputs.partial.species_clades` in a trial package limited to those clades, which a user
 should not take for Eukore), `counts` (species, species with rRNA alone, genomes, copies and their
 calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa, `busco_loci`, the
-copies' and records' confidence tiers, `labels`: per reference the species by how they matched; `metadata`: the rows of
+copies' and records' confidence tiers, `copy_unverified` (since 2026-11-10: per locus set the `unverified` copies and those
+`alone_in_family`: of a species no other species of whose family, or genus where NCBI names no family, holds the
+locus in the package), `labels`: per reference the species by how they matched; `metadata`: the rows of
 `metadata/ncbi.tsv.gz`, the genomes, those described, sketched, the organelle molecules, and the genomes by
 `genome_source` and `annotation_source`), `benchmarks` (the
 headline figures of `benchmarks/summary.json`, where the build measured them), and `files`: every file of the package
@@ -116,7 +121,7 @@ One row per NCBI species the package holds:
 | `ksgp`, `ksgp_match` | its lineage in KSGP (`k__` .. `s__`, as KSGP writes it; its eukaryote nuclear records) |
 | `silva`, `silva_match` | its lineage in SILVA's SSU Ref NR99 (138.2; format 5): its eukaryote records' path, of any depth, then the species (`Saccharomyces_cerevisiae`; the organism's first two words where they name one) |
 | `unite`, `unite_match` | its lineage in UNITE's general release of all eukaryotes (10.0, 2025-02-19; `k__` .. `s__`; format 5); its species hypotheses are in `crossrefs.tsv` |
-| `midori2`, `midori2_match` | its lineage in a MIDORI2 COI release (root;domain;phylum;class;order;family;genus;species), where the build was given one (`--midori2`; format 5): MIDORI2 names each record's NCBI taxid, so a species is found by it (`taxid`) before its name |
+| `midori2`, `midori2_match` | its lineage in a MIDORI2 release (root;domain;phylum;class;order;family;genus;species; a rank MIDORI2 does not give empty), where the build was given its COI file or several of its genes' (`--midori2`; format 5): MIDORI2 names each record's NCBI taxid, so a species is found by it (`taxid`) before its name. Since 2026-11-10 a record the reference screen drops ([`reference_screen.tsv`](#reference_screentsv-optional): another organism's gene, another gene) names no species |
 | `type_material` | NCBI's relation of its genome to the species' type material (`assembly from type material`, `assembly from synonym type material`, `assembly designated as neotype`, ...; `genomes.tsv`'s), `-` for none (format 5) |
 
 A species is found in a reference by name: `species` (NCBI's scientific name), `synonym` (one of NCBI's synonyms, an
@@ -138,6 +143,32 @@ Each species' ids in other taxonomies and databases, one row per id: `taxid` (th
 - `BOLD`: BOLD's BINs of the species' name or a synonym (`name`), where the build was given a BOLD data package
   (`--bold_tsv`; BOLD's bulk downloads need a login).
 
+## reference_screen.tsv (optional)
+Since 2026-11-10, where the build was given MIDORI2 files (`--midori2`) and has minimap2 and vsearch: the records of
+those files the reference screen calls (`eukore/refscreen.py`; [methods.md](methods.md#the-reference-screen-since-2026-11-10)),
+one row per record and gene file. A record with `action` `drop` names no species in `species.tsv`; the others do. A
+reader takes a package with or without the table. `tools/screen_reference.py` writes the same calls as KSGP's lists
+(`drop.tsv`, `trim.tsv`, `review.tsv`) and the files without the dropped records, for a user of MIDORI2 itself.
+
+| column | meaning |
+|---|---|
+| `reference` | `MIDORI2` |
+| `record` | the record's name in its file (`MG559732.1.<1.>690`: accession, version, span) |
+| `gene` | its file's gene, by the organelle genes' names (`COX1`, `CYTB`, `SSU`, `LSU`, ...; `organelle/genes.tsv`'s) |
+| `taxid`, `species_taxid` | the NCBI taxid MIDORI2 gives it; its species |
+| `length` | its bases |
+| `call` | `misnamed` (another clade's gene under its name: a contaminant, a misidentified specimen), `chimera` (a piece of another clade's gene in it), `other_gene` (another gene, whole or a piece), `weak` (doubtful: one of two records is misnamed and which is not told, or a piece that is not certain) |
+| `action` | `drop` (left out), `trim` (cut to `keep_start`-`keep_end`: its own part), `review` (kept as it is) |
+| `keep_start`, `keep_end` | the part kept of a cut record (1-based, inclusive), else `-` |
+| `clade` | the clade its sequence is another's: NCBI's first rank of phylum, class and order at which it parts from the record's (`order Lepidoptera`); the other gene of an `other_gene` |
+| `label_clade` | the record's own clade at that rank |
+| `identity` | the identity (%) of its nearest record of that clade (or gene), over a window of 300 bases |
+| `relatives`, `own_clade` | over the windows that clade claims: the mean identity of that clade's relatives (its second-best species under 97%), and of the record's own clade's nearest record; `-` for an `other_gene` |
+| `windows` | its windows (300 bases every 50) by what they are: `foreign`, `undecided`, `own`, `gene`, `none` |
+| `layout` | the stretches of windows in the record's order (`own:0-600 foreign:450-900`: 0-based starts and ends) |
+| `targets` | the records nearest its foreign stretches (RefSeq's as `<accession>_<gene>`, else MIDORI2's names) |
+| `reason` | the call in words |
+
 ## genomes.tsv
 The species' genomes and their other assemblies:
 
@@ -157,7 +188,7 @@ The species' genomes and their other assemblies:
 | `rdna_copies_reads`, `mt_copies_reads`, `pt_copies_reads` | optional (a package `tools/rdna_depth.py` has measured): rDNA units, mitochondrial and plastid genomes per haploid nuclear genome by its reads' depth (`depth.tsv`, rounded); `-` where not measured |
 | `local` | the genome's file in the build's kept genomes (`genomes/<accession>.fna.gz` beside the package), `-` where it is not kept |
 | `gencode` | NCBI's nuclear genetic code for its taxid, the table its BUSCO copies were called and are translated by (format 5) |
-| `duplicated_share`, `dup_identity_median`, `duplication` | of its BUSCOs called (Single or Duplicated) the share Duplicated; the median `dup_identity` of those; `haplotypes` (15% or more Duplicated, their copies 99.5% alike or more: an assembly holding both haplotypes of a diploid, or a recent hybrid), `wgd_or_polyploid` (15% or more Duplicated and less alike: a whole-genome duplication, a polyploid, an older hybrid), `low` (under 15%), `-` (under 20 BUSCOs called, or a genome run before 0.2). A heuristic: read it with the genome's size and the species' biology (format 5) |
+| `duplicated_share`, `dup_identity_median`, `duplication` | of its BUSCOs called (Single or Duplicated) the share Duplicated; the median `dup_identity` of those; `haplotypes` (15% or more Duplicated, their copies 99.5% alike or more: an assembly holding both haplotypes of a diploid, or a recent hybrid), `haplotigs` (since 2026-11-10: 15% or more Duplicated, 95% to under 99.5% alike, and a copy of them on a contig under a quarter of the Single copies' median contig far more often than a Single copy lies on one: an assembly not purged of the second haplotype of an outbred diploid; `wgd_or_polyploid` until then), `wgd_or_polyploid` (15% or more Duplicated, less alike than 99.5% and not `haplotigs`: a whole-genome duplication, a polyploid, an older hybrid, or two haplotypes of an outbred diploid assembled equally long, which identity and contig lengths do not tell from a recent polyploid), `low` (under 15%), `-` (under 20 BUSCOs called, or a genome run before 0.2). A heuristic: read it with the genome's size and the species' biology (format 5) |
 | `introns`, `introns_per_kb_cds`, `median_intron_length` | its BUSCO copies' introns (`busco/introns.tsv`): their number, per kb of the copies' coding sequence, their median length (format 5) |
 | `genome_record`, `foreign_copies`, `foreign_source` | what made its calls (Eukore's genome record, `genomes.GENOME_RECORD`: 1 for a run before 2026-11-09, 2 since; a build runs a genome of an older one again unless `--reversion` keeps its calls); its copies another clade's (`own_species` f); the NCBI taxid of those clades' lowest common ancestor, `-` (format 6) |
 | `gencode_check`, `gencode_codons`, `best_table` | its code checked against its BUSCO genes ([methods.md](methods.md)) on the codons nuclear codes are known to read otherwise (the stops TAA, TAG, TGA and CTG): `agrees`, `differs:<codon>><amino acid>,...` (NCBI's table reads them otherwise than the genes' conserved positions do), `undecided` (too few codons at conserved positions); of those four, the ones seen at 10 conserved positions or more (a stop at 5: under its own reading it is at none; a stop not seen is a stop; a CTG not seen is not judged: CTG-clade yeasts avoid it), `-` for none; the NCBI table that fits them best (NCBI's own where it fits as well; `-` where undecided). Every codon's evidence is `metadata/codons.tsv.gz` (format 5) |
@@ -200,7 +231,10 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 | `cutoff`, `hmm_length` | BUSCO's score cutoff, the length of its HMM |
 | `species` | species with a genome in the package searched for the locus (since 0.2.2: a genome run before a marker was added counts for it nowhere, not as one without it) |
 | `called`, `duplicated`, `fragmented` | species whose genome holds it complete (Single or Duplicated); of them Duplicated; species with a fragment alone |
-| `call_rate` | `called` over `species` |
+| `call_rate` | `called` over `species`: every record, transcriptomes too |
+| `genomes`, `genome_call_rate` | since 2026-11-10: the species searched whose record is a genome assembly (not a transcriptome, `tsa`, nor EukDetect2's records, `no_assembly`), and the share of them holding the locus complete; `-` for none |
+| `transcriptomes`, `transcriptome_call_rate` | since 2026-11-10: the species searched whose record is a transcriptome, and their share: a BUSCO a transcriptome misses is a gene not expressed, not one lost |
+| `genome_call_<group>` | since 2026-11-10: `genome_call_rate` within each group that has such a species |
 | `call_<group>` | the call rate within each group of the package's species (`species.tsv`'s `group`: Vertebrata, Metazoa, Fungi, Viridiplantae, Stramenopiles, Alveolata, Rhizaria, ...; until format 4 `call_<supergroup>` of its eleven supergroups, SAR one of them) |
 | `median_length`, `median_cds_length`, `median_protein_length` | of its complete copies |
 
@@ -215,10 +249,10 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 | column | |
 |---|---|
 | `accession`, `locus` | the copy |
-| `status` | `Single` (one complete copy in the genome), `Duplicated` (several: the best is the copy), `Fragmented` (its HMM alignment covers less than 80% of the profile) |
+| `status` | `Single` (one complete copy in the genome), `Duplicated` (several: the best is the copy), `Fragmented` (its HMM alignment covers less than 80% of the profile); the shipped model's: since 2026-11-10 a locus whose annotated or recovered model is complete is `Single` where miniprot's own was a fragment |
 | `contig`, `contig_length`, `start`, `end`, `strand` | where it lies in the assembly (1-based, inclusive) |
 | `length`, `cds_length`, `exons` | of the copy; of its coding sequence; its exons |
-| `identity`, `coverage` | miniprot's identity and the share of the query protein aligned |
+| `identity`, `coverage` | miniprot's identity and the share of the query protein aligned (of miniprot's own model also where `model` names an annotation: the annotated model is not aligned to the query) |
 | `hmm_score`, `cutoff`, `hmm_coverage` | its translation's score against the locus' BUSCO HMM, BUSCO's cutoff, the share of the profile aligned |
 | `copies` | complete copies of the locus in the genome |
 | `query` | the dataset protein that placed it (`<busco>_<taxid>_<id>`, or an ancestral variant; `<busco>_self` for the rescue pass' self protein) |
@@ -242,7 +276,9 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 A copy is `low` where a check calls it another organism's or not the locus: `own_species` (f), `fcs` (FCS-GX's EXCLUDE,
 TRIM or FIX), `window_prokaryote` (tiara's bacteria or archaea), `paralog` (format 6: a marker copy whose best profile
 is a decoy's, EFL called as EF-1a by a genome run before that decoy). It is `medium` where something may be wrong:
-`fragmented`, `duplicated`, `rescued` (the rescue pass': its span may fall short of the gene's ends), `length_short` or
+`fragmented`, `duplicated` (since 2026-11-10 not in a genome whose `duplication` is `haplotypes`, `haplotigs` or
+`wgd_or_polyploid`: two copies are that genome's truth, its `status` and `copies` still say so), `rescued` (the rescue
+pass': its span may fall short of the gene's ends), `length_short` or
 `length_long`, `gap`, `contig_edge` (under 1,000 bases), `window_organelle`, `fcs_review`, `transcript`, and since
 format 6 `internal_stops`, `cds_mismatch` and `cross_shared` (its sequence held by another clade's genome too, and
 neither clade's other species tell whose it is). It is `unverified` where none of these holds but `own_species` is `-`
@@ -314,12 +350,12 @@ manifest's `counts.marker_loci` the markers.
 | `taxid`, `species_taxid` | NCBI's |
 | `accession` | its genome (`-` for a published read without one) |
 | `source` | `genome`, `curated_unit`, `EUKARYOME`, `ROD` |
-| `regions` | `name:start-end,...` in order on the record: `18S`, `ITS1`, `5.8S`, `ITS2`, `28S`, and `5S` where a 5S lies in the same block (the unit as one stretch, on either strand: some protists' and fungi's repeats hold it; a tandem array's spacer 5S is one unit's, the one whose 28S it follows); a region not found is absent. A published read's record is the read on its unit's strand (reverse-complemented where its unit lies on -), its regions on it |
+| `regions` | `name:start-end,...` in order on the record: `18S`, `ITS1`, `5.8S`, `ITS2`, `28S`, and `5S` where a 5S lies in the same block (the unit as one stretch, on either strand: some protists' and fungi's repeats hold it; a tandem array's spacer 5S is one unit's, the one whose 28S it follows; of a unit's several the one after its 28S); a region not found is absent. A published read's record is the read on its unit's strand (reverse-complemented where its unit lies on -), its regions on it |
 | `length` | of the record |
 | `lsu_complete` | `t` where barrnap's 28S hit covers its whole model |
 | `ambiguous`, `homopolymer` | the share of non-ACGT bases; the longest one-base run |
 | `type` | its 99% 18S type within the species (`1`, `2`, ...) |
-| `own_species` | `t`, `f`, or `-`: whether its nearest records of other sources agree with its NCBI lineage to the family or deeper (a genome's contaminant rDNA fails; a genome's copies searched as one per 99% type, so that its own do not fill the hits; its own assembly's records in another source, ROD's, are its own: format 6), the owner of a shared 18S told as `busco/copies.tsv`'s |
+| `own_species` | `t`, `f`, or `-`: whether its nearest records of other sources agree with its NCBI lineage to the family or deeper (a genome's contaminant rDNA fails; a genome's copies searched as one per 99% type, so that its own do not fill the hits; its own assembly's records in another source, ROD's, are its own: format 6), `f` by the 18S' own rule (since 2026-11-10; until then `busco/copies.tsv`'s): 97% or more like species all of another class or phylum, its own clade's nearest record (the deepest of its family, order and class another record is of) 2 points or more under that, and the other clade's other species holding it nearer (or that species alone in its clade and its own clade holding nothing 90% like it); a lineage with no record of its class beside it only at 99.5% or more to another phylum's species whose clade holds it too. Of each species the best hit counts; the clades that tell the owner are searched alone where the first 32 hits held none; an 18S with introns is compared as its exons and as its span. A published read's (EUKARYOME's, ROD's; since 2026-11-10, until then `-`) against the genomes' records alone: its source's other reads, labelled by the same hand, vouch for nothing |
 | `screen` | the part screen's flags: `-`, or `part:rank,...`, each a part (`18S`, `junction`, `28S 5'`, `28S 3'`) whose nearest records of other genomes are another clade's at that rank (`kingdom` .. `family`) |
 | `label_from` | how its taxid was found: `assembly`, `rod_taxid`, `eukaryome_name`, `eukaryome_genus` |
 | `contig`, `start`, `end`, `strand` | a genome's record: where it lies in the assembly (1-based, inclusive; the 18S span's, or the unit's from its first region to its last); `-` for a published read |
@@ -327,7 +363,7 @@ manifest's `counts.marker_loci` the markers.
 | `introns` | the 18S's introns on the record (`18S:start-end,...`: the gaps between barrnap's 18S pieces), `-` for none; the 18S region spans them |
 | `gaps` | runs of 10 Ns or more in the record |
 | `confidence`, `flags` | `high`, `unverified`, `medium` or `low`, and why (below) |
-| `cross` | the species of another clade whose genome holds its 18S (as `busco/copies.tsv`'s; format 6) |
+| `cross` | the species of another clade whose record holds its 18S: an `f`'s source; an undecided record's other holder where its own clade's nearest 18S is 2 points or more under it or the two are 99.5% alike (format 6; the 18S' own rule since 2026-11-10) |
 | `ssu_model` | the SSU model of Rfam that scores its 18S best (cmsearch of the profile HMMs of RF01960 and RF02542, eukaryote, RF00177, bacteria, RF01959, archaea; a prokaryote model by 20 bits over the eukaryote's best): `eukarya`, `bacteria` or `archaea` (a bacterium's, a mitochondrion's or a plastid's SSU: `low`), `-` where none scored it or not measured (format 6) |
 
 A record is `low` where a check calls it another organism's or of bad sequence: `own_species` (f), `screen`,
@@ -335,8 +371,8 @@ A record is `low` where a check calls it another organism's or of bad sequence: 
 bacterial or archaeal SSU model, a bacterium's or an organelle's SSU). It is `medium` where something may be wrong:
 `gap`, `contig_edge` (under 1,000 bases), `lsu_partial` (an operon without a whole 28S), `genus_label` (a published read
 labelled by its genus alone), `cross_shared` (format 6). It is `unverified` where none of these holds but its
-own-species check is undecided or was not made, a published read's (`own_species_undecided`; `medium` until format 6).
-Else `high`.
+own-species check is undecided (`own_species_undecided`; `medium` until format 6; until 2026-11-10 every published
+read's, its check not made). Else `high`.
 
 An operon's spacers are its ITS1 and ITS2 (`regions`); the intergenic spacer between units is not taken (a unit runs
 from its 18S to its 28S, and its 5S where that lies in the same block). A 5S elsewhere in the genome (most animals' and
@@ -386,7 +422,7 @@ minicircle, chromatophore or cyanelle).
 | column | |
 |---|---|
 | `record` | its name: `<seqid>_<gene>` |
-| `gene` | `SSU` (12S in animals' mitochondria, 16S in plastids, 18S in plants' mitochondria, ...), `LSU` (16S in animals' mitochondria, 23S, 26S, ...), `5S`, `COX1`, `COX3`, `CYTB`, `nad1`, `nad5`, `atp6` (mitochondrion), `rbcL`, `matK`, `tufA`, `psbA`, `ycf1`, `trnH-psbA` (plastid) |
+| `gene` | `SSU` (12S in animals' mitochondria, 9S in kinetoplastids' maxicircles, 16S in plastids, 18S in plants' mitochondria, ...), `LSU` (16S in animals' mitochondria, 12S in kinetoplastids' since 2026-11-10, 23S, 26S, ...), `5S`, `COX1`, `COX3`, `CYTB`, `nad1`, `nad5`, `atp6` (mitochondrion), `rbcL`, `matK`, `tufA`, `psbA`, `ycf1`, `trnH-psbA` (plastid) |
 | `organelle` | `mitochondrion` (a kinetoplast too) or `plastid` (chloroplasts, apicoplasts, chromatophores, cyanelles and other plastids) |
 | `taxid`, `species_taxid` | NCBI's |
 | `source` | `refseq` (RefSeq's organelle genome, its annotated features) or `assembly` (the species' assembly: each gene by nhmmer with that gene of the 3 nearest RefSeq species, its exons joined; rRNA nhmmer misses by barrnap, `--kingdom mito` in animals' mitochondria, `bac` elsewhere) |
@@ -399,7 +435,7 @@ minicircle, chromatophore or cyanelle).
 | `partial` | `t` where RefSeq marks the feature partial, barrnap's hit is partial, or nhmmer's hits cover under 80% of the query's exons |
 | `ambiguous` | the share of non-ACGT bases |
 | `name` | its common name (format 5): an animal mitochondrion's `12S` and `16S`, a land plant mitochondrion's `18S` and `26S`, a plastid's `16S` and `23S`, else the gene |
-| `model` | where its exons come from (format 5): `refseq`, `miniprot` (the 3 nearest RefSeq species' proteins aligned by the organelle's code, where nhmmer joined several hits: a gene with introns; `--organelle_models`), `nhmmer`, `barrnap` |
+| `model` | where its exons come from (format 5): `refseq`, `miniprot` (the 3 nearest RefSeq species' proteins aligned by the organelle's code, where nhmmer joined several hits (a gene with introns) or, since 2026-11-10, its single hit is not the gene's coding sequence: it covers under 90% of its query, or holds more internal stops than miniprot's model; `--organelle_models`), `nhmmer`, `barrnap` |
 | `parts` | its exons on `seqid` in the order transcribed, `start-end:strand,...` (format 5), `-` where not known (nhmmer's hits joined) |
 | `trans_spliced` | `t` for a trans-spliced gene (its record its exons joined), else `f` (format 5) |
 | `regions` | the trnH-psbA record's parts on it, `psbA3':0-200,spacer:200-...,trnH:...` (0-based, end excluded), else `-` (format 5) |
@@ -533,12 +569,12 @@ array.
 | `platform`, `preset` | the run's (`ILLUMINA`, `PACBIO_SMRT`, `OXFORD_NANOPORE`) and minimap2's preset (`sr`, `map-hifi`, `map-pb`, `map-ont`) |
 | `reads`, `read_length` | reads mapped from, and the mean length of those that aligned |
 | `rdna_units_ref`, `rdna_ref_source` | the rDNA units mapped to (`rrna/records.tsv`'s records, one per 18S type), from the genome itself (`genome`) or the species' published operons (`published`) |
-| `sc_loci`, `sc_depth`, `sc_spread` | the single-copy BUSCOs measured (Single, confidence not low, no assembly gap), the median of their mean depths, and their interquartile range over that median |
+| `sc_loci`, `sc_depth`, `sc_spread` | the single-copy BUSCOs measured (Single, confidence not low, no assembly gap), the median of their exons' mean depths (since 2026-11-10; until then of the whole copies', introns and all: a young repeat in the introns of many BUSCOs raised it, and lowered every copy number divided by it), and their interquartile range over that median |
 | `rdna_depth` | the rDNA units' depths summed (each the median over its 18S, 5.8S and 28S) |
 | `rdna_copies_reads` | `rdna_depth` over `sc_depth`: rDNA units per haploid genome |
 | `rdna_18s_copies` | the same over the 18S alone |
 | `mt_genes`, `mt_copies_reads`; `pt_genes`, `pt_copies_reads` | the species' mitochondrial (plastid) records of `organelle/` measured, and the median of their depths over `sc_depth`: mitochondrial (plastid) genomes per haploid nuclear genome, in the tissue sequenced |
-| `flags` | `-`, or: `low_depth` (`sc_depth` under 3), `few_loci` (under 10), `spread` (`sc_spread` over 0.5), `uneven` (over a quarter of the BUSCOs under a fifth of their mean: reads of a few regions), `no_rdna_unit`, `no_single_copy`, `mt_at_rich`, `pt_at_rich` (the organelle's records 75% AT or more: short-read libraries cover them poorly, the number too low); `no_runs`, `not_measured`, `not_staged` for a genome without numbers |
+| `flags` | `-`, or: `low_depth` (`sc_depth` under 3), `few_loci` (under 10), `spread` (`sc_spread` over 0.5), `uneven` (over a quarter of the BUSCOs under a fifth of their mean: reads of a few regions), `no_rdna_unit`, `no_single_copy`, `mt_at_rich`, `pt_at_rich` (the organelle's records 75% AT or more: short-read libraries cover them poorly, the number too low); `no_runs`, `not_measured`, `not_staged` for a genome without numbers; `exons_over_gene` (since 2026-11-10: the exons' depth over 1.25 times the whole copies': reads of processed pseudogenes, `sc_depth` too high) |
 
 All values `-` where not measured. A number is one library's: libraries of one strain differed by up to 30% (README).
 
@@ -597,6 +633,15 @@ them). `genomes.tsv`'s
   and its flags `ssu_prokaryote` and `cross_shared`; `organelle/genes.tsv`'s `cross`, its `internal_stops` `medium`
   (until 6 `low`); `intraspecific/barcode_gap.tsv`'s `inter_rank`, `resolved` `t` against a congener alone. A reader
   of format 5 reads format 6 but for the tier `unverified`, which it may read as `medium`.
+- 2026-11-10, no new format (optional): `reference_screen.tsv` and the manifest's `inputs.references.MIDORI2.screen`
+  (and `files`), where the build was given MIDORI2 files; `species.tsv`'s `midori2` no longer names a species by a
+  record the screen drops. MIDORI2's later header layout (GB273's: a tab, every NCBI rank as `rank_Name_taxid`) is
+  read: until then such a file named no species (every `midori2` `-`). `rrna/records.tsv`'s `own_species` of a
+  published read (EUKARYOME's, ROD's) is made, against the genomes' records (until then `-`, the read `unverified`
+  at best), and an 18S relative under 90% no longer weighs for a clade. The 18S' `own_species` has its own rule (a lone
+  lineage's 18S undecided, a 2-point margin to its own clade, the clades searched alone), an 18S with introns is
+  compared as its exons too, an ITS1 of up to 4,500 bases is a unit's (3,000 until then), and a unit keeps the 5S
+  after its 28S.
 - 2026-11-06, no new format (optional, added to a built package): `depth.tsv`, `genomes.tsv`'s `rdna_copies_reads`,
   `mt_copies_reads` and `pt_copies_reads`, the manifest's `inputs.read_depth` (`tools/rdna_depth.py`). A reader
   takes a package with or without them.

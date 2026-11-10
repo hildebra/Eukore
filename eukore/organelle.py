@@ -46,6 +46,8 @@ SPACER = "trnH-psbA"
 CODING = tuple(g for g in GENES if g not in RRNA_GENES and g != SPACER)  # translated (cds.fna.gz, proteins.faa.gz)
 METAZOA = 33208
 EMBRYOPHYTA = 3193  # land plants: their mitochondrion's rRNA are 18S and 26S
+KINETOPLASTEA = 5653  # their maxicircle's rRNA are 9S (the small subunit's) and 12S (the large one's)
+KINETOPLASTID = "kinetoplastid"  # rrna_gene's `animal_mitochondrion` of a kinetoplastid (rrna_naming)
 NO_PLASTID = {METAZOA, 4751}  # animals, fungi
 COMPARTMENT = {"mitochondrion": "mito", "plastid": "plastid"}  # ncbi.code_of's
 TITLE = rrna.ORGANELLE_TITLE
@@ -54,6 +56,7 @@ NEAREST = 3                # RefSeq species whose gene is queried in an assembly
 MAX_EVALUE = 1e-10         # nhmmer's hits taken
 MAX_GENE = 40_000          # a gene's hits this close to its best are one gene (introns: a COX1's up to ~20 kb in fungi)
 MIN_COVER = 0.8            # of its query's exons a gene covers at least, else partial
+NHMMER_WHOLE = 0.9         # of its query nhmmer's single hit covers at least, else miniprot's model (with_miniprot)
 BARRNAP = {"mito": {"12S_rRNA": "SSU", "16S_rRNA": "LSU"},
            "bac": {"16S_rRNA": "SSU", "23S_rRNA": "LSU", "5S_rRNA": "5S"}}
 GENE_COLUMNS = ("record", "gene", "organelle", "taxid", "species_taxid", "source", "seqid", "accession", "start",
@@ -70,8 +73,11 @@ CACHE_COLUMNS = ("seqid", "organelle", "taxid", "record_length", "gene", "start"
 # What RefSeq's parsed genes (refseq_genes) and an assembly's search file (assembly_pass) were made by, part of their
 # keys since 2026-11-10: to be raised where record_genes', the searches' or the models' logic changes what they hold.
 # Until then (1, never written) a cache outlived such a change. 2: /pseudo, the longest feature, /codon_start,
-# /transl_table, the spacer across the origin. 3: /transl_except.
-CACHE_VERSION = 3
+# /transl_table, the spacer across the origin. 3 (2026-11-10), on two branches at once: /transl_except on one; on
+# the other a kinetoplastid's 12S its LSU (rrna_gene) and miniprot's model in place of nhmmer's single hit that is
+# not the gene's coding sequence (with_miniprot). 4: the two together, so that a cache either branch wrote is made
+# again.
+CACHE_VERSION = 4
 ASSEMBLY_COLUMNS = ("gene", "organelle", "seqid", "start", "end", "strand", "exons", "copies", "partial", "sequence",
                     "parts", "model")  # parts, model: since 2026-11-07
 
@@ -262,7 +268,11 @@ COX1_GENES = {"cox1", "coi", "co1", "coxi", "cox-1", "mt-co1", "mtco1", "cox1a"}
 
 def rrna_gene(text, animal_mitochondrion=False):
     """An rRNA feature's /gene and /product, lower case -> SSU, LSU, 5S or None (4.5S, unknown). "16S" is an animal
-    mitochondrion's LSU (its SSU is the 12S), elsewhere the SSU."""
+    mitochondrion's LSU (its SSU is the 12S), elsewhere the SSU. animal_mitochondrion is how the mitochondrion's rRNA
+    are numbered (rrna_naming): True in an animal and, since 2026-11-10, KINETOPLASTID in a kinetoplastid, whose
+    maxicircle's 12S is the LARGE subunit's rRNA and whose 9S is the small one's. Until then both were read as the
+    SSU: the species' "SSU" was its 12S (the longer feature of the two, `copies` 2) and it held no LSU (RefSeq's
+    NC_000894, Leishmania tarentolae: its "SSU" the 12S of 1,173 bases)."""
     if SMALL.search(text):
         return "SSU"
     if LARGE.search(text):
@@ -275,7 +285,8 @@ def rrna_gene(text, animal_mitochondrion=False):
         return "5S"
     if s < 9:
         return None
-    if s == 16 and animal_mitochondrion:
+    kinetoplastid = animal_mitochondrion == KINETOPLASTID
+    if (s == 12 and kinetoplastid) or (s == 16 and animal_mitochondrion and not kinetoplastid):
         return "LSU"
     return "SSU" if s < 20 else "LSU"
 
@@ -500,6 +511,15 @@ def is_animal(ncbi, taxid):
     return taxid is not None and METAZOA in ncbi.ancestors(ncbi.merged.get(taxid, taxid))
 
 
+def rrna_naming(ncbi, taxid):
+    """How a taxon's mitochondrial rRNA are numbered, as rrna_gene reads it (record_genes' `animal`, which hands it on
+    for a mitochondrion's features): KINETOPLASTID under Kinetoplastea (since 2026-11-10: their 12S is the LSU), else
+    whether it is an animal (its 16S is the LSU), as until then."""
+    if taxid is not None and KINETOPLASTEA in ncbi.ancestors(ncbi.merged.get(taxid, taxid)):
+        return KINETOPLASTID
+    return is_animal(ncbi, taxid)
+
+
 def table_of(row, ncbi):
     """The genetic code a gene's coding sequence is read by: its RefSeq CDS's own /transl_table where it names one of
     gencode's tables (since 2026-11-10: the code its annotation was made with; until then never read), else NCBI's
@@ -547,7 +567,7 @@ def refseq_genes(src_dir, work_folder, ncbi, log=print):
             for path in files:
                 organelle = "mitochondrion" if os.path.basename(path).startswith("mitochondrion") else "plastid"
                 for rec in gbff_records(path):
-                    genes = record_genes(rec, organelle, is_animal(ncbi, rec["taxid"]))
+                    genes = record_genes(rec, organelle, rrna_naming(ncbi, rec["taxid"]))
                     for gene, g in genes.items():
                         row = (rec["seqid"], organelle, rec["taxid"] or "-", rec["length"], gene, g["start"], g["end"],
                                g["strand"], g["exons"], g["copies"], "t" if g["partial"] else "f", g["sequence"],
@@ -750,7 +770,9 @@ def nhmmer_genes(molecules, queries, nhmmer, threads=1):
         out[gene] = dict(gene=gene, organelle=organelle, seqid=best["target"], start=start, end=end,
                          strand=best["strand"], exons=len(same), copies=1, partial=len(covered) < MIN_COVER * q_len,
                          sequence=subsequence(seq, start, end, best["strand"]),
-                         parts=f"{start}-{end}:{best['strand']}" if len(same) == 1 else "-", model="nhmmer")
+                         parts=f"{start}-{end}:{best['strand']}" if len(same) == 1 else "-", model="nhmmer",
+                         # not a column of the search file: the share of its query the hits cover (with_miniprot)
+                         cover=len(covered) / max(1, q_len))
     return out
 
 
@@ -796,7 +818,11 @@ def across_origin(hits, length):
 def gene_span(chain, strand, q_len, length):
     """A gene's (start, end) on its molecule, 1-based, from its chained hits (collinear's; coordinates beyond the
     molecule where the chain crosses its origin), reaching the query's ends the hits leave out: start after end where
-    it crosses the origin (subsequence joins it), else clipped to the molecule."""
+    it crosses the origin (subsequence joins it), else clipped to the molecule. The ends are reached however far
+    (the audit's B2 proposed a few codons at most; measured 2026-11-10 on 190 RefSeq organelle genomes searched as
+    assemblies, with_miniprot: of 642 genes without introns 426 came out exact and 86 over 6 codons off; with the
+    ends reached by 9 bases at most, 401 and 117, by none where over 9, 400 and 129 - nhmmer's local hits stop
+    short of a diverged end, and the query's length is the better guess of where the gene ends)."""
     q_first, q_last = min(h["q1"] for h in chain), max(h["q2"] for h in chain)
     start, end = min(h["start"] for h in chain), max(h["end"] for h in chain)
     lead, tail = q_first - 1, q_len - q_last  # the query's ends the hits leave out: the gene reaches them
@@ -819,7 +845,7 @@ def search_key(organelle, animal, queries, proteins, code, models):
     kingdom = "mito" if animal and organelle == "mitochondrion" else "bac"
     by_miniprot = (sorted(proteins.items()), code) if models == "miniprot" else ()
     text = repr((CACHE_VERSION, organelle, GENES_OF[organelle], kingdom, models, list(queries), by_miniprot,
-                 MAX_EVALUE, MAX_GENE, MIN_COVER, MAX_MOLECULE))
+                 MAX_EVALUE, MAX_GENE, MIN_COVER, MAX_MOLECULE, NHMMER_WHOLE))
     return hashlib.md5(text.encode()).hexdigest()[:10]
 
 
@@ -850,17 +876,52 @@ MODELS = ("nhmmer", "miniprot")  # the assembly pass' protein-coding gene models
 SAVED = "organelle.fna.gz"  # metadata.ORGANELLE: a genome's organelle molecules its scan kept
 
 
-def with_miniprot(found, models):
+def stops_of(row, table):
+    """The internal stops of a searched gene's coding sequence as the package will read it (coding_of: miniprot's
+    exons joined, nhmmer's single hit whole) by the organelle's genetic code, or None where it ships none (an rRNA,
+    nhmmer's hits joined, a gene across the origin, a row without its sequence)."""
+    cds = coding_of(row, row["sequence"]) if row.get("sequence") else None
+    return gencode.protein_of(cds, table)[1] if cds else None
+
+
+def single_hit_off(mine, model, table):
+    """Whether nhmmer's single hit of a gene (mine) is not the gene's coding sequence, by what miniprot's whole model
+    of it (model) shows: the hit covers under NHMMER_WHOLE of its query (a gene with introns whose other exons stay
+    below nhmmer's threshold: gene_span reaches for the query's ends into the intron), or, read as the coding
+    sequence it would ship as, it holds more internal stops by the organelle's code than miniprot's model (an end
+    reached out of frame or beyond the gene's stop, an intron inside the hit)."""
+    if mine.get("cover", 1.0) < NHMMER_WHOLE:
+        return True
+    hit, exons = stops_of(mine, table), stops_of(model, table)
+    return hit is not None and exons is not None and hit > exons
+
+
+def with_miniprot(found, models, table=1):
     """nhmmer's (and barrnap's) genes of an organelle and miniprot's models of its protein-coding genes -> the genes
     taken: miniprot's where nhmmer joined several hits (a gene with introns: its exons unknown) and miniprot aligned the
     whole protein, or where nhmmer found none; nhmmer's single hit kept. tools/organelle_models.py on 100 RefSeq
     records of each organelle (2026-11-07), each searched as an assembly against RefSeq's own exons: with introns,
     miniprot's exons reach a median F1 of 0.96-0.99, nhmmer's joined hits 0.27-0.60; without, both 1.00, nhmmer's ends
-    exact more often (COX3 67 of 86 genes, miniprot's 46)."""
+    exact more often (COX3 67 of 86 genes, miniprot's 46).
+    Since 2026-11-10 (the audit's B2) miniprot's whole model also replaces nhmmer's single hit where that hit is not
+    the gene's coding sequence (single_hit_off; table: the organelle's genetic code). Until then every single hit was
+    kept: also one exon of a gene with introns, reached to the query's length into the intron and shipped as the
+    coding sequence, and a hit of a gene without introns whose end was reached out of frame or past its stop.
+    Measured 2026-11-10 on 190 RefSeq organelle genomes (95 fungal, plant and protist mitochondria rich in introns,
+    40 animal ones, 55 plastids), each run through run_assembly with its own species' records left out of the
+    queries (in brackets: its genus'), 973 protein-coding genes against RefSeq's exons. Of 331 genes with introns 24
+    were such a single hit (21 holding 30 to 599 intron bases, 14 without a flag), now 14 (13: miniprot aligns
+    them in part, or RefSeq's exons are in doubt). Of 642 genes without introns the coding sequence was RefSeq's
+    exactly in 426 (361), now 431 (366); over 6 codons off in 86 (104), now 76 (95); with internal stops RefSeq's
+    has not in 59 (87), now 9 (11) - with introns in 52 (54), now 43 (43). 70 (97) rows changed: 22 (25) came
+    nearer to RefSeq's, 3 (6) went from within 6 codons to beyond. The share of the query alone (the audit's rule)
+    left 51 (74) of the 59 (87) with stops; miniprot's model always lost exact ends (426 to 418; animals 156 to
+    141), as tools/organelle_models.py had found."""
     out = dict(found)
     for gene, row in models.items():
         mine = out.get(gene)
-        if mine is None or (str(mine.get("exons")) != "1" and not row["partial"]):
+        if mine is None or (not row["partial"] and (str(mine.get("exons")) != "1"
+                                                   or single_hit_off(mine, row, table))):
             out[gene] = row
     return out
 
@@ -870,7 +931,8 @@ def run_assembly(args):
     Nearest.queries}, barrnap, nhmmer, threads, and since 2026-11-07 proteins {organelle: Nearest.proteins}, codes
     {organelle: genetic code}, miniprot or None) into its out file (ASSEMBLY_COLUMNS; written, even empty, once done)
     -> (accession, genes, why). nhmmer's genes first; barrnap's rRNA where nhmmer found none; with miniprot, its
-    models of the protein-coding genes nhmmer found in several hits (with_miniprot)."""
+    models of the protein-coding genes nhmmer found in several hits, or (since 2026-11-10) in a single hit that is not
+    the gene's coding sequence (with_miniprot)."""
     acc, path, out, animal, queries, barrnap, nhmmer, threads, *more = args
     proteins, codes, miniprot = more if more else ({}, {}, None)
     try:  # the molecules metadata.describe kept (since 2026-11-08), else the genome read again
@@ -885,7 +947,8 @@ def run_assembly(args):
                 found.setdefault(gene, dict(row, copies=copies))
             if miniprot:
                 found = with_miniprot(found, miniprot_genes(group, proteins.get(organelle, {}), miniprot,
-                                                            codes.get(organelle, 1), threads))
+                                                            codes.get(organelle, 1), threads),
+                                      codes.get(organelle, 1))
             rows += found.values()
     except (OSError, EOFError, RuntimeError) as e:
         return acc, None, f"{type(e).__name__}: {e}"

@@ -2,7 +2,8 @@
 """Tests of eukore/depth.py and tools/rdna_depth.py (read-depth copy numbers, since 2026-11-06): which alignments
 count; per-base depth over a target's interior; the run taken of a genome's runs (curated, its BioSample's, its
 strain's; WGS of genomic DNA, Illumina first); the rDNA units and single-copy BUSCOs mapped to; the first reads of a
-stream; the copy numbers and their flags; and, where minimap2 is on PATH, a small genome with 40 rDNA units and 30
+stream; the copy numbers and their flags; a BUSCO's depth over its exons, a repeat in its introns left out (since
+2026-11-10, a stand-in for minimap2); and, where minimap2 is on PATH, a small genome with 40 rDNA units and 30
 mitochondria per haploid genome measured from its simulated reads end to end (staged reads mapped, depth.tsv, the
 package's genomes.tsv and manifest).
 
@@ -271,6 +272,106 @@ class EstimateTest(unittest.TestCase):
     def test_gc(self):
         self.assertEqual(dp.gc("ATGCnnAT"), 1 / 3)
         self.assertEqual(dp.gc("NNN"), 0.0)
+
+
+class ExonDepthTest(unittest.TestCase):
+    """The 2026-11-10 audit's B6, the simulation's core case (~/eukore-sim/depth/sim_depth.py) with a stand-in for
+    minimap2: 20 single-copy genes of 3 kb (three exons of 400 bases), each with a repeat of 600 bases in its first
+    intron; 100 copies of the repeat elsewhere in the genome; 30 rDNA units; reads of 150 bases at 20x from all of
+    it. A read from a repeat's copy elsewhere maps to an intron's copy (whole where it lies inside the repeat; clipped
+    inside the target, and not counted, where it runs over the repeat's end)."""
+
+    GENES, COPIES, UNITS, DEPTH, READ = 20, 100, 30, 20, 150
+    EXONS, REPEAT, GENE, UNIT = ((0, 400), (1600, 2000), (2600, 3000)), (700, 1300), 3000, 7000
+    REGIONS = "18S:0-1800,ITS1:1800-2100,5.8S:2100-2260,ITS2:2260-2500,28S:2500-6000"
+
+    def setUp(self):
+        rng = random.Random(11)
+        self.tmp = tempfile.mkdtemp()
+        pkg = self.pkg = os.path.join(self.tmp, "Eukore_test")
+        for sub in ("rrna", "busco/copies"):
+            os.makedirs(os.path.join(pkg, sub))
+        self.loci = [f"{i}at2759" for i in range(self.GENES)]
+        with open(os.path.join(pkg, "busco", "copies.tsv"), "w") as fh:
+            fh.write("accession\tlocus\tstatus\tconfidence\tflags\n")
+            fh.writelines(f"GCA_9.1\t{locus}\tSingle\thigh\t-\n" for locus in self.loci)
+        with open(os.path.join(pkg, "busco", "features.tsv"), "w") as fh:
+            fh.write("accession\tlocus\tkind\tstart\tend\n")
+            for locus in self.loci[:-1]:  # the last copy's exons are not named: measured whole, as before
+                fh.writelines(f"GCA_9.1\t{locus}\texon\t{a}\t{b}\n" for a, b in self.EXONS)
+                fh.write(f"GCA_9.1\t{locus}\tintron\t400\t1600\nGCA_8.1\t{locus}\texon\t0\t3000\n")
+        for locus in self.loci:
+            with gzip.open(os.path.join(pkg, "busco", "copies", f"{locus}.fna.gz"), "wt") as fh:
+                fh.write(f">GCA_9.1\n{rand_seq(rng, self.GENE)}\n")
+        with open(os.path.join(pkg, "rrna", "records.tsv"), "w") as fh:
+            fh.write("record\tkind\taccession\tspecies_taxid\ttype\tconfidence\tlsu_complete\tlength\tregions\n")
+            fh.write(f"U\trDNA\tGCA_9.1\t4932\t1\thigh\tt\t{self.UNIT}\t{self.REGIONS}\n")
+        with gzip.open(os.path.join(pkg, "rrna", "records.fna.gz"), "wt") as fh:
+            fh.write(f">U\n{rand_seq(rng, self.UNIT)}\n")
+        self.rng = rng
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def reads_of(self, target, length, a, b, inside):
+        """PAF lines of reads at uniform starts over a target's stretch a-b, at DEPTH: aligned where they overlap it;
+        inside: the stretch lies inside the target (a repeat's copy elsewhere: a read over its end is clipped there),
+        else it is the whole target (a read over its end runs on into the genome)."""
+        n, read = int(self.DEPTH * (b - a + self.READ - 1) / self.READ), self.READ
+        for _ in range(n):
+            s = self.rng.randrange(a - read + 1, b)
+            ts, te = max(s, a), min(s + read, b)
+            qs = ts - s
+            self.count += 1
+            yield paf(f"r{self.count}", read, qs, qs + te - ts, "+", target, length, ts, te) + "\n"
+
+    def mapper(self, *_args, retrocopies=0):
+        self.count = 0
+        for locus in self.loci:
+            yield from self.reads_of(f"busco|{locus}", self.GENE, 0, self.GENE, False)
+            for _copy in range(0 if retrocopies else self.COPIES // self.GENES):  # the repeat's copies elsewhere
+                yield from self.reads_of(f"busco|{locus}", self.GENE, *self.REPEAT, True)
+            for _copy in range(retrocopies):  # a processed pseudogene: the exons joined, a read over a junction clipped
+                for a, b in self.EXONS:
+                    yield from self.reads_of(f"busco|{locus}", self.GENE, a, b, True)
+        for _unit in range(self.UNITS):
+            yield from self.reads_of("rdna|U", self.UNIT, 0, self.UNIT, False)
+
+    def test_exons_of_the_copies_wanted(self):
+        seqs, meta, _info = dp.reference(self.pkg, "GCA_9.1", 4932)
+        self.assertEqual(len(seqs), self.GENES + 1)
+        self.assertEqual(meta["busco|0at2759"], ("busco", list(self.EXONS), []))
+        self.assertEqual(meta[f"busco|{self.loci[-1]}"], ("busco", [(0, self.GENE)], []))  # no exons named: whole
+        self.assertEqual(dp.exons_of(os.path.join(self.pkg, "busco", "none.tsv"), {("GCA_9.1", "0at2759")}), {})
+
+    def test_a_repeat_in_the_introns_does_not_raise_the_single_copy_depth(self):
+        from unittest import mock  # noqa: PLC0415
+        with mock.patch.object(dp, "minimap2_paf", self.mapper):
+            got, rows = dp.measure(self.pkg, {"accession": "GCA_9.1", "species_taxid": "4932"},
+                                   os.path.join(self.tmp, "reads.fq.gz"), "sr", folder=self.tmp)
+        self.assertEqual((got["sc_loci"], got["sc_exon_loci"], got["flags"]), (self.GENES, self.GENES - 1, "-"))
+        self.assertAlmostEqual(got["sc_depth"], self.DEPTH, delta=self.DEPTH * 0.1)
+        self.assertAlmostEqual(got["rdna_copies_reads"], self.UNITS, delta=self.UNITS * 0.1)
+        self.assertAlmostEqual(got["rdna_18s_copies"], self.UNITS, delta=self.UNITS * 0.1)
+        # until 2026-11-10 the mean over the gene with its introns: five more copies' reads on 600 of its 2,800
+        # bases, the depth 1.8 times too high and the rDNA copies as much too low
+        self.assertGreater(got["sc_depth_gene"], 1.6 * self.DEPTH)
+        self.assertLess(got["rdna_depth"] / got["sc_depth_gene"], 0.65 * self.UNITS)
+        depths = {t: d for t, _kind, _length, _gc, d in rows}
+        self.assertGreater(depths[f"busco|{self.loci[-1]}"], 1.6 * self.DEPTH)  # the copy measured whole
+        self.assertAlmostEqual(depths["busco|0at2759"], self.DEPTH, delta=self.DEPTH * 0.3)
+
+    def test_processed_pseudogenes_of_most_genes_are_flagged(self):
+        # the exons' own repeat: three young processed pseudogenes of every gene raise the exons' depth, and above
+        # the whole copies' (a repeat in the introns does the reverse): not mended, flagged
+        import functools  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with mock.patch.object(dp, "minimap2_paf", functools.partial(self.mapper, retrocopies=3)):
+            got, _rows = dp.measure(self.pkg, {"accession": "GCA_9.1", "species_taxid": "4932"},
+                                    os.path.join(self.tmp, "reads.fq.gz"), "sr", folder=self.tmp)
+        self.assertGreater(got["sc_depth"], dp.EXONS_OVER * got["sc_depth_gene"])
+        self.assertGreater(got["sc_depth"], 1.5 * self.DEPTH)
+        self.assertEqual(got["flags"], "exons_over_gene")
 
 
 MINIMAP2 = os.environ.get("EUKORE_MINIMAP2") or shutil.which("minimap2")

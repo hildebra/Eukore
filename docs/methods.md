@@ -61,7 +61,9 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
      now 62; *Bodo saltans* 62, now 77; *Galdieria* 105, now 112). Until 2026-11-06 each alignment was also given
      the next one's translation (miniprot writes it first), so that the HMM checked a neighbour's protein: earlier
      calls, the trial packages' among them, are not to be trusted.
-   - A locus is Single, Duplicated (the best copy taken), Fragmented (under 80% of the profile) or Missing.
+   - A locus is Single, Duplicated (the best copy taken), Fragmented (under 80% of the profile) or Missing. The
+     share is the union of every domain hmmsearch reports: counting only domains of E-value 1e-3 or less was
+     measured (2026-11-10) and called whole genes fragments (27 of 27 shifts judged by OrthoDB's own models).
    - **The rescue pass** (since 2026-11-06; `--no_rescue` leaves it out). In a genome far from every dataset species,
      miniprot finds no seed for many genes with the distant proteins: *Blastocystis hominis* called without its own
      proteins lost 27 of the 98 BUSCOs OrthoDB annotates in it (its genes compact, its introns ~30 bases), though its
@@ -137,7 +139,8 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
 - **Checks**, each a column of `rrna/records.tsv`:
   - ambiguous bases and homopolymers;
   - the 99% 18S type within the species;
-  - `own_species`, against the package's other sources;
+  - `own_species`, against the package's other sources; a published read's against the genomes' records alone
+    (since 2026-11-10: until then not made, its label taken as its source gave it);
   - the part screen (`eukore/screen.py`, `screen`): a record whose 18S, junction or 28S half is another organism's,
     by the nearest records of other genomes on NCBI's lineages (a contaminant contig, a mosaic, a chimeric read).
 
@@ -224,7 +227,9 @@ So that a user (protal's build) has what it needs without computing it again:
 - **Duplication** (`loci.dup_identity`, `package.duplication_of`). Each Duplicated BUSCO's other complete copies are
   kept by the run, and vsearch measures the nearest one's identity to the chosen copy (`dup_identity`). A genome with
   many duplicated BUSCOs whose copies are 99.5% alike holds both haplotypes of a diploid (or a recent hybrid); less
-  alike, a whole-genome duplication or a polyploid (`genomes.tsv`'s `duplication`). The thresholds are a heuristic.
+  alike, an outbred diploid's second haplotype where the copies lie on contigs far shorter than the Single copies'
+  (`haplotigs`, since 2026-11-10), else a whole-genome duplication or a polyploid, or two haplotypes assembled
+  equally long (`genomes.tsv`'s `duplication`). The thresholds are a heuristic.
 
 ## Organelle genes, format 5 (since 2026-11-07)
 
@@ -236,7 +241,13 @@ So that a user (protal's build) has what it needs without computing it again:
 - **Exons in assemblies** (`--organelle_models`, default `miniprot`). miniprot aligns the 3 nearest RefSeq species'
   proteins to the assembly's organelle molecules by the species' organelle code (`taxonomy/nodes.tsv`'s mgcode,
   pgcode). Where nhmmer joined several hits (a gene with introns, its exons otherwise unknown) and miniprot aligns the
-  whole protein, miniprot's model is taken; nhmmer's single hit is kept (`organelle.with_miniprot`). The rule is
+  whole protein, miniprot's model is taken, and (since 2026-11-10) also where nhmmer's single hit is not the
+  gene's coding sequence: it covers under 90% of its query (one exon of a gene with introns, reached into the
+  intron), or, read as a coding sequence, it holds more internal stops by the organelle's code than miniprot's model
+  (an end reached out of frame or past the stop); otherwise nhmmer's single hit is kept
+  (`organelle.with_miniprot`). Measured on 190 RefSeq organelle genomes searched as assemblies (973 genes): genes
+  without introns shipped with internal stops fell from 59 to 9, intron genes shipped as one hit from 24 to 14;
+  capping how far an end is reached was measured too and made the intron-free control worse. The rule is
   measured (`tools/organelle_models.py`, 2026-11-07): 100 RefSeq records of each organelle, each searched as an
   assembly with its own species' records left out of the queries, against RefSeq's own exons:
 
@@ -286,6 +297,8 @@ So that a user (protal's build) has what it needs without computing it again:
   KSGP, by the same name match. `crossrefs.tsv`: Open Tree Taxonomy 3.7.3's taxon of each species found by its NCBI
   taxid (no name matched), and the GBIF, WoRMS, IRMNG and Index Fungorum ids Open Tree gives it; UNITE's SH codes and,
   given a BOLD data package, BOLD's BINs by name.
+- **The reference screen** (since 2026-11-10): MIDORI2's records are screened before they name species; see
+  [below](#the-reference-screen-since-2026-11-10).
 - **Type material.** NCBI's `relation_to_type_material` of each genome (`genomes.tsv`, `species.tsv`); the genome
   ranking does not use it.
 
@@ -470,3 +483,96 @@ of frame shipped as `high`, the true owner of a contaminant's sequence called an
   out (a contaminant's codons are its own code's); the barcode gap's `resolved` is `t` against a congener alone
   (`inter_rank`; until 2026-11-09 `t` where the package held no congener of the species) and its pairs align over 80%
   of their query.
+
+## The reference screen (since 2026-11-10)
+
+KSGP 4.5 and 5.2 found records in their 16S and 18S that hold pieces of two phyla's genes, or another phylum's gene
+under a name (`chimera_screen.py`: windows against GTDB genomes' 16S). MIDORI2, the mitochondrial reference the build
+can name species by (`--midori2`), takes GenBank's records as they are named, so it carries such records too: a
+contaminant's COI under its host's name, a specimen misidentified across orders, two genes joined. The same screen,
+on NCBI's lineages and for any gene (`eukore/refscreen.py`), runs on MIDORI2's files before they name species; a
+record it drops names none (`species.tsv`'s `midori2`), and `reference_screen.tsv` lists every call.
+`tools/screen_reference.py` writes the calls as KSGP's lists (`drop.tsv`, `trim.tsv`, `review.tsv`) and the files
+screened, for a user of MIDORI2 itself.
+
+- **Windows and references.** Each record is cut into 300-base windows (every 150 bases in the first pass, every 50
+  in the check). They are set beside RefSeq's organelle genes (trusted: curated genomes, every gene of them, so that
+  another gene shows) and one record of each other species of the files (its longest).
+- **First pass** (minimap2 `asm20`): a record is flagged where a window is 95% or more identical to a record of
+  another gene or of a species NCBI's lineage parts from its own at the order or above (the first of phylum, class,
+  order both name and differ in).
+- **The check.** Each window's copies (97% or more; minimap2) and relatives (80% or more; vsearch), and, where a
+  window looks another clade's, its own clade's records searched alone (a large clade's relatives fill a search's
+  hits). A window is claimed by another clade where a record of it is a copy and 5 points nearer than the window's own
+  clade's nearest record; nearer than that, a window tells the two clades apart no better than a conserved stretch
+  does (plants' mitochondrial genes are 97-100% alike across orders).
+- **Whose a sequence is.** A copy does not say: the copy may be the misnamed record, and so may several copies be (a
+  batch of contaminated specimens are copies of their source under wrong names; KSGP's second-genome rule). A clade
+  holds a sequence where it holds relatives of it: the other clade's second-best species under 97% (a RefSeq record
+  counting as two) against the record's own clade's nearest record, averaged over the consecutive windows the clade
+  claims (single windows' relatives at 80-90% differ by chance). 3 points nearer, and no third clade holding half the
+  windows about as well, the stretch is foreign; 3 points the other way, it is the record's own (the copy is the
+  misnamed one); else undecided.
+- **Calls.** A foreign stretch of 2 windows or more (or one at 99%) is certain. With 2 windows of its own clade or
+  more the record is a `chimera`, cut to its longest own part where 300 bases stay, else dropped; without, `misnamed`
+  and dropped where the stretches are half its windows or more. Another gene's windows (RefSeq's other gene 5 points
+  nearer than any of its own gene) make `other_gene` alike. Undecided stretches and uncertain pieces are `weak`: kept,
+  listed for review.
+- **What it does not see.** Clades NCBI does not part at the order or above (a misidentified congener, a chimera of
+  two species of one order); a contaminant of a clade the references hold no relatives of; a batch of contaminated
+  specimens under several names of the record's own clade.
+
+On MIDORI2 GB273's LONGEST files of COI, CYTB, lrRNA and srRNA (511,981 records; RefSeq's organelle release of
+2026-11-06; 2026-11-10, ~2 hours on 6 cores):
+
+| gene | records | misnamed | chimera (cut) | other gene (cut) | for review |
+|---|---|---|---|---|---|
+| COX1 | 242,986 | 118 | 11 (9) | 6 (1) | 98 |
+| CYTB | 71,358 | 29 | 12 (11) | 1 | 32 |
+| lrRNA | 119,217 | 52 | 9 (7) | 3,768 (242) | 205 |
+| srRNA | 78,420 | 75 | 19 (12) | 173 (95) | 100 |
+
+3,896 records are dropped and 377 cut. Most of the drops are one fault of MIDORI2's: 9,185 records sit in both its
+srRNA and its lrRNA file, and of their lrRNA copies 3,367 are SSU by RefSeq's genes (98-100% to a RefSeq SSU; their
+srRNA copies pass), mostly fungal mitochondrial SSU, the barcode of Agaricomycetes (1,299) and Lecanoromycetes
+(1,084), and plants'. The misnamed COI are of the kinds the screen is for: a Coleoptera record that is a hemipteran's
+COI, Lepidoptera records that are dipterans', arthropods' that are vertebrates', a fish's that is a
+cichlid's; the chimeras mostly long records whose one end is another phylum's or order's (an arthropod COI ending in a
+vertebrate's, a rodent COI starting as an artiodactyl's).
+
+Checked with records planted in the COI file (200 records' genes under the name of a species of another order, 200
+records whose second half is another order's record's; 2026-11-10): of the misnamed, 170 dropped (162 `misnamed`, 8
+`chimera`), 28 for review, 2 not flagged; of the chimeras, 104 caught (80 cut, the cut a median 29 bases from the
+join; 24 dropped), 55 for review, 41 not (the other record's second half often covers another stretch of the gene,
+which the record's windows do not meet). None of the 800 records the planted ones were made from was dropped, nor
+any record the screen of the file alone keeps: the true owner of a sequence is not taken for its contaminant.
+
+### The other sequences Eukore takes in
+
+Which other outside sequences go into the package, and what checks them (2026-11-10):
+
+| sequences | used as | checked by |
+|---|---|---|
+| EUKARYOME 2.1's long reads, ROD v1.2's operons | `rrna/records`, by their own labels | the part screen (`screen`) and, since 2026-11-10, `own_species` against the genomes' 18S |
+| MIDORI2's files (`--midori2`) | names of species (`species.tsv`) | the reference screen above |
+| NCBI's and Swiss-Prot's proteins of the marker loci | the markers' members, their HMMs | `markers.foreign()`: a member another phylum's at near identity is dropped |
+| the genomes, transcriptomes and `data/no_assembly.fna.gz`'s records | everything a genome gives | `own_species`, the part screen, FCS-GX, tiara, genetic code check |
+| RefSeq's organelle genomes | organelle models; the reference screen's trusted records | none: curated whole genomes |
+| PR2, KSGP, SILVA, UNITE, EUKARYOME's labels | names of species alone | nothing to screen: Eukore reads their names, not their sequences |
+| BUSCO's `refseq_db.faa`, `--read_compare`'s FASTAs | miniprot's queries; the benchmarks' other databases | not screened: a seed protein names nothing, and a benchmark compares a database as it is |
+
+- **Published reads' own species** (`rrna.own_species`). A published read's label was taken as its source gave it,
+  `own_species` `-` and the read `unverified` at best; a misnamed read or a contaminant's operon in ROD's assembly was
+  caught only where the part screen found another clade's copy at 99%. Now each read's 18S is set beside the genomes'
+  18S alone (its source's other reads, labelled by the same hand, vouch for nothing), and the 18S' own rule decides
+  (`rrna.verdict`, since 2026-11-10: not the coding sequences' `qc.verdict`; a lone lineage's 18S is undecided, not
+  another clade's, unless 99.5% like another phylum's; its own clade must be 2 points under the other's; measured
+  on 4,090 labelled 18S: true 18S of a species without a relative of its class called another clade's, 46 before
+  and 2 after, with no loss of the contaminants caught).
+- **Relatives under 90% hold nothing** (`qc.verdict`'s `related`, `rrna.RELATED`). Weighing two clades, a copy 99% like
+  one family's single genome and 80% like its own family's 18S went to its own family (80 > 0), though at 80% an 18S is
+  any eukaryote's. A relative under 90% now counts for neither clade (the BUSCO copies' check unchanged).
+- **On the trial's records** (eukore-013: 2,350 ROD operons, 74 EUKARYOME reads): 2,397 of the 2,424 published
+  reads `t`, 27 `-`, none `f`; no genome's record changed. 100 of its passing genomes' and reads' records renamed as
+  a species of another phylum: 91 `f`, 9 `-`, none `t` (12 `t` without `related`: Arabidopsis' operons, the trial
+  holding one Brassicaceae genome); no other record's verdict changed.

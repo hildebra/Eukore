@@ -188,8 +188,15 @@ class Reference:
         return []
 
     def stamp(self):
-        return {"version": self.version, "file": os.path.basename(self.path or ""), "md5": self.md5,
-                "species": len(self.species), "genera": len(self.genus)}
+        """The manifest's record of the reference; since 2026-11-10 its further files and its screen's counts
+        (refscreen.py), where it has them."""
+        out = {"version": self.version, "file": os.path.basename(self.path or ""), "md5": self.md5,
+               "species": len(self.species), "genera": len(self.genus)}
+        if getattr(self, "files", None):
+            out["files"] = self.files
+        if getattr(self, "screen", None) is not None:
+            out["screen"] = self.screen
+        return out
 
 
 def label_species(ncbi, taxids, references):
@@ -315,22 +322,87 @@ def unite_lines(path):
             yield raw.decode(errors="replace")
 
 
-def read_midori2(path, version=None):
-    """A MIDORI2 RAW FASTA of the user's (--midori2: >accession###root_1;Eukaryota_2759;...;Genus species_taxid; its
-    download URLs change with each GenBank release) -> Reference: each species by its own NCBI taxid (match `taxid`),
-    and by name."""
-    found = re.search(r"GB\d+", os.path.basename(path))
-    ref = Reference("MIDORI2", version or (found.group(0) if found else "?"), MIDORI2_RANKS, path, util.md5(path))
+MIDORI2_ITEM = re.compile(r"^([a-z]+)_(.*)_(\d+)$")
+# MIDORI2's gene files (MIDORI2_<set>_NUC_GB<release>_<gene>_RAW.fasta.gz) by the organelle genes' names (organelle.py)
+MIDORI2_GENES = {"A6": "atp6", "A8": "atp8", "CO1": "COX1", "CO2": "COX2", "CO3": "COX3", "Cytb": "CYTB",
+                 "ND1": "nad1", "ND2": "nad2", "ND3": "nad3", "ND4": "nad4", "ND4L": "nad4L", "ND5": "nad5",
+                 "ND6": "nad6", "lrRNA": "LSU", "srRNA": "SSU"}
+
+
+def midori2_gene(path):
+    """A MIDORI2 file's gene by its name (MIDORI2_GENES; else the name's own, else COX1: --midori2's until
+    2026-11-10)."""
+    m = re.search(r"_GB\d+_([A-Za-z0-9]+)_", os.path.basename(path))
+    return MIDORI2_GENES.get(m.group(1), m.group(1)) if m else "COX1"
+
+
+def midori2_header(line):
+    """A MIDORI2 RAW header -> (accession, its species' NCBI taxid or None, its names at MIDORI2_RANKS or None where
+    it gives no lineage). Two layouts: >accession###root_1;Eukaryota_2759;...;Genus species_taxid (eight ranks,
+    Name_taxid), and since 2026-11-10 the later releases' (GB273's): >accession<tab>root_1;...;domain_Eukaryota_2759;
+    ...;species_Genus species_taxid, every NCBI rank as rank_Name_taxid (until then such a file named no species: no
+    line of it holds ###)."""
+    head = line[1:].rstrip("\n")
+    for sep in ("###", "\t"):
+        if sep in head:
+            accession, tax = head.split(sep, 1)
+            break
+    else:
+        return head.split(" ")[0], None, None
+    items = tax.strip().rstrip(";").split(";")
+    if any(i.startswith(("species_", "domain_")) for i in items):
+        at = {}
+        for item in items:
+            m = MIDORI2_ITEM.match(item)
+            if m:
+                at.setdefault(m.group(1), (m.group(2), m.group(3)))
+        names = ["root"] + [at.get(r, ("", None))[0] for r in MIDORI2_RANKS[1:]]
+        taxid = at.get("species", (None, None))[1]
+    else:
+        parts = [p.rsplit("_", 1) for p in items]
+        names = [p[0] for p in parts]
+        taxid = parts[-1][1] if len(parts[-1]) == 2 and parts[-1][1].isdigit() else None
+    return accession, (int(taxid) if taxid else None), names
+
+
+def midori2_records(path):
+    """A MIDORI2 RAW FASTA's records -> (accession, its species' NCBI taxid or None, sequence)."""
+    accession, taxid, parts = None, None, []
     with util.open_text(path) as fh:
         for line in fh:
-            if not line.startswith(">") or "###" not in line:
-                continue
-            parts = [p.rsplit("_", 1) for p in line.rstrip("\n").split("###", 1)[1].split(";")]
-            names = [p[0] for p in parts]
-            if len(names) < 3 or names[1] != "Eukaryota":
-                continue
-            taxid = parts[-1][1] if len(parts[-1]) == 2 and parts[-1][1].isdigit() else None
-            ref.add(names[:-1] + [names[-1].replace(" ", "_")], taxid=taxid)
+            if line.startswith(">"):
+                if accession is not None:
+                    yield accession, taxid, "".join(parts)
+                accession, taxid, _names = midori2_header(line)
+                parts = []
+            elif accession is not None:
+                parts.append(line.strip())
+    if accession is not None:
+        yield accession, taxid, "".join(parts)
+
+
+def read_midori2(path, version=None, dropped=()):
+    """A MIDORI2 RAW FASTA of the user's (--midori2; midori2_header's two layouts; its download URLs change with each
+    GenBank release), or several (its genes' files: a species is named by any) -> Reference: each species by its own
+    NCBI taxid (match `taxid`), and by name. dropped: the records the reference screen leaves out, {(gene:
+    midori2_gene of their file, accession)} (refscreen.py: another organism's gene, another gene): they name no
+    species."""
+    paths = [path] if isinstance(path, str) else list(path)
+    found = re.search(r"GB\d+", os.path.basename(paths[0]))
+    ref = Reference("MIDORI2", version or (found.group(0) if found else "?"), MIDORI2_RANKS, paths[0],
+                    util.md5(paths[0]))
+    ref.files = {os.path.basename(p): util.md5(p) for p in paths[1:]}  # its further files (the stamp's `files`)
+    dropped = set(dropped)
+    for p in paths:
+        gene = midori2_gene(p)
+        with util.open_text(p) as fh:
+            for line in fh:
+                if not line.startswith(">"):
+                    continue
+                accession, taxid, names = midori2_header(line)
+                if names is None or len(names) < 3 or names[1] != "Eukaryota" or (gene, accession) in dropped:
+                    continue
+                ref.add(names[:-1] + [names[-1].replace(" ", "_")], taxid=taxid)
     return ref
 
 
@@ -455,9 +527,10 @@ def fetch(src_dir, download, log=print, ksgp_tax=None):
         json.dump({"pr2": PR2_FILE, "ksgp": ksgp_tax or KSGP_FILE}, fh)
 
 
-def references(src_dir, eukaryome_folder=None, ksgp_tax=None, log=print, midori2=None):
-    """The references found (PR2, EUKARYOME, KSGP; since 2026-11-07 SILVA, UNITE and the user's MIDORI2 file) ->
-    [Reference]; one missing is said and left out."""
+def references(src_dir, eukaryome_folder=None, ksgp_tax=None, log=print, midori2=None, midori2_screen=None):
+    """The references found (PR2, EUKARYOME, KSGP; since 2026-11-07 SILVA, UNITE and the user's MIDORI2 file or
+    files) -> [Reference]; one missing is said and left out. midori2_screen: (the accessions the reference screen
+    drops, its counts) or None (since 2026-11-10: refscreen.py)."""
     folder = folder_of(src_dir)
     out = []
     pr2 = os.path.join(folder, PR2_FILE)
@@ -492,5 +565,11 @@ def references(src_dir, eukaryome_folder=None, ksgp_tax=None, log=print, midori2
     else:
         log(f"WARNING: no {unite} (--stage fetch): species.tsv without UNITE's lineages")
     if midori2:
-        out.append(read_midori2(midori2))
+        dropped, counted = midori2_screen or ((), None)
+        ref = read_midori2(midori2, dropped=dropped)
+        ref.screen = counted
+        if not ref.species:
+            log(f"WARNING: --midori2 {midori2}: no record names a species (a MIDORI2 RAW FASTA's headers: "
+                "labels.midori2_header)")
+        out.append(ref)
     return out

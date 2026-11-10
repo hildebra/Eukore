@@ -315,6 +315,13 @@ def stats(folder):
                        "HSP90, GAPDH, histone H3)"),
         _rrna_category(folder)) if c] + _organelle_categories(folder)
     counts = manifest.get("counts", {})
+    # of a locus set's `unverified` copies, those of a species alone in its family (since 2026-11-10; the manifest's
+    # counts.copy_unverified, package.unverified_alone): unverified for want of a relative, not of a check that
+    # failed. None for a package written before (its manifest has no such count)
+    for c in categories:
+        if c["key"] in package.LOCUS_SETS:
+            alone = (counts.get("copy_unverified") or {}).get(c["key"], {} if "copy_unverified" in counts else None)
+            c["unverified_alone"] = None if alone is None else alone.get("alone_in_family", 0)
     out = dict(package=os.path.basename(os.path.normpath(folder)), version=manifest.get("version"),
                eukore=manifest.get("eukore"), format=manifest.get("format"), built=manifest.get("built"),
                released=datetime.datetime.now().isoformat(timespec="seconds"), release_by=__version__,

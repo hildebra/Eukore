@@ -113,6 +113,38 @@ class ScreenTest(unittest.TestCase):
             own = rrna.own_species(rows, ncbi, fx.vsearch(tmp))
             self.assertEqual({own[n][0] for n, _s, _r in array}, {"t"})  # (verdict, cross) since 2026-11-09
 
+    def test_published_reads_checked_against_the_genomes(self):
+        # since 2026-11-10 EUKARYOME's and ROD's records get the own-species check too (until then none: a misnamed
+        # read was high-quality but for the part screen's 99% copies), against the genomes' 18S alone
+        from eukore import rrna  # noqa: PLC0415
+        rng = random.Random(5)
+        sacch = "".join(rng.choice("ACGT") for _ in range(1200))
+        # another phylum's 18S, ~85% like Saccharomyces' (18S across eukaryotes): its family (Cryptococcaceae) one
+        # genome; until 2026-11-10 (qc.verdict without `related`) a read of it named S. cerevisiae was t, its
+        # label's family holding the 18S at 85% and the donor's no other genome at all
+        crypto = mutate(sacch, 0.15, rng)
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            records = []
+            for i, (taxid, base, rate) in enumerate([(4932, sacch, 0.002), (27291, sacch, 0.01), (28985, sacch, 0.03),
+                                                     (40410, crypto, 0.002)]):
+                records.append((f"G{i}_18S_1", mutate(base, rate, rng),
+                                dict(kind="18S", source="genome", accession=f"GCA_00000{i}.1", taxid=taxid,
+                                     species_taxid=taxid, regions_list=None)))
+
+            def read(name, taxid, base, source="EUKARYOME", accession="-"):
+                return (name, mutate(base, 0.003, rng), dict(kind="18S", source=source, accession=accession,
+                                                             taxid=taxid, species_taxid=taxid, regions_list=None))
+            # three reads named S. cerevisiae holding Cryptococcus' 18S (one source's labels: they vouch for none of
+            # their own), one of its own 18S, and ROD's operon of a genome the build holds (that genome no witness)
+            records += [read(f"EUK_bad{i}", 4932, crypto) for i in range(3)]
+            records += [read("EUK_good", 4932, sacch), read("ROD_1", 28985, sacch, "ROD", "GCF_000002.2")]
+            own = rrna.own_species(records, ncbi, fx.vsearch(tmp))
+        self.assertEqual({own[f"EUK_bad{i}"] for i in range(3)}, {("f", 40410)})
+        self.assertEqual(own["EUK_good"], ("t", None))
+        self.assertEqual(own["ROD_1"], ("t", None))
+        self.assertEqual(own["G0_18S_1"], ("t", None))  # the genomes' as before
+
     def test_a_types_longest_copy_searched(self):
         # until 2026-11-10 the type's first name: a copy cut at a contig's end (one type with the whole copies, the
         # identity over the shorter) was searched in their place

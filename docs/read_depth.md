@@ -27,7 +27,8 @@ python3 tools/rdna_depth.py table   --package OUT/Eukore_<v> --work DWORK --into
    BUSCO copies and its species' organelle records. An alignment counts if it is 95% identical (80% for PacBio CLR
    and Nanopore), and the read's unaligned ends lie past the target's ends (a paralog's read is clipped inside).
 4. **The copies.** The rDNA depth is the median over each unit's 18S, 5.8S and 28S, summed over the units. It is
-   divided by the median of the single-copy BUSCOs' mean depths. Both alleles map, so the number is per haploid
+   divided by the median of the single-copy BUSCOs' exons' mean depths (since 2026-11-10; until then the whole
+   copies', whose introns' repeats draw reads from all their genomic copies). Both alleles map, so the number is per haploid
    genome. Organelle genomes are counted the same way.
 5. **The package** (`table --into_package`). `depth.tsv` is written into the package. `genomes.tsv` gets
    `rdna_copies_reads`, `mt_copies_reads` and `pt_copies_reads`, and the manifest's files are updated.

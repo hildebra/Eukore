@@ -127,11 +127,16 @@ def families(ncbi, species, cache=None):
     return out
 
 
-def verdict(sp, found, ncbi, cache, members, near=NEAR, foreign_id=FOREIGN_ID):
+def verdict(sp, found, ncbi, cache, members, near=NEAR, foreign_id=FOREIGN_ID, related=0.0):
     """A copy's own-species verdict (module docstring), sp: its species; found: its hits of other species [(identity
     %, species)]; members: families() of the species holding the locus -> (own_species t, f or -, cross: the partner
     species where the copy is undecided between its clade and another's, or another's, else None, the top identity
-    or None, the agreement depth of the nearest or None)."""
+    or None, the agreement depth of the nearest or None). related: the identity under which a clade's other member
+    does not hold the sequence when the two clades are weighed (since 2026-11-10, the 18S' rrna.RELATED: at 80% an
+    18S is any eukaryote's, and a copy 99% another family's was its own clade's where that family had no other genome
+    and its own clade's 18S was 80% like it). The 18S' check has a rule of its own since that day (rrna.verdict: a
+    lone lineage's 18S is not another clade's, of two species at the top identity the partner is not the higher
+    taxid): this one is the coding sequences', as it was."""
     if not found:
         return "-", None, None, None
     top = max(i for i, _s in found)
@@ -146,8 +151,9 @@ def verdict(sp, found, ncbi, cache, members, near=NEAR, foreign_id=FOREIGN_ID):
     def held(x, ranks):
         fam = ranks.get("family")
         return fam is not None and bool(members.get(fam, set()) - {x, sp, partner})
-    own = max((i for i, s in found if depth(ncbi, sp, s, cache) >= 4), default=0.0)
-    theirs = max((i for i, s in found if s not in (sp, partner) and depth(ncbi, partner, s, cache) >= 4), default=0.0)
+    own = max((i for i, s in found if i >= related and depth(ncbi, sp, s, cache) >= 4), default=0.0)
+    theirs = max((i for i, s in found if i >= related and s not in (sp, partner)
+                  and depth(ncbi, partner, s, cache) >= 4), default=0.0)
     if theirs > own:  # the partner's clade holds the sequence nearer than the copy's own: another organism's
         return "f", partner, top, agree
     if own > theirs:  # its own clade holds it nearer: the copy is the sequence's owner, the partner's a contaminant
