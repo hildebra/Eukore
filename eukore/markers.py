@@ -222,10 +222,12 @@ def swissprot(path, eukaryote):
 
 
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-NCBI_SCOPE = ("eukaryota[orgn] AND (refseq[filter] OR NOT (fungi[orgn] OR metazoa[orgn] OR viridiplantae[orgn])) "
-              "NOT \"environmental samples\"[orgn]")
+NCBI_SCOPE = ("(refseq[filter] OR (eukaryota[orgn] NOT (fungi[orgn] OR metazoa[orgn] OR viridiplantae[orgn]))) "
+              "AND eukaryota[orgn] NOT \"environmental samples\"[orgn]")
 # RefSeq's of every eukaryote, GenBank's of the protists, none of an environmental sample (a row's query sets its
-# length range: [slen])
+# length range: [slen]). Entrez's NOT joins two terms, it negates none alone: until 2026-11-09 the scope's
+# "refseq[filter] OR NOT (fungi[orgn] OR ...)" took GenBank's fungi, animals and plants too (TEF1's query: 32,708
+# records, every one of GenBank's 17,851 fungal; now 3,109, of fungi RefSeq's 104)
 SUMMARIES = 5000  # esummary's per call (XML: JSON's is 500)
 BATCH = 300  # efetch's ids per call
 PER_TAXON = 3  # an organism's proteins fetched (its isoforms and paralogs named alike: the length nearest the median)

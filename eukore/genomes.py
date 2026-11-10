@@ -170,6 +170,7 @@ def job_of(ncbi, row, why, sp, refseq, others=(), unit="-", path=None):
         accession=row["accession"], fetch=fetch, url=url, size=row.get("size"), species_taxid=sp,
         taxid=int(row.get("taxid") or sp), organism=row.get("organism", ""), why=[why],
         lineage=list(ncbi.ancestors(ncbi.merged.get(sp, sp))), itsx=rrna.itsx_groups(ncbi, sp), rdna_unit=unit,
+        ranks={r: t for r, t in ncbi.rank_ids(sp).items() if r in DEPTH_RANKS},  # the clade hold-out's (2026-11-09)
         flags=sorted(row.get("flags") or ()), others=[o["accession"] for o in others], path=path,
         level=row.get("level", ""), category=row.get("category", ""),
         refseq_category=(refseq.get(row["accession"]) or row).get("refseq_category", ""),
@@ -540,6 +541,49 @@ def read_rows(path):
 
 HELD_OUT = "held_out.tsv"  # a dataset species' BUSCOs called without its own proteins (the OrthoDB benchmark's)
 HELD_OUT_COLUMNS = ("locus", "status", "query", "contig", "start", "end", "rescued", "cds")  # place since 2026-11-06
+# The clade hold-out (since 2026-11-09): a dataset species' BUSCOs called again without every dataset species of its
+# genus, then family, then order (held_out_<rank>.tsv): how a call fares the farther its genome is from BUSCO's
+# dataset, the reach into lineages the dataset does not hold, which the species' own hold-out cannot show (its
+# congeners stay). A rank that leaves out no more species than the one below is not run again.
+HELD_OUT_RANKS = ("genus", "family", "order")
+DEPTH_RANKS = ("phylum", "class", "order", "family", "genus")  # qc.RANKS: a depth of 0 (none) .. 5 (genus)
+
+
+def held_out_file(rank=None):
+    """A genome's held-out calls' file: the species' (HELD_OUT), or a clade's of `rank`."""
+    return HELD_OUT if rank in (None, "species") else f"held_out_{rank}.tsv"
+
+
+def rank_depth(a, b):
+    """qc.depth over two taxa's {rank: taxid} (genomes' jobs and the dataset's species carry them: no taxonomy in a
+    worker) -> 0 none .. 5 genus."""
+    out = 0
+    for i, r in enumerate(DEPTH_RANKS):
+        x, y = a.get(r), b.get(r)
+        if x is None or y is None:
+            continue
+        if x != y:
+            break
+        out = i + 1
+    return out
+
+
+def clade_left_out(job, settings, rank):
+    """The dataset taxids a genome's held-out call at `rank` leaves out: its species' (own_of) and every dataset
+    species' of its taxon at that rank (settings["odb_ranks"]: {dataset taxid: {rank: taxid}}); None where its lineage
+    names no taxon of the rank."""
+    mine = (job.get("ranks") or {}).get(rank)
+    if mine is None:
+        return None
+    return set(own_of(job, settings)) | {t for t, r in (settings.get("odb_ranks") or {}).items()
+                                         if r.get(rank) == mine}
+
+
+def nearest_kept(job, settings, left):
+    """The depth (rank_depth) a genome's lineage shares with the nearest dataset species its held-out call keeps."""
+    mine = job.get("ranks") or {}
+    return max((rank_depth(mine, r) for t, r in (settings.get("odb_ranks") or {}).items() if t not in left),
+               default=0)
 
 
 def done_dir(work, accession):
@@ -1006,6 +1050,22 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
             if why:
                 return acc, None, why, taken
             held = {"left_out": own, "seconds": round(time.time() - started - seconds, 1)}
+        held["nearest"] = nearest_kept(job, settings, set(own))
+        # the clade hold-out (since 2026-11-09): without its genus', family's, order's dataset species too
+        clades = {}
+        for rank in settings.get("held_out_ranks", HELD_OUT_RANKS):
+            old = (before or {}).get("held_out", {}).get("ranks", {}).get(rank)
+            if old and (old.get("same_as") or os.path.isfile(os.path.join(folder, held_out_file(rank)))):
+                clades[rank] = old  # a run for its gene models alone: as it was
+                if not old.get("same_as"):
+                    shutil.copyfile(os.path.join(folder, held_out_file(rank)), os.path.join(tmp, held_out_file(rank)))
+                continue
+            record, why = clade_held_out(path, job, settings, odb, tmp, scratch, rank, clades)
+            if why:
+                return acc, None, why, taken
+            clades[rank] = record
+        if clades:
+            held["ranks"] = clades
     from . import __version__  # noqa: PLC0415
     summary = {"accession": acc, "fetched": job.get("fetch", acc), "why": job["why"], "loci": taken_loci,
                "genome_record": GENOME_RECORD, "eukore": __version__,  # what made its calls (since 2026-11-09)
@@ -1052,7 +1112,8 @@ def backfill(args):
     pool's task: (job, settings)) -> (accession, [steps made], why one failed or None):
     - tiara's classes of its windows, where its run had no tiara or tiara failed (done.json's `tiara`; a run before
       2026-11-08: its loci.tsv's window_class all `-`), into loci.tsv;
-    - its rRNA (settings["rrna"]), where its run had no barrnap (no rrna.tsv) and its genome is here.
+    - its rRNA (settings["rrna"]), where its run had no barrnap (no rrna.tsv) and its genome is here;
+    - a dataset species' clade hold-out (clade_held_out; since 2026-11-09), the ranks its run did not make.
     Its done.json says what was made. A genome another build holds is left alone."""
     job, settings = args
     acc = job["accession"]
@@ -1103,6 +1164,21 @@ def backfill(args):
                 else:
                     os.replace(os.path.join(tmp, "rrna.tsv"), os.path.join(folder, "rrna.tsv"))
                     made.append("rrna")
+        if "held_out" in todo:  # the clade hold-out's missing ranks (since 2026-11-09)
+            genome = job.get("path") or genome_file(settings["genomes"], acc)
+            clades = summary["held_out"].setdefault("ranks", {})
+            with tempfile.TemporaryDirectory(dir=settings.get("scratch") or folder) as tmp:
+                for rank in settings.get("held_out_ranks", HELD_OUT_RANKS):
+                    if rank in clades:
+                        continue
+                    got, failed = clade_held_out(genome, job, settings, odb_of(settings), tmp, tmp, rank, clades)
+                    if failed:
+                        why = why or failed
+                        break
+                    if os.path.isfile(os.path.join(tmp, held_out_file(rank))):
+                        os.replace(os.path.join(tmp, held_out_file(rank)), os.path.join(folder, held_out_file(rank)))
+                    clades[rank] = got
+                    made.append(f"held_out_{rank}")
         path = os.path.join(folder, "done.json")
         with open(util.part_of(path), "w", newline="\n") as fh:
             json.dump(summary, fh, indent=1)
@@ -1125,6 +1201,12 @@ def backfill_needs(job, settings, summary=None):
             and not os.path.isfile(os.path.join(folder, "rrna.tsv")) \
             and os.path.isfile(genome_file(settings["genomes"], job["accession"])):
         out.append("rrna")
+    # a dataset species' clade hold-out (since 2026-11-09) where its run made the species' alone
+    ranks = settings.get("held_out_ranks", HELD_OUT_RANKS)
+    if ranks and job.get("kind") != "transcriptome" and summary.get("held_out") and own_of(job, settings) \
+            and os.path.isfile(job.get("path") or genome_file(settings["genomes"], job["accession"])) \
+            and any(r not in (summary["held_out"].get("ranks") or {}) for r in ranks):
+        out.append("held_out")
     return out
 
 
@@ -1296,11 +1378,11 @@ def held_out_missing(work, job, settings):
                                                                            HELD_OUT))
 
 
-def held_out(path, job, settings, odb, own, folder, scratch=None):
-    """A dataset species' genome's BUSCOs called again with its own proteins (own: their dataset taxids) left out of
-    the queries, into folder/HELD_OUT (HELD_OUT_COLUMNS; cds: the call's coding sequence): the OrthoDB benchmark
-    compares these with OrthoDB's gene models, which the build's own calls were queried with, and their places with
-    the build's own calls
+def held_out(path, job, settings, odb, own, folder, scratch=None, rank=None):
+    """A dataset species' genome's BUSCOs called again with its own proteins (own: their dataset taxids; or, rank
+    given, a clade's: clade_left_out) left out of the queries, into folder/held_out_file(rank) (HELD_OUT_COLUMNS; cds:
+    the call's coding sequence): the OrthoDB benchmark compares these with OrthoDB's gene models, which the build's
+    own calls were queried with, and their places with the build's own calls
     -> why it failed, or None."""
     queries = odb.queries(job["lineage"], settings["odb_lineages"], leave_out=own)
     try:
@@ -1311,7 +1393,7 @@ def held_out(path, job, settings, odb, own, folder, scratch=None):
         return f"held-out locus calling failed: {e}"
     if got["failed"]:
         return f"held-out locus calling failed: {got['failed']}"
-    with open(os.path.join(folder, HELD_OUT), "w", newline="\n") as fh:
+    with open(os.path.join(folder, held_out_file(rank)), "w", newline="\n") as fh:
         fh.write("\t".join(HELD_OUT_COLUMNS) + "\n")
         for locus in odb.loci:
             r = got["loci"].get(locus, {"status": "Missing"})
@@ -1319,6 +1401,30 @@ def held_out(path, job, settings, odb, own, folder, scratch=None):
                 locus, r["status"], r.get("query", "-"), r.get("contig", "-"), r.get("start", "-"), r.get("end", "-"),
                 ("t" if r.get("rescued") else "f") if r["status"] != "Missing" else "-", r.get("spliced", "-"))) + "\n")
     return None
+
+
+def clade_held_out(path, job, settings, odb, folder, scratch, rank, earlier=None):
+    """A dataset species' genome's held-out call at `rank` (clade_left_out; since 2026-11-09) into
+    folder/held_out_file(rank) -> (its record for done.json's held_out.ranks: left_out (dataset species left out),
+    nearest (nearest_kept's depth), seconds; same_as: the rank below where it leaves out no more, not run; no_taxon:
+    its lineage names none of the rank), why it failed or None)."""
+    left = clade_left_out(job, settings, rank)
+    if left is None:
+        return dict(left_out=0, no_taxon=True), None
+    ranks = list(settings.get("held_out_ranks", HELD_OUT_RANKS))
+    below, below_name = set(own_of(job, settings)), "species"
+    for r in ranks[:ranks.index(rank)] if rank in ranks else ():
+        got = clade_left_out(job, settings, r)
+        if got is not None:
+            below, below_name = got, r
+    nearest = nearest_kept(job, settings, left)
+    if left == below:
+        return dict(left_out=len(left), nearest=nearest, same_as=below_name), None
+    started = time.time()
+    why = held_out(path, job, settings, odb, sorted(left), folder, scratch, rank)
+    if why:
+        return None, why
+    return dict(left_out=len(left), nearest=nearest, seconds=round(time.time() - started, 1)), None
 
 
 def prune(genomes_folder, work, keep_bytes, protected=(), first=()):

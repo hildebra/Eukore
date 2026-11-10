@@ -253,6 +253,10 @@ def settings_of(opts, src_dir, ncbi, staged_only):
                 threads=opts.threads_per_genome, staged_only=staged_only, odb=folder, loci=odb.loci, hmm_db=hmm_db,
                 markers=markers_of(opts, src_dir),
                 odb_lineages=odb_mod.species_lineages(odb, ncbi), odb_own=odb_mod.own_taxids(odb, ncbi), tiara=tiara,
+                # the clade hold-out (since 2026-11-09): the dataset species' ranks, the ranks left out in turn
+                odb_ranks={t: {r: x for r, x in ncbi.rank_ids(t).items() if r in genomes.DEPTH_RANKS}
+                           for t in odb.species()},
+                held_out_ranks=opts.held_out_ranks,
                 rescue=not opts.no_rescue and bool(shutil.which("esl-translate")),
                 esl_translate=shutil.which("esl-translate"), sourmash=sourmash_of(opts),
                 veupathdb_key=opts.veupathdb_key, vsearch=shutil.which("vsearch"), scratch=opts.scratch,
@@ -483,7 +487,7 @@ def backfill_pass(opts, job_map, settings):
             and genomes.backfill_needs(j, settings)]
     if not todo:
         return
-    say(f"backfill: {len(todo)} done genomes lack tiara's classes or their rRNA, made now")
+    say(f"backfill: {len(todo)} done genomes lack tiara's classes, their rRNA or their clade hold-out, made now")
     made, failed = collections.Counter(), []
     progress = progress_of(opts, "genomes backfilled", [1] * len(todo), "", 1)
     with util.process_pool(opts.jobs) as pool:
@@ -1028,6 +1032,10 @@ def main(argv=None):
                         "alone, over https")
     p.add_argument("--no_rescue", action="store_true", help="no rescue pass of the BUSCOs miniprot missed (loci.py: "
                                                             "their HMMs in the genome's six-frame ORFs place them)")
+    p.add_argument("--held_out_ranks", default=",".join(genomes.HELD_OUT_RANKS),
+                   help="the clade hold-out of the OrthoDB benchmark: a BUSCO dataset species' genome called again "
+                        "without its genus', family's, order's dataset species in turn, a call each (comma-separated; "
+                        "`none`: the species' hold-out alone; default %(default)s)")
     p.add_argument("--reversion", action="store_true",
                    help="stamp every done genome of an older genome record (genomes.GENOME_RECORD: what made its "
                         "calls) with this Eukore's, its calls kept as they were made, so that it is not run again; "
@@ -1099,6 +1107,10 @@ def main(argv=None):
             opts.scratch = None
         elif why:  # the process stage's temporary files would load WORK's file system: stop
             p.error(f"--local_tmp {why}")
+    opts.held_out_ranks = [] if opts.held_out_ranks in ("", "none") else opts.held_out_ranks.split(",")
+    if set(opts.held_out_ranks) - set(genomes.HELD_OUT_RANKS):
+        p.error(f"--held_out_ranks: {opts.held_out_ranks} (known: {','.join(genomes.HELD_OUT_RANKS)})")
+    opts.held_out_ranks = [r for r in genomes.HELD_OUT_RANKS if r in opts.held_out_ranks]  # genus, family, order
     opts.jobs = opts.jobs or max(1, opts.threads // 4)
     opts.threads_per_genome = max(1, opts.threads // opts.jobs)
     opts.genomes = opts.genomes or os.path.join(opts.out, "genomes")  # --genomes since 2026-11-09

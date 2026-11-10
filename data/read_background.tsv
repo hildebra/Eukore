@@ -1,7 +1,11 @@
 # The read benchmark's background (eukore/reads.py, since 2026-11-06): bacteria and an archaeon of the human gut and
 # the lab, whose reads a eukaryote reference should leave alone. NCBI RefSeq genomes, fetched by the fetch stage into
-# WORK/sources/read_background/<accession>.fna.gz. Columns: RefSeq accession, assembly name, organism.
-accession	assembly	organism
+# WORK/sources/read_background/<accession>.fna.gz. Columns: RefSeq accession (or a sequence's, fetched by E-utilities),
+# assembly name, organism, and a eukaryote's NCBI taxid (since 2026-11-09): its reads are right on its own lineage and
+# wrong elsewhere, and it is no false detection in a sample. Human chromosome 21 is the host's DNA of a gut or skin
+# metagenome, repeats (Alu, L1, satellites) and all: absent from a trial package, its reads should stay unplaced or
+# high; in a full one, on Homo.
+accession	assembly	organism	taxid
 GCF_000005845.2	ASM584v2	Escherichia coli K-12 MG1655
 GCF_000025985.1	ASM2598v1	Bacteroides fragilis NCTC 9343
 GCF_000154205.1	ASM15420v1	Bacteroides uniformis ATCC 8492
@@ -10,3 +14,4 @@ GCF_000009045.1	ASM904v1	Bacillus subtilis 168
 GCF_000013425.1	ASM1342v1	Staphylococcus aureus NCTC 8325
 GCF_000006765.1	ASM676v1	Pseudomonas aeruginosa PAO1
 GCF_000016525.1	ASM1652v1	Methanobrevibacter smithii ATCC 35061
+NC_000021.9	GRCh38.p14	Homo sapiens chromosome 21	9606

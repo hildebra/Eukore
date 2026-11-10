@@ -271,6 +271,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
 | `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
+| `--held_out_ranks` | `genus,family,order` | the OrthoDB benchmark's clade hold-out: a BUSCO dataset species' genome called again without its genus', family's and order's dataset species in turn, one more BUSCO search each ([benchmarks.md](benchmarks.md); `none`: its own species' hold-out alone; since 2026-11-09) |
 | `--reversion` | off | stamp every done genome of an older genome record with the build's, its calls kept, so that it is not run again ([Resuming and rebuilding](#resuming-and-rebuilding); since 2026-11-09) |
 | `--organelle_models` | `miniprot` | the assemblies' organelle protein-coding genes: `nhmmer`'s hits alone, or with `miniprot`'s exons by the organelle's code where nhmmer joined several hits (a gene with introns; measured: [methods.md](methods.md); format 5) |
 | `--intraspecific` | 3 | further assemblies of each species of `data/intraspecific_panel.tsv` run for the barcode gap (`intraspecific/`); 0: none |

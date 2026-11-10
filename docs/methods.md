@@ -324,7 +324,16 @@ as loci of Eukore's own (`data/markers.tsv`, `eukore/markers.py`; the package's 
   yeast's actins as well as the actin profiles do.
 - **Query proteins.** Swiss-Prot's eukaryote proteins and NCBI's named as the marker (each row's Entrez query, with a
   length range: RefSeq's of every eukaryote, GenBank's of the protists, no environmental sample; of an organism the 3 of
-  the length nearest the median). A name only gathers: a candidate is the marker's where its best profile of all the
+  the length nearest the median). Until 2026-11-09 the scope's Entrez expression took GenBank's fungi, animals and
+  plants too (Entrez's NOT joins two terms: TEF1's query held 32,708 records, every one of GenBank's 17,851 fungal;
+  with the scope as meant, 3,109): the contaminants below were among them. With the scope as meant the members are
+  RefSeq's mostly, and fewer species' (built 2026-11-09: RPB1 3,095 to 1,792 species, RPB2 2,432 to 1,154, EF-2 3,322
+  to 1,476, EF-1α 3,789 to 861, β-tubulin 4,215 to 2,635, actin 2,559 to 1,656, HSP90 2,867 to 1,516, GAPDH 1,612 to
+  1,113, H3 4,754 to 1,941). On the 7-clade trial (2026-11-09) the marker calls barely moved: of 285, 206 identical
+  and 72 another exon end; no fungus' call changed (the trial's fungi have RefSeq members); in *Blastocystis* RPB1's
+  four calls became clean models a little nearer *Blastocystis*' own RPB1 (each had 1-2 stops; their HMM score ~10%
+  lower), and ST6's HSP90 a real HSP90 (the old call another gene). A fungus or plant with no RefSeq relative near is
+  queried with farther proteins now: not measured. A name only gathers: a candidate is the marker's where its best profile of all the
   targets and decoys is one of the marker's targets and one of them reaches its KO's own threshold (KOfam's rule; a
   plant's actin scores best against the vertebrate actin profile, under its threshold, and reaches the other
   eukaryotes' one), which leaves out the misnamed and the paralogs. A member is of 0.6 to 1.6 times the median length

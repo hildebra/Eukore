@@ -234,6 +234,26 @@ class AnnotationTest(unittest.TestCase):
             self.assertEqual(sorted(annotation.read_cds(path, {"LR1.1": [(1, 5000)]}, alias)), ["PF01_t1"])
 
 
+class AnnotationSwapTest(unittest.TestCase):
+    def test_a_model_against_an_independent_truth(self):
+        # tools/annotation_swap.py (since 2026-11-09): miniprot's model and the copy shipped, each laid on the truth
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
+        import annotation_swap  # noqa: PLC0415
+        truth = {"t1": dict(contig="c1", strand="+", gene="g1", cds=[(100, 200), (300, 400)], phase={})}
+        exact = annotation_swap.measure(dict(contig="c1", strand="+", status="Single",
+                                             exons=[(100, 200), (300, 400)]), truth)
+        off = annotation_swap.measure(dict(contig="c1", strand="+", status="Single", exons=[(100, 200), (310, 400)]),
+                                      truth)
+        self.assertEqual(exact[:4], ("t1", 1, 1, True))
+        self.assertEqual(off[:4], ("t1", 1, 0, False))
+        self.assertLess(off[4], exact[4])
+        self.assertEqual(annotation_swap.verdict(off, exact), "better")
+        self.assertEqual(annotation_swap.verdict(exact, off), "worse")
+        self.assertEqual(annotation_swap.verdict(exact, exact), "same")
+        self.assertEqual(annotation_swap.measure(dict(contig="c2", strand="+", status="Single", exons=[(1, 9)]),
+                                                 truth)[0], "-")
+
+
 class FatesTest(unittest.TestCase):
     def test_what_became_of_each_species(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -504,6 +524,37 @@ class CompareReferencesTest(unittest.TestCase):
         self.assertEqual({k: got["in_10"][k] for k in ("tp", "fn_missed", "fn_absent", "fp", "f1")},
                          dict(tp=1, fn_missed=1, fn_absent=1, fp=1, f1=0.4))
         self.assertNotIn("held_out_10", got)
+
+    def test_a_harder_benchmark(self):
+        # since 2026-11-09: a test's whole order out of the reference (novel), and a eukaryote background (the host)
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            table = os.path.join(tmp, "background.tsv")
+            with open(table, "w") as fh:
+                fh.write("# a comment\naccession\tassembly\torganism\ttaxid\nGCF_000005845.2\tASM584v2\tE. coli\t\n"
+                         "NC_000021.9\tGRCh38.p14\tHomo sapiens chromosome 21\t9606\n")
+            self.assertEqual(reads.background_rows(table), [
+                ("GCF_000005845.2", "ASM584v2", "E. coli", None),
+                ("NC_000021.9", "GRCh38.p14", "Homo sapiens chromosome 21", 9606)])
+            self.assertTrue(reads.background_url("NC_000021.9", "x").endswith("id=NC_000021.9&rettype=fasta&retmode=text"))
+            open(os.path.join(tmp, "NC_000021.9.fna.gz"), "w").close()
+            self.assertEqual(reads.read_background(table, tmp), [("Homo_sapiens_chromosome_21",
+                                                                   os.path.join(tmp, "NC_000021.9.fna.gz"), 9606)])
+        cache = {}
+        taxa = {"y": 4932, "p": 27291, "k": 28985, "c": 5476, "h": 9606}
+        hits = [(0.99, "y"), (0.985, "p"), (0.95, "c")]
+        self.assertEqual(reads.assign(hits, taxa, ncbi), 4930)  # yeasts: their genus
+        # Saccharomycetales out: the read goes nowhere it is right below its class; Candida, its own order's, is out too
+        self.assertIsNone(reads.assign(hits, taxa, ncbi, clade=("order", 4892), cache=cache))
+        self.assertEqual(reads.assign(hits + [(0.97, "h")], taxa, ncbi, clade=("order", 4892), cache=cache), 9606)
+        held = reads.holdings({"r1": 559292, "r2": 28985, "r3": 5476}, ncbi, cache)
+        self.assertFalse(reads.in_reference(4932, "novel", held, ncbi, cache))  # one order in Saccharomycetes alone
+        # the host's reads on its own lineage: no false detection; on another species: one
+        placed = {"T": {i: 4932 for i in range(6)}, "H": {0: 9606, 1: 9606, 2: 9606, 3: 9606}}
+        self.assertEqual(reads.detect(placed, "T", 4932, "species", 8, ["H"], ncbi, cache, {9606}), (6, True, 0))
+        self.assertEqual(reads.detect(placed, "T", 4932, "species", 8, ["H"], ncbi, cache), (6, True, 1))
+        self.assertEqual(reads.MODES, ("in", "held_out", "novel"))
+        self.assertEqual(reads.score(9606, 9606, ncbi, cache)["species"], "correct")  # the host's read on itself
 
     def test_several_compared_references(self):
         self.assertEqual(reads.compared(None), [])
