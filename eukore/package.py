@@ -616,29 +616,31 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
             with util.bgzf_open(os.path.join(part, set_of[locus], sub, f"{locus}.{ext}.gz")) as fh:
                 fh.writelines(f">{acc}\n{seqs[acc].upper()}\n" for acc in sorted(seqs) if seqs[acc])
     # each copy whole and the features: read again from each done genome in turn into every locus' file at once
-    # (since 2026-11-08: all held in memory from collect on)
-    copy_files = {item["locus"]: util.bgzf_open(os.path.join(part, set_of[item["locus"]], "copies",
-                                                             f"{item['locus']}.fna.gz"))
-                  for item in loci}
-    feature_files = {s: open(util.part_of(os.path.join(part, s, "features.tsv")), "w", newline="\n") for s in sets}
-    try:
-        for fh in feature_files.values():
-            fh.write("\t".join(FEATURE_COLUMNS) + "\n")
-        # a Duplicated locus' copy taken by lineage (collect's swaps); the genomes read `threads` at once (since
-        # 2026-11-10: genome_files), written here in their order
-        done = sorted(collected.get("done", ()))
-        items = [(collected["work"], acc, collected.get("swaps", {}).get(acc)) for acc in done]
-        for got, feats in util.ordered(genome_files, items, max(1, min(threads, len(items)))):
-            for locus, text in got:
-                if locus in copy_files:
-                    copy_files[locus].write(text)
-            for locus, lines in feats:
-                s = set_of.get(locus, "busco")
-                if s in feature_files:
-                    feature_files[s].write(lines)
-    finally:
-        for fh in list(copy_files.values()) + list(feature_files.values()):
-            fh.close()
+    # (since 2026-11-08: all held in memory from collect on); a Duplicated locus' copy taken by lineage (collect's
+    # swaps); the genomes read `threads` at once (since 2026-11-10: genome_files), written here in their order, by
+    # workers forked before the files' compression threads start (since 2026-11-10: after)
+    done = sorted(collected.get("done", ()))
+    items = [(collected["work"], acc, collected.get("swaps", {}).get(acc)) for acc in done]
+    with util.forked_pool(max(1, min(threads, len(items)))) as pool:
+        copy_files = {item["locus"]: util.bgzf_open(os.path.join(part, set_of[item["locus"]], "copies",
+                                                                 f"{item['locus']}.fna.gz"))
+                      for item in loci}
+        feature_files = {s: open(util.part_of(os.path.join(part, s, "features.tsv")), "w", newline="\n")
+                         for s in sets}
+        try:
+            for fh in feature_files.values():
+                fh.write("\t".join(FEATURE_COLUMNS) + "\n")
+            for got, feats in util.ordered(genome_files, items, pool=pool):
+                for locus, text in got:
+                    if locus in copy_files:
+                        copy_files[locus].write(text)
+                for locus, lines in feats:
+                    s = set_of.get(locus, "busco")
+                    if s in feature_files:
+                        feature_files[s].write(lines)
+        finally:
+            for fh in list(copy_files.values()) + list(feature_files.values()):
+                fh.close()
     for s in sets:
         path = os.path.join(part, s, "features.tsv")
         os.replace(util.part_of(path), path)

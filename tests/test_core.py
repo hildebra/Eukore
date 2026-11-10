@@ -299,6 +299,28 @@ class ProgressTest(unittest.TestCase):
             list(util.ordered(_jitter, [1, -1, 2], 2))
         self.assertEqual(gc.get_freeze_count(), 0)
 
+    def test_no_compression_thread_runs_when_a_pool_forks(self):
+        # since 2026-11-10 a pool's workers fork after this process' compression threads ended (util.bgzf_quiet):
+        # until then a BGZF file written before the pool left its threads running, and a worker could hang on a lock
+        # one of them held (Python 3.12 warned); a writer still open keeps them
+        util.compression_threads(2)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                with util.bgzf_open(os.path.join(tmp, "a.gz")) as fh:
+                    fh.write("x" * (3 * util.BGZF_BLOCK))
+                    self.assertFalse(util.bgzf_quiet())
+                with fx.forks_watched() as seen:
+                    self.assertEqual(list(util.ordered(_jitter, [1, 2, 3], 2)), [2, 4, 6])
+                    with util.forked_pool(2) as pool:  # forked on entering: writers opened inside it fork nothing
+                        with util.bgzf_open(os.path.join(tmp, "b.gz")) as fh:
+                            fh.write("y" * (3 * util.BGZF_BLOCK))
+                            self.assertEqual(list(util.ordered(_jitter, [4, 5], pool=pool)), [8, 10])
+                self.assertTrue(seen)
+                self.assertEqual([names for names in seen if names], [])
+                self.assertTrue(util.bgzf_whole(os.path.join(tmp, "b.gz")))
+        finally:
+            util.compression_threads(1)
+
     def test_usage_of_the_process_tree(self):
         tick, page = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE")
         me = os.getpid()

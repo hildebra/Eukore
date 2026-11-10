@@ -2,6 +2,7 @@
 an unknown phylum, a nematode and human; NCBI's assembly tables; a stand-in BUSCO dataset (odb.py's layout) of three
 loci; a genome holding two genes; stand-in miniprot, hmmsearch and vsearch scripts (Python, as the tools write)."""
 
+import contextlib
 import gzip
 import io
 import math
@@ -9,6 +10,7 @@ import os
 import random
 import stat
 import tarfile
+import threading
 
 # NCBI's taxonomy: (taxid, parent, rank, name)
 NODES = [
@@ -439,3 +441,29 @@ def hmm_text(name, emissions):
         lines.append("          " + "  ".join(["2.99573"] * 20) + "\n")
         lines.append("          0.1 2.3 3.0 0.6 0.8 0.0 *\n")
     return "".join(lines) + "//\n"
+
+
+_FORKS = {"watch": 0, "seen": []}
+
+
+def _before_fork():
+    if _FORKS["watch"]:
+        _FORKS["seen"].append(sorted(t.name for t in threading.enumerate() if t.name.startswith("bgzf")))
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before=_before_fork)
+
+
+@contextlib.contextmanager
+def forks_watched():
+    """The compression threads (util's, named bgzf) alive at each fork of this process inside the block -> a list of
+    their names' lists, one a fork (since 2026-11-10)."""
+    seen = []
+    _FORKS["watch"] += 1
+    old, _FORKS["seen"] = _FORKS["seen"], seen
+    try:
+        yield seen
+    finally:
+        _FORKS["watch"] -= 1
+        _FORKS["seen"] = old

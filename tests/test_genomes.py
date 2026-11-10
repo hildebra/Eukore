@@ -310,7 +310,7 @@ class RunTest(unittest.TestCase):
     def test_the_package_read_by_a_pool_is_the_same(self):
         # since 2026-11-10 collect and write read the done genomes `threads` at once in a pool of processes
         # (package.genome_part, genome_files): the package byte for byte the one of the genomes read one after another
-        from eukore import store  # noqa: PLC0415
+        from eukore import store, util  # noqa: PLC0415
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
             root = fx.odb_world(tmp)
@@ -335,28 +335,32 @@ class RunTest(unittest.TestCase):
             loci = [dict(locus=l, name=odb.names.get(l, "-"), cutoff=odb.cutoff[l], hmm_length=odb.length[l])
                     for l in odb.loci]
             files = {}
-            for threads in (1, 3):
-                collected = package.collect(ncbi, jobs, gb, work, fx.vsearch(tmp), threads)
-                package.genetics(collected, ncbi, odb.hmm, fx.hmmalign(tmp), work, log=lambda *_: None)
-                out = package.write(os.path.join(tmp, f"out{threads}", "Eukore_2026.11"), "2026.11", ncbi,
-                                    collected, loci, None, genomes_dir, {"test": True}, threads=threads)
-                self.assertIsNone(package.check(out, deep=True))
-                got = {}
-                for top, _dirs, names in os.walk(out):
-                    for n in names:
-                        with open(os.path.join(top, n), "rb") as fh:
-                            got[os.path.relpath(os.path.join(top, n), out)] = fh.read()
-                manifest = json.loads(got.pop(package.MANIFEST))
-                got["files"] = json.dumps(manifest["files"]).encode()  # its time of building differs
-                files[threads] = got
-                store.close()
+            util.compression_threads(2)  # since 2026-11-10: no worker forked while their threads run
+            self.addCleanup(util.compression_threads, 1)
+            with fx.forks_watched() as seen:
+                for threads in (1, 3):
+                    collected = package.collect(ncbi, jobs, gb, work, fx.vsearch(tmp), threads)
+                    package.genetics(collected, ncbi, odb.hmm, fx.hmmalign(tmp), work, log=lambda *_: None)
+                    out = package.write(os.path.join(tmp, f"out{threads}", "Eukore_2026.11"), "2026.11", ncbi,
+                                        collected, loci, None, genomes_dir, {"test": True}, threads=threads)
+                    self.assertIsNone(package.check(out, deep=True))
+                    got = {}
+                    for top, _dirs, names in os.walk(out):
+                        for n in names:
+                            with open(os.path.join(top, n), "rb") as fh:
+                                got[os.path.relpath(os.path.join(top, n), out)] = fh.read()
+                    manifest = json.loads(got.pop(package.MANIFEST))
+                    got["files"] = json.dumps(manifest["files"]).encode()  # its time of building differs
+                    files[threads] = got
+                    store.close()
+            self.assertTrue(seen)
+            self.assertEqual([names for names in seen if names], [])
             self.assertEqual(sorted(files[1]), sorted(files[3]))
             for name in files[1]:
                 self.assertEqual(files[1][name], files[3][name], name)
             self.assertGreater(len(package.read_copies(out, "1at2759")), 1)
             # C11's rest (since 2026-11-10): a BGZF file cut before its MD5 was taken (its manifest agreeing) is not
             # whole for check(deep); a package's gzip of before BGZF is not judged so
-            from eukore import util  # noqa: PLC0415
             rel = "busco/copies/1at2759.fna.gz"
             path = os.path.join(out, rel)
             with open(path, "rb") as fh:

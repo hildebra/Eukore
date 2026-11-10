@@ -67,6 +67,7 @@ import struct  # noqa: E402
 import zlib  # noqa: E402
 
 import threading  # noqa: E402
+import weakref  # noqa: E402
 
 USER_AGENT = "Eukore-build (https://protal.earlham.ac.uk)"
 ATTEMPTS = 5       # tries of a download before it is given up on
@@ -346,6 +347,7 @@ BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b00030000000000000000
 BGZF_PENDING = 32  # a threaded writer's blocks compressing at once at most (32 x 64 KiB a writer)
 _BGZF_POOL = {"threads": 1, "pid": None, "executor": None}
 _BGZF_LOCK = [threading.Lock()]  # the executor made once where several threads open their first writers at once
+_BGZF_OPEN = weakref.WeakSet()  # this process' writers on its compression threads, open (bgzf_quiet)
 
 
 def _bgzf_lock_anew():
@@ -378,6 +380,19 @@ def _bgzf_executor():
         return _BGZF_POOL["executor"]
 
 
+def bgzf_quiet():
+    """This process' compression threads ended where no BGZF writer of it is open (since 2026-11-10; made again at the
+    next writer's first block) -> whether they are: a process forked while threads run may hang (a lock a thread
+    held, never let go of in the child; Python 3.12 warns of it), and they stayed, idle, once made."""
+    if any(not w.closed for w in _BGZF_OPEN):
+        return False
+    old = _BGZF_POOL["executor"]
+    if old is not None and _BGZF_POOL["pid"] == os.getpid():
+        old.shutdown(wait=True)
+    _BGZF_POOL.update(pid=None, executor=None)
+    return True
+
+
 def bgzf_block(data, level=BGZF_LEVEL):
     """One BGZF block of data (at most BGZF_BLOCK bytes): a gzip member with a BC extra field giving its size."""
     deflate = zlib.compressobj(level, zlib.DEFLATED, -15)
@@ -400,6 +415,8 @@ class BgzfWriter(io.RawIOBase):
         self._buf = bytearray()
         self._pending = collections.deque()
         self._pool = _bgzf_executor()
+        if self._pool is not None:
+            _BGZF_OPEN.add(self)
 
     def writable(self):
         return True
@@ -702,7 +719,9 @@ def process_pool(workers):
     """A pool of `workers` processes (concurrent.futures'; since 2026-11-08). A worker that dies (killed by the OOM
     killer or SLURM, a crash in a C library) breaks the pool: the build stops (SystemExit), a rerun goes on; until then
     multiprocessing.Pool lost its task and the build waited for it forever. On any other error or a stop (Ctrl-C) the
-    workers are ended, not waited for, and the tools they started with them (_end_workers)."""
+    workers are ended, not waited for, and the tools they started with them (_end_workers). This process'
+    idle compression threads ended first (bgzf_quiet; since 2026-11-10)."""
+    bgzf_quiet()
     pool = concurrent.futures.ProcessPoolExecutor(max(1, workers))
     pool.size = max(1, workers)
     try:
@@ -717,31 +736,45 @@ def process_pool(workers):
         pool.shutdown(wait=True, cancel_futures=True)
 
 
-def ordered(task, items, workers=1, ahead=None):
-    """task(item) of each item -> the results in the items' order (since 2026-11-10: the package's reading of every
-    done genome, until then one after another): in this process where workers is 1, else in a process_pool of
-    `workers`, at most `ahead` (default 4 x workers) submitted beyond the result awaited, so that the parent holds a
-    few items' results, not all. task: a module's function (a worker imports it); an item's error is raised here."""
+@contextlib.contextmanager
+def forked_pool(workers):
+    """A process_pool of `workers` whose workers are all forked on entering (since 2026-11-10), None for one worker:
+    the compression threads ended first (process_pool), so that a caller opening BGZF writers inside it forks
+    no process while their threads run. The parent's objects (the package's tens of GB) out of the collector's reach
+    while workers fork from it: a collection in a worker would touch every one of them, and copy their pages into
+    each worker (Python's gc docs)."""
     if workers <= 1:
-        for item in items:
-            yield task(item)
+        yield None
         return
     import gc  # noqa: PLC0415
-    ahead = max(1, ahead or 4 * workers)
-    # the parent's objects (the package's tens of GB) out of the collector's reach while workers fork from it: a
-    # collection in a worker would touch every one of them, and copy their pages into each worker (Python's gc docs)
     gc.freeze()
     try:
         with process_pool(workers) as pool:
-            pending = collections.deque()
-            for item in items:
-                pending.append(pool.submit(task, item))
-                if len(pending) > ahead:
-                    yield pending.popleft().result()
-            while pending:
-                yield pending.popleft().result()
+            pool.submit(os.getpid).result()  # forks every worker where processes fork (Linux until Python 3.14)
+            yield pool
     finally:
         gc.unfreeze()
+
+
+def ordered(task, items, workers=1, ahead=None, pool=None):
+    """task(item) of each item -> the results in the items' order (since 2026-11-10: the package's reading of every
+    done genome, until then one after another): in this process where workers is 1, else in a forked_pool of
+    `workers` (or `pool`, one entered before: its size), at most `ahead` (default 4 x workers) submitted beyond the
+    result awaited, so that the parent holds a few items' results, not all. task: a module's function (a worker
+    imports it); an item's error is raised here."""
+    if pool is None and workers <= 1:
+        for item in items:
+            yield task(item)
+        return
+    with contextlib.nullcontext(pool) if pool is not None else forked_pool(workers) as pool:
+        ahead = max(1, ahead or 4 * pool.size)
+        pending = collections.deque()
+        for item in items:
+            pending.append(pool.submit(task, item))
+            if len(pending) > ahead:
+                yield pending.popleft().result()
+        while pending:
+            yield pending.popleft().result()
 
 
 def descendants(pids, proc="/proc"):
