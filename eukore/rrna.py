@@ -87,11 +87,15 @@ def barrnap_gff(barrnap, fasta, threads=1, kingdom="euk"):
 
 # an organelle molecule's FASTA title (organelle.py's too, and metadata.py's), its word read as the organelle by
 # organelle_of (since 2026-11-10; until then each read any word but mitochondrion as a plastid, so that a word of
-# another organelle added here, a kinetoplast's, would have made it one)
-ORGANELLE_TITLE = re.compile(r"\b(mitochondrion|chloroplast|plastid|apicoplast)\b", re.IGNORECASE)
+# another organelle added here, a kinetoplast's, would have made it one). Since 2026-11-10 every word of
+# ORGANELLE_WORDS (until then mitochondrion, chloroplast, plastid, apicoplast): a kinetoplastid's maxicircle and
+# Paulinella's chromatophore were searched as nuclear DNA, no organelle genes found on them. Of NCBI's eukaryote
+# records in an assembly titled by a word added (2026-11-10: 19 kinetoplast or maxicircle, 18-60 kb, Leishmania,
+# Trypanosoma, Crithidia; Paulinella micropora's chromatophore, 977 kb; no minicircle or cyanelle) none is nuclear
 ORGANELLE_WORDS = {"mitochondrion": "mitochondrion", "kinetoplast": "mitochondrion", "maxicircle": "mitochondrion",
                    "minicircle": "mitochondrion", "chloroplast": "plastid", "plastid": "plastid",
                    "apicoplast": "plastid", "chromatophore": "plastid", "cyanelle": "plastid"}
+ORGANELLE_TITLE = re.compile(r"\b(" + "|".join(ORGANELLE_WORDS) + r")\b", re.IGNORECASE)
 
 
 def organelle_of(title, pattern=ORGANELLE_TITLE):

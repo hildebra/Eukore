@@ -11,7 +11,8 @@
   the file, a truncated ycf1 at the inverted repeat's border before the gene); a feature marked /pseudo or
   /pseudogene is none of them.
 - Else the species' own assembly (assembly_pass): the molecules NCBI's FASTA titles name an organelle (TITLE:
-  mitochondrion, chloroplast, plastid, apicoplast). nhmmer finds each gene, queried with that gene of the NEAREST
+  mitochondrion, chloroplast, plastid, apicoplast; since 2026-11-10 kinetoplast, maxicircle, minicircle, chromatophore,
+  cyanelle). nhmmer finds each gene, queried with that gene of the NEAREST
   RefSeq species in NCBI's lineage (its exons joined); barrnap the rRNA nhmmer does not (--kingdom mito in animals'
   mitochondria, whose 12S and 16S are its models; bac elsewhere, as plastids' rRNA are bacterial in kind). barrnap
   alone finds no rRNA in yeast's mitochondrion, nhmmer with Kluyveromyces' all of it (2026-11-05).

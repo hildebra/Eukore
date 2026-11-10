@@ -370,7 +370,8 @@ barcode), and since format 5 mitochondrial COX3, nad1, nad5 and atp6 and plastid
 (land plants' barcode), where NCBI has them. Of each organelle, a
 species' genes come from one source: its RefSeq organelle genome (the one with the most of these genes, then of the
 species' own taxid, then the longest), else the organelle molecules of its own assembly (those NCBI's FASTA titles
-name a mitochondrion, chloroplast, plastid or apicoplast).
+name a mitochondrion, chloroplast, plastid or apicoplast; since 2026-11-10 also a kinetoplast, maxicircle,
+minicircle, chromatophore or cyanelle).
 - `genes.fna.gz`: one record per gene, `>record`, the gene from its first base to its last on its strand, introns and
   all, upper case. A trans-spliced gene (a plant mitochondrion's nad1, nad5: exons on both strands or out of order;
   `trans_spliced` t) is its exons joined. The trnH-psbA record runs from trnH-GUG's first base, across the spacer, to
@@ -386,7 +387,7 @@ name a mitochondrion, chloroplast, plastid or apicoplast).
 |---|---|
 | `record` | its name: `<seqid>_<gene>` |
 | `gene` | `SSU` (12S in animals' mitochondria, 16S in plastids, 18S in plants' mitochondria, ...), `LSU` (16S in animals' mitochondria, 23S, 26S, ...), `5S`, `COX1`, `COX3`, `CYTB`, `nad1`, `nad5`, `atp6` (mitochondrion), `rbcL`, `matK`, `tufA`, `psbA`, `ycf1`, `trnH-psbA` (plastid) |
-| `organelle` | `mitochondrion` or `plastid` (chloroplasts, apicoplasts and other plastids) |
+| `organelle` | `mitochondrion` (a kinetoplast too) or `plastid` (chloroplasts, apicoplasts, chromatophores, cyanelles and other plastids) |
 | `taxid`, `species_taxid` | NCBI's |
 | `source` | `refseq` (RefSeq's organelle genome, its annotated features) or `assembly` (the species' assembly: each gene by nhmmer with that gene of the 3 nearest RefSeq species, its exons joined; rRNA nhmmer misses by barrnap, `--kingdom mito` in animals' mitochondria, `bac` elsewhere) |
 | `seqid` | the organelle sequence (RefSeq's accession, or the assembly's molecule) |
@@ -409,7 +410,8 @@ name a mitochondrion, chloroplast, plastid or apicoplast).
 
 - `amplicons.tsv` (format 5): as `rrna/amplicons.tsv`, the organelle genes' primer pairs on their genes: COX1 `COI_Folmer` (LCO1490/HCO2198), `COI_Leray` (mlCOIintF/jgHCO2198); rbcL `rbcLa`; matK `matK_KIM`; `psbA-trnH`; an animal mitochondrion's 12S `MiFish-U`, `12S_V5` and 16S `16S_Palumbi`.
 - `molecules.fna.gz` (since 2026-11-07): the organelle molecules of each species' genome as its assembly holds them
-  (those its FASTA titles name a mitochondrion, chloroplast, plastid or apicoplast; up to 15 Mb each), whole,
+  (those its FASTA titles name a mitochondrion, chloroplast, plastid, apicoplast, or since 2026-11-10 a kinetoplast,
+  maxicircle, minicircle, chromatophore or cyanelle; up to 15 Mb each), whole,
   `>accession|seqid organelle`, upper case: for organelle genes a later build or a user wants (the nad genes, a
   plastid's psbA), whatever source `genes.tsv` took. RefSeq's organelle genomes are not copied.
 

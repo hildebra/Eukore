@@ -129,7 +129,8 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
   ITS1/5.8S/ITS2/28S borders, searching the profile sets of the genome's lineage. Where ITSx finds only one end
   of the 5.8S, it still reports both ITS spans, with the other border guessed (a 45-base 5.8S); barrnap's border
   is used there instead. Sequences titled as a
-  mitochondrion, chloroplast, plastid or apicoplast are left out: barrnap's eukaryote models call a mitochondrial
+  mitochondrion, chloroplast, plastid or apicoplast (since 2026-11-10 also a kinetoplast, maxicircle, minicircle,
+  chromatophore, cyanelle or nucleomorph) are left out: barrnap's eukaryote models call a mitochondrial
   SSU an 18S, and that bacterial-type gene then takes bacterial reads. Organelle rRNA comes from the organelle
   pass below.
 - **Published records.** EUKARYOME 2.1's long reads and ROD v1.2's operons, labelled by NCBI taxid.
@@ -149,7 +150,8 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
   `/gene`, else `/product`; rbcS, the small subunit, is not rbcL, nor the plastid's cytochrome b6 or b559 CYTB). Of a species' records, the one with the most of these genes, then its own taxid's, then the
   longest.
 - **Else its own assembly's organelle molecules**, those NCBI's FASTA titles name a mitochondrion, chloroplast, plastid
-  or apicoplast. nhmmer finds each gene, queried with that gene of the 3 nearest RefSeq species (its exons joined);
+  or apicoplast (since 2026-11-10 also a kinetoplast, maxicircle, minicircle, chromatophore or cyanelle). nhmmer
+  finds each gene, queried with that gene of the 3 nearest RefSeq species (its exons joined);
   barrnap the rRNA nhmmer misses (`--kingdom mito` in animals' mitochondria, `bac` elsewhere). This runs after the
   genomes in the process stage, and again in the package stage before the prune, on the organelle molecules the
   metadata scan kept (`WORK/done/<accession>/organelle.fna.gz`; since 2026-11-08, else the genome where still on

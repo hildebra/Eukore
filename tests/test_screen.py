@@ -9,7 +9,6 @@ rrna.py's name index and its titles of molecules that are not the nucleus'.
 
 import os
 import random
-import re
 import sys
 import tempfile
 import unittest
@@ -215,17 +214,15 @@ class RrnaNamesTest(unittest.TestCase):
                    "scaffold_12 Kinetoplastida sp. scaffold 12"]
         self.assertEqual([t for t in organelle if not rrna.NOT_NUCLEAR.search(t)], [])
         self.assertEqual([t for t in nuclear if rrna.NOT_NUCLEAR.search(t)], [])
-        # organelle.py and metadata.py read ORGANELLE_TITLE's word as the organelle: no word of another added to it
-        self.assertEqual({rrna.ORGANELLE_TITLE.search(t).group(1) for t in organelle[-2:-1]}, {"mitochondrion"})
-        self.assertEqual([t for t in organelle[:5] if rrna.ORGANELLE_TITLE.search(t)], [])
-        # since 2026-11-10 one reading of the word (organelle_of, organelle.py's and metadata.py's): a pattern widened
-        # by the other organelles' words reads a kinetoplast as a mitochondrion, not (as before) as a plastid
-        self.assertEqual([rrna.organelle_of(t) for t in organelle + nuclear[:1]],
-                         [None] * 8 + ["mitochondrion", None, None])
+        # since 2026-11-10 one reading of the word (organelle_of, organelle.py's and metadata.py's): a kinetoplast a
+        # mitochondrion, not (as a pattern widened before would have) a plastid; and ORGANELLE_TITLE widened by the
+        # other organelles' words: a maxicircle, a chromatophore are organelle molecules (until then nuclear ones)
+        self.assertEqual([rrna.organelle_of(t) for t in organelle + nuclear],
+                         ["mitochondrion"] * 3 + ["plastid"] * 2 + [None] * 3 + ["mitochondrion", None] + [None] * 6)
         self.assertEqual(rrna.organelle_of("X Toxoplasma gondii apicoplast, complete genome"), "plastid")
-        wide = re.compile(rrna.NOT_NUCLEAR.pattern.split("|\\bmito")[0], re.IGNORECASE)
-        self.assertEqual([rrna.organelle_of(t, wide) for t in organelle],
-                         ["mitochondrion"] * 3 + ["plastid"] * 2 + [None] * 3 + ["mitochondrion", None])
+        self.assertEqual(rrna.organelle_of("CM046929 Leishmania amazonensis strain PH8 kinetoplast maxicircle, "
+                                           "complete sequence, whole genome shotgun sequence"), "mitochondrion")
+        self.assertEqual([w for w in rrna.ORGANELLE_WORDS if not rrna.ORGANELLE_TITLE.search(f"X {w} DNA")], [])
 
 
 if __name__ == "__main__":

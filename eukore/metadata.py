@@ -9,7 +9,8 @@ into WORK/done/<accession>/:
   (lower-case) share of ACGT, CpG observed/expected; GC of WINDOW-base windows (their spread, quantiles, and the share
   GC_OUTLIER or more from their median: another organism's contigs, isochores); sequences identical to an earlier one;
   telomeric repeats at the sequence ends (TELOMERES); the organelle molecules (FASTA titles naming a mitochondrion,
-  chloroplast, plastid or apicoplast: organelle.TITLE); the counts of the 136 canonical tetranucleotides;
+  chloroplast, plastid, apicoplast, kinetoplast, chromatophore, ...: organelle.TITLE); the counts of the 136 canonical
+  tetranucleotides;
 - ORGANELLE (organelle.fna.gz): those organelle molecules, whole (up to organelle.MAX_MOLECULE each);
 - SKETCH (sketch.sig.gz): sourmash's FracMinHash sketch of the genome (SKETCH_PARAMS), where sourmash is there.
 NCBI's assembly_summary rows of each genome are its tables', read at package time (ncbi_rows).
