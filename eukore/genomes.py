@@ -1029,7 +1029,8 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
                             settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), scratch,
                             settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings),
-                            annotation=(gff, report, source) if gff else None, index_dir=index_dir)
+                            annotation=(gff, report, source) if gff else None, index_dir=index_dir,
+                            bases=job.get("size") or None)  # NCBI's total length (since 2026-11-10; loci.call)
     except (OSError, RuntimeError) as e:
         return acc, None, f"locus calling failed: {e}", taken
     if got["failed"]:
@@ -1508,7 +1509,7 @@ def held_out(path, job, settings, odb, own, folder, scratch=None, rank=None, ind
         got = loci_mod.call(path, queries, odb, settings.get("miniprot", "miniprot"),
                             settings.get("hmmsearch", "hmmsearch"), settings.get("threads", 1), scratch or folder,
                             settings.get("hmm_db"), job.get("gencode", 1), **rescue_of(settings),
-                            index_dir=index_dir)
+                            index_dir=index_dir, bases=job.get("size") or None)
     except (OSError, RuntimeError) as e:
         return f"held-out locus calling failed: {e}"
     if got["failed"]:

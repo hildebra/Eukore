@@ -161,6 +161,16 @@ class LociTest(unittest.TestCase):
         got = loci.call(self.path, fx.QUERIES, self.odb, failing, fx.hmmsearch(self.dir), 1, self.dir)
         self.assertTrue(got["failed"].startswith("miniprot failed: out of memory"))
 
+    def test_a_profile_s_coverage_the_union_of_its_domains(self):
+        # three domains of a profile of 120: 40-80, 1-50 (overlapping), 100-120 (apart): 101 positions, each once
+        # (since 2026-11-10 by the merged spans; the same value as the set of positions until then)
+        rows = "".join(f"p - 100 7 - 120 1e-9 55.0 0 {i} 3 1e-5 1e-5 20.0 0 {a} {b} 1 9 1 9 0.9 -\n"
+                       for i, (a, b) in enumerate([(40, 80), (1, 50), (100, 120)], 1))
+        tool = fx.tool(self.dir, "hs", "#!/bin/sh\nwhile [ \"$1\" != --domtblout ]; do shift; done\n"
+                                       f"printf '%s' '{rows}' > \"$2\"\n")
+        got = loci.hmmsearch({"p": "MKV"}, os.path.join(self.dir, "x.hmm"), tool, 1, self.dir)
+        self.assertEqual(got, {"p": {"7": (55.0, 101 / 120)}})
+
     def test_frameshifts_left_out_of_the_coding_sequence(self):
         # miniprot's CIGAR: amino acids (M, D: 3 bases each), a protein insertion (I: none), a phase-0 intron (N: not
         # coding), a phase-1 or 2 one (U, V: its split codon's 3 bases), frameshifts (F, G: their bases, out of frame)
@@ -255,6 +265,34 @@ class LociTest(unittest.TestCase):
         plain = loci.call(self.path, fx.QUERIES, self.odb, fx.miniprot(self.dir, self.gff), fx.hmmsearch(self.dir), 1,
                           self.dir)
         self.assertEqual(plain["loci"]["1at2759"]["model"], "miniprot")
+
+    def test_a_row_s_status_its_shipped_model_s(self):
+        # since 2026-11-10 (the audit's B8): miniprot's model of locus 2 a fragment (3/4 of the profile), the
+        # annotation's the whole gene: taken, and the locus Single (until then Fragmented beside a coverage of 1);
+        # locus 1's annotated model its first exon alone (half the profile) where miniprot's is complete: not taken
+        # (until then taken: Duplicated beside a coverage of 0.5)
+        a, _b = self.spans["1at2759"]
+        c, d = self.spans["2at2759"]
+        short = self.gff.replace(fx.PROTEINS["2at2759"], fx.PROTEINS["2at2759"][:90])
+        gff = os.path.join(self.dir, "ann.gff.gz")
+        with gzip.open(gff, "wt") as fh:
+            fh.write("##gff-version 3\n"
+                     f"c1\tRefSeq\tCDS\t{a}\t{a + 179}\t.\t+\t0\tID=c1;Parent=rna-1;gene=ONE\n"
+                     f"c1\tRefSeq\tCDS\t{c}\t{d}\t.\t-\t0\tID=c2;Parent=rna-2;gene=TWO\n")
+        args = (self.path, fx.QUERIES, self.odb, fx.miniprot(self.dir, short), fx.hmmsearch(self.dir), 1, self.dir)
+        plain = loci.call(*args)["loci"]
+        got = loci.call(*args, annotation=(gff, None))["loci"]
+        was, two = plain["2at2759"], got["2at2759"]
+        self.assertEqual((was["status"], round(was["hmm_coverage"], 2), was["model"]), ("Fragmented", 0.75, "miniprot"))
+        self.assertEqual((two["status"], two["copies"], two["hmm_coverage"], two["model"], two["transcript"]),
+                         ("Single", 1, 1.0, "ncbi", "rna-2"))
+        self.assertEqual(two["spliced"], fx.cds_of(fx.PROTEINS["2at2759"]))
+        # how the gene was found stays miniprot's alignment's: its query, identity, coverage of the query, score
+        self.assertEqual([two[f] for f in ("query", "identity", "coverage", "score")],
+                         [plain["2at2759"][f] for f in ("query", "identity", "coverage", "score")])
+        one = got["1at2759"]
+        self.assertEqual((one["status"], one["hmm_coverage"], one["model"], one["transcript"]),
+                         ("Duplicated", 1.0, "miniprot", "-"))
 
     def test_a_missed_gene_rescued(self):
         # locus 3's gene after the others: miniprot's first pass (the fixed GFF) does not align it, its HMM finds it in
@@ -463,6 +501,148 @@ class LociTest(unittest.TestCase):
         # the same genome whole (not over CHUNK_BASES): another index, of the file itself
         self.assertIsNone(run(5)[1])
         self.assertEqual([c[-1] for c in commands(log) if "-d" in c], [path])
+
+    # a contig over CHUNK_BASES in windows (since 2026-11-10; the audit's C8): until then alone in its piece, whole
+
+    def long_contig(self):
+        """A genome of a contig of 8,000 bases and one of 1,000 (pieces of 3,000, windows 800 or more into each
+        other, cut on multiples of 256 from the contig's ends: 0-2880, 2048-4928, 4096-6976, 6144-8000) with four
+        genes of one exon -> (its path, {gene: (contig, start, end)} 1-based with the stop, the contigs): locus 1's
+        inside the first window alone, locus 2's across the first window's end (whole in the second alone), locus
+        3's inside the second and third windows' overlap (whole in both), locus 1's again on the second contig (the
+        stand-in finds a protein once a record)."""
+        rng = __import__("random").Random(11)
+        c1 = [rng.choice("ACGT") for _ in range(8000)]
+        c2 = [rng.choice("ACGT") for _ in range(1000)]
+        places = {}
+        for gene, locus, seq, at in (("a", "1at2759", c1, 500), ("b", "2at2759", c1, 2700), ("c", "3at2759", c1, 4500),
+                                     ("d", "1at2759", c2, 300)):
+            cds = fx.cds_of(fx.PROTEINS[locus])
+            seq[at:at + len(cds)] = cds
+            places[gene] = ("c1" if seq is c1 else "c2", at + 1, at + len(cds))
+        path = os.path.join(self.dir, "long.fna")
+        with open(path, "w") as fh:  # lines of 70 bases: a window's ends inside lines
+            for name, seq in (("c1", c1), ("c2", c2)):
+                fh.write(f">{name} a contig\n")
+                fh.writelines("".join(seq[i:i + 70]) + "\n" for i in range(0, len(seq), 70))
+        return path, places, "".join(c1), "".join(c2)
+
+    def test_a_long_contig_in_windows(self):
+        self.assertEqual(placement.windows(8000, 3000, 800), [(0, 2880), (2048, 4928), (4096, 6976), (6144, 8000)])
+        self.assertEqual(placement.windows(3000, 3000, 800), [(0, 3000)])   # not over a piece: whole
+        self.assertEqual(placement.windows(3001, 3000, 800), [(0, 2745), (1792, 3001)])
+        big = placement.windows(10_000_123, 4_000_000, 500_000)  # on miniprot's blocks of 256, from either end
+        self.assertEqual((len(big), big[0][0], big[-1][1]), (3, 0, 10_000_123))
+        self.assertTrue(all(a % 256 == 0 and (10_000_123 - b) % 256 == 0 and b - a <= 4_000_000 for a, b in big))
+        self.assertTrue(all(500_000 <= b - c < 500_256 for (_a, b), (c, _d) in zip(big, big[1:])))
+        self.assertEqual(placement.windows(8000, 3000, 0), [(0, 8000)])     # no overlap asked: never cut
+        self.assertEqual(placement.window_of("c1" + placement.WINDOW_MARK + "2200"), ("c1", 2200))
+        self.assertEqual(placement.window_of("c1|x"), ("c1|x", 0))
+        path, _places, c1, c2 = self.long_contig()
+        work = os.path.join(self.dir, "pieces")
+        os.makedirs(work)
+        # as until 2026-11-10 (no overlap given: the six-frame ORFs' pieces): the long contig whole, alone in its piece
+        old = placement.chunks(path, work, 3000)
+        self.assertEqual([[(n, len(s)) for n, s in odb_mod.read_fasta(p)] for p in old],
+                         [[("c1", 8000)], [("c2", 1000)]])
+        parts = placement.chunks(path, work, 3000, 800)
+        got = [list(odb_mod.read_fasta(p)) for p in parts]
+        mark = placement.WINDOW_MARK
+        self.assertEqual([[n for n, _s in piece] for piece in got],
+                         [[f"c1{mark}0"], [f"c1{mark}2048"], [f"c1{mark}4096"], [f"c1{mark}6144", "c2"]])
+        self.assertTrue(all(sum(len(s) for _n, s in piece) <= 3000 for piece in got))  # what the build reserved
+        for piece in got:
+            for name, seq in piece:
+                contig, start = placement.window_of(name)
+                self.assertEqual(seq, {"c1": c1, "c2": c2}[contig][start:start + len(seq)])
+        self.assertEqual(sum(len(s) for n, s in sum(got, []) if n != "c2"), 8000 + 3 * 832)
+        # the genome's bases where the caller knows them (the audit's L5): under a piece, not cut, whatever the file's
+        # size says; over it, cut
+        self.assertEqual(placement.chunks(path, work, 3000, 800, bases=2500), [path])
+        self.assertEqual(len(placement.chunks(path, work, 20_000, 800, bases=30_000)), 1)  # (one piece holds it all)
+        self.assertEqual(placement.chunks(path, work, 20_000, 800), [path])
+
+    def test_a_long_contig_s_alignments_those_of_the_whole(self):
+        # the stand-in searches each piece (-M0): a gene is found in every window that holds it whole
+        path, places, _c1, _c2 = self.long_contig()
+        mp = fx.miniprot(self.dir, self.gff)
+        queries = fx.QUERIES | {k.replace("1at", "3at"): fx.PROTEINS["3at2759"] for k in fx.QUERIES
+                                if k.startswith("1at")}
+        folders = [os.path.join(self.dir, f"w{k}") for k in range(2)]
+        for folder in folders:
+            os.makedirs(folder)
+        whole, why = loci.align(path, queries, mp, 1, 1, folders[0], ["-G", "5000", "-M0"])
+        self.assertIsNone(why)
+        with mock.patch.object(placement, "CHUNK_BASES", 3000), mock.patch.object(placement, "CHUNK_OVERLAP", 800):
+            cut, why = loci.align(path, queries, mp, 1, 1, folders[1], ["-G", "5000", "-M0"])
+        self.assertIsNone(why)
+        self.assertEqual(sorted(f for f in os.listdir(folders[1]) if f.startswith("piece")),
+                         [f"piece{k}.fna" for k in range(4)])
+
+        def key(a):
+            return a["query"], a["contig"], a["start"]
+        self.assertEqual(sorted(cut, key=key), sorted(whole, key=key))  # places, exons, proteins: all of them
+        self.assertEqual(sorted({(a["contig"], a["start"], a["end"]) for a in cut}), sorted(places.values()))
+        self.assertEqual(len(cut), 2 * len(places))  # two proteins a locus: the overlap's gene once for each
+        # of two windows' alignments of a protein that overlap, the best score: one cut short at a window's end is
+        # not a second alignment; one beside it, or of the same window, stays
+        mark = placement.WINDOW_MARK
+
+        def hit(window, start, end, score, query="q"):
+            return dict(query=query, contig=f"c1{mark}{window}", start=start, end=end, strand="+", score=score,
+                        exons=[(start, end)])
+        got = loci.whole_contigs([hit(0, 2500, 3000, 400.0), hit(2200, 300, 1100, 900.0),    # cut short; whole
+                                  hit(2200, 1500, 1900, 300.0), hit(2200, 1800, 2000, 290.0),  # one window's two
+                                  hit(4400, 100, 500, 50.0, "r"), dict(hit(0, 5, 9, 1.0), contig="c2")])
+        self.assertEqual(sorted((a["query"], a["contig"], a["start"], a["end"], a["exons"], a["score"]) for a in got),
+                         [("q", "c1", 2500, 3300, [(2500, 3300)], 900.0),
+                          ("q", "c1", 3700, 4100, [(3700, 4100)], 300.0),
+                          ("q", "c1", 4000, 4200, [(4000, 4200)], 290.0), ("q", "c2", 5, 9, [(5, 9)], 1.0),
+                          ("r", "c1", 4500, 4900, [(4500, 4900)], 50.0)])
+
+    def test_a_long_contig_s_windows_each_their_index(self):
+        path, _places, _c1, _c2 = self.long_contig()
+        mp, log, _mode = indexing_miniprot(self.dir, self.gff)
+        idx = os.path.join(self.dir, "idx")
+        with mock.patch.object(placement, "CHUNK_BASES", 3000), mock.patch.object(placement, "CHUNK_OVERLAP", 800):
+            for k in range(2):
+                work = os.path.join(self.dir, f"work{k}")
+                os.makedirs(work)
+                self.assertIsNone(loci.align(path, fx.QUERIES, mp, 1, 1, work, index_dir=idx)[1])
+                self.assertFalse([f for f in os.listdir(work) if f.startswith("piece")])
+        runs = commands(log)
+        built = [c for c in runs if "-d" in c]
+        self.assertEqual([os.path.basename(c[-1]) for c in built], [f"piece{k}.fna" for k in range(4)])  # once
+        pieces = sorted(f for f in os.listdir(idx) if f.endswith(".mpi"))
+        self.assertEqual([f.split(".")[2] for f in pieces], [f"piece{k}" for k in range(4)])
+        self.assertEqual([os.path.basename(c[-2]) for c in runs if "-d" not in c], pieces * 2)
+
+    def test_the_genome_s_size_where_the_caller_knows_it(self):
+        # since 2026-11-10 (the audit's L5): the rescue's gate and the intron bound of the rescue by the genome's true
+        # bases where the caller gives them; else by the file's size, as until then
+        self.assertEqual([loci.intron_bound(n) for n in (1_000_000, 12_071_326, 64_000_000, 10 ** 11)],
+                         [10_000, 12_507, 28_800, 300_000])  # miniprot -I's: 3.6 x the root, 10 kb to 300 kb
+        rng = __import__("random").Random(9)
+        pad = "".join(rng.choice("ACGT") for _ in range(400))
+        path = os.path.join(self.dir, "g3.fna.gz")
+        with gzip.open(path, "wt") as fh:
+            fh.write(f">c1 a test contig\n{self.seq + pad + fx.cds_of(fx.PROTEINS['3at2759']) + pad}\n")
+        mp, log, _mode = indexing_miniprot(self.dir, self.gff)
+        queries = fx.QUERIES | {k.replace("1at", "3at"): fx.PROTEINS["3at2759"] for k in fx.QUERIES
+                                if k.startswith("1at")}
+        args = (path, queries, self.odb, mp, fx.hmmsearch(self.dir), 1, self.dir)
+
+        def rescued(**more):
+            got = loci.call(*args, translate=fx.esl_translate(self.dir), **more)
+            bound = [c[c.index("-G") + 1] for c in commands(log) if "-G" in c]
+            return got["loci"]["3at2759"]["status"], bound
+        with mock.patch.object(loci, "RESCUE_MAX_BASES", 100_000_000):
+            self.assertEqual(rescued(), ("Single", ["10000"]))  # the file's size / 0.3: a few kb
+            self.assertEqual(rescued(bases=64_000_000), ("Single", ["28800"]))
+            self.assertEqual(rescued(bases=100_000_001), ("Missing", []))  # over the gate: not rescued
+        with mock.patch.object(loci, "RESCUE_MAX_BASES", 1000):  # by the file's size over the gate, by its bases not
+            self.assertEqual(rescued(), ("Missing", []))
+            self.assertEqual(rescued(bases=900), ("Single", ["10000"]))
 
 
 if __name__ == "__main__":

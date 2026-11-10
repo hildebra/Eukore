@@ -3,7 +3,8 @@ own copies, in place of EukDetect1's and EukDetect2's.
 
 1. miniprot aligns the genome's queries (odb.Odb.queries: the nearest species' proteins and the ancestral variants of
    each locus) with the genome's genetic code (NCBI's, `table`: a ciliate's or a diplomonad's TAA and TAG are
-   glutamine), keeping alignments of OUTS of a protein's best score (several per protein: a second copy);
+   glutamine), keeping alignments of OUTS of a protein's best score (several per protein: a second copy); a genome
+   over placement.CHUNK_BASES in pieces, a contig over that in overlapping windows (since 2026-11-10: whole_contigs);
 2. per locus, the alignments overlapping on a contig's strand are one candidate region, of the alignments with
    MIN_IDENTITY and MIN_COVERAGE of their protein;
 3. hmmsearch scores the translations of a region's TOP_K best alignments (by miniprot's score) against every locus'
@@ -21,7 +22,9 @@ own copies, in place of EukDetect1's and EukDetect2's.
    where the locus' HMM confirms its translation at ANNOTATION_SHARE of miniprot's score or more (`model` the source:
    ncbi, ensembl, toga2), else keeps miniprot's. Since 2026-11-09 not a model with a stop inside its protein where
    miniprot's has none, nor one whose protein is over ANNOTATION_LONGER times miniprot's and the profile's (a fusion
-   of two genes, which the HMM's score does not see).
+   of two genes, which the HMM's score does not see). Since 2026-11-10 nor a fragment where miniprot's is complete; and
+   a Fragmented locus whose model taken (or recovered) is complete is Single: a row's status and hmm_coverage are its
+   shipped model's. Its identity, coverage, score and query stay miniprot's alignment's (how the gene was found).
 
 A copy's coding sequence (`spliced`) leaves out the bases of miniprot's frameshifts (its CIGAR's F and G), which its
 GFF keeps inside the CDS; they are `frameshift` features of the copy.
@@ -310,11 +313,9 @@ def hmmsearch(proteins, hmm_db, binary="hmmsearch", threads=1, tmp=None):
             qlen[query] = length
             spans[(target, query)].append((int(f[15]), int(f[16])))
     out = collections.defaultdict(dict)
-    for key, s in score.items():
-        covered = set()
-        for a, b in spans[key]:
-            covered.update(range(a, b + 1))
-        out[key[0]][key[1]] = (s, len(covered) / max(qlen[key[1]], 1))
+    for key, s in score.items():  # the domains' union by their merged spans (until 2026-11-10 a set of every position)
+        covered = sum(b - a + 1 for a, b in placement.merged(spans[key]))
+        out[key[0]][key[1]] = (s, covered / max(qlen[key[1]], 1))
     return out
 
 
@@ -408,10 +409,42 @@ def write_index(miniprot, threads, indexing, source, dest):
     return None if os.path.getsize(dest) else "its index was not written (empty)"
 
 
-def align(target, queries, miniprot, threads, table, work, options=None, index_dir=None):
-    """miniprot's alignments of queries {name: protein} on a genome or a windows file (in pieces where large) ->
-    (alignments, why it failed or None). options: its intron and seeding options (default -I: the max intron 3.6
-    times the square root of the target's length).
+def intron_bound(bases):
+    """The longest intron of a genome of `bases` as miniprot's -I sets it (its manual: 3.6 times the square root of
+    the genome's length, 10 kb at least, 300 kb at most), for the passes that name it (-G): the rescue's and the
+    recovery's, on a few windows whose own length would say nothing (until 2026-11-10 without -I's two bounds: under
+    10 kb for a genome under 7.7 Mb)."""
+    return int(min(max(3.6 * bases ** 0.5, 10_000), 300_000))
+
+
+def whole_contigs(alignments):
+    """Alignments on a cut contig's windows (placement.chunks: a contig over CHUNK_BASES; since 2026-11-10) put back
+    on the contig -> the alignments, every one of the windows' overlap once. A gene in two windows' overlap is aligned
+    in both, the same or cut short at one window's end: of a protein's alignments of two windows that overlap on a
+    contig's strand the best score is kept (of equal ones the first). Alignments of no window: as they are."""
+    out, cut = [], collections.defaultdict(list)  # (query, contig, strand) -> [(alignment, its window's start)]
+    for a in alignments:
+        contig, shift = placement.window_of(a["contig"])
+        if contig == a["contig"]:
+            out.append(a)
+            continue
+        a = dict(a, contig=contig, start=a["start"] + shift, end=a["end"] + shift,
+                 exons=[(x + shift, y + shift) for x, y in a["exons"]])
+        cut[(a["query"], contig, a["strand"])].append((a, shift))
+    for hits in cut.values():
+        kept = []
+        for a, w in sorted(hits, key=lambda h: -h[0]["score"]):  # stable: of equal scores the first window's
+            if not any(w != v and a["start"] <= b["end"] and a["end"] >= b["start"] for b, v in kept):
+                kept.append((a, w))
+        out += [a for a, _w in kept]
+    return out
+
+
+def align(target, queries, miniprot, threads, table, work, options=None, index_dir=None, bases=None):
+    """miniprot's alignments of queries {name: protein} on a genome or a windows file (in pieces where large; a contig
+    over placement.CHUNK_BASES in windows, since 2026-11-10: whole_contigs) -> (alignments, why it failed or None).
+    options: its intron and seeding options (default -I: the max intron 3.6 times the square root of the target's
+    length). bases: the target's bases where the caller knows them (placement.chunks).
     index_dir (since 2026-11-10): a folder that holds miniprot's index of each of the target's pieces, made by the
     first call that names it (miniprot -d, with the indexing options: the genetic code is one, the index holds the
     translated ORFs) and read by every later one of the same target and indexing options in place of the FASTA
@@ -424,14 +457,15 @@ def align(target, queries, miniprot, threads, table, work, options=None, index_d
         fh.writelines(f">{q}\n{p}\n" for q, p in queries.items())
     options, code = list(options or ["-I"]), ["-T", str(table or 1)]
     if index_dir is None:
-        parts = placement.chunks(target, work)
+        parts = placement.chunks(target, work, overlap=placement.CHUNK_OVERLAP, bases=bases)
     else:
         # the indexing options at the index's build alone; the genetic code at the alignment too: 0.18 keeps it in the
         # index and reads it there whatever -T says then (checked), a version that did not would need it
         indexing, options = split_options(options + code)
         parts, why = placement.saved_indexes(
             target, work, index_dir, [miniprot, *indexing],
-            lambda source, dest: write_index(miniprot, threads, indexing, source, dest))
+            lambda source, dest: write_index(miniprot, threads, indexing, source, dest),
+            overlap=placement.CHUNK_OVERLAP, bases=bases)
         if why:
             return [], "miniprot failed: " + why
     alignments = []
@@ -442,7 +476,7 @@ def align(target, queries, miniprot, threads, table, work, options=None, index_d
         if run.returncode != 0:
             return [], "miniprot failed: " + (run.stderr.strip().splitlines() or ["?"])[-1][:200]
         alignments += parse_alignments(run.stdout)
-    return (best_of_each(alignments) if len(parts) > 1 else alignments), None
+    return (best_of_each(whole_contigs(alignments)) if len(parts) > 1 else alignments), None
 
 
 def confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work):
@@ -690,17 +724,18 @@ def orf_file(genome, orfs, table, threads, work, translate="esl-translate"):
             os.remove(path)
 
 
-def orf_hits(target, loci_, odb, table, hmmsearch_bin, threads, work, translate="esl-translate"):
+def orf_hits(target, loci_, odb, table, hmmsearch_bin, threads, work, translate="esl-translate", bases=None):
     """The loci's HMMs in a genome's six-frame ORFs (esl-translate, ORF_MIN residues or more, split at assembly gaps:
     split_orfs) -> {locus: [dict(contig, strand, start, end (the ORF's span on the contig), score, hmm_from, hmm_to,
-    protein (the domain's envelope on the ORF))]}, the domains of RESCUE_DOM_E or less."""
+    protein (the domain's envelope on the ORF))]}, the domains of RESCUE_DOM_E or less. bases: the genome's, where
+    the caller knows them (placement.chunks)."""
     hmm, wanted = os.path.join(work, "rescue.hmm"), set(loci_)
     with open(hmm, "w") as out:
         for locus in loci_:
             with open(odb.hmm[locus]) as fh:
                 out.write(fh.read())
     hits = collections.defaultdict(list)
-    for i, part in enumerate(placement.chunks(target, work)):
+    for i, part in enumerate(placement.chunks(target, work, bases=bases)):
         orfs, dom = os.path.join(work, f"orfs{i}.faa"), os.path.join(work, f"orfs{i}.dom")
         orf_file(part, orfs, table, threads, work, translate)
         found = collections.defaultdict(list)  # ORF -> [(locus, score, hmm_from, hmm_to, env_from, env_to)]
@@ -749,12 +784,13 @@ def located(hits, join=RESCUE_JOIN):
 
 
 def rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads, table, hmm_db, work,
-           translate="esl-translate"):
+           translate="esl-translate", bases=None):
     """The rescue pass (step 5) of the loci the first pass left Missing -> {locus: [confirmed alignments, rescued]}:
     the locus' HMM in the genome's six-frame ORFs places it (located); on that place and RESCUE_FLANK bases each side,
     miniprot with RESCUE_OPTIONS aligns the locus' queries and its self protein; the HMMs confirm as in the first pass.
-    Introns as long as the first pass allows (-G: -I's 3.6 times the square root of the genome's length)."""
-    places = located(orf_hits(genome_path, missing, odb, table, hmmsearch_bin, threads, work, translate))
+    Introns as long as the first pass allows (-G: intron_bound of the genome's bases; `bases` where the caller knows
+    them, since 2026-11-10, else estimated from the file's size)."""
+    places = located(orf_hits(genome_path, missing, odb, table, hmmsearch_bin, threads, work, translate, bases))
     if not places:
         return {}
     by_contig = collections.defaultdict(list)
@@ -774,7 +810,7 @@ def rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads,
                 fh.write(f">{name}\n{seq[lo - 1:hi]}\n")
     q = {n: p for n, p in queries.items() if n.split("~", 1)[0] in places}
     q.update({f"{locus}~{locus}_self": p[3] for locus, p in places.items() if p[3]})
-    intron = int(3.6 * placement.genome_bases(genome_path) ** 0.5)
+    intron = intron_bound(bases or placement.genome_bases(genome_path))
     alignments, failed = align(target, q, miniprot, threads, table, work, ["-G", str(intron)] + RESCUE_OPTIONS)
     if failed:
         raise RuntimeError(f"rescue: {failed}")
@@ -860,9 +896,13 @@ def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hm
         s, cov = got[locus]
         a, p = chosen[locus], proteins[locus]
         # since 2026-11-09: not a model of a stop inside where miniprot's has none, nor a fusion (its protein over
-        # ANNOTATION_LONGER times miniprot's and the profile's: the HMM's score does not see a second gene)
+        # ANNOTATION_LONGER times miniprot's and the profile's: the HMM's score does not see a second gene).
+        # Since 2026-11-10 (the audit's B8) nor a fragment where miniprot's is complete, as cleanest and recover take
+        # a complete one for a complete one: the row is its model's (hmm_coverage), and read Single beside a
+        # coverage under COMPLETE (Blastocystis hominis with NCBI's models: 1 of 72 taken, 0.817 -> 0.787)
         clean = "*" not in p
         if s >= odb.cutoff[locus] and s >= ANNOTATION_SHARE * a["hmm_score"] and (clean or not is_clean(a)) \
+                and (cov >= COMPLETE or a["hmm_coverage"] < COMPLETE) \
                 and len(p) <= ANNOTATION_LONGER * max(len((a.get("protein") or "").rstrip("*")), odb.length[locus]):
             out[locus] = dict(a, exons=m["exons"], start=m["start"], end=m["end"], shifts=[], hmm_score=s,
                               hmm_coverage=cov, protein=p, model=source, transcript=m["transcript"],
@@ -872,7 +912,8 @@ def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hm
 
 
 def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearch", threads=1, tmp=None,
-         hmm_db=None, table=1, rescue_missing=True, translate="esl-translate", annotation=None, index_dir=None):
+         hmm_db=None, table=1, rescue_missing=True, translate="esl-translate", annotation=None, index_dir=None,
+         bases=None):
     """The BUSCO genes of a genome (table: its NCBI genetic code) -> dict(loci {locus: dict(status, copy, spliced,
     features [(kind, start, end)],
     contig, start, end, strand, identity, coverage, score, hmm_score, hmm_coverage, cutoff, copies, query, protein,
@@ -885,20 +926,25 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
     annotation: (the genome's GFF, NCBI's assembly report or None, its source) for step 6 (annotated()), or None;
     index_dir (since 2026-11-10): where the genome is called more than once (its hold-outs), a folder of the run's own
     for miniprot's index of the genome, made by the first call and read by the others (align; the genome's file, the
-    table and miniprot the same in each); the caller deletes it. None: as before, the index made by every call."""
+    table and miniprot the same in each); the caller deletes it. None: as before, the index made by every call.
+    bases (since 2026-11-10, the audit's L5): the genome's bases where the caller knows them (NCBI's total length),
+    for the rescue's gate, the pieces and the intron bound of the rescue and the recovery. None: estimated from the
+    file's size as until then (placement.genome_bases: 0.98 to 1.07 times the true length on the trial's genomes,
+    less by a genome's share of N), while the first pass' -I always had the true length."""
     lengths = {q: len(p) for q, p in queries.items()}
+    size = bases or placement.genome_bases(genome_path)
     with tempfile.TemporaryDirectory(dir=tmp) as work:
         hmm_db = hmm_db or odb.hmm_db(os.path.join(work, "loci.hmm"))
         # the genome's own alignment alone: the rescue's and the recovery's windows are small files of this call
-        alignments, failed = align(genome_path, queries, miniprot, threads, table, work, index_dir=index_dir)
+        alignments, failed = align(genome_path, queries, miniprot, threads, table, work, index_dir=index_dir,
+                                   bases=bases)
         if failed:
             return dict(loci={}, failed=failed, windows={})
         confirmed = confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work)
         missing = [locus for locus in odb.loci if not confirmed.get(locus)]
-        if (rescue_missing and missing and placement.genome_bases(genome_path) <= RESCUE_MAX_BASES
-                and shutil.which(translate)):
+        if rescue_missing and missing and size <= RESCUE_MAX_BASES and shutil.which(translate):
             confirmed.update(rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads, table,
-                                    hmm_db, work, translate))
+                                    hmm_db, work, translate, bases))
         reps = [r for rs in confirmed.values() for r in rs]
         transcripts = annotated_transcripts(reps, annotation) if annotation and annotation[0] and reps else None
         # the genome's bases read once: every confirmed alignment's span (since 2026-11-09: their coding sequences
@@ -916,9 +962,8 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
         chosen, statuses = choose(confirmed, odb.loci)
         unclean = {locus: a for locus, a in chosen.items() if not is_clean(a)}
         if unclean:  # aligned again on their place (recover); one that stays unclean ships flagged
-            intron = int(3.6 * placement.genome_bases(genome_path) ** 0.5)
             chosen.update(recover(unclean, contigs, queries, odb, miniprot, hmmsearch_bin, threads, table, hmm_db,
-                                  work, intron))
+                                  work, intron_bound(size)))
         if transcripts is not None:
             chosen = annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hmm_db, table,
                                transcripts)
@@ -929,6 +974,12 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
             continue
         best = chosen[locus]
         status, others = statuses[locus]
+        # since 2026-11-10 (the audit's B8): the status is the shipped model's. A Fragmented locus (no complete region
+        # when the copy was chosen) whose copy is complete since, by the annotation's model or a recovered one, is
+        # Single; until then the row read Fragmented beside its model's hmm_coverage (B. hominis with NCBI's models:
+        # 1 of 72 taken, a fragment of 107 residues at 0.27 of the profile, the annotated gene 389 at 0.95)
+        if status == "Fragmented" and best["hmm_coverage"] >= COMPLETE:
+            status = "Single"
         seq = contigs[best["contig"]]
         loci[locus] = dict(copy_record(best, contigs, odb.cutoff[locus], table), status=status,
                            copies=len(others) + (status != "Fragmented"),

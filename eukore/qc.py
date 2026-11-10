@@ -134,7 +134,9 @@ def verdict(sp, found, ncbi, cache, members, near=NEAR, foreign_id=FOREIGN_ID, r
     or None, the agreement depth of the nearest or None). related: the identity under which a clade's other member
     does not hold the sequence when the two clades are weighed (since 2026-11-10, the 18S' rrna.RELATED: at 80% an
     18S is any eukaryote's, and a copy 99% another family's was its own clade's where that family had no other genome
-    and its own clade's 18S was 80% like it)."""
+    and its own clade's 18S was 80% like it). The 18S' check has a rule of its own since that day (rrna.verdict: a
+    lone lineage's 18S is not another clade's, of two species at the top identity the partner is not the higher
+    taxid): this one is the coding sequences', as it was."""
     if not found:
         return "-", None, None, None
     top = max(i for i, _s in found)

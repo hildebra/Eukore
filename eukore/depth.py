@@ -21,7 +21,14 @@ For a genome of a package:
   `min_identity` identical and the read's unaligned ends lie beyond the target's ends (a read from a paralog, or a
   repeat that shares a domain with a target, is clipped inside the target: not counted) (accept).
 - depth: per base, over a target's interior (`trim` bases from either end left out: a read over a target's end maps
-  only where enough of it overlaps). A BUSCO copy's and an organelle gene's mean over its whole interior; an rDNA
+  only where enough of it overlaps). A BUSCO copy's mean over its exons (`busco/features.tsv`; since 2026-11-10:
+  until then over the whole copy, introns and all, and a repeat in an intron drew the reads of all its copies in the
+  genome, which are not in the reference: simulated, a young repeat in most genes' introns made the single-copy depth
+  1.1 to 2.1 times too high, the copy numbers as much too low; the old value is kept as `sc_depth_gene`). The mean,
+  not the median: at the 5x the reads are staged to, a median of whole reads steps (5 of 5.5: 9% too low), and the
+  median over the BUSCOs already leaves out the odd gene. Exons have their own repeat, processed pseudogenes: where
+  most BUSCOs have young ones the exons' depth is the one too high, and above the whole copies' (`exons_over_gene`).
+  An organelle gene's mean over its whole interior; an rDNA
   unit's median over its 18S, 5.8S and 28S (not its spacers, which vary between units; a median, not swayed by an
   insertion some units carry: Drosophila's R1 and R2).
 - copies: the rDNA units' depths summed (reads of one unit map to one of the types) over the median depth of the
@@ -68,6 +75,7 @@ UNEVEN = 0.25         # single-copy BUSCOs under a fifth of their mean depth: a 
 MIN_LOCI = 10         # single-copy BUSCOs measured: fewer flags `few_loci`
 LOW_DEPTH = 3.0       # their median depth: lower flags `low_depth`
 SPREAD = 0.5          # their interquartile range over their median: more flags `spread`
+EXONS_OVER = 1.25     # their exons' depth over their whole copies': more flags `exons_over_gene` (since 2026-11-10)
 AT_RICH = 0.75        # an organelle's sequences this AT-rich flag `mt_at_rich`, `pt_at_rich`: short-read libraries
                       # cover them poorly (yeast's mtDNA, 83% AT: 7-60x in 5 kb windows where its nuclear genes had 8x)
 DEPTH_COLUMNS = ("accession", "species_taxid", "runs", "run_source", "platform", "preset", "reads", "read_length",
@@ -146,6 +154,23 @@ def busco_folder(package):
     return None
 
 
+def exons_of(path, wanted):
+    """features.tsv's exons of the copies wanted ({(accession, locus)}) -> {(accession, locus): [(start, end)]} on
+    the copy (0-based, end excluded: qc.spliced's), {} for no file. Read line by line: a full package's table has
+    tens of millions of rows."""
+    out = collections.defaultdict(list)
+    if not wanted or not os.path.isfile(path):
+        return out
+    with util.open_text(path) as fh:
+        head = fh.readline().rstrip("\n").split("\t")
+        acc, locus, kind, start, end = (head.index(c) for c in ("accession", "locus", "kind", "start", "end"))
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if len(f) > end and f[kind] == "exon" and (f[acc], f[locus]) in wanted:
+                out[(f[acc], f[locus])].append((int(f[start]), int(f[end])))
+    return out
+
+
 def reference(package, accession, species_taxid):
     """The targets of a genome -> ({target: sequence}, {target: (kind, [(start, end) measured])}, info): kind `rdna`,
     `busco`, `mitochondrion` or `plastid`; names `<kind>|<record or locus>`."""
@@ -182,6 +207,9 @@ def references(package, wanted):
             by_locus[locus].add(a)
     copy_seqs = {locus: fasta(os.path.join(folder, "copies", f"{locus}.fna.gz"), accs)
                  for locus, accs in by_locus.items()}
+    # the copies' exons (since 2026-11-10): a BUSCO's depth is measured over them, not over its introns
+    exons = exons_of(os.path.join(folder, "features.tsv"),
+                     {(a, locus) for a, ls in loci.items() for locus in ls}) if folder else {}
     genes = collections.defaultdict(list)
     for r in read_dicts(os.path.join(package, "organelle", "genes.tsv")):
         if r["species_taxid"] in species:
@@ -203,7 +231,9 @@ def references(package, wanted):
             if seq:
                 name = f"busco|{locus}"
                 seqs[name] = seq
-                meta[name] = ("busco", [(0, len(seq))], [])
+                # its exons; the whole copy where the package names none (a format 3 package: no features.tsv)
+                spans = [(max(0, a), min(len(seq), b)) for a, b in sorted(exons.get((accession, locus), ()))]
+                meta[name] = ("busco", [s for s in spans if s[0] < s[1]] or [(0, len(seq))], [])
         for row in genes[sp]:
             if row["record"] in gene_seqs and row.get("partial") != "t":
                 name = f"{row['organelle']}|{row['record']}"
@@ -445,7 +475,7 @@ def depths(paf_lines, lengths, min_identity):
 
 def interior_depth(cov, spans, trim, median=False):
     """The mean (or median) depth over the spans' bases at least `trim` from the target's ends, or None where under
-    MIN_INTERIOR bases are left."""
+    MIN_INTERIOR bases are left (a BUSCO copy of few coding bases, measured over its exons since 2026-11-10)."""
     lo, hi = trim, len(cov) - trim
     values = [cov[i] for a, b in spans for i in range(max(a, lo), min(b, hi))]
     if len(values) < MIN_INTERIOR:
@@ -515,7 +545,10 @@ def estimate(target_depth, meta):
 
 def measure(package, genome, reads, preset, minimap2="minimap2", threads=1, folder=None, targets=None):
     """A genome's copy numbers from its staged reads -> (estimate dict, [(target, kind, length, depth)]). targets: its
-    reference()'s, where read already (references(): several genomes' in one pass)."""
+    reference()'s, where read already (references(): several genomes' in one pass). Since 2026-11-10 a BUSCO's depth
+    is its exons' (module docstring); the estimate also holds `sc_depth_gene`, the single-copy depth as it was until
+    then (the median of the copies' means over their whole length), and `sc_exon_loci`, the BUSCOs measured over
+    their exons (the others whole: the package names no exons of them)."""
     accession, species_taxid = genome["accession"], genome["species_taxid"]
     seqs, meta, info = targets or reference(package, accession, species_taxid)
     folder = folder or os.path.dirname(reads)
@@ -527,16 +560,27 @@ def measure(package, genome, reads, preset, minimap2="minimap2", threads=1, fold
                                     {t: len(s) for t, s in seqs.items()}, IDENTITY[preset])
     os.remove(ref)
     trim = TRIM[preset]
-    target_depth, rows = {}, []
+    target_depth, rows, whole, by_exons = {}, [], [], 0
     for t, (kind, spans, spans_18s) in meta.items():
         target_depth[t] = interior_depth(cov[t], spans, trim, median=kind == "rdna")
         if kind == "rdna":
             target_depth[t + "#18S"] = interior_depth(cov[t], spans_18s, trim, median=True)
+        if kind == "busco":  # as until 2026-11-10 too: the mean over the copy, introns and all (sc_depth_gene)
+            whole.append(interior_depth(cov[t], [(0, len(cov[t]))], trim))
+            by_exons += target_depth[t] is not None and spans != [(0, len(cov[t]))]
         rows.append((t, kind, len(seqs[t]), gc(seqs[t]), target_depth[t]))
     meta_all = dict(meta)
     meta_all.update({t + "#18S": ("rdna18s", [], []) for t, m in meta.items() if m[0] == "rdna"})
     result = estimate(target_depth, meta_all)
+    whole = [v for v in whole if v is not None]
+    result["sc_depth_gene"] = statistics.median(whole) if whole else None
+    result["sc_exon_loci"] = by_exons
     flags = [] if result["flags"] == "-" else result["flags"].split(",")
+    # a repeat in the introns makes the whole copies' depth the higher one; the exons' far above it: reads of
+    # processed pseudogenes (simulated, young ones of 60% of the genes: the exons' depth 2.1 times too high)
+    if by_exons and result["sc_depth"] and result["sc_depth_gene"] \
+            and result["sc_depth"] > EXONS_OVER * result["sc_depth_gene"]:
+        flags.append("exons_over_gene")
     for kind, key in (("mitochondrion", "mt"), ("plastid", "pt")):
         organelle = "".join(s for t, s in seqs.items() if meta[t][0] == kind)
         if organelle and 1 - gc(organelle) >= AT_RICH:

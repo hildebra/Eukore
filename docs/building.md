@@ -235,8 +235,11 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   once in `--local_tmp` and read by the later calls (since 2026-11-10; genomes up to 4 Gb, some 4-8 bytes a
   base on the node's disk while the genome runs). A worker process that dies (the OOM killer,
   a crash) stops the stage with a message; a rerun goes on (since 0.2.2: the stage waited for it forever). A genome
-  over 4 Gb is aligned in pieces of 4 Gb at most, a chromosome over that alone (since 0.2.2: a piece took one more
-  whole chromosome past it, over the memory the scheduler reserved). Then it
+  over 4 Gb is aligned in pieces of 4 Gb at most, a chromosome over that in windows of 4 Gb that reach 5 Mb
+  into each other (since 2026-11-10; until then whole, alone in its piece, over the memory the scheduler reserved;
+  since 0.2.2 a piece no longer takes one more whole chromosome past it). The rescue's gate and the intron bounds take
+  NCBI's total length where the plan has it (since 2026-11-10: the gzip file's size over 0.3, up to 7% off, far more
+  for an N-rich genome). Then it
   makes what a tool missing at a genome's run left out (tiara's classes, the rRNA, a clade hold-out: a backfill; since
   2026-11-10 begun as the genomes' memory fits, as the genome runs are: a hold-out is a miniprot call), takes the
   organelle genes (`WORK/organelle`; from the organelle molecules the metadata scan kept, not the genome again), and runs the
@@ -302,7 +305,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
 | `--held_out_ranks` | `genus,family,order` | the OrthoDB benchmark's clade hold-out: a BUSCO dataset species' genome called again without its genus', family's and order's dataset species in turn, one more BUSCO search each ([benchmarks.md](benchmarks.md); `none`: its own species' hold-out alone; since 2026-11-09) |
 | `--reversion` | off | stamp every done genome of an older genome record with the build's, its calls kept, so that it is not run again ([Resuming and rebuilding](#resuming-and-rebuilding); since 2026-11-09) |
-| `--organelle_models` | `miniprot` | the assemblies' organelle protein-coding genes: `nhmmer`'s hits alone, or with `miniprot`'s exons by the organelle's code where nhmmer joined several hits (a gene with introns; measured: [methods.md](methods.md); format 5) |
+| `--organelle_models` | `miniprot` | the assemblies' organelle protein-coding genes: `nhmmer`'s hits alone, or with `miniprot`'s exons by the organelle's code where nhmmer joined several hits (a gene with introns) or its single hit is not the coding sequence (under 90% of the query, or more internal stops than miniprot's model; since 2026-11-10; measured: [methods.md](methods.md); format 5) |
 | `--intraspecific` | 3 | further assemblies of each species of `data/intraspecific_panel.tsv` run for the barcode gap (`intraspecific/`); 0: none |
 | `--no_markers` | markers on | no Eukore marker loci (`data/markers.tsv`: RPB1, RPB2, EF-2, EF-1α, ...), the BUSCOs alone |
 | `--no_tsa` | transcriptomes on | no INSDC transcriptomes (ENA's TSA sets) for the species without a genome |

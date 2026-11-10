@@ -13,9 +13,11 @@ labelled by NCBI taxid, checked without any KSGP.
   genome's units'.
 - Checks, each a column (a record failing one is kept and flagged): ambiguous bases, the longest homopolymer, the 99%
   18S type within its species, and own_species: a genome's 18S types against every other source's 18S (vsearch),
-  agreeing to the family or deeper with its NCBI lineage (t), sharing no more than the phylum at FOREIGN_ID or more
-  (f, a contaminant's rDNA), else undecided (-); a published read's (since 2026-11-10) against the genomes' 18S
-  alone (f: a misnamed read, a contaminant's operon in ROD's assembly).
+  agreeing to the family or deeper with its NCBI lineage (t); FOREIGN_ID or more like another class' or phylum's,
+  its own clade's 18S MARGIN farther and the other clade's other species holding it (f, a contaminant's rDNA: the
+  18S' own rule, verdict(), since 2026-11-10: a lone lineage's 18S, 98% like another class', is not); else
+  undecided (-); a published read's (since 2026-11-10) against the genomes' 18S alone (f: a misnamed read, a
+  contaminant's operon in ROD's assembly).
 """
 
 import collections
@@ -35,12 +37,22 @@ UP = 3000           # a window's bases before a seed on its 18S's strand
 DOWN = 15000        # and after it: the whole 28S (human's ends ~9.5 kb past the 18S's start) and an inline 5S
 MAX_INTRON = 1500   # an 18S cut by introns: pieces this close are one span
 MIN_LEN = 1200      # an 18S span this long at least
-MAX_ITS = 3000      # the 18S's end to the 5.8S, the 5.8S's end to the 28S: at most
+MAX_ITS = 3000      # the 5.8S's end to the 28S: at most (EUKARYOME 2.1's longest by barrnap: 2,551, Phaeocystis)
+# the 18S's end to the 5.8S: at most (since 2026-11-10; until then MAX_ITS: of EUKARYOME 2.1's long reads 24 have an
+# ITS1 of 3,030-4,272 by barrnap, opossum 3.1 kb, fungus gnats 3.1 kb, Trinematidae 3.4-3.8 kb, Ceramium 3.0 kb,
+# Mougeotia 4.3 kb, and were no unit: each an "18S" record of its whole 6-9 kb; Pinaceae's 15 there are 1.8-2.8 kb).
+# Not more: an 18S whose own 5.8S is not found must not reach the next unit's, a 28S and an 18S further on
+MAX_ITS1 = 4500
 GAP_5S = 3000       # an inline 5S: this close to the unit's ends
 SAME_TYPE = 0.99
 NEAR = 0.5
 FOREIGN_ID = 97.0
 RELATED = 90.0      # an 18S this like a copy: of its clade's relatives that hold it (qc.verdict's related; 2026-11-10)
+# the 18S' own rule (verdict; since 2026-11-10, the simulation on EUKARYOME's species-labelled reads of that day)
+OWN_RANKS = ("family", "order", "class")  # a record's own clade: the deepest of them another holder is of
+MARGIN = 2.0        # another clade's only where its own clade's best is this far under the top
+SHARED_ID = 99.5    # one sequence in two clades: a lone lineage's another phylum's at this or more
+WITH_INTRONS = "%s|with_introns"  # own_species' name of a record's 18S span beside its exons
 PREFIX = 1000       # a published read's first bases: its 18S, for the own-species pool
 ITSX_FIELD = re.compile(r"(SSU|ITS1|5\.8S|ITS2|LSU): (\d+)-(\d+)")
 # ITSx 1.1.3 without both of the 5.8S's ends still writes ITS1 and ITS2, their inner borders guessed (an ITS2 45
@@ -247,7 +259,7 @@ def units_of(seq, feats):
     `seq`. A 28S cut by introns (barrnap's pieces, each partial) is one, whole where its pieces' shares make WHOLE
     (until 2026-11-06 the unit ended at its first piece). A 5S is one unit's at most (until 2026-11-06 a tandem
     array's spacer 5S was both its neighbours'): the unit whose 28S it follows within GAP_5S, else whose 18S it
-    precedes; a unit keeps the nearest of its own."""
+    precedes; a unit keeps one of its own, the nearest after its 28S, else the nearest before its 18S."""
     out, cores = [], []
     s18 = feats.get("18S_rRNA", [])
     lsu_spans = joined(feats.get("28S_rRNA", []))
@@ -266,7 +278,7 @@ def units_of(seq, feats):
         out.append(item)
         fwd = strand == "+"
         s58 = [f for f in feats.get("5_8S_rRNA", []) if f[2] == strand and
-               (0 < f[0] - end <= MAX_ITS if fwd else 0 < start - f[1] <= MAX_ITS)]
+               (0 < f[0] - end <= MAX_ITS1 if fwd else 0 < start - f[1] <= MAX_ITS1)]
         if not s58:
             continue
         f58 = min(s58, key=lambda f: f[0]) if fwd else max(s58, key=lambda f: f[1])
@@ -284,7 +296,11 @@ def units_of(seq, feats):
             for rank, gap in ((0, after), (1, before)):
                 if 0 <= gap <= GAP_5S and (best is None or (rank, gap) < best[0]):
                     best = ((rank, gap), i)
-        if best and (best[1] not in five_of or best[0][1] < five_of[best[1]][0][1]):
+        # of a unit's several the one after its 28S before one before its 18S, then the nearer (since 2026-11-10;
+        # until then the nearer whatever its side: an array's first unit, no unit before it to take the spacer's 5S
+        # before its 18S, took that one where it lay nearer than the one after its 28S, and began with a 5S while
+        # the array's other units ended with theirs)
+        if best and (best[1] not in five_of or best[0] < five_of[best[1]][0]):
             five_of[best[1]] = (best[0], f)
     for i, (item, start, end, fwd, f58, f28, cuts, a, b) in enumerate(cores):
         five = [five_of[i][1]] if i in five_of else []
@@ -605,21 +621,176 @@ def ssu_part(seq, row):
     return next((seq[a:b] for n, a, b in row.get("regions_list") or () if n == "18S"), seq[:PREFIX])
 
 
+def ssu_exons(seq, row):
+    """A record's 18S without its introns (ssu_part less the row's introns_list of the 18S, on the record as its
+    regions: a genome's records'; a published read's are not kept): what the own-species check compares beside the
+    span (since 2026-11-10; until then the span with its introns alone: vsearch counts an intron's bases as a gap's,
+    a 400-base group I intron taking a fifth off the identity to every relative without it)."""
+    if row["kind"] == "18S":
+        a, b = 0, len(seq)
+    else:
+        a, b = next(((x, y) for n, x, y in row.get("regions_list") or () if n == "18S"), (None, None))
+        if a is None:
+            return seq[:PREFIX]
+    parts, at = [], a
+    for x, y in sorted((x, y) for n, x, y in row.get("introns_list") or () if n == "18S" and a <= x < y <= b):
+        parts.append(seq[at:x])
+        at = max(at, y)
+    return "".join(parts) + seq[at:b]
+
+
+def clades_of(ncbi, species, cache):
+    """{(rank, taxid): {species}} of the species at OWN_RANKS (those NCBI names a taxon of there): the clades an 18S'
+    owner is weighed by (verdict)."""
+    from . import qc  # noqa: PLC0415
+    out = collections.defaultdict(set)
+    for sp in species:
+        at = qc._ranks(ncbi, sp, cache)  # noqa: SLF001 (qc's cache of a species' ranks)
+        for rank in OWN_RANKS:
+            if at.get(rank) is not None:
+                out[(rank, at[rank])].add(sp)
+    return out
+
+
+def clade_of(sp, clades, ncbi, cache, but=()):
+    """A species' clade among the records: the deepest of OWN_RANKS at which a species other than `but` holds an 18S
+    -> its species less `but`; empty where none does (a lone lineage)."""
+    from . import qc  # noqa: PLC0415
+    at = qc._ranks(ncbi, sp, cache)  # noqa: SLF001
+    for rank in OWN_RANKS:
+        others = clades.get((rank, at.get(rank)), set()) - set(but)
+        if others:
+            return others
+    return set()
+
+
+def _phyla_apart(ncbi, a, b, cache):
+    """Two species of two phyla (both named), else of two groups (groups.group_of)."""
+    from . import qc  # noqa: PLC0415
+    x, y = (qc._ranks(ncbi, t, cache).get("phylum") for t in (a, b))  # noqa: SLF001
+    if x is not None and y is not None:
+        return x != y
+    from .groups import group_of  # noqa: PLC0415
+    groups = [cache[k] if k in cache else cache.setdefault(k, group_of(ncbi, k[1]))
+              for k in (("group", a), ("group", b))]  # qc.apart's keys in the cache
+    return groups[0] != groups[1]
+
+
+def _suspect(sp, found, ncbi, cache):
+    """Whether an 18S' nearest are all another clade's at FOREIGN_ID or more (found: {species: identity}) -> None
+    where its nearest agree with it to the family (t) or nothing tells against it (-), else the species at the top
+    identity."""
+    from . import qc  # noqa: PLC0415
+    if not found:
+        return None
+    top = max(found.values())
+    near = [s for s, i in found.items() if i >= top - NEAR]
+    if top < FOREIGN_ID or any(qc.depth(ncbi, sp, s, cache) >= 4 or not qc.apart(ncbi, sp, s, cache) for s in near):
+        return None
+    return sorted(s for s, i in found.items() if i == top)
+
+
+def _partner(sp, found, tied, clades, ncbi, cache):
+    """The nearest other clade's species of an 18S and the best identity of that species' clade's other species
+    (theirs; RELATED at least, else 0) -> (partner, theirs). Of several species at the top identity the one whose
+    clade's others hold the sequence nearest, then the lower taxid: no verdict by NCBI's numbering (L6; qc.verdict
+    takes the higher taxid)."""
+    def theirs(p):  # sp is none of p's clade: they part at the class or above
+        clade = clade_of(p, clades, ncbi, cache, (p,))
+        return max((i for s, i in found.items() if s in clade and i >= RELATED), default=0.0)
+    partner = max(tied, key=lambda p: (theirs(p), -p))
+    return partner, theirs(partner)
+
+
+def searches(sp, found, own, clades, ncbi, cache):
+    """The clades an 18S is to be searched among again, each alone (own_species): of a suspect (its nearest all
+    another clade's at FOREIGN_ID or more) its own clade and its partners' clades' other species, where the first
+    hits hold none of them -> (whether its own clade, [the partners' clades' species]). vsearch's first 32 hits
+    need not hold the clades that tell the owner (the audit's L6): they are one species' reads where it has that
+    many, and its order of the targets is not the identities' (the simulation of 2026-11-10: the partner's
+    family's second species not among them for 76 of 2,810 contaminants)."""
+    tied = _suspect(sp, found, ncbi, cache)
+    if not tied:
+        return False, []
+    theirs = []
+    for p in tied:
+        clade = clade_of(p, clades, ncbi, cache, (p,))
+        if clade and not any(s in clade for s in found):
+            theirs.append(clade)
+    return bool(own) and not any(s in own for s in found), theirs
+
+
+def verdict(sp, found, own, clades, ncbi, cache):
+    """An 18S' own-species verdict (since 2026-11-10; until then qc.verdict's, the coding sequences' rule, by which a
+    lineage with no relative among the records was another clade's wherever its 18S was FOREIGN_ID like another
+    class' whose family had a second species: 18S is that alike across classes of ctenophores, mosses, green algae,
+    yeasts. The simulation of that day on EUKARYOME's species-labelled 18S: of 3,879 species with the others of
+    their class taken out qc.verdict called 46 f, this 2, both another organism's 18S; of 18S renamed to another
+    class or phylum, as a contaminant is, 55-58% and 58-59%, and their own species' (t) 11 and 3 of 2,747). sp: the
+    record's species; found: {species: its best identity} (a hit a species; the record's own species' in another
+    genome or source too); own: the species of its own clade (clade_of: the deepest of its family, order and class
+    another holder of the 18S is of; empty: a lone lineage); clades: clades_of() the holders -> (own_species, cross).
+    - t: its nearest (within NEAR of the top) agree with it to the family or deeper; or, another clade's species the
+      nearest, its own clade holds the sequence within MARGIN of the top and its family nearer than the partner's
+      clade (the owner of a sequence another clade's record holds too; without the margin a contaminant 91% like
+      its label's family and 99% like a lone species was its label's own);
+    - f: FOREIGN_ID or more to species all known to part from it at the class or above, its own clade's best MARGIN
+      points or more under that (of the contaminants 99.8% are; of the 47 such 18S of species without their family
+      or order 21 are not), and the partner's clade's other species nearer than its own clade's (the sequence is
+      theirs), or the partner alone in its clade and its own clade's best under RELATED (it holds nothing like
+      it). A lone lineage: only at SHARED_ID or more to another phylum's species whose clade's others hold it at
+      FOREIGN_ID or more;
+    - else undecided, with its partner (cross: shared, the package's cross_shared) where its own clade is MARGIN
+      under the top or the top is SHARED_ID."""
+    from . import qc  # noqa: PLC0415
+    if not found:
+        return "-", None
+    tied = _suspect(sp, found, ncbi, cache)
+    if not tied:
+        top = max(found.values())
+        agree = any(qc.depth(ncbi, sp, s, cache) >= 4 for s, i in found.items() if i >= top - NEAR)
+        return ("t" if agree else "-"), None
+    top = found[tied[0]]
+    partner, theirs = _partner(sp, found, tied, clades, ncbi, cache)
+    shared = partner if top >= SHARED_ID else None
+    if not own:
+        if shared and theirs >= FOREIGN_ID and _phyla_apart(ncbi, sp, partner, cache):
+            return "f", partner
+        return "-", shared
+    mine = max((i for s, i in found.items() if s in own), default=0.0)
+    if top - mine >= MARGIN:
+        # the partner's clade's other species hold it nearer; or none is there to tell, and its own clade holds
+        # nothing like it (under RELATED: as qc.verdict's own clade that holds the locus and not this sequence)
+        lone = mine < RELATED and not clade_of(partner, clades, ncbi, cache, (partner,))
+        return ("f" if theirs > mine or lone else "-"), partner
+    kin = max((i for s, i in found.items() if qc.depth(ncbi, sp, s, cache) >= 4), default=0.0)
+    if kin > theirs:
+        return "t", None
+    return "-", shared
+
+
 def own_species(records, ncbi, vsearch, threads=1):
     """The own-species check (module docstring) -> {record: (t, f or -, the other clade's species its 18S is shared
     with or None)}: each genome's 18S types against the 18S of every other genome and source (vsearch
-    --usearch_global at 80%, the first 32 hits), their nearest (within NEAR points of the best) agreeing with the
-    genome's NCBI lineage to the family or deeper: t; at FOREIGN_ID or more and known to part from it at the class or
-    above, its owner told (qc.verdict): f; else -. records: [(name, sequence, row)] (row: accession, source,
-    species_taxid, regions). A published record (EUKARYOME's, ROD's; since 2026-11-10, until then not checked: its
-    label its source's, a misnamed read high-quality where its part screen found no 99% copy) is checked alike
-    against the genomes' 18S alone: its source's other records, labelled by the same hand, vouch for nothing. A
-    genome's (or a source's) 18S are searched as one per 99% type (screen.representatives), so that its own copies do
-    not fill the first hits."""
-    from . import qc, screen  # noqa: PLC0415
+    --usearch_global at 80%, the first 32 hits, of each species the best: until 2026-11-10 every hit, a species of
+    many reads all of them), then, where its nearest are all another clade's, against its own clade's and its
+    partners' clades' alone where the first hits held none of them (searches), and verdict() decides. records:
+    [(name, sequence, row)] (row: accession, source, species_taxid, regions, introns). A published record
+    (EUKARYOME's, ROD's; since 2026-11-10, until then not checked: its label its source's, a misnamed read
+    high-quality where its part screen found no 99% copy) is checked alike against the genomes' 18S alone: its
+    source's other records, labelled by the same hand, vouch for nothing. A genome's (or a source's) 18S are searched
+    as one per 99% type (screen.representatives), so that its own copies do not fill the first hits. An 18S with
+    introns is searched, and searched against, as its exons and as its span, the better of the two a species
+    (since 2026-11-10; until then the span alone: of EUKARYOME's 445 species-labelled 18S with introns 72% were
+    their family's by the span, 87% by the exons, 88% by the two; the span too, as the bases between barrnap's
+    pieces are 18S where an assembly gap parted them)."""
+    from . import screen  # noqa: PLC0415
     if not vsearch or not records:
         return {}
-    ssu = {name: ssu_part(seq, row)[:2500] for name, seq, row in records}
+    ssu = {name: ssu_exons(seq, row)[:2500] or ssu_part(seq, row)[:2500] for name, seq, row in records}
+    spans = {name: ssu_part(seq, row)[:2500] for name, seq, row in records}
+    spans = {WITH_INTRONS % name: s for name, s in spans.items() if s != ssu[name]}  # of the 18S with introns
+    record_of = {WITH_INTRONS % name: name for name in ssu if WITH_INTRONS % name in spans}
     # a record's genome, its RefSeq copy's and every version's one (screen.genome_of; since 2026-11-09: ROD's copy of
     # it was another genome's, a contaminant's operon confirmed by its own copy)
     owner = {name: screen.genome_of(name, row) for name, _s, row in records}
@@ -629,28 +800,54 @@ def own_species(records, ncbi, vsearch, threads=1):
     published_reps = {k for k in reps if group[k][0] != "genome"}
     if not genome_reps:
         return {}
-    genomes_ssu = {k: ssu[k] for k in sorted(genome_reps)}
-    with tempfile.TemporaryDirectory() as tmp:
-        found = screen.search(genomes_ssu, {k: ssu[k] for k in sorted(reps)}, vsearch,
-                              threads, tmp, ident=0.8, accepts=32, rejects=256)
-        found_published = screen.search({k: ssu[k] for k in sorted(published_reps)}, genomes_ssu, vsearch, threads,
-                                        tmp, ident=0.8, accepts=32, rejects=256)
     taxid_of = {name: int(row["species_taxid"]) for name, _s, row in records}
     cache, out = {}, {}
-    # since 2026-11-09 qc.verdict's: another clade's only where known to part at the class or above (apart), and of
-    # a sequence two clades' genomes hold, the clade whose other species hold it nearer its owner (until then both
-    # genomes' records were f, the true owner's too)
-    members = qc.families(ncbi, {taxid_of[k] for k in reps}, cache)
-    # a published read's: the families the genomes hold the 18S of (a family only other reads hold does not tell
-    # that the read's own family holds the locus far from it)
-    genome_members = qc.families(ncbi, {taxid_of[k] for k in genome_reps}, cache)
-    for rep, found_, families in [(r, found, members) for r in genome_reps] + \
-            [(r, found_published, genome_members) for r in published_reps]:
-        hits = [(i, taxid_of[t]) for i, t in found_.get(rep, []) if owner[t] != owner[rep]]
-        verdict, cross, _top, _agree = qc.verdict(taxid_of[rep], hits, ncbi, cache, families, NEAR, FOREIGN_ID,
-                                                  RELATED)
+
+    def forms(names):  # the records' 18S, and with its introns where it has some
+        return {key: s for k in names for key, s in ((k, ssu[k]), (WITH_INTRONS % k, spans.get(WITH_INTRONS % k)))
+                if s}
+
+    def check(names, among, tmp):
+        """The verdicts of the records `names` against the records `among` -> {name: (own_species, cross)}."""
+        def search(queries, targets):
+            return screen.search(forms(sorted(queries)), forms(targets), vsearch, threads, tmp, ident=0.8,
+                                 accepts=32, rejects=256)
+
+        def add(best, hits):  # a hit a species: its best, the record's own genome's left out
+            for query, got in hits.items():
+                rep = record_of.get(query, query)
+                for i, target in got:
+                    t = record_of.get(target, target)
+                    if owner[t] != owner[rep] and i > best[rep].get(taxid_of[t], 0.0):
+                        best[rep][taxid_of[t]] = i
+        holders = collections.defaultdict(set)  # species -> the genomes and sources holding its 18S
+        records_of = collections.defaultdict(list)
+        for k in sorted(among):
+            holders[taxid_of[k]].add(owner[k])
+            records_of[taxid_of[k]].append(k)
+        clades = clades_of(ncbi, holders, cache)
+        best = {rep: {} for rep in names}
+        add(best, search(names, sorted(among)))
+        own, again = {}, collections.defaultdict(set)
+        for rep in sorted(names):
+            sp = taxid_of[rep]
+            # its own species is of its clade where another genome or source holds it
+            own[rep] = clade_of(sp, clades, ncbi, cache, () if holders.get(sp, set()) - {owner[rep]} else (sp,))
+            mine, theirs = searches(sp, best[rep], own[rep], clades, ncbi, cache)
+            # its own clade whole (its own genome's records are no hits): one search for all the clade's suspects
+            for species in ([own[rep] | ({sp} & holders.keys())] if mine else []) + theirs:
+                again[frozenset(species)].add(rep)
+        for species, queries in sorted(again.items(), key=lambda kv: sorted(kv[0])):
+            add(best, search(queries, [k for s in sorted(species) for k in records_of[s]]))
+        return {rep: verdict(taxid_of[rep], best[rep], own[rep], clades, ncbi, cache) for rep in names}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # a published read's against the genomes' alone: a clade only other reads hold does not tell that the
+        # read's own clade holds the 18S far from it
+        got = {**check(genome_reps, reps, tmp), **check(published_reps, genome_reps, tmp)}
+    for rep, result in got.items():
         for member in reps[rep]:
-            out[member] = (verdict, cross)
+            out[member] = result
     return out
 
 
