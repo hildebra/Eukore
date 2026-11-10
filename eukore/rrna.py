@@ -99,9 +99,24 @@ def barrnap_gff(barrnap, fasta, threads=1, kingdom="euk"):
     return run.stdout
 
 
-# an organelle molecule's FASTA title (organelle.py's too, and metadata.py's: both read its word as the organelle,
-# mitochondrion or else a plastid, so that a word of another organelle is not added here: NOT_NUCLEAR's are)
-ORGANELLE_TITLE = re.compile(r"\b(mitochondrion|chloroplast|plastid|apicoplast)\b", re.IGNORECASE)
+# an organelle molecule's FASTA title (organelle.py's too, and metadata.py's), its word read as the organelle by
+# organelle_of (since 2026-11-10; until then each read any word but mitochondrion as a plastid, so that a word of
+# another organelle added here, a kinetoplast's, would have made it one). Since 2026-11-10 every word of
+# ORGANELLE_WORDS (until then mitochondrion, chloroplast, plastid, apicoplast): a kinetoplastid's maxicircle and
+# Paulinella's chromatophore were searched as nuclear DNA, no organelle genes found on them. Of NCBI's eukaryote
+# records in an assembly titled by a word added (2026-11-10: 19 kinetoplast or maxicircle, 18-60 kb, Leishmania,
+# Trypanosoma, Crithidia; Paulinella micropora's chromatophore, 977 kb; no minicircle or cyanelle) none is nuclear
+ORGANELLE_WORDS = {"mitochondrion": "mitochondrion", "kinetoplast": "mitochondrion", "maxicircle": "mitochondrion",
+                   "minicircle": "mitochondrion", "chloroplast": "plastid", "plastid": "plastid",
+                   "apicoplast": "plastid", "chromatophore": "plastid", "cyanelle": "plastid"}
+ORGANELLE_TITLE = re.compile(r"\b(" + "|".join(ORGANELLE_WORDS) + r")\b", re.IGNORECASE)
+
+
+def organelle_of(title, pattern=ORGANELLE_TITLE):
+    """The organelle a FASTA title names (the first word of pattern's in it: ORGANELLE_WORDS) -> mitochondrion,
+    plastid, or None (none named; a word of pattern's ORGANELLE_WORDS does not hold, a nucleomorph's)."""
+    m = pattern.search(title)
+    return ORGANELLE_WORDS.get(m.group(1).lower()) if m else None
 # not the nucleus either: a cryptophyte's or chlorarachniophyte's nucleomorph (Guillardia theta, Bigelowiella natans),
 # the endosymbiont's red or green algal nucleus with rDNA operons of its own (until 2026-11-06 labelled the host's);
 # since 2026-11-10 the organelles' other titles too (until then read as the nucleus', their SSU an 18S): a
@@ -508,12 +523,20 @@ def on_record(unit, length):
 
 # --- labels by NCBI taxid ----------------------------------------------------------------------------------------
 
+class NameIndex(dict):
+    """name_index's {lower-case name: taxid}, with `homonyms` {name: [taxids]}: the names unrelated taxa share, which
+    the dict does not hold (eukaryome_taxid chooses among them by a label's lineage)."""
+    homonyms = {}
+
+
 def name_index(ncbi):
     """{lower-case name: taxid} of NCBI's scientific names and synonyms. A name several taxa share is the one's among
     them that holds all the others (since 2026-11-10: NCBI names a genus and its nominate subgenus alike, Aedes, Culex,
     Anopheles and ~160 more, a phylum and its class; until then every shared name was dropped, and EUKARYOME's records
-    of such a genus had no label). Unrelated taxa's (homonyms: Morus the plant and the bird): none, as before."""
-    index, shared = {}, {}
+    of such a genus had no label). Unrelated taxa's (homonyms: Morus the plant and the bird): none, as before, but
+    kept as the NameIndex's homonyms (since 2026-11-10)."""
+    index, shared = NameIndex(), {}
+    index.homonyms = {}
     for taxid, name in ncbi.name.items():
         for n in [name] + ncbi.synonyms.get(taxid, []):
             key = n.lower()
@@ -524,8 +547,33 @@ def name_index(ncbi):
         if holder:
             index[key] = holder.pop()
         else:
+            index.homonyms[key] = sorted(taxids)
             del index[key]
     return index
+
+
+LINEAGE_RANKS = "kpcof"  # a EUKARYOME label's ranks above its genus (k__ .. f__), its lineage
+
+
+def by_lineage(candidates, lineage, required, ncbi, fits):
+    """A name's taxon among candidates (index.homonyms', or the one NCBI taxon of a name EUKARYOME marks as a homonym)
+    chosen by a label's lineage (its names) -> the candidate (`fits` it: its rank) whose NCBI lineage holds the most
+    of the label's names and one of `required` (its k__ .. f__ names) at least, or None (none does, two hold as many;
+    since 2026-11-10: Drosophila the fly, k__Metazoa, not the fungus; Uronema the ciliate, k__Alveolata and
+    g__Uronema, not the green alga, g__Uronema alone). A label of no rank NCBI names (EUKARYOME's mitochondrion set:
+    all unclassified, its g__Alaria(Metazoa) kelps) gets none."""
+    wanted = {n.lower() for n in lineage if n}
+    must = {n.lower() for n in required if n and n.lower() != "unclassified"}
+    scored = []
+    for t in candidates:
+        if fits(t):
+            names = {ncbi.name.get(a, "").lower() for a in ncbi.ancestors(t) if a != t}
+            if must & names:
+                scored.append((len(wanted & names), t))
+    scored.sort(reverse=True)
+    if scored and (len(scored) == 1 or scored[1][0] < scored[0][0]):
+        return scored[0][1]
+    return None
 
 
 def species_name(genus, species):
@@ -543,14 +591,37 @@ def species_name(genus, species):
 def eukaryome_taxid(label, index, ncbi):
     """A EUKARYOME label (k__...;g__Genus;s__epithet) -> (taxid, how) by its species name, else its genus's;
     (None, None) where neither is NCBI's. EUKARYOME 2.1's s__ is the epithet alone (g__Geotrupes;s__spiniger), or
-    unclassified: until format 4 it was read as the whole name, and every record was labelled by its genus."""
+    unclassified: until format 4 it was read as the whole name, and every record was labelled by its genus. A name
+    unrelated taxa share (index.homonyms), and a genus EUKARYOME marks as a homonym (g__Lactarius(Fungi)), is the
+    one's whose lineage holds the label's (by_lineage; since 2026-11-10, until then no label)."""
     parts = {p[:1]: p[3:].replace("_", " ") for p in label.split(";") if "__" in p}
-    genus = parts.get("g", "")
+    # EUKARYOME's own homonyms, g__Lactarius(Fungi): the genus without its bracket, a name of its lineage; until
+    # 2026-11-10 looked up with the bracket, and found never
+    hint = re.findall(r"\((.*?)\)", parts.get("g", ""))
+    genus = re.sub(r"\(.*?\)", "", parts.get("g", "")).strip()
     sp = species_name(genus, parts.get("s", ""))
-    if sp and (t := index.get(sp.lower())) and ncbi.rank.get(ncbi.species_of(t)) == "species":
-        return ncbi.species_of(t), "eukaryome_name"
-    if genus and (t := index.get(genus.lower())) and ncbi.rank.get(t) == "genus":
-        return t, "eukaryome_genus"
+    ranks = [parts.get(k, "") for k in LINEAGE_RANKS]
+    homonyms = getattr(index, "homonyms", {})
+
+    def is_species(t):
+        return ncbi.rank.get(ncbi.species_of(t)) == "species"
+
+    def is_genus(t):
+        return ncbi.rank.get(t) == "genus"
+    if sp:
+        t = index.get(sp.lower()) or by_lineage(homonyms.get(sp.lower(), ()), hint + ranks + [genus], ranks, ncbi,
+                                                is_species)
+        if t and is_species(t):
+            return ncbi.species_of(t), "eukaryome_name"
+    if genus:
+        key = genus.lower()
+        if hint:  # a homonym by EUKARYOME's word: NCBI's one taxon of the name may be the other one (Amphisiella)
+            t = by_lineage(homonyms.get(key) or ([index[key]] if key in index else ()), hint + ranks, ranks, ncbi,
+                           is_genus)
+        else:
+            t = index.get(key) or by_lineage(homonyms.get(key, ()), ranks, ranks, ncbi, is_genus)
+        if t and is_genus(t):
+            return t, "eukaryome_genus"
     return None, None
 
 

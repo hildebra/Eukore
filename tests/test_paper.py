@@ -357,7 +357,8 @@ class FatesTest(unittest.TestCase):
             with mock.patch.object(genomes.util, "fetch_file", fetch):
                 job = dict(url="https://t/A1.2bit")
                 self.assertEqual(genomes.fetch_genome(job, os.path.join(out, "TOGA2_A1.fna.gz"), scratch=scratch), "")
-            self.assertEqual(got, [os.path.join(scratch, "TOGA2_A1.fna.gz.2bit")])
+            # since 2026-11-10 under this process' own name (C9), still a *.2bit for the fetch stage's leftover glob
+            self.assertEqual(got, [genomes.util.fetch_part(os.path.join(scratch, "TOGA2_A1.fna.gz"))[:-5] + ".2bit"])
             self.assertEqual((os.listdir(out), os.listdir(scratch)), (["TOGA2_A1.fna.gz"], []))
 
 

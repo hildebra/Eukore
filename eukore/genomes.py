@@ -463,8 +463,10 @@ def fetch_genome(job, path, **how):
         return util.fetch_file(url, path, **how)
     from . import twobit  # noqa: PLC0415
     # the .2bit in --local_tmp where given (since 2026-11-08: beside the genome, a killed conversion's left there for
-    # good; the fetch stage now deletes leftovers of a day)
-    raw = os.path.join(how.get("scratch") or os.path.dirname(path), os.path.basename(path) + ".2bit")
+    # good; the fetch stage now deletes leftovers of a day); this process' own name (since 2026-11-10: until then
+    # <genome>.2bit, which two runs fetching it both wrote and deleted)
+    raw = util.fetch_part(os.path.join(how.get("scratch") or os.path.dirname(path), os.path.basename(path)))[:-5] \
+        + ".2bit"
     why = util.fetch_file(url, raw, gzip_check=False, **{k: v for k, v in how.items() if k == "times"})
     if why:
         return why

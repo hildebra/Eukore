@@ -1,14 +1,13 @@
 """The BUSCO copies' proteins placed on their locus' HMM (since 2026-11-07): hmmalign of each locus' proteins against
 BUSCO's profile, read as the HMM match state of each residue (None for a residue in an insert). The match states are
 positions shared across species: an intron's place in the gene (introns.py) and the amino acid a codon most likely
-codes (codecheck.py) are read through them. The alignments are cached under WORK/align/ by their input's MD5; the
-package does not hold them.
+codes (codecheck.py) are read through them. Each distinct protein's row on the profile is cached under WORK/align/
+(since 2026-11-10; until then each locus' alignment whole); the package does not hold them.
 """
 
 import hashlib
 import math
 import os
-import shutil
 import subprocess
 import tempfile
 
@@ -42,35 +41,66 @@ def read_pfam(path):
     return rows, rf
 
 
+def a2m_of(aligned, rf):
+    """A sequence's row of a Pfam-format alignment and its RF line -> the row on the profile alone (A2M): a residue
+    on a match state upper case, a match state it skips -, a residue in an insert lower case; nothing of the other
+    sequences' inserts."""
+    out = []
+    for c, r in zip(aligned, rf):
+        if r not in ".-~":
+            out.append("-" if c in "-.~" else c.upper())
+        elif c not in "-.~":
+            out.append(c.lower())
+    return "".join(out)
+
+
+def states_of_a2m(a2m):
+    """An A2M row (a2m_of) -> [the match state (1-based) of each residue, or None for one in an insert]."""
+    out, state = [], 0
+    for c in a2m:
+        if c == "-":
+            state += 1
+        elif c.isupper():
+            state += 1
+            out.append(state)
+        else:
+            out.append(None)
+    return out
+
+
 def align_locus(hmm, proteins, hmmalign="hmmalign", cache=None, tmp=None):
     """One locus' proteins ({name: protein}) on its HMM -> {name: [match state or None per residue]}; {} where hmmalign
-    could not run. An internal stop (*) is aligned as X; cache: a folder the alignment is kept in, by its input's
-    MD5."""
+    could not run. An internal stop (*) is aligned as X. cache: a folder each distinct protein's row on the profile
+    is kept in (since 2026-11-10: util.cache_read's files <locus>.<the HMM's MD5>, a line a protein, keyed by its MD5;
+    until then the locus' whole alignment, by the MD5 of all its proteins: one protein more, a genome added, and every
+    protein of the locus was aligned again). hmmalign places each sequence on the profile alone, whatever else it
+    aligns (3,796 of 3,796 proteins of 129 loci the same alone as together, HMMER 3.4), so a kept row is the one a run
+    with the others gives; and each distinct protein is aligned once."""
     if not proteins or not hmm or not os.path.isfile(hmm):
         return {}
-    text = "".join(f">{n}\n{p.replace('*', 'X')}\n" for n, p in sorted(proteins.items()) if p)
-    digest = hashlib.md5((text + util.md5(hmm)).encode()).hexdigest()[:16]
-    out = os.path.join(cache, f"{os.path.basename(hmm)[:-4]}.{digest}.pfam") if cache else None
-    if not out or not os.path.isfile(out):
+    key_of = {n: hashlib.md5(p.replace("*", "X").encode()).hexdigest() for n, p in proteins.items() if p}
+    stem = os.path.join(cache, f"{os.path.basename(hmm)[:-4]}.{util.md5(hmm)[:16]}") if cache else None
+    rows = util.cache_read(stem) if stem else {}
+    todo = {k: proteins[n].replace("*", "X") for n, k in key_of.items() if k not in rows}
+    if todo:
         with tempfile.TemporaryDirectory(dir=tmp) as work:
             fasta, got = os.path.join(work, "p.faa"), os.path.join(work, "a.pfam")
             with open(fasta, "w") as fh:
-                fh.write(text)
-            run = subprocess.run([hmmalign, "--outformat", "Pfam", "-o", got, hmm, fasta], capture_output=True,
-                                 text=True, check=False)
+                fh.writelines(f">{k}\n{p}\n" for k, p in sorted(todo.items()))
+            try:
+                run = subprocess.run([hmmalign, "--outformat", "Pfam", "-o", got, hmm, fasta], capture_output=True,
+                                     text=True, check=False)
+            except OSError:  # no such program (since 2026-11-10: raised, the docstring's {} not given)
+                return {}
             if run.returncode != 0 or not os.path.isfile(got):
                 return {}
-            if not out:
-                return _states(got)
-            os.makedirs(cache, exist_ok=True)
-            shutil.move(got, util.part_of(out))  # the temporary folder may be on another file system
-            os.replace(util.part_of(out), out)
-    return _states(out)
-
-
-def _states(path):
-    rows, rf = read_pfam(path)
-    return {n: states_of(row, rf) for n, row in rows.items()}
+            aligned, rf = read_pfam(got)
+        new = {k: a2m_of(row, rf) for k, row in aligned.items() if k in todo}
+        rows.update(new)
+        if stem:
+            with util.cache_open(stem) as fh:
+                fh.writelines(f"{k}\t{a}\n" for k, a in sorted(new.items()))
+    return {n: states_of_a2m(rows[k]) for n, k in key_of.items() if k in rows}
 
 
 def align(collected, hmm_of, hmmalign="hmmalign", work=None, log=print, threads=1):

@@ -24,6 +24,13 @@ def _slow(x):  # a pool's task (util.unordered)
     return 2 * x
 
 
+def _jitter(x):  # a pool's task (util.ordered): the later items finish first
+    if x < 0:
+        raise ValueError(x)
+    time.sleep(0.05 * (7 - x) / 7)
+    return 2 * x
+
+
 def _killed(x):  # a pool's task whose worker is killed, as by the OOM killer
     if x == 2:
         os.kill(os.getpid(), signal.SIGKILL)
@@ -280,6 +287,39 @@ class ProgressTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             with util.process_pool(2) as pool:
                 list(util.unordered(pool, _killed, [1, 2, 3], poll=0.05))
+
+    def test_results_in_their_order(self):
+        # util.ordered (since 2026-11-10, the package's reading of the done genomes): the items' order whatever the
+        # workers' speeds, in this process for one worker; a task's error raised to the caller, the collector on again
+        import gc  # noqa: PLC0415
+        items = [5, 1, 4, 2, 3, 0, 6]
+        self.assertEqual(list(util.ordered(_jitter, items, 1)), [2 * x for x in items])
+        self.assertEqual(list(util.ordered(_jitter, items, 3, ahead=2)), [2 * x for x in items])
+        with self.assertRaises(ValueError):
+            list(util.ordered(_jitter, [1, -1, 2], 2))
+        self.assertEqual(gc.get_freeze_count(), 0)
+
+    def test_no_compression_thread_runs_when_a_pool_forks(self):
+        # since 2026-11-10 a pool's workers fork after this process' compression threads ended (util.bgzf_quiet):
+        # until then a BGZF file written before the pool left its threads running, and a worker could hang on a lock
+        # one of them held (Python 3.12 warned); a writer still open keeps them
+        util.compression_threads(2)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                with util.bgzf_open(os.path.join(tmp, "a.gz")) as fh:
+                    fh.write("x" * (3 * util.BGZF_BLOCK))
+                    self.assertFalse(util.bgzf_quiet())
+                with fx.forks_watched() as seen:
+                    self.assertEqual(list(util.ordered(_jitter, [1, 2, 3], 2)), [2, 4, 6])
+                    with util.forked_pool(2) as pool:  # forked on entering: writers opened inside it fork nothing
+                        with util.bgzf_open(os.path.join(tmp, "b.gz")) as fh:
+                            fh.write("y" * (3 * util.BGZF_BLOCK))
+                            self.assertEqual(list(util.ordered(_jitter, [4, 5], pool=pool)), [8, 10])
+                self.assertTrue(seen)
+                self.assertEqual([names for names in seen if names], [])
+                self.assertTrue(util.bgzf_whole(os.path.join(tmp, "b.gz")))
+        finally:
+            util.compression_threads(1)
 
     def test_usage_of_the_process_tree(self):
         tick, page = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE")

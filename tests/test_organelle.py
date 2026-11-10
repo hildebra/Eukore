@@ -500,6 +500,40 @@ class AuditTest(unittest.TestCase):
                                                   transl_table=t) for i, t in enumerate(("4", "-"))]}
         self.assertEqual(sorted(organelle.Nearest(chosen, ncbi).protein), [("NC_0.1", "COX1")])
 
+    def test_a_codon_by_its_transl_except(self):
+        # since 2026-11-10: a CDS's /transl_except codon is read as its amino acid, not a stop inside the protein
+        coding = "ATG" + "AAA" * 4 + "TGA" + "AAA" * 4 + "TAA"  # its sixth codon (number 5) TGA: Trp by exception
+        seq = random_seq(100, 21) + coding + random_seq(100, 22) + rrna.revcomp(coding) + random_seq(50, 23)
+        a, b = 101, 100 + len(coding)
+        c, d = b + 101, b + 100 + len(coding)
+        tga = a + 15  # on the molecule; on the minus strand the codon's first base is its highest
+        rec = self.record([
+            ("CDS", [f"{a}..{b}"], [("gene", "nad1"), ("transl_except", f"(pos:{tga}..{tga + 2},aa:Trp)")]),
+            ("CDS", [f"complement({c}..{d})"],
+             [("gene", "nad5"), ("transl_except", f"(pos:complement({d - 17}..{d - 15}),aa:Sec)"),
+              ("transl_except", f"(pos:{d - 40},aa:TERM)")]),  # a stop completed by poly-A: no amino acid
+            ("CDS", [f"join({a}..{a + 8},{a + 9}..{b})"],  # the codon in its second exon
+             [("gene", "atp6"), ("transl_except", f"(pos:{tga}..{tga + 2},aa:Trp)")]),
+            ("CDS", [f"{a}..{b}"], [("gene", "COX3"), ("transl_except", f"(pos:{tga + 1}..{tga + 3},aa:Trp)")])],
+            seq)
+        got = organelle.record_genes(rec, "mitochondrion")
+        self.assertEqual({g: got[g]["transl_except"] for g in ("nad1", "nad5", "atp6", "COX3")},
+                         {"nad1": "5:W", "nad5": "5:U", "atp6": "5:W", "COX3": "-"})  # COX3's: off its frame
+        self.assertEqual(organelle.with_excepts(*gencode.protein_of(coding, 1), got["nad1"]["transl_except"]),
+                         ("MKKKKWKKKK", 0))
+        self.assertEqual(organelle.with_excepts("MKA", 0, "1:W"), ("MKA", 0))  # not a stop there: as it is
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+        records = [(f"m{i}_COX1", coding, dict(record=f"m{i}_COX1", gene="COX1", organelle="mitochondrion",
+                                               taxid=27291, species_taxid=27291, partial="f", ambiguous="0.0000",
+                                               model="refseq", exons=1, cds=coding, transl_table="1",
+                                               transl_except=t)) for i, t in enumerate(("5:W", "-"))]
+        organelle.check(records, ncbi)
+        self.assertEqual([(r["protein"], r["internal_stops"]) for _n, _s, r in records],
+                         [("MKKKKWKKKK", 0), ("MKKKK*KKKK", 1)])
+        self.assertEqual(records[0][2]["flags"].count("internal_stops"), 0)
+        self.assertIn("internal_stops", records[1][2]["flags"])
+
     def test_the_spacer_across_the_origin(self):
         # test_spacer_and_a_trans_spliced_gene's record opened 300 bases on: between trnH and psbA's 3' end
         seq = random_seq(4000, 9)

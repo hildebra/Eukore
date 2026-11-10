@@ -954,10 +954,12 @@ def measure(part, opts, src_dir, ncbi, collected, vsearch, stages, fates=None, t
     if tests and not minimap2:
         say(f"WARNING: {opts.minimap2} not found: no read benchmark (bioconda's minimap2)")
     # its files in a folder of this run's (since 2026-11-08: WORK/read_benchmark, which two package stages on one WORK
-    # wrote and deleted under each other); a killed run's removed by the next (util.dead_partials)
+    # wrote and deleted under each other); a killed run's removed by the next (util.dead_partials). Since 2026-11-10
+    # in --local_tmp where given: the whole package's FASTAs and minimap2's index, written and read once each, until
+    # then on WORK's shared file system
     reads = dict(genomes_folder=opts.genomes, tests=list(tests), minimap2=minimap2,
                  background=reads_mod.read_background(READ_BACKGROUND, os.path.join(src_dir, "read_background")),
-                 work=util.part_of(os.path.join(opts.work, "read_benchmark")))
+                 work=util.part_of(os.path.join(getattr(opts, "scratch", None) or opts.work, "read_benchmark")))
     inside = opts.inside if opts.wanted is not None else None
     try:
         return benchmarks.run(part, ncbi, odb_mod.folder_of(src_dir), vsearch, opts.threads, opts.work, nearest,
@@ -1579,7 +1581,8 @@ def _main(argv, held):
         # killed runs' unfinished packages and read benchmark folders; not those of a package stage going on (since
         # 2026-11-08: every one was deleted)
         for leftover in (util.dead_partials(opts.out, f"Eukore_{opts.version}")
-                         + util.dead_partials(opts.work, "read_benchmark")):
+                         + util.dead_partials(opts.work, "read_benchmark")
+                         + (util.dead_partials(opts.scratch, "read_benchmark") if opts.scratch else [])):
             shutil.rmtree(leftover, ignore_errors=True)
         loci = called_loci(opts, src_dir)
         short = [a for a in job_map if genomes.is_done(opts.work, a) and not genomes.is_done(opts.work, a, loci)]
@@ -1701,7 +1704,7 @@ def _main(argv, held):
                                  + tables(src_dir, "refseq", opts.groups), jobs=job_map)
         out = package.write(os.path.join(opts.out, f"Eukore_{opts.version}"), opts.version, ncbi, collected,
                             loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook,
-                            metadata=meta, tables=extra_tables, writers=writers)
+                            metadata=meta, tables=extra_tables, writers=writers, threads=opts.threads)
         say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")
         if not opts.no_release:  # the website's data and the downloads (since 2026-11-09; --stage release again)
             release_mod.write(out, os.path.join(opts.out, "release"), say, threads=opts.threads)
