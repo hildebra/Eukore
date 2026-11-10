@@ -14,7 +14,8 @@ labelled by NCBI taxid, checked without any KSGP.
 - Checks, each a column (a record failing one is kept and flagged): ambiguous bases, the longest homopolymer, the 99%
   18S type within its species, and own_species: a genome's 18S types against every other source's 18S (vsearch),
   agreeing to the family or deeper with its NCBI lineage (t), sharing no more than the phylum at FOREIGN_ID or more
-  (f, a contaminant's rDNA), else undecided (-).
+  (f, a contaminant's rDNA), else undecided (-); a published read's (since 2026-11-10) against the genomes' 18S
+  alone (f: a misnamed read, a contaminant's operon in ROD's assembly).
 """
 
 import collections
@@ -39,6 +40,7 @@ GAP_5S = 3000       # an inline 5S: this close to the unit's ends
 SAME_TYPE = 0.99
 NEAR = 0.5
 FOREIGN_ID = 97.0
+RELATED = 90.0      # an 18S this like a copy: of its clade's relatives that hold it (qc.verdict's related; 2026-11-10)
 PREFIX = 1000       # a published read's first bases: its 18S, for the own-species pool
 ITSX_FIELD = re.compile(r"(SSU|ITS1|5\.8S|ITS2|LSU): (\d+)-(\d+)")
 # ITSx 1.1.3 without both of the 5.8S's ends still writes ITS1 and ITS2, their inner borders guessed (an ITS2 45
@@ -609,9 +611,11 @@ def own_species(records, ncbi, vsearch, threads=1):
     --usearch_global at 80%, the first 32 hits), their nearest (within NEAR points of the best) agreeing with the
     genome's NCBI lineage to the family or deeper: t; at FOREIGN_ID or more and known to part from it at the class or
     above, its owner told (qc.verdict): f; else -. records: [(name, sequence, row)] (row: accession, source,
-    species_taxid, regions); a published record is not checked (its label is its source's). A genome's (or a
-    source's) 18S are searched as one per 99% type (screen.representatives), so that its own copies do not fill the
-    first hits."""
+    species_taxid, regions). A published record (EUKARYOME's, ROD's; since 2026-11-10, until then not checked: its
+    label its source's, a misnamed read high-quality where its part screen found no 99% copy) is checked alike
+    against the genomes' 18S alone: its source's other records, labelled by the same hand, vouch for nothing. A
+    genome's (or a source's) 18S are searched as one per 99% type (screen.representatives), so that its own copies do
+    not fill the first hits."""
     from . import qc, screen  # noqa: PLC0415
     if not vsearch or not records:
         return {}
@@ -622,20 +626,29 @@ def own_species(records, ncbi, vsearch, threads=1):
     group = {name: (row["source"], screen.genome_of(name, row)) for name, _s, row in records}
     reps = screen.representatives({n: s for n, s in ssu.items() if s}, group)
     genome_reps = {k for k in reps if group[k][0] == "genome"}
+    published_reps = {k for k in reps if group[k][0] != "genome"}
     if not genome_reps:
         return {}
+    genomes_ssu = {k: ssu[k] for k in sorted(genome_reps)}
     with tempfile.TemporaryDirectory() as tmp:
-        found = screen.search({k: ssu[k] for k in sorted(genome_reps)}, {k: ssu[k] for k in sorted(reps)}, vsearch,
+        found = screen.search(genomes_ssu, {k: ssu[k] for k in sorted(reps)}, vsearch,
                               threads, tmp, ident=0.8, accepts=32, rejects=256)
+        found_published = screen.search({k: ssu[k] for k in sorted(published_reps)}, genomes_ssu, vsearch, threads,
+                                        tmp, ident=0.8, accepts=32, rejects=256)
     taxid_of = {name: int(row["species_taxid"]) for name, _s, row in records}
     cache, out = {}, {}
     # since 2026-11-09 qc.verdict's: another clade's only where known to part at the class or above (apart), and of
     # a sequence two clades' genomes hold, the clade whose other species hold it nearer its owner (until then both
     # genomes' records were f, the true owner's too)
     members = qc.families(ncbi, {taxid_of[k] for k in reps}, cache)
-    for rep in genome_reps:
-        hits = [(i, taxid_of[t]) for i, t in found.get(rep, []) if owner[t] != owner[rep]]
-        verdict, cross, _top, _agree = qc.verdict(taxid_of[rep], hits, ncbi, cache, members, NEAR, FOREIGN_ID)
+    # a published read's: the families the genomes hold the 18S of (a family only other reads hold does not tell
+    # that the read's own family holds the locus far from it)
+    genome_members = qc.families(ncbi, {taxid_of[k] for k in genome_reps}, cache)
+    for rep, found_, families in [(r, found, members) for r in genome_reps] + \
+            [(r, found_published, genome_members) for r in published_reps]:
+        hits = [(i, taxid_of[t]) for i, t in found_.get(rep, []) if owner[t] != owner[rep]]
+        verdict, cross, _top, _agree = qc.verdict(taxid_of[rep], hits, ncbi, cache, families, NEAR, FOREIGN_ID,
+                                                  RELATED)
         for member in reps[rep]:
             out[member] = (verdict, cross)
     return out
@@ -803,8 +816,8 @@ def confidence(row):
     MAX_AMBIGUOUS, a homopolymer of HOMOPOLYMER; since 2026-11-09 an 18S a bacterial or archaeal SSU model scores best:
     `ssu_prokaryote`, a bacterium's or an organelle's); medium where something may be wrong (an assembly gap in it, at
     a contig's end, an operon without a whole 28S, labelled by its genus alone, an 18S shared with another clade's
-    genome, its owner undecided); unverified where nothing is wrong but its own-species check could not decide or was
-    not made (a published read's: its label is its source's; until 2026-11-09 medium); else high."""
+    genome, its owner undecided); unverified where nothing is wrong but its own-species check could not decide (until
+    2026-11-09 medium; until 2026-11-10 every published read's, not checked); else high."""
     from .package import tier  # noqa: PLC0415
     low, medium, unverified = [], [], []
     if row.get("own_species") == "f":

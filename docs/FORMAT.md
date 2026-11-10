@@ -32,7 +32,7 @@ worse tiers first):
   family or deeper), and nothing says something may be wrong;
 - `unverified`: nothing says something may be wrong, but its own-species check could not decide
   (`own_species_undecided`: no other species of its family near enough, often a protist lineage the package holds
-  few species of; for a published read, not made);
+  few species of; for a published read, no genome of its family; until 2026-11-10 a published read's was not made);
 - `medium`: something may be wrong (a fragment, a duplicate, a short span, an assembly gap, a contig's end, a stop
   inside its protein, a sequence shared with another clade's genome whose owner is undecided, ...);
 - `low`: a check calls it another organism's, or not the gene (a contaminant, a bacterium's or an organelle's SSU as
@@ -348,7 +348,7 @@ manifest's `counts.marker_loci` the markers.
 | `lsu_complete` | `t` where barrnap's 28S hit covers its whole model |
 | `ambiguous`, `homopolymer` | the share of non-ACGT bases; the longest one-base run |
 | `type` | its 99% 18S type within the species (`1`, `2`, ...) |
-| `own_species` | `t`, `f`, or `-`: whether its nearest records of other sources agree with its NCBI lineage to the family or deeper (a genome's contaminant rDNA fails; a genome's copies searched as one per 99% type, so that its own do not fill the hits; its own assembly's records in another source, ROD's, are its own: format 6), the owner of a shared 18S told as `busco/copies.tsv`'s |
+| `own_species` | `t`, `f`, or `-`: whether its nearest records of other sources agree with its NCBI lineage to the family or deeper (a genome's contaminant rDNA fails; a genome's copies searched as one per 99% type, so that its own do not fill the hits; its own assembly's records in another source, ROD's, are its own: format 6), the owner of a shared 18S told as `busco/copies.tsv`'s (a clade's relatives under 90% hold none of it: since 2026-11-10). A published read's (EUKARYOME's, ROD's; since 2026-11-10, until then `-`) against the genomes' records alone: its source's other reads, labelled by the same hand, vouch for nothing |
 | `screen` | the part screen's flags: `-`, or `part:rank,...`, each a part (`18S`, `junction`, `28S 5'`, `28S 3'`) whose nearest records of other genomes are another clade's at that rank (`kingdom` .. `family`) |
 | `label_from` | how its taxid was found: `assembly`, `rod_taxid`, `eukaryome_name`, `eukaryome_genus` |
 | `contig`, `start`, `end`, `strand` | a genome's record: where it lies in the assembly (1-based, inclusive; the 18S span's, or the unit's from its first region to its last); `-` for a published read |
@@ -364,8 +364,8 @@ A record is `low` where a check calls it another organism's or of bad sequence: 
 bacterial or archaeal SSU model, a bacterium's or an organelle's SSU). It is `medium` where something may be wrong:
 `gap`, `contig_edge` (under 1,000 bases), `lsu_partial` (an operon without a whole 28S), `genus_label` (a published read
 labelled by its genus alone), `cross_shared` (format 6). It is `unverified` where none of these holds but its
-own-species check is undecided or was not made, a published read's (`own_species_undecided`; `medium` until format 6).
-Else `high`.
+own-species check is undecided (`own_species_undecided`; `medium` until format 6; until 2026-11-10 every published
+read's, its check not made). Else `high`.
 
 An operon's spacers are its ITS1 and ITS2 (`regions`); the intergenic spacer between units is not taken (a unit runs
 from its 18S to its 28S, and its 5S where that lies in the same block). A 5S elsewhere in the genome (most animals' and
@@ -627,7 +627,9 @@ them). `genomes.tsv`'s
 - 2026-11-10, no new format (optional): `reference_screen.tsv` and the manifest's `inputs.references.MIDORI2.screen`
   (and `files`), where the build was given MIDORI2 files; `species.tsv`'s `midori2` no longer names a species by a
   record the screen drops. MIDORI2's later header layout (GB273's: a tab, every NCBI rank as `rank_Name_taxid`) is
-  read: until then such a file named no species (every `midori2` `-`).
+  read: until then such a file named no species (every `midori2` `-`). `rrna/records.tsv`'s `own_species` of a
+  published read (EUKARYOME's, ROD's) is made, against the genomes' records (until then `-`, the read `unverified`
+  at best), and an 18S relative under 90% no longer weighs for a clade.
 - 2026-11-06, no new format (optional, added to a built package): `depth.tsv`, `genomes.tsv`'s `rdna_copies_reads`,
   `mt_copies_reads` and `pt_copies_reads`, the manifest's `inputs.read_depth` (`tools/rdna_depth.py`). A reader
   takes a package with or without them.

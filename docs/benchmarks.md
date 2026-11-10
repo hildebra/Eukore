@@ -129,8 +129,8 @@ sum of the checks that set them ([FORMAT.md](FORMAT.md#confidence-tiers-format-6
 (`own_species`, FCS-GX, tiara, a bacterium's SSU as an 18S), a duplicated or fragmented call, a length off its
 relatives', a contig end, an assembly gap, a stop inside the protein; for rRNA, ambiguous bases, homopolymers, the
 part screen, a partial 28S, a read labelled by its genus. A sequence its own-species check could not decide is
-`unverified` (until format 6 `medium`): published reads mostly, whose own-species check is not made, and a trial's
-species with no relative of their family in it. The figure below is of a format-5 trial: its `medium` holds what
+`unverified` (until format 6 `medium`): a trial's species with no relative of their family in it, and (until
+2026-11-10, when their check was not made) the published reads. The figure below is of a format-5 trial: its `medium` holds what
 format 6 calls `unverified`.
 
 ![Confidence tiers](benchmarks/figures/confidence.png)

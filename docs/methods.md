@@ -136,7 +136,8 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
 - **Checks**, each a column of `rrna/records.tsv`:
   - ambiguous bases and homopolymers;
   - the 99% 18S type within the species;
-  - `own_species`, against the package's other sources;
+  - `own_species`, against the package's other sources; a published read's against the genomes' records alone
+    (since 2026-11-10: until then not made, its label taken as its source gave it);
   - the part screen (`eukore/screen.py`, `screen`): a record whose 18S, junction or 28S half is another organism's,
     by the nearest records of other genomes on NCBI's lineages (a contaminant contig, a mosaic, a chimeric read).
 
@@ -532,3 +533,30 @@ records whose second half is another order's record's; 2026-11-10): of the misna
 join; 24 dropped), 55 for review, 41 not (the other record's second half often covers another stretch of the gene,
 which the record's windows do not meet). None of the 800 records the planted ones were made from was dropped, nor
 any record the screen of the file alone keeps: the true owner of a sequence is not taken for its contaminant.
+
+### The other sequences Eukore takes in
+
+Which other outside sequences go into the package, and what checks them (2026-11-10):
+
+| sequences | used as | checked by |
+|---|---|---|
+| EUKARYOME 2.1's long reads, ROD v1.2's operons | `rrna/records`, by their own labels | the part screen (`screen`) and, since 2026-11-10, `own_species` against the genomes' 18S |
+| MIDORI2's files (`--midori2`) | names of species (`species.tsv`) | the reference screen above |
+| NCBI's and Swiss-Prot's proteins of the marker loci | the markers' members, their HMMs | `markers.foreign()`: a member another phylum's at near identity is dropped |
+| the genomes, transcriptomes and `data/no_assembly.fna.gz`'s records | everything a genome gives | `own_species`, the part screen, FCS-GX, tiara, genetic code check |
+| RefSeq's organelle genomes | organelle models; the reference screen's trusted records | none: curated whole genomes |
+| PR2, KSGP, SILVA, UNITE, EUKARYOME's labels | names of species alone | nothing to screen: Eukore reads their names, not their sequences |
+| BUSCO's `refseq_db.faa`, `--read_compare`'s FASTAs | miniprot's queries; the benchmarks' other databases | not screened: a seed protein names nothing, and a benchmark compares a database as it is |
+
+- **Published reads' own species** (`rrna.own_species`). A published read's label was taken as its source gave it,
+  `own_species` `-` and the read `unverified` at best; a misnamed read or a contaminant's operon in ROD's assembly was
+  caught only where the part screen found another clade's copy at 99%. Now each read's 18S is set beside the genomes'
+  18S alone (its source's other reads, labelled by the same hand, vouch for nothing), and `qc.verdict` decides as for a
+  genome's.
+- **Relatives under 90% hold nothing** (`qc.verdict`'s `related`, `rrna.RELATED`). Weighing two clades, a copy 99% like
+  one family's single genome and 80% like its own family's 18S went to its own family (80 > 0), though at 80% an 18S is
+  any eukaryote's. A relative under 90% now counts for neither clade (the BUSCO copies' check unchanged).
+- **On the trial's records** (eukore-013: 2,350 ROD operons, 74 EUKARYOME reads): 2,397 of the 2,424 published
+  reads `t`, 27 `-`, none `f`; no genome's record changed. 100 of its passing genomes' and reads' records renamed as
+  a species of another phylum: 91 `f`, 9 `-`, none `t` (12 `t` without `related`: Arabidopsis' operons, the trial
+  holding one Brassicaceae genome); no other record's verdict changed.
