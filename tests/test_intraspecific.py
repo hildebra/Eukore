@@ -27,6 +27,41 @@ def mutate(seq, n, seed):
     return "".join(s)
 
 
+COVER_VSEARCH = '''#!/usr/bin/env python3
+"""vsearch --usearch_global's stand-in with its covers: two sequences are aligned from their starts over the shorter
+one's length; the identity is the share of equal positions of that stretch (--iddef 2: the aligned columns alone), one
+percent less where the query's name sorts before the target's (the two directions' alignments are not one); a pair is
+written where it reaches --id and the stretch covers --query_cov of the query and --target_cov of the target (each
+where given), self hits too (as vsearch writes them without --self)."""
+import sys
+args = sys.argv[1:]
+q, db, out = (args[args.index(o) + 1] for o in ("--usearch_global", "--db", "--userout"))
+least, qcov, tcov = (float(args[args.index(o) + 1]) if o in args else 0.0 for o in ("--id", "--query_cov",
+                                                                                   "--target_cov"))
+
+
+def read(path):
+    seqs, name = {}, None
+    for line in open(path):
+        if line.startswith(">"):
+            name = line[1:].strip()
+            seqs[name] = ""
+        else:
+            seqs[name] += line.strip()
+    return seqs
+
+
+targets = read(db)
+with open(out, "w") as fh:
+    for a, s in read(q).items():
+        for b, t in targets.items():
+            n = min(len(s), len(t))
+            ident = 100.0 * sum(x == y for x, y in zip(s, t)) / n - (1.0 if a < b else 0.0)
+            if ident >= 100 * least and n >= qcov * len(s) and n >= tcov * len(t):
+                fh.write(f"{a}\\t{b}\\t{ident:.1f}\\n")
+'''
+
+
 class PanelTest(unittest.TestCase):
     def test_further_assemblies_chosen(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -63,6 +98,35 @@ class PanelTest(unittest.TestCase):
             rows = intraspecific.barcode_gap({4932: "Y"}, rep, extra, species_of, {(4932, "m1"): 99.9}, {}, ncbi,
                                              fx.vsearch(tmp))
             self.assertEqual({r["marker"]: r["resolved"] for r in rows}, {"m1": "f", "m2": "-"})
+            self.assertEqual({r["pairs_left_out"] for r in rows}, {0})  # every pair measured
+
+    def test_a_pair_is_aligned_over_both_copies(self):
+        # since 2026-11-10: the cover of both sequences, the lower of a pair's two directions, and a pair without an
+        # alignment left out and counted. Until then a partial copy inside a whole one was a pair at its local
+        # identity (the query's cover alone, the higher direction), and a pair not reported was read as 50%
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            vsearch = fx.tool(tmp, "vsearch", COVER_VSEARCH)
+            rng = random.Random(1)
+            base = "".join(rng.choice("ACGT") for _ in range(400))
+            # m1: the genome's copy, a strain's 99% alike and another strain's half copy (a contig's edge), the same
+            # as the genome's as far as it goes; m2: the genome's own copy the half one
+            rep = {"Y": {"m1": base, "m2": base[:200]}}
+            extra = {"Y2": {"m1": mutate(base, 4, 2), "m2": base}, "Y3": {"m1": base[:200]}}
+            species_of = {"Y": 4932, "Y2": 4932, "Y3": 4932}
+            others = {"m1": {"27291|P": mutate(base, 20, 6)}, "m2": {"27291|P": mutate(base, 20, 7)}}
+            rows = intraspecific.barcode_gap({4932: "Y"}, rep, extra, species_of, {}, others, ncbi, vsearch)
+            got = {r["marker"]: r for r in rows}
+            m1 = got["m1"]  # its one whole pair: 99% and 98% by its two directions; the half copy's two pairs left out
+            self.assertEqual((m1["assemblies"], m1["intra_min"], m1["intra_median"], m1["pairs_left_out"]),
+                             (3, "98.0", "98.0", 2))
+            self.assertEqual((m1["inter_max"], m1["gap"], m1["resolved"], m1["inter_rank"]),
+                             ("95.0", "3.0", "t", "genus"))
+            # no pair measured, and the genome's half copy against no other species' whole one: not measured, where
+            # the half copy's 200 bases gave 100% within the species and 95% to the other
+            self.assertEqual([got["m2"][c] for c in intraspecific.GAP_COLUMNS[4:]],
+                             [2, "-", "-", "-", "-", "-", "-", 1])
+            self.assertEqual(intraspecific.GAP_COLUMNS[-1], "pairs_left_out")  # the last column: readers by name
 
     def test_markers_of_a_genome(self):
         unit = dict(kind="rDNA", sequence="A" * 10 + "C" * 20 + "G" * 5 + "T" * 15,

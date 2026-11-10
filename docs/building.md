@@ -26,7 +26,7 @@ micromamba activate eukore
 ```
 
 `envs/eukore.yaml` holds:
-- Python 3.12 or later;
+- Python 3.12 or later (the build stops at its start on a Python without `tarfile`'s extraction filter);
 - miniprot and HMMER (hmmsearch, nhmmer, hmmalign; its easel tools' esl-translate for the rescue pass): the BUSCO calls,
   the introns' places and the genetic code check (hmmalign), and the
   organelle genes;
@@ -149,9 +149,13 @@ be given together (since 2026-11-10): `--stage process,package` is one run with 
 made once (`fetch,process` likewise).
 
 The process stage may run on several nodes at once, e.g. a SLURM array: each run claims the genomes it takes, so the
-runs share them out without a split. With `--genomes_only` (since 2026-11-09) each runs its genomes and stops; one
-run without it, after them all, makes the passes after the genomes over every one of them, then the package. After
-the download, that is one chain of two jobs, submitted together (since 2026-11-10):
+runs share them out without a split. With `--genomes_only` (since 2026-11-09) each runs its genomes, then the passes
+that take one done genome at a time under its claim (since 2026-11-10: the backfill, whose clade hold-outs are whole
+miniprot calls, the assembly metadata, the packing of older done folders; until then the last run made them alone, on
+one node), and stops; one run without it, after them all, makes what they left and the passes over all genomes (the
+intraspecific panel, the organelle genes, the gene models), then the package. No task list is written: the claims
+are the queue, and a killed task's genomes and steps fall to the others. After the download, that is one chain of
+two jobs, submitted together (since 2026-11-10):
 
 ```bash
 B=(python3 eukore_build.py --build_dir WORK --out OUT --groups fungi,protozoa --version 2026.11)
@@ -215,15 +219,21 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   `--veupathdb_key`), else Ensembl's, else TOGA2's (their indexes fetched once into `SRC/annotation_sources`); the process stage takes a BUSCO copy's
   model from it where the HMM confirms it ([methods.md](methods.md)), compares miniprot's models with it
   (`annotation.tsv`) and deletes it.
-- **process** calls each fetched genome's BUSCOs and extracts its rRNA into `WORK/done/<accession>/`, `-j` genomes at a
+- **process** calls each fetched genome's BUSCOs and extracts its rRNA into `WORK/done/<accession>.zip` (one file a
+  genome since 2026-11-10; `--done_folders`: a folder of 8-14 small files, as before), `-j` genomes at a
   time with `-t / -j` threads each, the largest first (since 2026-11-08; the rRNA and the assembly metadata run beside
   miniprot). A genome not fetched yet is left for the next run; so is one whose annotation the fetch stage has not
   asked for yet (it fetches a genome's annotation before the genome itself). Several process runs may share one WORK,
   e.g. one per node (since 2026-11-08): each genome is claimed by the run that takes it (`WORK/done/.<accession>.claim`;
   touched every minute, a claim of a killed job or a node that died is taken over after 5 minutes untouched, so a
   restart runs the genomes its killed job held), a genome another run finished after this one planned is left alone
-  (since 0.2.2: run again), and each run then makes the passes below too, unless `--genomes_only` leaves them to one
-  run after them all (since 2026-11-09; above). A worker process that dies (the OOM killer,
+  (since 0.2.2: run again), and each run then makes the passes below too; with `--genomes_only` those that take a
+  genome at a time under its claim (the backfill, the metadata), the others left to one run after them all (since
+  2026-11-09; above). A failed rRNA extraction no longer fails its genome (since 2026-11-10: its calls were
+  thrown away and made again by every run): the genome is done, `done.json` notes `rrna_failed`, and the backfill
+  tries the rRNA again. A dataset species' genome, called again for each hold-out, has miniprot's index built
+  once in `--local_tmp` and read by the later calls (since 2026-11-10; genomes up to 4 Gb, some 4-8 bytes a
+  base on the node's disk while the genome runs). A worker process that dies (the OOM killer,
   a crash) stops the stage with a message; a rerun goes on (since 0.2.2: the stage waited for it forever). A genome
   over 4 Gb is aligned in pieces of 4 Gb at most, a chromosome over that alone (since 0.2.2: a piece took one more
   whole chromosome past it, over the memory the scheduler reserved). Then it
@@ -272,7 +282,8 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--out DIR` | required | where `Eukore_<version>/`, `release/` and `genomes/` (unless `--genomes`) go |
 | `--genomes DIR` | `OUT/genomes` | the genomes' folder: the fetch stage downloads each species' genome, its gene models and NCBI's assembly report into it, the process stage reads them from it, the package stage cuts it back to `--keep_gb`; the same for every stage (since 2026-11-09) |
 | `--stage` | `all` | `fetch`, `process`, `package` or `all` (the three in turn); stages that follow one another, with commas: `process,package`, `fetch,process` (one run, one plan; since 2026-11-10); `release`: `OUT/release/` again of a finished `OUT/Eukore_<version>/` (since 2026-11-09) |
-| `--genomes_only` | | with `--stage process`: run the genomes and stop, the passes after them (backfill, intraspecific panel, metadata, organelle genes, gene models) left to a run without it after them all (`--stage process,package`: it waits for the genomes other runs still hold, runs what they left, then makes the passes and the package); for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages), `tools/eukore.sh`; since 2026-11-09) |
+| `--genomes_only` | | with `--stage process`: run the genomes, then the passes that take one genome at a time under its claim (since 2026-11-10: the backfill, the assembly metadata, the done folders' packing), and stop; the passes over all genomes (intraspecific panel, organelle genes, gene models) left to a run without it after them all (`--stage process,package`: it waits for the genomes other runs still hold, runs what they left, then makes the passes and the package); for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages), `tools/eukore.sh`; since 2026-11-09) |
+| `--done_folders` | | keep each genome's results as a folder of 8-14 small files (`WORK/done/<accession>/`, as every build before 2026-11-10) rather than one file (`WORK/done/<accession>.zip`, the default: for all eukaryotes some 30,000 files in place of 300,000 in 30,000 folders on the shared file system). Either way a WORK holding the other form is read as it is; without this flag the process stage packs the folders it finds |
 | `--no_release` | | the package stage writes no `OUT/release/` (the website's data and the downloads, a second copy of the package: since 2026-11-09 written last by default) |
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
@@ -310,7 +321,11 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 ### Resuming and rebuilding
 
 Every stage is resumable: a rerun does only what is not done.
-- A genome's results are in `WORK/done/<accession>/`. `done.json` is written last, so a killed job is redone whole.
+- A genome's results are in `WORK/done/<accession>.zip` (since 2026-11-10; `unzip -l` lists them, `unzip -p
+  <file> done.json` prints one; a build before then, or `--done_folders`: the folder `WORK/done/<accession>/`).
+  The file is written whole and renamed into place, so a killed job is redone whole, and a run again replaces
+  the old results in one step. A WORK of folders needs nothing done to it: every stage reads both forms, and
+  the process stage packs the folders (`--done_folders` keeps them).
 - A genome run without a tool (tiara, barrnap) gets that step once the tool is there; one run without the rescue
   pass (`--no_rescue`, no `esl-translate`) is run again where it is made now (since 2026-11-08).
 - A genome searched for fewer BUSCOs than the build calls (a run before format 4, or one with `--loci`) is run again.
@@ -357,7 +372,7 @@ Without it, these sources stay as first fetched. For a newer taxonomy, delete `W
 | `OUT/release/` | since 2026-11-09, the package's release, laid out as Eukore's website (`website/`) is, so that `rsync -a OUT/release/ <site>/` publishes it: `data/stats.json` (species by genome source and supergroup, the marker categories, the headline benchmarks), `data/taxonomy.json` (the species as a tree, each taxon's counts), `data/downloads.json`; `downloads/Eukore_<version>/`: the complete package (`Eukore_<version>.tar.gz`), the marker genes with introns (`_marker_genes.tar.gz`) and without (`_marker_cds.tar.gz`: coding sequences, proteins), the rDNA and organelle markers (`_rrna_organelle.tar.gz`), the genomes' sourmash sketches as one collection (`_sketches.sig.gz`), each metadata table alone (`_species.tsv.gz`, `_genomes.tsv.gz`, `_assembly.tsv.gz`, ...) and `MD5SUMS`. A bundle's files sit under `Eukore_<version>/` as in the package. A rerun keeps the downloads of the same package (its manifest's MD5). `--stage release` writes it again; `--no_release`, none |
 | `OUT/genomes/` | the genomes kept after the prune (`<accession>.fna.gz`, as NCBI serves them; `manifest.tsv` lists kept and deleted). `genomes.tsv`'s `local` column names them |
 | `WORK/sources/` | the sources, with their versions and checks (`source.json`, `labels.json`, ...) |
-| `WORK/done/<accession>/` | each genome's calls (`loci.tsv`, `copies.fna`, `features.tsv`), windows, rRNA (`rrna.tsv`), FCS-GX's ranges; for a species of BUSCO's dataset, its calls made without its own proteins (`held_out.tsv`, the OrthoDB benchmark's) |
+| `WORK/done/<accession>.zip` (`WORK/done/<accession>/` before 2026-11-10 and with `--done_folders`) | each genome's calls (`loci.tsv`, `copies.fna`, `features.tsv`), windows, rRNA (`rrna.tsv`), FCS-GX's ranges; for a species of BUSCO's dataset, its calls made without its own proteins (`held_out.tsv`, the OrthoDB benchmark's) |
 | `WORK/organelle/`, `WORK/published/` | the organelle genes' searches; the published rRNA reads' annotation |
 
 ### Checking and reading a package

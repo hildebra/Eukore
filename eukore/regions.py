@@ -10,6 +10,7 @@ import collections
 import glob
 import hashlib
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -49,7 +50,9 @@ def models_path(src_dir):
 def fetch(src_dir, download, log=print):
     """Rfam's SSU model into src_dir/rfam (kept when there and an Infernal model: a page saved in its place, e.g. a
     proxy's, is fetched again; since 2026-11-08 it was kept, and every package stage then stopped), and (since
-    2026-11-09) SSU_MODELS' joined into models_path's file."""
+    2026-11-09) SSU_MODELS' joined into models_path's file: written where it is not those models' files one after the
+    other (since 2026-11-10; until then kept where it was an Infernal model, so that a model added to SSU_MODELS, or
+    one fetched again, never reached cmsearch)."""
     path = cm_path(src_dir)
     folder = os.path.dirname(path)
     os.makedirs(folder, exist_ok=True)
@@ -63,20 +66,59 @@ def fetch(src_dir, download, log=print):
                 os.remove(one)
                 raise OSError(f"{url}: not an Infernal model")
     joined = models_path(src_dir)
-    if not is_cm(joined):
-        with open(util.part_of(joined), "w", newline="\n") as out:
-            for acc, _kind in SSU_MODELS:
-                with open(os.path.join(folder, f"{acc}.cm")) as fh:
-                    out.write(fh.read())
+    text = ""
+    for acc, _kind in SSU_MODELS:
+        with open(os.path.join(folder, f"{acc}.cm"), newline="") as fh:
+            text += fh.read()
+    try:
+        with open(joined, newline="") as fh:
+            same = fh.read() == text
+    except OSError:
+        same = False
+    if not same:
+        with open(util.part_of(joined), "w", newline="") as out:
+            out.write(text)
         os.replace(util.part_of(joined), joined)
     return path
 
 
-def ssu_models(seqs, cm, cmsearch="cmsearch", threads=1, tmp=None):
+def _cache_read(stem):
+    """A cache's lines {key: value}: of all its files (stem.<host>-<pid>.tsv, one a process), a line a killed run cut
+    (no line end, not its two fields) left out."""
+    cache = {}
+    for path in sorted(glob.glob(glob.escape(stem) + "*.tsv")):
+        with open(path) as fh:
+            for line in fh:
+                f = line.rstrip("\n").split("\t")
+                if line.endswith("\n") and len(f) == 2:
+                    cache[f[0]] = f[1]
+    return cache
+
+
+def _cache_open(stem):
+    """This process' own file of a cache, opened to add lines (after a line a killed run cut: a line end first)."""
+    path = f"{stem}.{socket.gethostname()}-{os.getpid()}.tsv"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cut = os.path.isfile(path) and os.path.getsize(path) and not util.ends_in_newline(path)
+    out = open(path, "a", newline="\n")
+    if cut:
+        out.write("\n")
+    return out
+
+
+def _digest(seq):
+    return hashlib.md5(seq.encode()).hexdigest()
+
+
+def ssu_models(seqs, cm, cmsearch="cmsearch", threads=1, tmp=None, work=None):
     """Each sequence's SSU model of the best score ({name: its 18S} -> {name: eukarya, bacteria, archaea, or - where
     none scores it}; since 2026-11-09): cmsearch of SSU_MODELS (cm: models_path's file) by their profile HMMs alone
     (--hmmonly: an HMM search's speed), each distinct sequence once; a prokaryote model's call needs its score over
-    the eukaryote models' best by SSU_MARGIN bits."""
+    the eukaryote models' best by SSU_MARGIN bits.
+    Since 2026-11-10 a sequence's model is kept under work/cmalign/models.<digest of the models' file, SSU_MODELS and
+    SSU_MARGIN> (work: the build's WORK; tmp where none is given, which the build gives its WORK as), a line a
+    sequence as run's cache: until then every package stage searched every 18S again. -Z 1 makes a sequence's hits
+    its own whatever is searched with it, so that the kept call is the one a search would give."""
     kind_of = dict(SSU_MODELS)
     distinct = {}
     for name, seq in seqs.items():
@@ -84,36 +126,47 @@ def ssu_models(seqs, cm, cmsearch="cmsearch", threads=1, tmp=None):
             distinct.setdefault(seq.upper(), []).append(name)
     if not distinct:
         return {}
-    best = collections.defaultdict(dict)  # sequence index -> {kind: best score}
-    order = list(distinct)
-    with tempfile.TemporaryDirectory(dir=tmp) as work:
-        fasta, table = os.path.join(work, "s.fna"), os.path.join(work, "hits.tbl")
-        with open(fasta, "w") as fh:
-            fh.writelines(f">s{i}\n{seq}\n" for i, seq in enumerate(order))
-        run = subprocess.run([cmsearch, "--hmmonly", "--noali", "-Z", "1", "--cpu", str(max(1, threads)), "--tblout",
-                              table, "-o", os.devnull, cm, fasta], capture_output=True, text=True, check=False)
-        if run.returncode != 0:
-            raise RuntimeError(f"cmsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
-        with open(table) as fh:
-            for line in fh:
-                if line.startswith("#"):
-                    continue
-                f = line.split()
-                kind, score = kind_of.get(f[3]), float(f[14])
-                if kind and score > best[int(f[0][1:])].get(kind, float("-inf")):
-                    best[int(f[0][1:])][kind] = score
-    out = {}
-    for i, seq in enumerate(order):
-        scores = best.get(i)
-        if not scores:
-            kind = "-"
-        else:
-            kind = max(scores, key=scores.get)
-            if kind != "eukarya" and scores[kind] < scores.get("eukarya", float("-inf")) + SSU_MARGIN:
-                kind = "eukarya"
-        for name in distinct[seq]:
-            out[name] = kind
-    return out
+    folder = work or tmp
+    stem = None
+    if folder and os.path.isfile(cm):
+        key = hashlib.md5("\n".join([util.md5(cm), repr(SSU_MODELS), str(SSU_MARGIN)]).encode())
+        stem = os.path.join(folder, "cmalign", f"models.{key.hexdigest()[:10]}")
+    cache = _cache_read(stem) if stem else {}
+    order = [seq for seq in distinct if _digest(seq) not in cache]
+    if order:
+        best = collections.defaultdict(dict)  # sequence index -> {kind: best score}
+        with tempfile.TemporaryDirectory(dir=tmp) as scratch:
+            fasta, table = os.path.join(scratch, "s.fna"), os.path.join(scratch, "hits.tbl")
+            with open(fasta, "w") as fh:
+                fh.writelines(f">s{i}\n{seq}\n" for i, seq in enumerate(order))
+            run = subprocess.run([cmsearch, "--hmmonly", "--noali", "-Z", "1", "--cpu", str(max(1, threads)),
+                                  "--tblout", table, "-o", os.devnull, cm, fasta], capture_output=True, text=True,
+                                 check=False)
+            if run.returncode != 0:  # nothing kept
+                raise RuntimeError(f"cmsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+            with open(table) as fh:
+                for line in fh:
+                    if line.startswith("#"):
+                        continue
+                    f = line.split()
+                    kind, score = kind_of.get(f[3]), float(f[14])
+                    if kind and score > best[int(f[0][1:])].get(kind, float("-inf")):
+                        best[int(f[0][1:])][kind] = score
+        new = {}
+        for i, seq in enumerate(order):
+            scores = best.get(i)
+            if not scores:
+                kind = "-"
+            else:
+                kind = max(scores, key=scores.get)
+                if kind != "eukarya" and scores[kind] < scores.get("eukarya", float("-inf")) + SSU_MARGIN:
+                    kind = "eukarya"
+            new[_digest(seq)] = kind
+        cache.update(new)
+        if stem:
+            with _cache_open(stem) as out:
+                out.writelines(f"{k}\t{v}\n" for k, v in sorted(new.items()))
+    return {name: cache[_digest(seq)] for seq, names in distinct.items() for name in names}
 
 
 def is_cm(path):
@@ -141,6 +194,16 @@ MAX_SSU = 4000   # an 18S longer than this (a misjoined unit, an intron-laden on
 MXSIZE = 2048    # cmalign's matrix limit (Mb, per thread); a sequence needing more is left out
 
 
+def _program(tool):
+    """A program's identity in a cache's key: its file, its size and its time (its name where it is not found)."""
+    path = shutil.which(tool) or tool
+    try:
+        found = os.stat(path)
+    except OSError:
+        return tool
+    return f"{os.path.realpath(path)}\t{found.st_size}\t{found.st_mtime_ns}"
+
+
 def _cmalign(cm, seqs, names, cmalign_bin, threads, tmp):
     with tempfile.TemporaryDirectory(dir=tmp) as work:
         fasta, got = os.path.join(work, "s.fna"), os.path.join(work, "a.pfam")
@@ -149,32 +212,39 @@ def _cmalign(cm, seqs, names, cmalign_bin, threads, tmp):
         run = subprocess.run([cmalign_bin, "--cpu", str(max(1, threads)), "--outformat", "Pfam", "--noprob",
                               "--mxsize", str(MXSIZE), "-o", got, cm, fasta], capture_output=True, text=True,
                              check=False)
-        if run.returncode != 0:
-            return None, run.stderr.strip()[-300:]
+        if run.returncode != 0:  # its own exit (1: a sequence over its matrix limit), or killed (a signal's, a shell's)
+            return None, run.stderr.strip()[-300:], 0 < run.returncode < 128
         rows, rf = align_mod.read_pfam(got)
-        return {n: align_mod.states_of(row, rf) for n, row in rows.items()}, None
+        return {n: align_mod.states_of(row, rf) for n, row in rows.items()}, None, True
 
 
-def cmalign(cm, seqs, cmalign_bin="cmalign", threads=1, tmp=None, log=None, each=None):
+def cmalign(cm, seqs, cmalign_bin="cmalign", threads=1, tmp=None, log=None, each=None, fail=None):
     """seqs {name: sequence} aligned to the CM -> {name: [the model position of each base, or None in an insert]}. A
-    sequence over MAX_SSU is left out; a batch cmalign fails on (one sequence over its matrix limit) is aligned one
-    sequence at a time, those that fail left out (said). each: a function given each batch's alignments as they come
-    (run's cache)."""
-    out, failed = {}, []
+    sequence over MAX_SSU is left out; a batch cmalign fails on (one sequence over its matrix limit) is aligned in
+    halves, a half that fails in its halves, down to the sequences that fail alone: left out (said). Since 2026-11-10;
+    until then one sequence at a time, BATCH runs for one sequence that fails, where the halves take ~2 log2(BATCH).
+    each: a function given each run's alignments as they come (run's cache); fail: one given {name: cmalign's words}
+    of the sequences that failed alone by cmalign's own exit (one killed says nothing of its sequence)."""
+    out, failed, own = {}, [], {}
     names = sorted(n for n in seqs if len(seqs[n]) <= MAX_SSU)
     for i in range(0, len(names), BATCH):
-        got, why = _cmalign(cm, seqs, names[i:i + BATCH], cmalign_bin, threads, tmp)
-        if got is None:
-            got = {}
-            for n in names[i:i + BATCH]:
-                one, why = _cmalign(cm, seqs, [n], cmalign_bin, threads, tmp)
-                if one is None:
-                    failed.append((n, why))
-                else:
-                    got.update(one)
-        out.update(got)
-        if each:
-            each(got)
+        parts = [names[i:i + BATCH]]
+        while parts:
+            part = parts.pop()
+            got, why, ended = _cmalign(cm, seqs, part, cmalign_bin, threads, tmp)
+            if got is not None:
+                out.update(got)
+                if each:
+                    each(got)
+            elif len(part) > 1:
+                half = len(part) // 2
+                parts += [part[half:], part[:half]]  # the first half next
+            else:
+                failed.append((part[0], why))
+                if ended:
+                    own[part[0]] = why
+    if fail and own:
+        fail(own)
     long_ones = len(seqs) - len(names)
     if log and (failed or long_ones):
         log(f"  cmalign: {long_ones} 18S over {MAX_SSU} bases and {len(failed)} it could not align left out"
@@ -219,7 +289,7 @@ def ssu_of(seq, row):
 
 def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
     """Every record's 18S variable regions (records [(name, sequence, row)]) -> rows (REGION_COLUMNS). Each distinct 18S
-    is aligned once (cached under WORK/cmalign/)."""
+    is aligned once (cached under WORK/cmalign/; one cmalign fails on is not aligned again by that cmalign)."""
     regions = read_regions()
     ref = cmalign(cm, {"reference": reference()}, cmalign_bin, threads, work).get("reference")
     if ref is None:  # a damaged model, a cmalign that fails: no regions, the package goes on (until 2026-11-08 stopped)
@@ -234,29 +304,31 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
     # appended to one, their lines interleaved), all read
     key = hashlib.md5("\n".join([util.md5(cm), util.md5(REGIONS), reference(), str(SLACK), str(MAX_SSU)]).encode())
     stem = os.path.join(work, "cmalign", f"ssu.{key.hexdigest()[:10]}") if work else None
-    cache = {}
-    for path in sorted(glob.glob(glob.escape(stem) + "*.tsv")) if stem else ():
-        with open(path) as fh:
-            for line in fh:
-                f = line.rstrip("\n").split("\t")
-                if line.endswith("\n") and len(f) == 2:  # a line a killed run cut: aligned again
-                    cache[f[0]] = f[1]
-    cache_path = f"{stem}.{socket.gethostname()}-{os.getpid()}.tsv" if stem else None
+    cache = _cache_read(stem) if stem else {}  # a line a killed run cut: aligned again
+    # the 18S this cmalign failed on (since 2026-11-10, a cache of their own: every run aligned them again, each
+    # failing batch in its halves, to fail again): kept under the digest of the model, the matrix limit and the
+    # program (its file, size and time: another cmalign tries them again), and only where cmalign said so itself of
+    # the sequence alone and aligned the reference again after it (a full disk, a node out of memory fail it too)
+    failed_stem = None
+    if work:
+        failed_key = hashlib.md5("\n".join([util.md5(cm), str(MXSIZE), _program(cmalign_bin)]).encode())
+        failed_stem = os.path.join(work, "cmalign", f"unaligned.{failed_key.hexdigest()[:10]}")
+    unaligned = _cache_read(failed_stem) if failed_stem else {}
     ssu = {}
     for name, seq, row in records:
         got = ssu_of(seq, row)
         if got:
-            ssu[name] = (got[0].upper(), got[1], hashlib.md5(got[0].upper().encode()).hexdigest())
+            ssu[name] = (got[0].upper(), got[1], _digest(got[0].upper()))
     todo = {key: s for s, _o, key in ssu.values() if key not in cache}
+    known = sorted(key for key in todo if key in unaligned)
+    if known:
+        log(f"18S variable regions: {len(known)} distinct 18S cmalign failed on before left out, e.g. "
+            f"{unaligned[known[0]][-120:]} ({failed_stem}.*.tsv: removed, they are tried again)")
+        todo = {key: s for key, s in todo.items() if key not in unaligned}
     if todo:
         log(f"18S variable regions: {len(todo)} distinct 18S to align (cmalign)")
-        out = None
-        if cache_path:
-            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            cut = os.path.isfile(cache_path) and os.path.getsize(cache_path) and not util.ends_in_newline(cache_path)
-            out = open(cache_path, "a", newline="\n")
-            if cut:
-                out.write("\n")
+        out = _cache_open(stem) if stem else None
+        failures = {}
 
         def keep(aligned):
             got = {key: ",".join(f"{n}:{a}-{b}:{'t' if c else 'f'}" for n, (a, b, c) in
@@ -267,10 +339,13 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
                 out.flush()
         try:
             keep({key: [] for key, s in todo.items() if len(s) > MAX_SSU})  # never aligned: none, for good
-            cmalign(cm, todo, cmalign_bin, threads, work, log, each=keep)
+            cmalign(cm, todo, cmalign_bin, threads, work, log, each=keep, fail=failures.update)
         finally:
             if out:
                 out.close()
+        if failures and failed_stem and cmalign(cm, {"reference": reference()}, cmalign_bin, threads, work):
+            with _cache_open(failed_stem) as fh:
+                fh.writelines(f"{k}\t{' '.join(why.split()) or '-'}\n" for k, why in sorted(failures.items()))
     out = []
     for name, (_s, offset, key) in sorted(ssu.items()):
         for part in cache.get(key, "-").split(","):

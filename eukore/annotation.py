@@ -38,6 +38,7 @@ import os
 import re
 import urllib.parse
 
+from . import store
 from . import util
 
 TABLE = "annotation.tsv"
@@ -148,7 +149,7 @@ def missing(work, job):
     """Whether a done genome with an annotation to try has not been compared with it yet."""
     from .genomes import done_dir, is_done  # noqa: PLC0415
     return wanted(job) and is_done(work, job["accession"]) and \
-        not os.path.isfile(os.path.join(done_dir(work, job["accession"]), TABLE))
+        not store.has(done_dir(work, job["accession"]), TABLE)
 
 
 def ensembl_index(species_json):
@@ -329,15 +330,10 @@ def assign(job_map, index, veupathdb=False):
 
 
 def calls_of(folder):
-    """A done genome's calls (loci.tsv, features.tsv) -> {locus: dict(status, contig, strand, exons [(start, end)] on
-    the contig, 1-based inclusive, in order)}."""
+    """A done genome's calls (loci.tsv, features.tsv; folder: its done folder, or the packed genome's, store.py) ->
+    {locus: dict(status, contig, strand, exons [(start, end)] on the contig, 1-based inclusive, in order)}."""
     def rows(name):
-        path = os.path.join(folder, name)
-        if not os.path.isfile(path):
-            return []
-        with open(path) as fh:
-            head = fh.readline().rstrip("\n").split("\t")
-            return [dict(zip(head, line.rstrip("\n").split("\t"))) for line in fh if line.strip()]
+        return store.table(folder, name)
     on_copy = collections.defaultdict(list)
     for f in rows("features.tsv"):
         if f["kind"] == "exon":
@@ -369,11 +365,15 @@ def aliases(report, gff=None):
     GenBank name and the reverse (the GFF names the RefSeq copy's sequences, a genome fetched from GenBank the GenBank
     ones), a chromosome's name (Ensembl's: `1`, `X`) its GenBank name, and an accession without its version (TOGA2's)
     the accession. gff: the annotation, whose ##sequence-region lines name a sequence the report does not (VEuPathDB's
-    own names: `Pf3D7_01_v3`) its GenBank name where its length is that of one sequence alone in both."""
+    own names: `Pf3D7_01_v3`) its GenBank name where its length is that of one sequence alone in both. Since
+    2026-11-10 also a sequence's name as its submitter gave it (Sequence-Name: `scaffold_12`, `chrIV`) and its UCSC
+    name (`chr1`, `chrUn_KI270302v1`), where the name is one sequence's alone and no other name's already: until then
+    a gene set naming its scaffolds that way matched none, and the genome got no transcripts, silently."""
     out = {}
     if not report or not os.path.isfile(report):
         return out
     by_length = collections.defaultdict(list)
+    named, sequence = collections.defaultdict(set), {}  # a submitter's or UCSC's name -> its sequences; the accessions
     with open(report) as fh:
         for line in fh:
             if line.startswith("#"):
@@ -391,6 +391,17 @@ def aliases(report, gff=None):
                 out.setdefault(f[2], gb)
             if (gb or rs) and len(f) > 8 and f[8].isdigit():
                 by_length[int(f[8])].append(gb or rs)
+            if gb or rs:
+                sequence.update({acc: gb or rs for acc in (gb, rs) if acc})
+                for name in (f[0], f[9] if len(f) > 9 else ""):
+                    if name.strip() not in ("na", ""):  # `na` is the report's word for no name
+                        named[name.strip()].add(gb or rs)
+    for name, theirs in named.items():
+        # a name of two sequences (an assembly's units naming their scaffolds alike), an accession, or a name that
+        # already leads elsewhere (a chromosome's name another sequence was given) is not mapped: no model on a wrong
+        # sequence
+        if len(theirs) == 1 and name not in out and name not in sequence:
+            out[name] = next(iter(theirs))
     if gff and os.path.isfile(gff):
         theirs = collections.defaultdict(list)
         with util.open_text(gff) as fh:
@@ -425,15 +436,17 @@ def read_cds(gff, spans, alias=None):
     is the CDS's Parent (a GTF's transcript_id). alias: {annotation's sequence name: the calls'} where the two name the
     sequences differently (aliases(); two steps: a chromosome's name to its GenBank name to its RefSeq name). Until
     2026-11-06 a transcript kept only its CDS overlapping the spans: an exon miniprot missed was cut from NCBI's model
-    too."""
-    out, hit = {}, set()
+    too. Since 2026-11-10 a transcript's stop_codon lines are read too (with_stop): a GTF's CDS ends before the stop
+    (GENCODE's rule), a GFF3's holds it, as miniprot's model does (loci.parse_alignments); until then a GTF's model
+    was three bases short of the other two."""
+    out, hit, stops = {}, set(), collections.defaultdict(list)
     alias = alias or {}
     with util.open_text(gff) as fh:
         for line in fh:
             if line.startswith("#"):
                 continue
             f = line.rstrip("\n").split("\t")
-            if len(f) < 9 or f[2] != "CDS":
+            if len(f) < 9 or f[2] not in ("CDS", "stop_codon"):
                 continue
             if f[0] not in spans:
                 name = alias.get(f[0])
@@ -442,18 +455,44 @@ def read_cds(gff, spans, alias=None):
                 continue
             a, b = int(f[3]), int(f[4])
             attrs = attributes(f[8])
+            phase = int(f[7]) if f[7].isdigit() else 0
+            if f[2] == "stop_codon":  # its transcript's, on its sequence (the lines' order is not relied on)
+                parent = attrs.get("Parent") or attrs.get("transcript_id")
+                if parent:
+                    stops[parent].append((f[0], a, b, phase))
+                continue
             parent = attrs.get("Parent") or attrs.get("transcript_id") or attrs.get("ID") or f"{f[0]}:{a}"
             t = out.setdefault(parent, dict(contig=f[0], strand=f[6], gene=urllib.parse.unquote(
                 attrs.get("gene") or attrs.get("gene_name") or attrs.get("locus_tag") or attrs.get("gene_id") or "-"),
                 cds=[]))
             t["cds"].append((a, b))
-            t.setdefault("phase", {})[(a, b)] = int(f[7]) if f[7].isdigit() else 0
+            t.setdefault("phase", {})[(a, b)] = phase
             if any(a <= e and b >= s for s, e in spans[f[0]]):
                 hit.add(parent)
     out = {name: t for name, t in out.items() if name in hit}
-    for t in out.values():
+    for name, t in out.items():
         t["cds"] = sorted(set(t["cds"]))
+        with_stop(t, [s[1:] for s in stops.get(name, ()) if s[0] == t["contig"]])
     return out
+
+
+def with_stop(t, stops):
+    """A transcript (read_cds') with its stop codon's lines [(start, end, phase)] made coding: one inside its CDS
+    changes nothing (a GFF3's CDS holds the stop); one touching a CDS interval is that interval's end (the interval
+    keeps its phase: the stop is at its 3' end on either strand); one apart from them (a stop an intron splits: its
+    bases in the next exon) is an interval of its own."""
+    for a, b, phase in sorted(set(stops)):
+        if any(s <= a and b <= e for s, e in t["cds"]):
+            continue
+        near = next(((s, e) for s, e in t["cds"] if a <= e + 1 and b >= s - 1), None)
+        if near is None:
+            t["cds"].append((a, b))
+            t["phase"][(a, b)] = phase
+        else:
+            joined = (min(near[0], a), max(near[1], b))
+            t["cds"][t["cds"].index(near)] = joined
+            t["phase"][joined] = t["phase"].pop(near)
+        t["cds"].sort()
 
 
 def has_cds(gff):
@@ -513,11 +552,9 @@ def annotate(folder, gff, report=None, calls=None, source="ncbi"):
         transcripts = read_cds(gff, spans, aliases(report, gff))
         if transcripts or has_cds(gff):  # a GFF without coding sequences (an assembly's regions alone): no annotation
             rows = [dict(compare(c, transcripts), locus=locus, source=source) for locus, c in sorted(calls.items())]
-    path = os.path.join(folder, TABLE)
-    with open(util.part_of(path), "w", newline="\n") as fh:
-        fh.write("\t".join(ANNOTATION_COLUMNS) + "\n")
-        fh.writelines("\t".join(str(r[c]) for c in ANNOTATION_COLUMNS) + "\n" for r in rows)
-    os.replace(util.part_of(path), path)
+    # with the genome's other results: in its folder, or its packed file (store.put; since 2026-11-10)
+    store.put(folder, {TABLE: ("\t".join(ANNOTATION_COLUMNS) + "\n" + "".join(
+        "\t".join(str(r[c]) for c in ANNOTATION_COLUMNS) + "\n" for r in rows)).encode()})
     return len(rows)
 
 

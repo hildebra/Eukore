@@ -4,17 +4,23 @@ from its nearest other species. The panel's species (data/intraspecific_panel.ts
 compared with each other and with the species' genome's.
 
 - intra_min, intra_median: the identity (vsearch, --iddef 2, %) of the species' assemblies' copies of a marker to each
-  other: their least alike pair, the median pair ("<50" pairs read as 50).
+  other: their least alike pair, the median pair, of the pairs measured (- where none is); pairs_left_out (since
+  2026-11-10): the pairs vsearch reports no alignment of (none over COVER of both copies at MIN_ID: a partial copy
+  beside a whole one, or two copies under 50% alike), which are in neither figure. Until then such a pair was read
+  as 50% identical, which "no alignment over the cover" does not say.
 - inter_max: the identity of the species' genome's copy to its nearest copy of another species in the package (a
   BUSCO's: busco/copies.tsv's own check, qc.check's nearest_id; the 18S, the ITS, an organelle gene's: vsearch against
   every other species' in the package).
 - gap: intra_min - inter_max; resolved: t where it is above 0 (every assembly of the species nearer to each other than
   to any other species) and the nearest other species is a congener, f where it is not above 0, - where the species
   has no other species' copy 50% alike, or (since 2026-11-09) none of its genus: a gap to a farther relative says
-  nothing of telling the species from its congeners (until then t, where the package held no congener).
+  nothing of telling the species from its congeners (until then t, where the package held no congener), or (since
+  2026-11-10) none of its pairs is measured.
 - inter_rank (since 2026-11-09): the deepest rank the nearest other species shares with the species (genus ..
   phylum, none; qc.depth), - where not known.
-Pairs are aligned over COVER of their query at least (since 2026-11-09).
+Pairs are aligned over COVER of both sequences at least (since 2026-11-10; of the query alone since 2026-11-09), the
+species' own pairs and the genome's copy against the other species' alike; a pair's identity is the lower of its two
+directions' (until 2026-11-10 the higher).
 
 Markers: each BUSCO (its coding sequence), 18S, ITS (ITS1, 5.8S and ITS2 of an rDNA unit), and the organelle genes
 (their coding sequence where known, else their record).
@@ -28,10 +34,11 @@ from . import organelle as organelle_mod
 from . import package, qc, rrna, util
 
 MIN_ID = 0.5
-COVER = 0.8  # a pair's alignment covers this share of its query (since 2026-11-09)
+COVER = 0.8  # a pair's alignment covers this share of both sequences (since 2026-11-10; of its query since 2026-11-09)
 GAP_COLUMNS = ("marker", "species_taxid", "name", "group", "assemblies", "intra_min", "intra_median", "inter_max",
                "gap", "resolved",
-               "inter_rank")  # since 2026-11-09 (format 6): the rank the nearest other species shares with it
+               "inter_rank",  # since 2026-11-09 (format 6): the rank the nearest other species shares with it
+               "pairs_left_out")  # since 2026-11-10: the species' pairs without an alignment, in no figure of the row
 RANK_NAMES = ("none", "phylum", "class", "order", "family", "genus")  # qc.depth's 0 .. 5
 COPY_COLUMNS = ("accession", "species_taxid", "locus", "status", "contig", "start", "end", "strand", "length",
                 "cds_length", "exons", "hmm_score", "hmm_coverage", "copies", "dup_identity")
@@ -99,14 +106,16 @@ def _pairs(query, db, vsearch, threads=1, maxaccepts=0):
     """vsearch of query {name: seq} against db {name: seq} -> [(query, target, identity)], or None where vsearch
     failed (since 2026-11-08: [], every pair then read as under MIN_ID and the gap called unresolved). A pair's
     alignment covers COVER of the query (since 2026-11-09: --iddef 2 reads identity over the aligned columns alone, and
-    a partial record's few hundred bases matched made a nearest species or a strain look nearer than it is)."""
+    a partial record's few hundred bases matched made a nearest species or a strain look nearer than it is) and of
+    the target (since 2026-11-10: the query's cover alone let a partial copy, a contig-edge 18S, inside a whole one
+    count as a pair at its local identity, the whole one being the target)."""
     if not vsearch:
         return None
     if not query or not db:
         return []
     try:
         return util.vsearch_global(vsearch, query, db, MIN_ID, threads, maxaccepts, 256 if maxaccepts else 0,
-                                   ["--query_cov", str(COVER)])
+                                   ["--query_cov", str(COVER), "--target_cov", str(COVER)])
     except OSError:
         return None
 
@@ -149,7 +158,9 @@ def barcode_gap(panel_species, rep_markers, extra_markers, species_of, inter, ot
         for q, t, ident in pairs:
             if q != t and q.split("|")[0] == t.split("|")[0]:
                 key = tuple(sorted((q, t)))
-                hits[q.split("|")[0]][key] = max(hits[q.split("|")[0]].get(key, 0.0), ident)
+                # one identity a pair: the lower of its two directions' (since 2026-11-10; until then the higher,
+                # which with the query's cover alone was the partial copy's local one)
+                hits[q.split("|")[0]][key] = min(hits[q.split("|")[0]].get(key, ident), ident)
         by_species = collections.defaultdict(list)
         for name in seqs:
             by_species[name.split("|")[0]].append(name)
@@ -157,19 +168,25 @@ def barcode_gap(panel_species, rep_markers, extra_markers, species_of, inter, ot
             if len(names) < 2:
                 continue
             pairs = [(a, b) for i, a in enumerate(sorted(names)) for b in sorted(names)[i + 1:]]
-            ids = [hits[sp].get((a, b), MIN_ID * 100) for a, b in pairs]
+            # the pairs measured; one vsearch reports no alignment of is left out and counted (since 2026-11-10; until
+            # then read as MIN_ID, 50%: no alignment over the cover is not an identity, and with both sequences'
+            # cover asked every pair of a partial copy would be the species' least alike one, at 50%)
+            ids = [hits[sp][pair] for pair in pairs if pair in hits[sp]]
             near = inter.get((int(sp), marker))
             near, depth = near if isinstance(near, tuple) else (near, None)
-            intra_min = min(ids)
+            intra_min = min(ids) if ids else None
             # resolved against a congener alone (since 2026-11-09); nearer to a farther relative is unresolved all
-            # the same
-            resolved = "-" if near is None else "f" if intra_min <= near else "t" if depth == 5 else "-"
+            # the same; no pair measured: not measured
+            resolved = "-" if near is None or intra_min is None else "f" if intra_min <= near else \
+                "t" if depth == 5 else "-"
             out.append(dict(marker=marker, species_taxid=sp, name=ncbi.name.get(int(sp), "-") if ncbi else "-",
                             group=(group_of or {}).get(int(sp), "-"), assemblies=len(names),
-                            intra_min=f"{intra_min:.1f}", intra_median=f"{statistics.median(ids):.1f}",
+                            intra_min="-" if intra_min is None else f"{intra_min:.1f}",
+                            intra_median=f"{statistics.median(ids):.1f}" if ids else "-",
                             inter_max="-" if near is None else f"{near:.1f}",
-                            gap="-" if near is None else f"{intra_min - near:.1f}", resolved=resolved,
-                            inter_rank="-" if depth is None else RANK_NAMES[depth]))
+                            gap="-" if near is None or intra_min is None else f"{intra_min - near:.1f}",
+                            resolved=resolved, inter_rank="-" if depth is None else RANK_NAMES[depth],
+                            pairs_left_out=len(pairs) - len(ids)))
     return out
 
 

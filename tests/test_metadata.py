@@ -228,5 +228,141 @@ class PackageTest(unittest.TestCase):
             self.assertEqual((lines[0], lines[1]), (f">{YEAST}|mt1 mitochondrion", RECORDS[4][1]))
 
 
+# sourmash's stand-in that does not end: its partial half-written, its pid and its partial's name noted beside it
+STALLED = r"""#!/usr/bin/env python3
+import os, sys, time
+a = sys.argv
+part = a[a.index("-o") + 1]
+with open(part, "w") as fh:
+    fh.write("half")
+note = os.path.join(os.path.dirname(os.path.abspath(a[0])), "noted")
+with open(note + ".tmp", "w") as fh:
+    fh.write("%d\t%s" % (os.getpid(), part))
+os.replace(note + ".tmp", note)
+time.sleep(60)
+"""
+
+
+class DescribeTest(unittest.TestCase):
+    """metadata.describe since 2026-11-10: the MD5 from the scan's own pass, a damaged gzip a genome's failure, the
+    sketch's partial this process' own and never left."""
+
+    def test_the_md5_comes_from_the_scan(self):
+        import hashlib  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            gz = fasta(os.path.join(tmp, "g.fna.gz"))
+            plain = fasta(os.path.join(tmp, "g.fna"))
+            bgzf = os.path.join(tmp, "b.fna.gz")  # BGZF: a gzip member a block, and the empty one at its end
+            util.bgzf_copy(plain, bgzf, util.WORK_LEVEL)
+            # 4 Mb: a compressed file of more than one of the feeder's blocks and many of gzip's reads
+            big = os.path.join(tmp, "big.fna.gz")
+            with gzip.open(big, "wb", compresslevel=1) as fh:
+                fh.write(b">big1\n" + os.urandom(4_000_000).translate(bytes(b"ACGT"[i & 3] for i in range(256))))
+            self.assertGreater(os.path.getsize(big), 1 << 20)
+
+            def md5(path):
+                with open(path, "rb") as fh:
+                    return hashlib.md5(fh.read()).hexdigest()
+            tools = [t for t in (shutil.which("gzip"), shutil.which("pigz"), shutil.which("igzip")) if t] + [None]
+            tool, expected = util.GZIP_TEST, metadata.scan(gz)
+            try:
+                for path in (gz, bgzf, plain):
+                    for util.GZIP_TEST in tools if path != plain else [None]:  # a plain file: no decompressor
+                        digest = hashlib.md5()
+                        self.assertEqual(metadata.scan(path, digest), expected)  # the scan the same with a digest
+                        self.assertEqual(digest.hexdigest(), md5(path), (path, util.GZIP_TEST))
+                for util.GZIP_TEST in tools:
+                    digest = hashlib.md5()
+                    for _piece in metadata._pieces_of(big, digest):  # noqa: SLF001
+                        pass
+                    self.assertEqual(digest.hexdigest(), md5(big), util.GZIP_TEST)
+                # describe takes it from there: the file is not read a second time
+                for util.GZIP_TEST in tools:
+                    folder = os.path.join(tmp, f"done-{tools.index(util.GZIP_TEST)}")
+                    os.makedirs(folder)
+                    with mock.patch.object(util, "md5", side_effect=AssertionError("a second read")):
+                        self.assertIsNone(metadata.describe(gz, folder, YEAST, YEAST_GCF))
+                    with open(os.path.join(folder, metadata.STATS)) as fh:
+                        stats = json.load(fh)
+                    self.assertEqual((stats["md5"], stats["bytes"]), (md5(gz), os.path.getsize(gz)))
+                # a scan given up (its reader's error) ends the tool and its feeder: nothing waits
+                util.GZIP_TEST = shutil.which("gzip")
+                pieces = metadata._pieces_of(big, hashlib.md5())  # noqa: SLF001
+                next(pieces)
+                pieces.close()
+            finally:
+                util.GZIP_TEST = tool
+
+    def test_a_damaged_gzip_is_the_genomes_failure(self):
+        import zlib  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(fasta(os.path.join(tmp, "g.fna.gz")), "rb") as fh:
+                data = bytearray(fh.read())
+            data[len(data) // 2:len(data) // 2 + 64] = b"\xff" * 64  # the deflate stream damaged, not cut
+            bad = os.path.join(tmp, "bad.fna.gz")
+            with open(bad, "wb") as fh:
+                fh.write(data)
+            with self.assertRaises(zlib.error), gzip.open(bad, "rb") as fh:
+                fh.read()
+            folder = os.path.join(tmp, "done")
+            os.makedirs(folder)
+            sourmash = fx.tool(tmp, "sourmash", SKETCHER)
+            tool = util.GZIP_TEST
+            try:
+                util.GZIP_TEST = None  # Python's gzip: zlib.error, where a tool's failure is an OSError
+                why = metadata.describe(bad, folder, YEAST, YEAST_GCF, sourmash)
+            finally:
+                util.GZIP_TEST = tool
+            self.assertTrue(why.startswith("metadata: error: "), why)
+            self.assertEqual(os.listdir(folder), [metadata.SKETCH])  # no stats of it, nothing half-written
+
+    def test_the_sketchs_partial_is_this_process_own_and_never_left(self):
+        import socket  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415
+        import time  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            path = fasta(os.path.join(tmp, f"{YEAST}.fna.gz"))
+            folder = os.path.join(tmp, "done")
+            os.makedirs(folder)
+            host = socket.gethostname()
+            gone = subprocess.Popen(["true"])
+            gone.wait()
+            # another process' partials: the name every process wrote until 2026-11-10, another host's of now, and
+            # one of a process of this host that is gone
+            old, theirs, dead = (os.path.join(folder, n) for n in (
+                ".sketch.partial.sig.gz", ".elsewhere-7.sketch.partial.sig.gz",
+                f".{host}-{gone.pid}.sketch.partial.sig.gz"))
+            for other in (old, theirs, dead):
+                with open(other, "w") as fh:
+                    fh.write("another's")
+            sourmash = fx.tool(tmp, "sourmash", SKETCHER)
+            self.assertIsNone(metadata.describe(path, folder, YEAST, YEAST_GCF, sourmash, {metadata.SKETCH}))
+            self.assertEqual(sorted(os.listdir(folder)), sorted([os.path.basename(old), os.path.basename(theirs),
+                                                                 metadata.SKETCH]))
+            for other in (old, theirs):  # not written over, not renamed away
+                with open(other) as fh:
+                    self.assertEqual(fh.read(), "another's")
+            os.remove(os.path.join(folder, metadata.SKETCH))
+            # an error nobody foresaw while sourmash runs: sourmash ended, its partial removed
+            stalled = fx.tool(tmp, "stalled", STALLED)
+            note = os.path.join(tmp, "noted")
+
+            def failing(*_args):
+                for _ in range(400):
+                    if os.path.isfile(note):
+                        break
+                    time.sleep(0.05)
+                raise RuntimeError("the scan broke")
+            with mock.patch.object(metadata, "scan", failing), self.assertRaises(RuntimeError):
+                metadata.describe(path, folder, YEAST, YEAST_GCF, stalled)
+            with open(note) as fh:
+                pid, part = fh.read().split("\t")
+            self.assertEqual(part, os.path.join(folder, f".{host}-{os.getpid()}.sketch.partial.sig.gz"))
+            self.assertFalse(util.pid_alive(int(pid)))
+            self.assertEqual(sorted(os.listdir(folder)), sorted([os.path.basename(old), os.path.basename(theirs)]))
+
+
 if __name__ == "__main__":
     unittest.main()

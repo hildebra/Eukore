@@ -24,6 +24,8 @@ up the package's folders (package.read_copies reads them). A rerun keeps the dow
 """
 
 import collections
+import concurrent.futures
+import contextlib
 import datetime
 import gzip
 import json
@@ -372,20 +374,52 @@ BUNDLES = (("", "Complete package", "Eukore, whole",
             "the complete package)", _rrna_organelle))
 
 
-def _plain(info):
-    info.uid = info.gid = 0
-    info.uname = info.gname = ""
-    info.mode = 0o644 if info.isfile() else 0o755
-    return info
+TAR_EPOCH = 1767225600  # 2026-01-01 UTC: a bundle's members' time where the manifest tells no build time
 
 
-def _tar(folder, rels, dest, top):
-    """rels of folder as a BGZF tar (dest), each under top/."""
-    part = util.part_of(dest)
+def built_time(folder):
+    """The package's build time (its manifest's `built`, read as UTC where it names no zone: the same number on
+    every machine) as seconds since 1970, TAR_EPOCH where the manifest tells none."""
+    try:
+        with open(os.path.join(folder, package.MANIFEST)) as fh:
+            built = datetime.datetime.fromisoformat(json.load(fh)["built"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return TAR_EPOCH
+    if built.tzinfo is None:
+        built = built.replace(tzinfo=datetime.timezone.utc)
+    return int(built.timestamp())
+
+
+def _plain(mtime):
+    """A tar member's filter: no owner, plain modes, and one time for every member, mtime (since 2026-11-10: each
+    file's own mtime, so that the bundles of one package differed, and their MD5s, wherever its files were copied or
+    written again)."""
+    def plain(info):
+        info.uid = info.gid = 0
+        info.uname = info.gname = ""
+        info.mode = 0o644 if info.isfile() else 0o755
+        info.mtime = mtime
+        return info
+    return plain
+
+
+def _publish(part, dest):
+    """A download written under its temporary name (part) into place: only a BGZF file that has its end block, and on
+    the disk before its rename (util.publish; since 2026-11-10: renamed as it was)."""
+    if not util.bgzf_whole(part):
+        os.remove(part)
+        raise OSError(f"release: {os.path.basename(dest)} was not written whole (no BGZF end block)")
+    util.publish(part, dest)
+
+
+def _tar(folder, rels, dest, top, mtime=TAR_EPOCH):
+    """rels of folder as a BGZF tar (dest), each under top/, every member's time mtime (_plain): the same bytes from
+    the same files, whenever and wherever it is made."""
+    part, plain = util.part_of(dest), _plain(mtime)
     with util.bgzf_open(part, "wb") as raw, tarfile.open(fileobj=raw, mode="w|", format=tarfile.PAX_FORMAT) as tar:
         for rel in rels:
-            tar.add(os.path.join(folder, rel), arcname=f"{top}/{rel}", recursive=False, filter=_plain)
-    os.replace(part, dest)
+            tar.add(os.path.join(folder, rel), arcname=f"{top}/{rel}", recursive=False, filter=plain)
+    _publish(part, dest)
 
 
 def _sketches(src, dest):
@@ -405,18 +439,22 @@ def _sketches(src, dest):
                 out.write((",\n" if n else "") + json.dumps(sig, separators=(",", ":")))
                 n += 1
         out.write("]\n")
-    os.replace(part, dest)
+    _publish(part, dest)
     return n
 
 
 def _table(src, dest):
-    """A package table as dest, BGZF at level 9: a BGZF table copied as it is, another compressed again."""
+    """A package table as dest, BGZF at level 9: a BGZF table copied as it is, another compressed again. A BGZF table
+    without its end block is cut short: no download of it (since 2026-11-10: copied as it was)."""
+    part = util.part_of(dest)
     if src.endswith(".gz") and util.is_bgzf(src):
-        part = util.part_of(dest)
+        if not util.bgzf_whole(src):
+            raise OSError(f"release: {src} is cut short (no BGZF end block): the package is damaged")
         shutil.copyfile(src, part)
-        os.replace(part, dest)
     else:
-        util.bgzf_copy(src, dest)
+        with util.open_binary(src) as fh, util.bgzf_open(part, "wb") as out:
+            shutil.copyfileobj(fh, out, 1 << 22)
+    _publish(part, dest)
 
 
 def package_files(folder):
@@ -428,22 +466,80 @@ def package_files(folder):
     return sorted(rels, key=lambda r: (r != package.MANIFEST, r))
 
 
-def downloads(folder, dest, log=print):
-    """The package's downloads into dest (a folder of its own) -> [entry: key, group, title, what, file, bytes, md5,
-    files]. Kept from an earlier run where the package is the same (STATE: its manifest's MD5), else made again."""
-    name = os.path.basename(os.path.normpath(folder))
-    stamp = util.md5(os.path.join(folder, package.MANIFEST))
+def _state(dest):
+    """The downloads' state (STATE): the MD5 of the manifest of the package they were made from and, since
+    2026-11-10, each download's bytes, mtime and MD5 as last measured ({} where there is none)."""
     try:
         with open(os.path.join(dest, STATE)) as fh:
-            same = json.load(fh).get("manifest_md5") == stamp
+            state = json.load(fh)
     except (OSError, ValueError):
-        same = False
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _keep_state(dest, state):
+    part = util.part_of(os.path.join(dest, STATE))
+    with open(part, "w", newline="\n") as fh:
+        json.dump(state, fh)
+    util.publish(part, os.path.join(dest, STATE))
+
+
+def _download(item, dest, known, log):
+    """One download of the plan in dest, made where it is not there whole -> (its entry, its state: bytes, mtime_ns,
+    md5). A file an earlier run left without BGZF's end block (a node that went down) is made again (since
+    2026-11-10: kept, and listed with its MD5). A file kept whose size and mtime are those of its state (known) keeps
+    that state's MD5 and count (since 2026-11-10: every download read again for its MD5 at every run, the sketches
+    loaded whole to count them)."""
+    path = os.path.join(dest, item["file"])
+    entry = {k: v for k, v in item.items() if k != "make"}
+    sketches, made = item["key"] == "sketches", False
+    if os.path.isfile(path) and not util.bgzf_whole(path):
+        log(f"release: {item['file']} of an earlier run is cut short (no BGZF end block): made again")
+        os.remove(path)
+    if not os.path.isfile(path):
+        started = time.time()
+        got = item["make"](path)
+        made = True
+        if sketches:
+            entry["files"] = got
+        log(f"release: {item['file']} ({util.size_text(os.path.getsize(path))}, "
+            f"{util.duration(time.time() - started)})")
+    at = os.stat(path)
+    old = known.get(item["file"])
+    old = old if isinstance(old, dict) else {}
+    same = not made and (old.get("bytes"), old.get("mtime_ns")) == (at.st_size, at.st_mtime_ns)
+    md5 = old["md5"] if same and old.get("md5") else util.md5(path)
+    if sketches and not made:
+        if same and isinstance(old.get("files"), int):
+            entry["files"] = old["files"]
+        else:
+            with gzip.open(path, "rt") as fh:
+                entry["files"] = len(json.load(fh))
+    entry.update(bytes=at.st_size, md5=md5)
+    state = dict(bytes=at.st_size, mtime_ns=at.st_mtime_ns, md5=md5)
+    if sketches:
+        state["files"] = entry["files"]
+    return entry, state
+
+
+def downloads(folder, dest, log=print, threads=1):
+    """The package's downloads into dest (a folder of its own) -> [entry: key, group, title, what, file, bytes, md5,
+    files]. Kept from an earlier run where the package is the same (STATE: its manifest's MD5), else made again.
+    threads: the downloads made, and their MD5s taken, at once (since 2026-11-10: one after another; each is a file
+    of its own, the same bytes whatever is made beside it, and listed in the plan's order). A download's own
+    compression runs on the process' compression threads (util.compression_threads), 32 blocks at a time at most:
+    on a node of more cores than that, one download at a time left the others idle."""
+    name = os.path.basename(os.path.normpath(folder))
+    stamp = util.md5(os.path.join(folder, package.MANIFEST))
+    state = _state(dest)
+    same = state.get("manifest_md5") == stamp
     if not same and os.path.isdir(dest):
         shutil.rmtree(dest)
     os.makedirs(dest, exist_ok=True)
-    with open(os.path.join(dest, STATE), "w", newline="\n") as fh:
-        json.dump({"manifest_md5": stamp, "package": name}, fh)
+    known = state.get("files") if same and isinstance(state.get("files"), dict) else {}
+    _keep_state(dest, {"manifest_md5": stamp, "package": name, "files": known})
     rels = package_files(folder)
+    mtime = built_time(folder)
     plan = []
     for suffix, group, title, what, chosen in BUNDLES:
         members = [r for r in rels if chosen(r)]
@@ -451,7 +547,7 @@ def downloads(folder, dest, log=print):
             continue
         plan.append(dict(key=suffix.strip("_") or "complete", group=group, title=title, what=what,
                          file=f"{name}{suffix}.tar.gz", files=len(members),
-                         make=lambda path, m=members: _tar(folder, m, path, name)))
+                         make=lambda path, m=members: _tar(folder, m, path, name, mtime)))
     if os.path.isfile(os.path.join(folder, SKETCHES)):
         plan.append(dict(key="sketches", group="Sourmash sketches", title="Sourmash sketches of the genomes",
                          what="each genome's sourmash signature (taken before the build deleted the genome), one "
@@ -465,26 +561,36 @@ def downloads(folder, dest, log=print):
             plan.append(dict(key=base.split(".")[0], group="Metadata tables", title=title, what=what,
                              file=f"{name}_{base}.gz", files=None, source=rel,
                              make=lambda path, r=rel: _table(os.path.join(folder, r), path)))
-    out = []
-    for item in plan:
-        path = os.path.join(dest, item["file"])
-        if not os.path.isfile(path):
-            started = time.time()
-            got = item["make"](path)
-            if item["key"] == "sketches":
-                item["files"] = got
-            log(f"release: {item['file']} ({util.size_text(os.path.getsize(path))}, "
-                f"{util.duration(time.time() - started)})")
-        elif item["key"] == "sketches":
-            with gzip.open(path, "rt") as fh:
-                item["files"] = len(json.load(fh))
-        entry = {k: v for k, v in item.items() if k != "make"}
-        entry.update(bytes=os.path.getsize(path), md5=util.md5(path))
-        out.append(entry)
-    with open(util.part_of(os.path.join(dest, "MD5SUMS")), "w", newline="\n") as fh:
+    # the partial files of runs that were killed (since 2026-11-10: left there, and copied onto the site with the rest)
+    _clear_partials(dest, [item["file"] for item in plan] + ["MD5SUMS", STATE])
+
+    def one(item):
+        return _download(item, dest, known, log)
+    threads = min(max(1, int(threads or 1)), len(plan))
+    if threads > 1:
+        pool = concurrent.futures.ThreadPoolExecutor(threads, thread_name_prefix="release")
+        try:
+            done = list(pool.map(one, plan))
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+    else:
+        done = [one(item) for item in plan]
+    out = [entry for entry, _state_of in done]
+    part = util.part_of(os.path.join(dest, "MD5SUMS"))
+    with open(part, "w", newline="\n") as fh:
         fh.writelines(f"{e['md5']}  {e['file']}\n" for e in out)
-    os.replace(util.part_of(os.path.join(dest, "MD5SUMS")), os.path.join(dest, "MD5SUMS"))
+    util.publish(part, os.path.join(dest, "MD5SUMS"))
+    _keep_state(dest, {"manifest_md5": stamp, "package": name,
+                       "files": {entry["file"]: state_of for entry, state_of in done}})
     return out
+
+
+def _clear_partials(folder, names):
+    """The partial files (util.part_of) of these names that runs which ended left in folder, removed."""
+    for name in names:
+        for dead in util.dead_partials(folder, name):
+            with contextlib.suppress(OSError):
+                os.remove(dead)
 
 
 def _json(path, value, compact=False):
@@ -495,12 +601,15 @@ def _json(path, value, compact=False):
         else:
             json.dump(value, fh, indent=1, ensure_ascii=False)
         fh.write("\n")
-    os.replace(part, path)
+    util.publish(part, path)
 
 
-def write(folder, out, log=print, files=True):
+def write(folder, out, log=print, files=True, threads=1):
     """The package's release into out (data/, downloads/<package>/: the module's doc) -> out. files: the downloads
-    made too (False: the website's data alone, the downloads' table kept)."""
+    made too (False: the website's data alone, the downloads' table kept); threads: the downloads made at once
+    (downloads). The website's data is written once the downloads are whole (since 2026-11-10: stats.json and
+    taxonomy.json before them, so that a run that failed there left the new package's numbers beside the old
+    downloads)."""
     if package.read(folder) is None:
         raise SystemExit(f"release: {folder} is no finished Eukore package (no {package.MANIFEST})")
     name = os.path.basename(os.path.normpath(folder))
@@ -508,10 +617,12 @@ def write(folder, out, log=print, files=True):
     numbers, taxonomy = stats(folder)
     data = os.path.join(out, DATA)
     os.makedirs(data, exist_ok=True)
+    _clear_partials(data, ["stats.json", "taxonomy.json", "downloads.json"])
+    if files:
+        entries = downloads(folder, os.path.join(out, DOWNLOADS, name), log, threads)
     _json(os.path.join(data, "stats.json"), numbers)
     _json(os.path.join(data, "taxonomy.json"), taxonomy, compact=True)
     if files:
-        entries = downloads(folder, os.path.join(out, DOWNLOADS, name), log)
         _json(os.path.join(data, "downloads.json"),
               dict(package=name, version=numbers["version"], built=numbers["built"],
                    folder=f"{DOWNLOADS}/{name}/", compression="BGZF (gzip), level 9", files=entries))

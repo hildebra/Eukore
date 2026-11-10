@@ -365,17 +365,79 @@ def on_copy(intervals, start, end, strand):
     return sorted((a, b) if strand == "+" else (length - b, length - a) for a, b in intervals)
 
 
-def align(target, queries, miniprot, threads, table, work, options=None):
+INDEX_OPTIONS = ("-k", "-M", "-L", "-b", "-T")  # miniprot's options that shape its index (its usage's "Indexing")
+
+
+def split_options(options):
+    """miniprot's options -> (those that shape its index, each as one word ("-k5"; "-k", "5" alike) in INDEX_OPTIONS'
+    order, of one given twice the last; the others as given)."""
+    indexing, others, options, i = {}, [], list(options), 0
+    while i < len(options):
+        o = options[i]
+        if o in INDEX_OPTIONS and i + 1 < len(options):
+            indexing[o] = options[i + 1]
+            i += 1
+        elif o[:2] in INDEX_OPTIONS and len(o) > 2:
+            indexing[o[:2]] = o[2:]
+        else:
+            others.append(o)
+        i += 1
+    return [f"{o}{indexing[o]}" for o in INDEX_OPTIONS if o in indexing], others
+
+
+def write_index(miniprot, threads, indexing, source, dest):
+    """miniprot's index of a FASTA (-d, with its indexing options) written to dest -> why not, or None. miniprot
+    writes it to its standard output and this process to the file, which sees a write fail: miniprot 0.18 exits 0
+    where it cannot open or fill its -d file (a missing folder, a full disk), and aligns on a cut index without a
+    word (a half index: 2 of 24 genes found, exit 0; checked 2026-11-10)."""
+    with tempfile.TemporaryFile() as err:  # not beside the index: a full disk there is one of the failures to tell
+        proc = subprocess.Popen([miniprot, "-t", str(threads), *indexing, "-d", "/dev/stdout", source],
+                                stdout=subprocess.PIPE, stderr=err)
+        why = None
+        try:
+            with proc.stdout, open(dest, "wb") as out:
+                shutil.copyfileobj(proc.stdout, out, 1 << 22)
+        except OSError as e:
+            why = f"its index was not written ({e})"
+            proc.kill()
+        code = proc.wait()
+        err.seek(0)
+        last = (err.read().decode(errors="replace").strip().splitlines() or ["?"])[-1][:200]
+    if why or code != 0:
+        return why or last
+    return None if os.path.getsize(dest) else "its index was not written (empty)"
+
+
+def align(target, queries, miniprot, threads, table, work, options=None, index_dir=None):
     """miniprot's alignments of queries {name: protein} on a genome or a windows file (in pieces where large) ->
     (alignments, why it failed or None). options: its intron and seeding options (default -I: the max intron 3.6
-    times the square root of the target's length)."""
+    times the square root of the target's length).
+    index_dir (since 2026-11-10): a folder that holds miniprot's index of each of the target's pieces, made by the
+    first call that names it (miniprot -d, with the indexing options: the genetic code is one, the index holds the
+    translated ORFs) and read by every later one of the same target and indexing options in place of the FASTA
+    (placement.saved_indexes); the caller deletes it. For a target aligned more than once (a genome's main call and
+    its hold-outs: the proteins differ, the genome does not); a single alignment only pays the index's write and
+    read. The output is the same either way (miniprot 0.18, GFF with --trans, -I, tables 1 and 4: identical).
+    None: the index made in memory by each run, the commands as before."""
     faa = os.path.join(work, "q.faa")
     with open(faa, "w") as fh:
         fh.writelines(f">{q}\n{p}\n" for q, p in queries.items())
-    alignments, parts = [], placement.chunks(target, work)
+    options, code = list(options or ["-I"]), ["-T", str(table or 1)]
+    if index_dir is None:
+        parts = placement.chunks(target, work)
+    else:
+        # the indexing options at the index's build alone; the genetic code at the alignment too: 0.18 keeps it in the
+        # index and reads it there whatever -T says then (checked), a version that did not would need it
+        indexing, options = split_options(options + code)
+        parts, why = placement.saved_indexes(
+            target, work, index_dir, [miniprot, *indexing],
+            lambda source, dest: write_index(miniprot, threads, indexing, source, dest))
+        if why:
+            return [], "miniprot failed: " + why
+    alignments = []
     for part in parts:
-        run = subprocess.run([miniprot, "-t", str(threads)] + list(options or ["-I"]) + [
-            "-T", str(table or 1), "--gff", "--trans", f"--outs={OUTS}", f"--outn={OUTN}", part, faa],
+        run = subprocess.run([miniprot, "-t", str(threads)] + options + code + [
+            "--gff", "--trans", f"--outs={OUTS}", f"--outn={OUTN}", part, faa],
             capture_output=True, text=True, check=False)
         if run.returncode != 0:
             return [], "miniprot failed: " + (run.stderr.strip().splitlines() or ["?"])[-1][:200]
@@ -810,7 +872,7 @@ def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hm
 
 
 def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearch", threads=1, tmp=None,
-         hmm_db=None, table=1, rescue_missing=True, translate="esl-translate", annotation=None):
+         hmm_db=None, table=1, rescue_missing=True, translate="esl-translate", annotation=None, index_dir=None):
     """The BUSCO genes of a genome (table: its NCBI genetic code) -> dict(loci {locus: dict(status, copy, spliced,
     features [(kind, start, end)],
     contig, start, end, strand, identity, coverage, score, hmm_score, hmm_coverage, cutoff, copies, query, protein,
@@ -820,11 +882,15 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
     makes them; since 2026-11-09))}, failed (why the genome could not be called, or None), windows {name: sequence} of
     the copies' flanks).
     rescue_missing: the rescue pass (step 5) of the loci left Missing, in a genome of RESCUE_MAX_BASES or less;
-    annotation: (the genome's GFF, NCBI's assembly report or None, its source) for step 6 (annotated()), or None."""
+    annotation: (the genome's GFF, NCBI's assembly report or None, its source) for step 6 (annotated()), or None;
+    index_dir (since 2026-11-10): where the genome is called more than once (its hold-outs), a folder of the run's own
+    for miniprot's index of the genome, made by the first call and read by the others (align; the genome's file, the
+    table and miniprot the same in each); the caller deletes it. None: as before, the index made by every call."""
     lengths = {q: len(p) for q, p in queries.items()}
     with tempfile.TemporaryDirectory(dir=tmp) as work:
         hmm_db = hmm_db or odb.hmm_db(os.path.join(work, "loci.hmm"))
-        alignments, failed = align(genome_path, queries, miniprot, threads, table, work)
+        # the genome's own alignment alone: the rescue's and the recovery's windows are small files of this call
+        alignments, failed = align(genome_path, queries, miniprot, threads, table, work, index_dir=index_dir)
         if failed:
             return dict(loci={}, failed=failed, windows={})
         confirmed = confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work)

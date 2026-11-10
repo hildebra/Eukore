@@ -240,7 +240,9 @@ class ResumeTest(unittest.TestCase):
 
     def test_genomes_only_runs_the_genomes_alone(self):
         # several process runs on one WORK (a SLURM array, since 2026-11-09): with --genomes_only each runs its share
-        # of the genomes and stops, the passes after them left to one run without it once all have ended
+        # of the genomes and stops, the passes over all genomes left to one run without it once all have ended; the
+        # passes that take a genome at a time under its claim (the backfill, the metadata) are every run's (since
+        # 2026-11-10: the last run's alone, on one node)
         import contextlib  # noqa: PLC0415
         import io  # noqa: PLC0415
         import eukore_build  # noqa: PLC0415
@@ -263,7 +265,8 @@ class ResumeTest(unittest.TestCase):
                     stack.enter_context(mock.patch.object(eukore_build.rrna, "check_itsx", return_value=None))
                     called = {n: stack.enter_context(mock.patch.object(eukore_build, n)) for n in passes}
                     self.assertEqual(eukore_build.main(args + (["--genomes_only"] if only else [])), 0)
-                self.assertEqual({n for n, m in called.items() if m.called}, set() if only else set(passes))
+                self.assertEqual({n for n, m in called.items() if m.called},
+                                 {"backfill_pass", "describe_pass"} if only else set(passes))
                 self.assertEqual("left to a process run without it" in out.getvalue(), only)
 
     def test_the_folders_old_flags_still_taken(self):
@@ -691,7 +694,7 @@ class ChainTest(unittest.TestCase):
                 raise OSError(errno.EXDEV, "Invalid cross-device link")
             replace(src, dst)
 
-        def held_out(_genome, _job, _settings, _odb, folder, _scratch, rank, _earlier):
+        def held_out(_genome, _job, _settings, _odb, folder, _scratch, rank, _earlier, _index_dir=None):
             with open(os.path.join(folder, genomes.held_out_file(rank)), "w") as fh:
                 fh.write("its calls\n")
             return {"left_out": 3}, None

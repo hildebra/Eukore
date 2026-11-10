@@ -376,7 +376,8 @@ name a mitochondrion, chloroplast, plastid or apicoplast).
   `trans_spliced` t) is its exons joined. The trnH-psbA record runs from trnH-GUG's first base, across the spacer, to
   200 bases into psbA's 3' end, so that the barcode's primers sit on it (`regions`).
 - `cds.fna.gz`, `proteins.faa.gz` (format 5): the protein-coding genes' coding sequences (their exons joined) and
-  proteins (translated by the species' organelle code: `taxonomy/nodes.tsv`'s `mgcode`, `pgcode`; the stop that ends
+  proteins (translated by the species' organelle code: `taxonomy/nodes.tsv`'s `mgcode`, `pgcode`; since 2026-11-10 a
+  RefSeq gene by its own `/transl_table` and from its `/codon_start`; the stop that ends
   them left out), where the exons are known: RefSeq's, miniprot's, or a gene of one exon. nhmmer's hits joined are not
   a gene's exons (`flags` `exons_approximate`).
 - `genes.tsv`:
@@ -393,7 +394,7 @@ name a mitochondrion, chloroplast, plastid or apicoplast).
 | `start`, `end`, `strand` | on `seqid` (1-based, inclusive); `start` after `end` where the gene crosses a circular genome's origin |
 | `length` | of the record |
 | `exons` | RefSeq's feature's parts (a COX1's exons), or the nhmmer hits joined; 1 for barrnap's |
-| `copies` | the gene's copies on the source (a plastid's inverted repeat: 2): the record is the first, or barrnap's longest whole hit |
+| `copies` | the gene's copies on the source (a plastid's inverted repeat: 2; since 2026-11-10 a RefSeq feature marked `/pseudo` is none): the record is a whole one before a partial one, then the longest, then the first (until 2026-11-10 the first), or barrnap's longest whole hit |
 | `partial` | `t` where RefSeq marks the feature partial, barrnap's hit is partial, or nhmmer's hits cover under 80% of the query's exons |
 | `ambiguous` | the share of non-ACGT bases |
 | `name` | its common name (format 5): an animal mitochondrion's `12S` and `16S`, a land plant mitochondrion's `18S` and `26S`, a plastid's `16S` and `23S`, else the gene |
@@ -478,10 +479,11 @@ species is set beside its distance to the nearest other species ([methods.md](me
 |---|---|
 | `marker`, `species_taxid`, `name`, `group` | the marker and the species |
 | `assemblies` | the species' assemblies holding the marker (its genome and its further ones) |
-| `intra_min`, `intra_median` | the identity of their copies to each other (vsearch, `--iddef 2`, %): the least alike pair, the median pair (a pair under 50% read as 50) |
+| `intra_min`, `intra_median` | the identity of their copies to each other (vsearch, `--iddef 2`, %): the least alike pair, the median pair. Since 2026-11-10 over the pairs vsearch aligns over 80% of both copies, a pair's identity the lower of its two directions; a pair it does not report is left out and counted (`pairs_left_out`), `-` where none is measured (until then such a pair read as 50) |
 | `inter_max` | the identity of the species' genome's copy to its nearest copy of another species in the package (a BUSCO's: its check's, `qc.check`), `-` where none is 50% alike |
 | `gap`, `resolved` | `intra_min - inter_max`; `t` where above 0 (its assemblies nearer to each other than to any other species) and its nearest other species is a congener (format 6: a gap to a farther relative says nothing of its congeners), `f` where not above 0, `-` where not measured or no congener is nearest |
-| `inter_rank` | the deepest rank its nearest other species shares with it (`genus` .. `phylum`, `none`), `-` where not known (format 6). Pairs are aligned over 80% of their query at least (format 6) |
+| `inter_rank` | the deepest rank its nearest other species shares with it (`genus` .. `phylum`, `none`), `-` where not known (format 6). Pairs are aligned over 80% of their query at least (format 6), of both sequences since 2026-11-10 |
+| `pairs_left_out` | the pairs of its assemblies' copies not measured (no alignment over 80% of both: a partial copy, or a pair under 50% alike), left out of `intra_min` and `intra_median` (last column, since 2026-11-10) |
 
 ## benchmarks/ (optional)
 How complete, right and discriminating the package is, measured by the build (`eukore/benchmarks.py`; absent with
@@ -508,7 +510,7 @@ why. A reader needs none of them.
 | `organelle.tsv` | supergroup and organelle gene: species, and those with the gene |
 | `overlap.tsv` | supergroup (and `all`) and database (PR2, EUKARYOME's long reads and KSGP by their species names; ROD by its taxids; BUSCO's OrthoDB dataset; the `--read_compare` references): its NCBI species, those in Eukore too (any record), Eukore's alone, the database's alone |
 | `rrna_copies.tsv` | each species' genome: its assembly level and contigs, its 18S spans, rDNA units and whole units as extracted (an assembly collapses a tandem array: the copies assembled, not the genome's) |
-| `reads.tsv` | test genome (or background genome), reference (`Eukore`, `Eukore exons`, `Eukore 18S`, each `--read_compare` one), mode (`in`: its species in the reference; `held_out`: left out; `novel`: its whole order left out, since format 6), reads (`marker`: from its markers' loci; `genome`: from anywhere): reads simulated, assigned, and per rank (`species` .. `phylum`) correct and wrong (a prokaryote background read: wrong at every rank its assignment reaches; a eukaryote background read, the host's, format 6: right on its own lineage); `congeners`: the package's other species of its genus |
+| `reads.tsv` | test genome (or background genome), reference (`Eukore`, `Eukore exons`, `Eukore 18S`, each `--read_compare` one), mode (`in`: its species in the reference; `held_out`: left out; `novel`: its whole order left out, since format 6), reads (`marker`: from its markers' loci; `genome`: from anywhere): reads simulated, assigned, and per rank (`species` .. `phylum`) correct and wrong (a prokaryote background read: wrong at every rank its assignment reaches; a eukaryote background read, the host's, format 6: right on its own lineage); `congeners`: the package's other species of its genus; `censored` (last column, since 2026-11-10; 0 in mode `in`): the unassigned reads whose alignment list was full (minimap2's 50 secondary alignments) of records left out in that mode, so that a hit to a kept record may have been cut off: the wrong assignments of `held_out` and `novel` are a lower bound by up to these |
 | `detection.tsv` | each test genome as a sample (its first `depth` reads from anywhere in it, 1,000, 5,000 and 20,000, and as many background reads), per reference and mode: the rank scored (`species` with its species in the reference, `genus` held out, `class` novel), whether the reference holds it (`in_reference`: the species; held out, another of its genus; novel, another order of its class), the reads placed to its right taxon (`true_reads`), `detected` (3 reads or more, and 1% or more of the sample's reads placed at that rank) and the other taxa detected (`false_taxa`; a eukaryote background's own taxon, the host truly in the sample, is none: format 6) |
 | `holdout.tsv` | (format 6) per BUSCO dataset species' genome and level (`species`: its own proteins left out of the queries; `genus`, `family`, `order`: every dataset species of its genus, family, order too): `left_out` (dataset species left out), `nearest` (the rank its lineage shares with the nearest dataset species kept: `genus` .. `phylum`, `none`), the BUSCOs OrthoDB holds of it (`loci`), `called`, their verdicts against OrthoDB's gene model (`concordant`, `similar`, `discordant`, `missed`), those on the package call's gene (`same_gene`) and sharing 90% of its span (`span_90`) |
 | `summary.json` | the headline figures |

@@ -211,6 +211,9 @@ seeding) it searches instead: each query whose coding sequence (fixtures.CODE's 
 its forward strand, as one exon."""
 import sys
 args = sys.argv[1:]
+if "-d" in args:  # the index of a genome called more than once (loci.write_index): any file
+    open(args[args.index("-d") + 1], "w").write("index\\n")
+    sys.exit(0)
 queries, name = {}, None
 for line in open(args[-1]):
     if line.startswith(">"):

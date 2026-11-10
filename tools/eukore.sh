@@ -6,10 +6,12 @@
 #   AFTER=<job id> bash tools/eukore.sh build   # the chain begun only once that job (the fetch) has ended well
 #   REVERSION=1 bash tools/eukore.sh build      # once, on a build whose genomes an older Eukore ran: --reversion
 #
-# `build` submits both jobs at once. The process jobs share the genomes out by their claims and stop
-# (--stage process --genomes_only); the final job starts once every one of them has ended, however it ended
-# (afterany: a task that timed out or crashed does not leave the chain pending for good), runs the genomes they
-# left, waits for any still claimed, makes the passes after the genomes and writes the package
+# `build` submits both jobs at once. The process jobs share the genomes out by their claims; each, once no genome
+# is left for it, goes on with the steps that take one done genome at a time under its claim (the backfill with its
+# clade hold-outs, the assembly metadata, the packing of older done folders), and stops
+# (--stage process --genomes_only). The final job starts once every one of them has ended, however it ended
+# (afterany: a task that timed out or crashed does not leave the chain pending for good), runs the genomes and
+# steps they left, waits for any still claimed, makes the passes over all genomes and writes the package
 # (--stage process,package, one run and one plan). Every job is resumable: `build` again goes on where the last
 # chain stopped.
 #

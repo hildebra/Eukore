@@ -19,15 +19,19 @@ The package's metadata/ (write): assembly.tsv.gz (STATS, ASSEMBLY_COLUMNS), tetr
 """
 
 import collections
+import contextlib
 import gzip
 import hashlib
 import itertools
 import json
 import os
 import re
+import socket
 import subprocess
+import threading
 import time
 import zipfile
+import zlib
 
 import numpy as np
 
@@ -51,6 +55,7 @@ TELOMERES = ("TTAGGG",     # vertebrates, many fungi and protists, some inverteb
              "TTGGGG",     # Tetrahymena and other ciliates
              "TTTTGGGG")   # hypotrich ciliates (Oxytricha, Euplotes)
 SKETCH_PARAMS = "k=21,k=31,scaled=10000,noabund"
+SKETCH_PART = ".partial.sig.gz"  # a sketch being written: .<host>-<pid>.sketch.partial.sig.gz (sourmash gzips a .gz)
 ASSEMBLY_COLUMNS = (
     "accession", "fetched", "genome_source", "genome_url", "annotation_source", "md5", "bytes", "sequences", "length",
     "acgt", "n_bases", "other_bases", "longest",
@@ -110,26 +115,94 @@ def _split(text):
         yield None, text[pos:]
 
 
-def _pieces_of(path):
+class _Hashed:
+    """A binary file read through to its end, its bytes into a digest as they are read: the file's MD5 from the pass
+    that scans it (since 2026-11-10: describe read each genome a second time for it)."""
+
+    def __init__(self, fh, digest):
+        self.fh, self.digest = fh, digest
+
+    def read(self, size=-1):
+        data = self.fh.read(size)
+        self.digest.update(data)
+        return data
+
+    def rest(self):
+        """What the reader left unread (nothing, where it read to the file's end), into the digest."""
+        for block in iter(lambda: self.fh.read(1 << 22), b""):
+            self.digest.update(block)
+
+
+class _Feed(threading.Thread):
+    """A file's bytes into a decompressor's stdin and into a digest, by a thread beside the scan (the tool reads a
+    pipe then, not the file itself: Python sees the bytes it hashes). A tool that ends before the file does (a damaged
+    file: its error is the scan's) is fed no more; `given_up` (the scan ended early) stops the reading."""
+
+    def __init__(self, src, sink, digest):
+        super().__init__(daemon=True)
+        self.src, self.sink, self.digest = src, sink, digest
+        self.given_up, self.error = threading.Event(), None
+
+    def run(self):
+        piped = True
+        try:
+            for block in iter(lambda: self.src.read(1 << 20), b""):
+                if self.given_up.is_set():
+                    break
+                self.digest.update(block)
+                if piped:
+                    try:
+                        self.sink.write(block)
+                    except OSError:  # a broken pipe: the tool ended
+                        piped = False
+        except OSError as e:  # the file's read failed: the digest is not the file's (raised by _pieces_of)
+            self.error = e
+        finally:
+            with contextlib.suppress(OSError):
+                self.sink.close()
+
+
+def _pieces_of(path, digest=None):
     """A FASTA's pieces (_pieces), gzipped or plain (decompressed by util.GZIP_TEST's igzip or pigz where there: a
-    core of its own, ~3x Python's zlib) -> raises OSError where the decompressor fails."""
+    core of its own, ~3x Python's zlib) -> raises OSError where the decompressor fails. digest: a hashlib object that
+    is given the file's own bytes (the compressed ones) as they are read, all of them once the pieces are through."""
     with open(path, "rb") as fh:
         gz = fh.read(2) == b"\x1f\x8b"
     if not gz or not util.GZIP_TEST:
-        with (gzip.open(path, "rb") if gz else open(path, "rb")) as fh:
-            yield from _pieces(fh)
+        with open(path, "rb") as raw:
+            src = raw if digest is None else _Hashed(raw, digest)
+            if gz:
+                with gzip.GzipFile(fileobj=src, mode="rb") as fh:
+                    yield from _pieces(fh)
+            else:
+                yield from _pieces(src)
+            if digest is not None:
+                src.rest()
         return
     with open(path, "rb") as src:
-        proc = subprocess.Popen([util.GZIP_TEST, "-dc"], stdin=src, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.Popen([util.GZIP_TEST, "-dc"], stdin=src if digest is None else subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        feed = None
+        if digest is not None:
+            feed = _Feed(src, proc.stdin, digest)
+            feed.start()
+        through = False
         try:
             yield from _pieces(proc.stdout)
+            through = True
         finally:
+            if feed is not None and not through:
+                feed.given_up.set()
             proc.stdout.close()
             err = proc.stderr.read().decode("utf-8", "replace")
             proc.stderr.close()
             proc.wait()
+            if feed is not None:
+                feed.join()
     if proc.returncode:
         raise OSError(f"{os.path.basename(util.GZIP_TEST)} -dc {path}: {err.strip()[-200:] or proc.returncode}")
+    if feed is not None and feed.error is not None:
+        raise OSError(f"{path}: {feed.error}")
 
 
 def _nx(lengths, total, share):
@@ -311,11 +384,12 @@ class Scan:
         return out, [int(x) for x in tetra], self.molecules
 
 
-def scan(path):
-    """A genome's FASTA (gzipped or plain) -> Scan.finish()."""
+def scan(path, digest=None):
+    """A genome's FASTA (gzipped or plain) -> Scan.finish(). digest: a hashlib object given the file's bytes in the
+    same pass (_pieces_of): its MD5."""
     from . import organelle  # noqa: PLC0415
     s = Scan(organelle.TITLE, organelle.MAX_MOLECULE)
-    for title, data in _pieces_of(path):
+    for title, data in _pieces_of(path, digest):
         if title is not None:
             s.start(title)
         else:
@@ -326,48 +400,64 @@ def scan(path):
 # --- a genome's metadata into its done folder -------------------------------------------------------------------
 
 def missing(folder, sourmash=None):
-    """What a done genome's folder lacks: STATS (and ORGANELLE), SKETCH (where sourmash is there) -> a set."""
+    """What a done genome's results (its folder, or the packed genome's: store.py) lack: STATS (and ORGANELLE),
+    SKETCH (where sourmash is there) -> a set."""
+    from . import store  # noqa: PLC0415
     out = set()
-    if not os.path.isfile(os.path.join(folder, STATS)):
+    if not store.has(folder, STATS):
         out.add(STATS)
-    if sourmash and not os.path.isfile(os.path.join(folder, SKETCH)):
+    if sourmash and not store.has(folder, SKETCH):
         out.add(SKETCH)
     return out
 
 
 def describe(path, folder, accession, fetched=None, sourmash=None, want=None):
     """A genome's metadata into folder (want: of STATS and SKETCH, default both; SKETCH only where sourmash is
-    given), sourmash's sketch made beside the scan -> why it failed, or None."""
+    given), sourmash's sketch made beside the scan -> why it failed, or None. The file's MD5 comes from the scan's own
+    pass (since 2026-11-10: a second read of the genome). The sketch is written under this process' own name (host
+    and pid; since 2026-11-10: one name, .sketch.partial.sig.gz, which two processes describing a genome both wrote)
+    and, whatever fails, sourmash is not left running nor its partial left there."""
     want = {STATS, SKETCH} if want is None else set(want)
     started = time.time()
-    sketch = None
+    part = proc = None
     if SKETCH in want and sourmash:
-        part = os.path.join(folder, ".sketch.partial.sig.gz")
-        sketch = (part, subprocess.Popen([sourmash, "sketch", "dna", "-p", SKETCH_PARAMS, "--name", accession, "-o",
-                                          part, path], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True))
+        for dead in util.dead_partials(folder, "sketch", SKETCH_PART):  # those of runs that were killed
+            with contextlib.suppress(OSError):
+                os.remove(dead)
+        part = os.path.join(folder, f".{socket.gethostname()}-{os.getpid()}.sketch{SKETCH_PART}")
+        proc = subprocess.Popen([sourmash, "sketch", "dna", "-p", SKETCH_PARAMS, "--name", accession, "-o", part, path],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     why = None
-    if STATS in want:
-        try:
-            stats, tetra, molecules = scan(path)
-        except (OSError, EOFError, ValueError) as e:
-            why = f"metadata: {type(e).__name__}: {e}"
-        else:
-            with util.bgzf_open(util.part_of(os.path.join(folder, ORGANELLE)), level=util.WORK_LEVEL) as fh:
-                fh.writelines(f">{n} {k}\n{s}\n" for n, k, s in molecules)
-            os.replace(util.part_of(os.path.join(folder, ORGANELLE)), os.path.join(folder, ORGANELLE))
-            stats = dict(accession=accession, fetched=fetched or accession, md5=util.md5(path),
-                         bytes=os.path.getsize(path), **stats, tetranucleotides=tetra,
-                         seconds=round(time.time() - started, 1))
-            with open(util.part_of(os.path.join(folder, STATS)), "w", newline="\n") as fh:
-                json.dump(stats, fh)
-            os.replace(util.part_of(os.path.join(folder, STATS)), os.path.join(folder, STATS))
-    if sketch:
-        part, proc = sketch
-        err = proc.communicate()[1]
-        if proc.returncode == 0 and os.path.isfile(part):
-            os.replace(part, os.path.join(folder, SKETCH))
-        else:
-            why = why or f"sourmash sketch failed (exit {proc.returncode}): {err.strip()[-200:]}"
+    try:
+        if STATS in want:
+            digest = hashlib.md5()
+            try:
+                stats, tetra, molecules = scan(path, digest)
+            # zlib.error: a damaged gzip stream read by Python's gzip (until 2026-11-10 not caught: it left the
+            # function with sourmash running and its partial there)
+            except (OSError, EOFError, ValueError, zlib.error) as e:
+                why = f"metadata: {type(e).__name__}: {e}"
+            else:
+                with util.bgzf_open(util.part_of(os.path.join(folder, ORGANELLE)), level=util.WORK_LEVEL) as fh:
+                    fh.writelines(f">{n} {k}\n{s}\n" for n, k, s in molecules)
+                os.replace(util.part_of(os.path.join(folder, ORGANELLE)), os.path.join(folder, ORGANELLE))
+                stats = dict(accession=accession, fetched=fetched or accession, md5=digest.hexdigest(),
+                             bytes=os.path.getsize(path), **stats, tetranucleotides=tetra,
+                             seconds=round(time.time() - started, 1))
+                with open(util.part_of(os.path.join(folder, STATS)), "w", newline="\n") as fh:
+                    json.dump(stats, fh)
+                os.replace(util.part_of(os.path.join(folder, STATS)), os.path.join(folder, STATS))
+        if proc:
+            err = proc.communicate()[1]
+            if proc.returncode == 0 and os.path.isfile(part):
+                os.replace(part, os.path.join(folder, SKETCH))
+            else:
+                why = why or f"sourmash sketch failed (exit {proc.returncode}): {err.strip()[-200:]}"
+    finally:
+        if proc:
+            if proc.poll() is None:  # an error left the block
+                proc.kill()
+                proc.communicate()
             if os.path.isfile(part):
                 os.remove(part)
     return why
@@ -445,6 +535,7 @@ def write(part, genomes, work, tables=(), jobs=None):
     genome and of the RefSeq copy fetched); metadata/assembly.tsv.gz, a row per species' genome (where it came from,
     and the measures of those Eukore described); of those, metadata/tetranucleotides.tsv.gz, metadata/sketches.zip and
     organelle/molecules.fna.gz -> counts for the manifest."""
+    from . import store  # noqa: PLC0415
     from .genomes import done_dir  # noqa: PLC0415
     jobs = jobs or {}
     folder = os.path.join(part, FOLDER)
@@ -465,31 +556,28 @@ def write(part, genomes, work, tables=(), jobs=None):
         for acc in sorted(genomes):
             if genomes[acc].get("representative") != "t":
                 continue
-            d = done_dir(work, acc)
+            d = done_dir(work, acc)  # its folder, or its packed file (store.py; since 2026-11-10)
             try:
-                with open(os.path.join(d, STATS)) as fh:
-                    stats = json.load(fh)
-            except (OSError, ValueError):
+                stats = json.loads(store.text(d, STATS) or "")
+            except ValueError:
                 stats = None
-            sketch = os.path.join(d, SKETCH)
-            if os.path.isfile(sketch):
-                sketches.append((acc, sketch))
+            sketched = store.has(d, SKETCH)
+            if sketched:
+                sketches.append((acc, d))
             g, job = genomes[acc], jobs.get(acc)
             row = dict(stats or {}, accession=acc, fetched=g.get("fetched") or acc,
                        genome_source=genome_source(g, job), genome_url=(job or {}).get("url") or "-",
                        annotation_source=annotation_source(work, g, job),
-                       sketch="t" if os.path.isfile(sketch) else "f")
+                       sketch="t" if sketched else "f")
             listed.append(row)
             if stats is None:
                 continue
             described.append(row)
-            if os.path.isfile(os.path.join(d, ORGANELLE)):
-                with gzip.open(os.path.join(d, ORGANELLE), "rt") as fh:
-                    for line in fh:
-                        if line.startswith(">"):
-                            n_molecules += 1
-                            line = f">{acc}|{line[1:]}"
-                        mol.write(line)
+            for line in store.open_text(d, ORGANELLE) or ():
+                if line.startswith(">"):
+                    n_molecules += 1
+                    line = f">{acc}|{line[1:]}"
+                mol.write(line)
     os.replace(util.part_of(molecules), molecules)
     _gz_table(os.path.join(folder, "assembly.tsv.gz"), ASSEMBLY_COLUMNS, listed)
     _gz_table(os.path.join(folder, "tetranucleotides.tsv.gz"), ("accession",) + tuple(CANONICAL),
@@ -497,8 +585,8 @@ def write(part, genomes, work, tables=(), jobs=None):
     if sketches:  # a zip of signatures sourmash reads as one collection (stored: each is gzipped)
         path = os.path.join(folder, "sketches.zip")
         with zipfile.ZipFile(util.part_of(path), "w", zipfile.ZIP_STORED) as z:
-            for acc, sketch in sketches:
-                z.write(sketch, f"signatures/{acc}.sig.gz")
+            for acc, d in sketches:
+                z.writestr(f"signatures/{acc}.sig.gz", store.read(d, SKETCH))
         os.replace(util.part_of(path), path)
     return {"ncbi_rows": len(out), "genomes": len(listed), "assemblies_described": len(described),
             "sketches": len(sketches), "organelle_molecules": n_molecules,

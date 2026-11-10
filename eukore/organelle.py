@@ -6,8 +6,10 @@
   rRNA and protein-coding genes' features (rrna_gene, cds_gene), parsed once into WORK/organelle (refseq_genes). A
   species takes, of each organelle, its records' genes (choose): those of the one with the most of GENES, then its own
   taxid's (not a strain's or subspecies'), then the longest, and a gene it lacks from the next (a mitogenome in
-  several chromosomes). A gene annotated twice (a plastid's inverted repeat) is taken once, its first, `copies`
-  counting them.
+  several chromosomes). A gene annotated twice (a plastid's inverted repeat) is taken once, `copies` counting them:
+  since 2026-11-10 a whole feature before a partial one, then the longest, then the first (until then the first in
+  the file, a truncated ycf1 at the inverted repeat's border before the gene); a feature marked /pseudo or
+  /pseudogene is none of them.
 - Else the species' own assembly (assembly_pass): the molecules NCBI's FASTA titles name an organelle (TITLE:
   mitochondrion, chloroplast, plastid, apicoplast). nhmmer finds each gene, queried with that gene of the NEAREST
   RefSeq species in NCBI's lineage (its exons joined); barrnap the rRNA nhmmer does not (--kingdom mito in animals'
@@ -61,7 +63,13 @@ GENE_COLUMNS = ("record", "gene", "organelle", "taxid", "species_taxid", "source
                 "length_check", "confidence", "flags",
                 "cross")  # since 2026-11-09 (format 6): the other clade's species it is shared with (qc.verdict)
 CACHE_COLUMNS = ("seqid", "organelle", "taxid", "record_length", "gene", "start", "end", "strand", "exons", "copies",
-                 "partial", "sequence", "spliced", "parts", "trans_spliced", "regions")
+                 "partial", "sequence", "spliced", "parts", "trans_spliced", "regions",
+                 "transl_table")  # since 2026-11-10: a CDS's own /transl_table, `-` where it names none (table_of)
+# What RefSeq's parsed genes (refseq_genes) and an assembly's search file (assembly_pass) were made by, part of their
+# keys since 2026-11-10: to be raised where record_genes', the searches' or the models' logic changes what they hold.
+# Until then (1, never written) a cache outlived such a change. 2: /pseudo, the longest feature, /codon_start,
+# /transl_table, the spacer across the origin.
+CACHE_VERSION = 2
 ASSEMBLY_COLUMNS = ("gene", "organelle", "seqid", "start", "end", "strand", "exons", "copies", "partial", "sequence",
                     "parts", "model")  # parts, model: since 2026-11-07
 
@@ -329,10 +337,24 @@ SPACER_FLANK = 200    # of psbA's 3' end the trnH-psbA record holds (the barcode
 SPACER_MAX = 3000     # trnH and psbA this far apart at most: neighbours
 
 
+def in_frame(parts, quals):
+    """A CDS's parts (parts_of's) from its first whole codon on: its /codon_start 2 or 3 (a CDS whose 5' end is not
+    known begins inside a codon) takes that many bases less one off its first part. Since 2026-11-10: until then
+    /codon_start was not read, and such a gene's coding sequence and protein were read out of frame."""
+    shift = next((int(v) - 1 for n, v in quals if n == "codon_start" and v in ("2", "3")), 0)
+    a, b, strand = parts[0]
+    if not shift or b - a + 1 <= shift:
+        return parts
+    return [(a + shift, b, strand) if strand == "+" else (a, b - shift, strand)] + list(parts[1:])
+
+
 def record_genes(rec, organelle, animal=False):
     """A RefSeq organelle record's genes -> {gene: dict(start, end, strand, exons, copies, partial, sequence, spliced
-    (its exons joined), parts, trans_spliced, regions)}. A trans-spliced gene's sequence is its exons joined; the
-    trnH-psbA spacer (since 2026-11-07) runs from trnH-GUG's first base to SPACER_FLANK bases into psbA's 3' end."""
+    (its exons joined), parts, trans_spliced, regions, transl_table)}. A trans-spliced gene's sequence is its exons
+    joined; the trnH-psbA spacer (since 2026-11-07) runs from trnH-GUG's first base to SPACER_FLANK bases into psbA's
+    3' end. Of a gene's features (a plastid's inverted repeat holds it twice) a whole one is taken before a partial
+    one, then the longest (its exons joined), then the first in the file; a CDS begins at its first whole codon
+    (in_frame)."""
     found, counts, his = {}, collections.Counter(), []
     seq = rec["sequence"]
     for key, location, quals in rec["features"]:
@@ -351,14 +373,17 @@ def record_genes(rec, organelle, animal=False):
         else:
             continue
         parsed = parts_of(location) if gene else None
-        if not parsed:
+        # since 2026-11-10: a feature RefSeq marks /pseudo or /pseudogene is not a copy of the gene (a truncated ycf1
+        # at the inverted repeat's border, a fragment of a broken gene); until then it was counted, and where it
+        # came first in the file it was the species' record and the assemblies' query
+        if not parsed or any(n in ("pseudo", "pseudogene") for n, _v in quals):
             continue
         counts[gene] += 1
-        if gene in found:
-            continue
         parts, partial = parsed
         if max(b for _a, b, _s in parts) > len(seq):
             continue
+        if key == "CDS":
+            parts = in_frame(parts, quals)
         trans = trans_spliced(parts, rec["circular"])
         joined = spliced(seq, parts)
         if trans:  # its exons on different strands or out of order: the record is its exons joined
@@ -367,47 +392,90 @@ def record_genes(rec, organelle, animal=False):
             strand = parts[0][2]
             start, end = span_of([(a, b) for a, b, _s in parts], rec["length"], rec["circular"])
             whole = subsequence(seq, start, end, strand)
-        found[gene] = dict(start=start, end=end, strand=strand, exons=len(parts), partial=partial, sequence=whole,
-                           spliced=joined, parts=parts_text(parts), trans_spliced=trans, regions="-")
+        # the feature's own genetic code (a CDS's /transl_table; table_of reads it before NCBI's of the taxid)
+        table = next((v for n, v in quals if n == "transl_table" and v.isdigit()), "-") if key == "CDS" else "-"
+        row = dict(start=start, end=end, strand=strand, exons=len(parts), partial=partial, sequence=whole,
+                   spliced=joined, parts=parts_text(parts), trans_spliced=trans, regions="-", transl_table=table)
+        # since 2026-11-10 the gene's best feature, not its first: whole before partial, then the longest; the first
+        # of equals (an inverted repeat's two copies), as until then
+        if gene not in found or (not partial, len(joined)) > (not found[gene]["partial"], len(found[gene]["spliced"])):
+            found[gene] = row
     for gene, row in found.items():
         row["copies"] = counts[gene]
     if "psbA" in found and his and not found["psbA"]["trans_spliced"]:
-        spacer = spacer_of(seq, found["psbA"], his)
+        spacer = spacer_of(seq, found["psbA"], his, rec["circular"])
         if spacer:
             found[SPACER] = spacer
     return found
 
 
-def spacer_of(seq, psba, his):
+def spacer_of(seq, psba, his, circular=False):
     """The trnH-psbA record of a plastid record (its psbA's row, its trnH-GUG parts) -> a gene row, or None where
-    trnH is not psbA's neighbour on its strand. psbA's 3' end is its end on its strand; trnH lies beyond it."""
-    strand = psba["strand"]
-    if psba["start"] > psba["end"]:  # across the origin
+    trnH is not psbA's neighbour on its strand. psbA's 3' end is its end on its strand; trnH lies beyond it. On a
+    circular record the origin may lie anywhere between psbA's 3' end and trnH (or inside psbA): the record is
+    joined across it, its start after its end, as a gene's is (since 2026-11-10; until then such a record, opened
+    between trnH and psbA, gave no spacer)."""
+    strand, length = psba["strand"], len(seq)
+    if psba["start"] > psba["end"] and not circular:
         return None
     three = psba["start"] if strand == "-" else psba["end"]  # psbA's last base, on the molecule
+    psba_length = (psba["end"] - psba["start"]) % length + 1
     for parts in his:
         if len(parts) != 1 or parts[0][2] != strand:
             continue
         a, b, _s = parts[0]
-        if strand == "-" and b < three and three - b <= SPACER_MAX:
-            start, end = a, three + SPACER_FLANK - 1  # trnH below psbA's 3' end; read on the minus strand
-            regions = [("psbA3'", 0, SPACER_FLANK), ("spacer", SPACER_FLANK, end - b), ("trnH", end - b, end - a + 1)]
-        elif strand == "+" and a > three and a - three <= SPACER_MAX:
-            start, end = three - SPACER_FLANK + 1, b
-            regions = [("psbA3'", 0, SPACER_FLANK), ("spacer", SPACER_FLANK, a - start), ("trnH", a - start, b - start + 1)]
-        else:
+        near = three - b if strand == "-" else a - three  # trnH's near end beyond psbA's last base, along its strand
+        if circular and not 0 < near <= SPACER_MAX:
+            # the way round the origin; on a small circle a trnH before psbA is also "beyond" it that way: taken only
+            # where it is nearer to psbA's 3' end than, the other way round, to its 5' end
+            near %= length
+            if length - psba_length - (near - 1) - (b - a + 1) < near - 1:
+                continue
+        if not 0 < near <= SPACER_MAX:
             continue
-        if start < 1 or end > len(seq):
+        size = SPACER_FLANK + near - 1 + b - a + 1  # psbA's 3' end, the spacer, trnH
+        start, end = (a, a + size - 1) if strand == "-" else (b - size + 1, b)
+        if circular and size < length:  # an end beyond the record's: back on it, the start after the end
+            start, end = (start - 1) % length + 1, (end - 1) % length + 1
+        elif start < 1 or end > length:
             continue
+        regions = [("psbA3'", 0, SPACER_FLANK), ("spacer", SPACER_FLANK, SPACER_FLANK + near - 1),
+                   ("trnH", SPACER_FLANK + near - 1, size)]
         whole = subsequence(seq, start, end, strand)
+        pieces = [(start, end, strand)] if start <= end else \
+            [(start, length, strand), (1, end, strand)][::1 if strand == "+" else -1]  # in the order transcribed
         return dict(start=start, end=end, strand=strand, exons=1, partial=False, sequence=whole, spliced=whole,
-                    parts=f"{start}-{end}:{strand}", trans_spliced=False, copies=1,
+                    parts=parts_text(pieces), trans_spliced=False, copies=1, transl_table="-",
                     regions=",".join(f"{n}:{x}-{y}" for n, x, y in regions))
     return None
 
 
 def is_animal(ncbi, taxid):
     return taxid is not None and METAZOA in ncbi.ancestors(ncbi.merged.get(taxid, taxid))
+
+
+def table_of(row, ncbi):
+    """The genetic code a gene's coding sequence is read by: its RefSeq CDS's own /transl_table where it names one of
+    gencode's tables (since 2026-11-10: the code its annotation was made with; until then never read), else NCBI's
+    of its taxid's organelle, as before (an assembly's gene; a CDS that names none)."""
+    own = str(row.get("transl_table") or "-")
+    if own.isdigit() and int(own) in gencode.TABLES:
+        return int(own)
+    return ncbi.code_of(int(row["taxid"]), COMPARTMENT[row["organelle"]])
+
+
+def release_sizes(files):
+    """The release's files' names and sizes, as text (refseq_genes' key: their content's stand-in; an md5 of the
+    ~2.2 GB at each build's start would cost more than a release of the same sizes is likely)."""
+    return ",".join(f"{os.path.basename(p)}:{os.path.getsize(p) if os.path.isfile(p) else '-'}" for p in files)
+
+
+def rules_text():
+    """What a RefSeq record's genes are named and cut by, as text (refseq_genes' key): the protein-coding genes' rules,
+    the rRNA's patterns, the spacer's lengths. A rule changed parses the release again without CACHE_VERSION raised."""
+    rules = [(name, kind, sorted(names), products.pattern, by_product)
+             for name, kind, names, products, by_product in CDS_RULES]
+    return repr((rules, NUMBER.pattern, SMALL.pattern, LARGE.pattern, SPACER_FLANK, SPACER_MAX))
 
 
 def refseq_genes(src_dir, work_folder, ncbi, log=print):
@@ -417,9 +485,13 @@ def refseq_genes(src_dir, work_folder, ncbi, log=print):
     if not files:
         return []
     # the release's and the genes': parsed again where either changes (CYTB, rbcL, matK, tufA since 2026-11-07; the
-    # format-5 genes and the cache's parts, trans-spliced genes and regions since 2026-11-07)
+    # format-5 genes and the cache's parts, trans-spliced genes and regions since 2026-11-07). Since 2026-11-10 the
+    # key also holds the release's files' sizes (release.txt names them alone, and RefSeq's names are the same in
+    # every release: a release fetched anew was read from the old cache), the rules the genes are named by
+    # (rules_text) and CACHE_VERSION. The caches of before are parsed again once (~2.2 GB of GenBank files), which is
+    # accepted; their files (refseq_<old key>.tsv.gz) stay in WORK/organelle and can be deleted.
     key = hashlib.md5((util.md5(os.path.join(folder_of(src_dir), "release.txt")) + ",".join(GENES + CACHE_COLUMNS)
-                       ).encode()).hexdigest()[:10]
+                       + release_sizes(files) + rules_text() + f"version:{CACHE_VERSION}").encode()).hexdigest()[:10]
     cache = os.path.join(work_folder, f"refseq_{key}.tsv.gz")
     if not os.path.isfile(cache):
         log(f"RefSeq organelles: parsing {len(files)} GenBank files")
@@ -433,7 +505,8 @@ def refseq_genes(src_dir, work_folder, ncbi, log=print):
                     for gene, g in genes.items():
                         row = (rec["seqid"], organelle, rec["taxid"] or "-", rec["length"], gene, g["start"], g["end"],
                                g["strand"], g["exons"], g["copies"], "t" if g["partial"] else "f", g["sequence"],
-                               g["spliced"], g["parts"], "t" if g["trans_spliced"] else "f", g["regions"])
+                               g["spliced"], g["parts"], "t" if g["trans_spliced"] else "f", g["regions"],
+                               g["transl_table"])
                         fh.write("\t".join(map(str, row)) + "\n")
         os.replace(util.part_of(cache), cache)
     rows = []
@@ -511,8 +584,8 @@ class Nearest:
             for r in rows:
                 if r["partial"] == "f" and r.get("trans_spliced", "f") != "t":
                     self.seq[(r["seqid"], r["gene"])] = r["spliced"]
-                    if r["gene"] in CODING:  # its protein, by its organelle's code (miniprot_genes' query)
-                        p, stops = gencode.protein_of(r["spliced"], ncbi.code_of(int(r["taxid"]), COMPARTMENT[organelle]))
+                    if r["gene"] in CODING:  # its protein, by its own code (table_of; miniprot_genes' query)
+                        p, stops = gencode.protein_of(r["spliced"], table_of(dict(r, organelle=organelle), ncbi))
                         if not stops:
                             self.protein[(r["seqid"], r["gene"])] = p
                     for a in ncbi.ancestors(sp):
@@ -692,9 +765,22 @@ def assembly_file(work_folder, accession):
     return os.path.join(work_folder, "assembly", f"{accession}.tsv")
 
 
+def search_key(organelle, animal, queries, proteins, code, models):
+    """One organelle's search's inputs as a short digest (the #searched line's `inputs`, since 2026-11-10): the
+    queries (the nearest RefSeq species' genes: other ones after a new release, or after their parsing changed),
+    barrnap's kingdom, the models, with miniprot its proteins and the genetic code, the thresholds and CACHE_VERSION.
+    Until then a file was kept by its genes' names and its models alone, whatever it had been searched with."""
+    kingdom = "mito" if animal and organelle == "mitochondrion" else "bac"
+    by_miniprot = (sorted(proteins.items()), code) if models == "miniprot" else ()
+    text = repr((CACHE_VERSION, organelle, GENES_OF[organelle], kingdom, models, list(queries), by_miniprot,
+                 MAX_EVALUE, MAX_GENE, MIN_COVER, MAX_MOLECULE))
+    return hashlib.md5(text.encode()).hexdigest()[:10]
+
+
 def searched_of(path):
-    """An assembly's search file's genes searched -> {organelle: set of genes}: its #searched line's, else (a file of
-    before 2026-11-07) OLD_GENES of each organelle."""
+    """An assembly's search file's genes searched -> {organelle: set of genes}: its #searched line's (and its other
+    entries: `models`, since 2026-11-10 `inputs` {organelle=search_key}), else (a file of before 2026-11-07) OLD_GENES
+    of each organelle."""
     with open(path) as fh:
         line = fh.readline()
     if not line.startswith("#searched"):
@@ -758,9 +844,12 @@ def run_assembly(args):
     except (OSError, EOFError, RuntimeError) as e:
         return acc, None, f"{type(e).__name__}: {e}"
     os.makedirs(os.path.dirname(out), exist_ok=True)
+    models = "miniprot" if miniprot else "nhmmer"
+    inputs = [f"{k}={search_key(k, animal, queries[k], proteins.get(k, {}), codes.get(k, 1), models)}"
+              for k in KINDS if k in queries]  # what it was searched with: assembly_pass searches again where other
     with open(util.part_of(out), "w", newline="\n") as fh:
         fh.write("\t".join(["#searched"] + [f"{k}:{','.join(GENES_OF[k])}" for k in KINDS if k in queries]
-                           + [f"models:{'miniprot' if miniprot else 'nhmmer'}"]) + "\n")
+                           + [f"models:{models}", f"inputs:{','.join(inputs)}"]) + "\n")
         fh.write("\t".join(ASSEMBLY_COLUMNS) + "\n")
         for r in sorted(rows, key=lambda r: (KINDS.index(r["organelle"]), GENES.index(r["gene"]))):
             fh.write("\t".join(str("t" if r.get(c) is True else "f" if r.get(c) is False else r.get(c, "-"))
@@ -783,24 +872,35 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
     organelle.fna.gz, or None: since 2026-11-08, so that a genome is not read again, nor needed on disk; else
     genome_of(accession) -> its genome) and not done yet -> how many were run, failed. Only the organelles RefSeq lacks
     are searched; with miniprot (since 2026-11-07) its protein-coding genes' exons are miniprot's, by the species'
-    organelle code (an assembly searched with the other models is searched again)."""
+    organelle code (an assembly searched with the other models is searched again; since 2026-11-10 also one searched
+    with other inputs: search_key)."""
     nearest = Nearest(chosen, ncbi)
     models = "miniprot" if miniprot else "nhmmer"
     todo = []
     for acc, job in sorted(job_map.items()):
         sp = int(job["species_taxid"])
         out = assembly_file(work_folder, acc)
-        path = (saved_of(acc) if saved_of else None) or genome_of(acc)
         need = [k for k in organelles_of(ncbi, sp) if every or (sp, k) not in chosen]  # every: the panel's extras
-        if job.get("path") or not need or not os.path.isfile(path):
+        if job.get("path") or not need:
             continue
+        animal = is_animal(ncbi, sp)
+        queries, proteins = {k: nearest.queries(sp, k) for k in need}, {k: nearest.proteins(sp, k) for k in need}
+        codes = {k: ncbi.code_of(sp, COMPARTMENT[k]) for k in need}
         if os.path.isfile(out):  # searched; again for genes added since (CYTB, rbcL, matK, tufA: 2026-11-07)
             got = searched_of(out)
-            if all(set(GENES_OF[k]) <= got.get(k, set()) for k in need) and got.get("models", {"nhmmer"}) == {models}:
+            # since 2026-11-10 also where it was searched with other inputs (search_key: the queries of another
+            # release, another genetic code, other thresholds, a CACHE_VERSION raised). A file of before holds no
+            # `inputs` and is searched again, once: accepted, as nothing says what it was searched with.
+            same = {f"{k}={search_key(k, animal, queries[k], proteins[k], codes[k], models)}" for k in need}
+            if all(set(GENES_OF[k]) <= got.get(k, set()) for k in need) and got.get("models", {"nhmmer"}) == {models} \
+                    and same <= got.get("inputs", set()):
                 continue
-        todo.append((acc, path, out, is_animal(ncbi, sp), {k: nearest.queries(sp, k) for k in need}, barrnap,
-                     nhmmer, threads, {k: nearest.proteins(sp, k) for k in need},
-                     {k: ncbi.code_of(sp, COMPARTMENT[k]) for k in need}, miniprot))
+        # asked of the assemblies to search alone (since 2026-11-10: of every assembly; a packed genome's saved
+        # molecules are written out for the search, store.py)
+        path = (saved_of(acc) if saved_of else None) or genome_of(acc)
+        if not os.path.isfile(path):
+            continue
+        todo.append((acc, path, out, animal, queries, barrnap, nhmmer, threads, proteins, codes, miniprot))
     if not todo:
         return 0, 0
     log(f"organelle genes: {len(todo)} assemblies to search")
@@ -850,7 +950,9 @@ def collect(ncbi, job_map, species_set, chosen, work_folder):
                                             partial=r["partial"], ambiguous=f"{rrna.ambiguous(seq):.4f}",
                                             name=name_of(organelle, r["gene"], animal, plant), model=model,
                                             parts=r.get("parts") or "-", trans_spliced=r.get("trans_spliced") or "f",
-                                            regions=r.get("regions") or "-", cds=coding_of(r, seq))))
+                                            regions=r.get("regions") or "-", cds=coding_of(r, seq),
+                                            # not a column of genes.tsv: check reads it (table_of)
+                                            transl_table=r.get("transl_table") or "-")))
     return out
 
 
@@ -877,14 +979,15 @@ MAX_AMBIGUOUS = 0.005  # a record with this share of other bases than ACGT: low
 def check(records, ncbi, vsearch=None, threads=1):
     """The organelle genes' checks across species (since 2026-11-07; qc.check, each gene of each organelle a locus;
     a protein-coding gene's coding sequence compared where it has one, else its record) and their proteins by the
-    species' organelle code -> records, their rows completed with own_species, same_as, length_check,
-    internal_stops, confidence and flags (`protein` kept in the row for write_genes)."""
+    species' organelle code (since 2026-11-10 a RefSeq CDS's own /transl_table before it: table_of) -> records, their
+    rows completed with own_species, same_as, length_check, internal_stops, confidence and flags (`protein` kept in
+    the row for write_genes)."""
     from . import qc  # noqa: PLC0415
     seqs, species, lengths = {}, {}, {}
     for name, seq, row in records:
         cds = row.get("cds")
         if row["gene"] in CODING and cds:
-            p, stops = gencode.protein_of(cds, ncbi.code_of(int(row["taxid"]), COMPARTMENT[row["organelle"]]))
+            p, stops = gencode.protein_of(cds, table_of(row, ncbi))
             row.update(protein=p, internal_stops=stops)
             lengths[(name, row["organelle"] + ":" + row["gene"])] = len(p)
         key = (name, row["organelle"] + ":" + row["gene"])

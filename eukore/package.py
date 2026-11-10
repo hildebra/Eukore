@@ -15,6 +15,7 @@ import sys
 
 from . import gencode
 from . import qc
+from . import store
 from . import util
 from . import __version__
 
@@ -171,9 +172,8 @@ def organelle_molecules_of(folder):
     plastid: n}, {} where not measured."""
     from .metadata import STATS  # noqa: PLC0415
     try:
-        with open(os.path.join(folder, STATS)) as fh:
-            stats = json.load(fh)
-    except (OSError, ValueError):
+        stats = json.loads(store.text(folder, STATS) or "")
+    except ValueError:
         return {}
     return {k: int(stats[f"{k}_molecules"]) for k in ("mitochondrion", "plastid")
             if str(stats.get(f"{k}_molecules", "")).isdigit()}
@@ -248,21 +248,17 @@ def _tsv(path, columns, rows):
 
 
 def done_table(work, accession, name):
-    """A done genome's table (WORK/done/<accession>/<name>, header first) -> [row dicts]."""
+    """A done genome's table (WORK/done/<accession>/<name>, or its packed genome's, store.py; header first) -> [row
+    dicts]."""
     from .genomes import done_dir  # noqa: PLC0415
-    folder = done_dir(work, accession)
-    return read_table(folder, name) if os.path.isfile(os.path.join(folder, name)) else []
+    return store.table(done_dir(work, accession), name)
 
 
 def done_copies(work, accession, swaps=None):
     """A genome's copies (WORK/done/<accession>/copies.fna) -> {locus: copy}; swaps: {locus: alt}, the loci whose
     copy is one of its alternates (collect's choice by lineage, since 2026-11-09)."""
     from .genomes import done_dir  # noqa: PLC0415
-    path = os.path.join(done_dir(work, accession), "copies.fna")
-    if not os.path.isfile(path):
-        return {}
-    with open(path) as fh:
-        lines = [line.strip() for line in fh]
+    lines = [line.strip() for line in (store.text(done_dir(work, accession), "copies.fna") or "").splitlines()]
     out = {lines[i][1:]: lines[i + 1] for i in range(0, len(lines) - 1, 2)}
     if swaps:
         alts = {(a["locus"], a["alt"]): a for a in done_alternates(work, accession)}
@@ -275,15 +271,13 @@ def done_alternates(work, accession):
     -> [loci.tsv-like row dicts with alt (int), copy and features [(kind, start, end)]], [] for none."""
     from .genomes import ALTERNATES, done_dir  # noqa: PLC0415
     folder = done_dir(work, accession)
-    table, fasta, features = (os.path.join(folder, n) for n in ALTERNATES)
-    if not os.path.isfile(table):
+    rows = store.table(folder, ALTERNATES[0])
+    if not rows:
         return []
-    rows = read_table(folder, ALTERNATES[0])
-    with open(fasta) as fh:
-        lines = [line.strip() for line in fh]
+    lines = [line.strip() for line in (store.text(folder, ALTERNATES[1]) or "").splitlines()]
     copies = {lines[i][1:]: lines[i + 1] for i in range(0, len(lines) - 1, 2)}
     feats = collections.defaultdict(list)
-    for f in read_table(folder, ALTERNATES[2]):
+    for f in store.table(folder, ALTERNATES[2]):
         feats[(f["locus"], int(f["alt"]))].append((f["kind"], int(f["start"]), int(f["end"])))
     for r in rows:
         r["alt"] = int(r["alt"])
@@ -335,7 +329,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                             type_material=type_material_of(row))
         from . import rrna as rrna_mod  # noqa: PLC0415
         from .genomes import done_dir  # noqa: PLC0415
-        if os.path.isfile(os.path.join(done_dir(work, acc), "rrna.tsv")):
+        if store.has(done_dir(work, acc), "rrna.tsv"):
             rrna_rows = rrna_mod.load(done_dir(work, acc))
             n = rrna_mod.counts(rrna_rows)
             genomes[acc].update(rrna_18s=n["18S"], rdna_units=n["rDNA"], rdna_complete=n["rDNA_complete"],
@@ -352,7 +346,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             own[f["locus"]].append((f["kind"], int(f["start"]), int(f["end"])))
         gap_of = {locus: len(gap_runs(seq)) for locus, seq in got.items()}
         fcs = [dict(f, start=int(f["start"]), end=int(f["end"])) for f in done_table(work, acc, "fcs.tsv")]
-        screened = os.path.isfile(os.path.join(done_dir(work, acc), "fcs.tsv"))
+        screened = store.has(done_dir(work, acc), "fcs.tsv")
         searched = done_table(work, acc, "loci.tsv")
         genomes[acc]["_searched"] = {r["locus"] for r in searched}  # Missing ones too: copy_numbers.tsv's zeros
         genomes[acc]["genome_record"] = record_of(done_summary(work, acc)) or "-"  # since 2026-11-09
@@ -401,7 +395,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         new_introns = []
         for acc in sorted({a for a, _l in taken}):
             alts = {(a["locus"], a["alt"]): a for a in done_alternates(work, acc)}
-            screened = os.path.isfile(os.path.join(done_dir(work, acc), "fcs.tsv"))
+            screened = store.has(done_dir(work, acc), "fcs.tsv")
             fcs = [dict(f, start=int(f["start"]), end=int(f["end"]))
                    for f in done_table(work, acc, "fcs.tsv")] if screened else None
             for locus, (k, c) in sorted((lo, v) for (a_, lo), v in taken.items() if a_ == acc):

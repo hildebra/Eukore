@@ -4,7 +4,8 @@ genome's origin on the minus strand, a qualifier over two lines, an animal's 16S
 its 4.5S left out), a species' record chosen, an assembly's mitochondrion searched (stand-in barrnap and nhmmer: its
 rRNA by bacterial models, its COX1 of two exons), a mitochondrion's CYTB and a plastid's rbcL, matK and tufA (since
 2026-11-07; an assembly searched before them searched again, one searched for them all not), and the genes written into
-the package.
+the package; since 2026-11-10 (AuditTest) a gene's best feature, /pseudo, /codon_start, /transl_table, the spacer
+across the origin and the caches' keys.
 
     python3 -m unittest discover -s tests -t tests
 """
@@ -19,7 +20,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import genomes, ncbi as ncbi_mod, organelle, package, rrna  # noqa: E402
+from eukore import gencode, genomes, ncbi as ncbi_mod, organelle, package, rrna  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 YEAST = "GCA_000146045.2"
@@ -305,8 +306,10 @@ class AssemblyTest(unittest.TestCase):
             head = "\t".join(organelle.ASSEMBLY_COLUMNS) + "\n"
             for acc, searched in ((plant, ""),  # a file of before 2026-11-07: no #searched line
                                   (yeast, "#searched\tmitochondrion:SSU,LSU,5S,COX1\n"),  # before CYTB
+                                  # every gene of its mitochondrion, but not what it was searched with (a file of
+                                  # before 2026-11-10: no `inputs`): searched again, once
                                   (worm, "#searched\tmitochondrion:" + ",".join(organelle.GENES_OF["mitochondrion"])
-                                   + "\n")):  # every gene of its mitochondrion: not searched again
+                                   + "\n")):
                 os.makedirs(os.path.dirname(organelle.assembly_file(work, acc)), exist_ok=True)
                 with open(organelle.assembly_file(work, acc), "w") as fh:
                     fh.write(searched + head)
@@ -317,12 +320,16 @@ class AssemblyTest(unittest.TestCase):
             def run():
                 return organelle.assembly_pass(work, jobs, lambda a: genomes.genome_file(genomes_dir, a), chosen,
                                                ncbi, barrnap, nhmmer, 1, 1, lambda _t: 0)
-            self.assertEqual(run(), (2, 0))  # the plant and the yeast, not the worm
-            self.assertEqual(organelle.searched_of(organelle.assembly_file(work, plant)),
-                             dict({k: set(organelle.GENES_OF[k]) for k in organelle.KINDS}, models={"nhmmer"}))
-            self.assertEqual(organelle.searched_of(organelle.assembly_file(work, yeast)),
-                             {"mitochondrion": set(organelle.GENES_OF["mitochondrion"]), "models": {"nhmmer"}})
-            self.assertEqual(run(), (0, 0))
+
+            def searched(acc):  # its genes and models; its inputs' organelles (their keys: test_caches_keyed)
+                got = organelle.searched_of(organelle.assembly_file(work, acc))
+                return {k: v for k, v in got.items() if k != "inputs"}, sorted(i.split("=")[0] for i in got["inputs"])
+            self.assertEqual(run(), (3, 0))
+            self.assertEqual(searched(plant), (dict({k: set(organelle.GENES_OF[k]) for k in organelle.KINDS},
+                                                    models={"nhmmer"}), ["mitochondrion", "plastid"]))
+            self.assertEqual(searched(yeast), ({"mitochondrion": set(organelle.GENES_OF["mitochondrion"]),
+                                                "models": {"nhmmer"}}, ["mitochondrion"]))
+            self.assertEqual(run(), (0, 0))  # searched for every gene, with these inputs: not again
             records = organelle.collect(ncbi, jobs, {952}, chosen, work)
             self.assertIn(("mitochondrion", "COX1"), {(r["organelle"], r["gene"]) for _n, _s, r in records})
 
@@ -416,6 +423,160 @@ class Format5Test(unittest.TestCase):
         self.assertEqual((y["confidence"], y["flags"]), ("unverified", "own_species_undecided"))
         self.assertEqual(organelle.confidence(dict(y, internal_stops=2, partial="t"))[1],
                          "internal_stops,partial,own_species_undecided")
+
+
+class AuditTest(unittest.TestCase):
+    """Since 2026-11-10 (the audit's C19, C22, L10): a gene's best feature and no pseudogene, a CDS read by its
+    /codon_start and /transl_table, the spacer across a circular record's origin, the caches' keys."""
+
+    def record(self, features, seq=None, circular=True):
+        seq = seq or random_seq(6000, 11)
+        return dict(seqid="NC_8.1", taxid=952, length=len(seq), circular=circular, sequence=seq, features=features)
+
+    def test_a_genes_best_feature_and_no_pseudogene(self):
+        rec = self.record([
+            # a truncated ycf1 at the inverted repeat's border first, the gene later, a longer pseudogene between
+            ("CDS", ["complement(100..400)"], [("gene", "ycf1")]),
+            ("CDS", ["500..2999"], [("gene", "ycf1"), ("pseudo", "")]),
+            ("CDS", ["3000..4499"], [("gene", "ycf1")]),
+            # a partial 16S (longer) before a whole one; a 16S pseudogene
+            ("rRNA", ["<4500..5600"], [("gene", "rrn16")]),
+            ("rRNA", ["5601..5900"], [("gene", "rrn16")]),
+            ("rRNA", ["1..5999"], [("gene", "rrn16"), ("pseudogene", "unknown")]),
+            # two of one length (an inverted repeat's): the first, as before
+            ("rRNA", ["complement(410..490)"], [("product", "5S ribosomal RNA")]),
+            ("rRNA", ["5901..5981"], [("product", "5S ribosomal RNA")]),
+            ("CDS", ["10..90"], [("gene", "psbA"), ("pseudo", "")])])  # a pseudogene alone: no gene
+        seq = rec["sequence"]
+        got = organelle.record_genes(rec, "plastid")
+        self.assertEqual(sorted(got), ["5S", "SSU", "ycf1"])
+        self.assertEqual({g: (r["start"], r["end"], r["strand"], r["copies"], r["partial"]) for g, r in got.items()},
+                         {"ycf1": (3000, 4499, "+", 2, False), "SSU": (5601, 5900, "+", 2, False),
+                          "5S": (410, 490, "-", 2, False)})
+        self.assertEqual(got["ycf1"]["sequence"], seq[2999:4499])
+        # partial features alone: the longest of them
+        rec = self.record([("rRNA", ["<1..300"], [("gene", "rrn23")]), ("rRNA", ["400..>1500"], [("gene", "rrn23")])])
+        lsu = organelle.record_genes(rec, "plastid")["LSU"]
+        self.assertEqual((lsu["start"], lsu["end"], lsu["partial"], lsu["copies"]), (400, 1500, True, 2))
+
+    def test_a_cds_by_its_codon_start(self):
+        coding = "AAA" * 30 + "TAA"
+        seq = random_seq(100, 12) + "CA" + coding + random_seq(100, 13) + rrna.revcomp("G" + coding) + random_seq(50, 4)
+        a, b = 101, 102 + len(coding)  # the plus strand's feature: two bases of a codon, then the coding sequence
+        c, d = b + 101, b + 101 + len(coding)  # the minus strand's: one base, on the molecule its last
+        rec = self.record([
+            ("CDS", [f"<{a}..{b}"], [("gene", "nad1"), ("codon_start", "3"), ("transl_table", "4")]),
+            ("CDS", [f"complement({c}..>{d})"], [("gene", "nad5"), ("codon_start", "2")]),
+            ("CDS", [f"join(<{a}..{a + 10},{a + 20}..{a + 30})"], [("gene", "atp6"), ("codon_start", "2")]),
+            ("CDS", [f"{a}..{b}"], [("gene", "COX3"), ("codon_start", "1")])], seq)
+        got = organelle.record_genes(rec, "mitochondrion")
+        for gene, start, end in (("nad1", a + 2, b), ("nad5", c, d - 1)):
+            row = got[gene]
+            self.assertEqual((row["start"], row["end"], row["spliced"], row["sequence"]), (start, end, coding, coding))
+            self.assertEqual(gencode.protein_of(row["spliced"], 1), ("K" * 30, 0))  # in frame
+        self.assertEqual((got["nad1"]["parts"], got["nad5"]["parts"]), (f"{a + 2}-{b}:+", f"{c}-{d - 1}:-"))
+        self.assertEqual(got["atp6"]["parts"], f"{a + 1}-{a + 10}:+,{a + 20}-{a + 30}:+")  # off its first exon alone
+        self.assertEqual((got["COX3"]["start"], got["COX3"]["parts"]), (a, f"{a}-{b}:+"))  # 1: as it is
+        self.assertEqual([got[g]["transl_table"] for g in ("nad1", "nad5")], ["4", "-"])
+        self.assertEqual(organelle.in_frame([(5, 6, "+")], [("codon_start", "3")]), [(5, 6, "+")])  # nothing left: kept
+
+    def test_a_cds_by_its_own_transl_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+        row = dict(taxid=27291, organelle="mitochondrion")  # NCBI's mitochondrial code of the species: 1
+        self.assertEqual([organelle.table_of(dict(row, transl_table=t), ncbi) for t in ("4", "-", "", "99", "x")],
+                         [4, 1, 1, 1, 1])
+        self.assertEqual(organelle.table_of(dict(taxid=4932, organelle="mitochondrion"), ncbi), 3)  # an assembly's
+        cds = "ATG" + "TGA" * 5 + "AAA" * 5 + "TAA"  # TGA: W by table 4, a stop by table 1
+        records = [(f"m{i}_COX1", cds, dict(record=f"m{i}_COX1", gene="COX1", organelle="mitochondrion", taxid=27291,
+                                            species_taxid=27291, partial="f", ambiguous="0.0000", model="refseq",
+                                            exons=1, cds=cds, transl_table=t)) for i, t in enumerate(("4", "-"))]
+        organelle.check(records, ncbi)
+        self.assertEqual([(r["protein"], r["internal_stops"]) for _n, _s, r in records],
+                         [("M" + "W" * 5 + "K" * 5, 0), ("M" + "*" * 5 + "K" * 5, 5)])
+        # the assemblies' protein queries: a RefSeq gene read by its own table is whole, by the species' it is not
+        chosen = {(27291, "mitochondrion"): [dict(seqid=f"NC_{i}.1", gene="COX1", taxid="27291", partial="f",
+                                                  trans_spliced="f", spliced=cds, organelle="mitochondrion",
+                                                  transl_table=t) for i, t in enumerate(("4", "-"))]}
+        self.assertEqual(sorted(organelle.Nearest(chosen, ncbi).protein), [("NC_0.1", "COX1")])
+
+    def test_the_spacer_across_the_origin(self):
+        # test_spacer_and_a_trans_spliced_gene's record opened 300 bases on: between trnH and psbA's 3' end
+        seq = random_seq(4000, 9)
+        turned = seq[300:] + seq[:300]
+        features = [("tRNA", ["complement(3701..3775)"], [("gene", "trnH-GUG"), ("product", "tRNA-His")]),
+                    ("CDS", ["complement(100..1159)"], [("gene", "psbA")])]
+        spacer = organelle.record_genes(self.record(features, turned), "plastid")["trnH-psbA"]
+        self.assertEqual((spacer["start"], spacer["end"], spacer["strand"], spacer["regions"], spacer["parts"]),
+                         (3701, 299, "-", "psbA3':0-200,spacer:200-524,trnH:524-599", "1-299:-,3701-4000:-"))
+        self.assertEqual(spacer["sequence"], rrna.revcomp(seq[:599]))  # the record's, as before it was opened there
+        self.assertNotIn("trnH-psbA", organelle.record_genes(self.record(features, turned, circular=False), "plastid"))
+        # on the plus strand: psbA at the record's end, trnH at its start
+        features = [("CDS", ["3000..3990"], [("gene", "psbA")]),
+                    ("tRNA", ["100..174"], [("gene", "trnH-GUG"), ("product", "tRNA-His")])]
+        spacer = organelle.record_genes(self.record(features, seq), "plastid")["trnH-psbA"]
+        self.assertEqual((spacer["start"], spacer["end"], spacer["regions"], spacer["parts"]),
+                         (3791, 174, "psbA3':0-200,spacer:200-309,trnH:309-384", "3791-4000:+,1-174:+"))
+        self.assertEqual(spacer["sequence"], seq[3790:] + seq[:174])
+        # psbA itself across the origin (until 2026-11-10: no spacer)
+        features = [("CDS", ["join(3900..4000,1..900)"], [("gene", "psbA")]),
+                    ("tRNA", ["1000..1074"], [("gene", "trnH-GUG"), ("product", "tRNA-His")])]
+        spacer = organelle.record_genes(self.record(features, seq), "plastid")["trnH-psbA"]
+        self.assertEqual((spacer["start"], spacer["end"], spacer["sequence"]), (701, 1074, seq[700:1074]))
+        # a trnH on the other side of psbA, or too far beyond it: no neighbour, on a circular record neither
+        for trnh in ("2000..2074", "complement(100..174)"):
+            features = [("CDS", ["3000..3990"], [("gene", "psbA")]), ("tRNA", [trnh], [("gene", "trnH-GUG")])]
+            self.assertNotIn("trnH-psbA", organelle.record_genes(self.record(features, seq), "plastid"))
+
+    def test_caches_keyed_by_their_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            src, work = os.path.join(tmp, "sources"), os.path.join(tmp, "work", "organelle")
+            release(src)
+
+            def caches():
+                return sorted(f for f in os.listdir(work) if f.startswith("refseq_"))
+            rows = organelle.refseq_genes(src, work, ncbi, lambda _t: 0)
+            first = caches()
+            self.assertEqual((len(first), {r["transl_table"] for r in rows}), (1, {"-"}))
+            genomes_dir = os.path.join(tmp, "genomes")
+            os.makedirs(genomes_dir)
+            with gzip.open(genomes.genome_file(genomes_dir, YEAST), "wt") as fh:
+                fh.write(f">m1 Saccharomyces cerevisiae mitochondrion, complete genome\n{YEAST_MT}\n")
+            jobs = {YEAST: dict(accession=YEAST, species_taxid=4932, taxid=559292)}
+            barrnap, nhmmer = fx.tool(tmp, "barrnap", BARRNAP), fx.tool(tmp, "nhmmer", NHMMER)
+
+            def run(rows):
+                return organelle.assembly_pass(work, jobs, lambda a: genomes.genome_file(genomes_dir, a),
+                                               organelle.choose(rows, ncbi), ncbi, barrnap, nhmmer, 1, 1, lambda _t: 0)
+            self.assertEqual((run(rows), run(rows)), ((1, 0), (0, 0)))
+            # another release under the same names (release.txt as it was): parsed again, not read from the cache;
+            # the yeast's queries are another species' now (a nearer one's COX1), its assembly searched again
+            other = random_seq(2000, 21)
+            with gzip.open(os.path.join(organelle.folder_of(src), "mitochondrion.1.genomic.gbff.gz"), "at") as fh:
+                fh.write(gbff_record("NC_000005.1", other, 27291, "mitochondrion", [
+                    feature("CDS", "101..1600", '/gene="COX1"', "/transl_table=3")]))
+            rows = organelle.refseq_genes(src, work, ncbi, lambda _t: 0)
+            self.assertEqual(len(caches()), 2)
+            self.assertEqual({r["seqid"]: r["transl_table"] for r in rows if r["seqid"] == "NC_000005.1"},
+                             {"NC_000005.1": "3"})
+            self.assertEqual((run(rows), run(rows)), ((1, 0), (0, 0)))
+            # the cache's version raised (the parsing or the search changed): both made again
+            organelle.CACHE_VERSION += 1
+            try:
+                self.assertEqual(len(organelle.refseq_genes(src, work, ncbi, lambda _t: 0)), len(rows))
+                self.assertEqual((len(caches()), run(rows), run(rows)), (3, (1, 0), (0, 0)))
+            finally:
+                organelle.CACHE_VERSION -= 1
+            self.assertEqual(len(organelle.refseq_genes(src, work, ncbi, lambda _t: 0)), len(rows))
+            self.assertEqual(len(caches()), 3)  # the version as it was: its cache read again, none made
+            # a rule changed: another key without the version raised
+            before = organelle.rules_text()
+            organelle.SPACER_MAX += 1
+            try:
+                self.assertNotEqual(organelle.rules_text(), before)
+            finally:
+                organelle.SPACER_MAX -= 1
 
 
 if __name__ == "__main__":

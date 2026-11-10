@@ -50,6 +50,9 @@ def records(path):
             m_sizes = struct.unpack(f"{order}{masks}I", fh.read(4 * masks))
             fh.read(4)
             seq = bytearray(4 * ((size + 3) // 4))
+            # since 2026-11-10 named before the loop: a record of length 0 never enters it, and `del packed` below
+            # failed on the unbound name (UnboundLocalError), the whole genome's conversion with it
+            packed = b""
             for at in range(0, len(seq), PIECE):  # the packed bases read and unpacked a piece at a time: no copy
                 packed = fh.read(min(PIECE, len(seq) - at) // 4)
                 for i, plane in enumerate(PLANES):

@@ -382,5 +382,157 @@ class Release(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(tmp, "work")))  # nothing of the build's own made
 
 
+def listed(out):
+    with open(os.path.join(out, "data", "downloads.json")) as fh:
+        return json.load(fh)["files"]
+
+
+class Downloads(unittest.TestCase):
+    """The release's downloads since 2026-11-10: the same bytes from the same package whenever and on however many
+    threads they are made, whole or made again, on the disk before their rename, their MD5s not taken twice."""
+
+    def tearDown(self):
+        util.compression_threads(1)
+
+    def test_the_same_bytes_whatever_the_files_times_and_the_threads(self):
+        import datetime  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = toy_package(os.path.join(tmp, "Eukore_2026.11"))
+            built = int(datetime.datetime(2026, 11, 9, 10, tzinfo=datetime.timezone.utc).timestamp())
+            self.assertEqual(release.built_time(pkg), built)  # the manifest's `built`, read as UTC on every machine
+            one, many = os.path.join(tmp, "one"), os.path.join(tmp, "many")
+            release.write(pkg, one, log=lambda line: None)
+            # the package's files copied or written again (other mtimes), the downloads made four at once, their
+            # blocks compressed on three threads
+            for folder, _dirs, names in os.walk(pkg):
+                for name in names:
+                    os.utime(os.path.join(folder, name), (1_000_000_000, 1_000_000_000))
+            util.compression_threads(3)
+            said = []
+            release.write(pkg, many, log=said.append, threads=4)
+            self.assertEqual([e["file"] for e in listed(many)], [e["file"] for e in listed(one)])  # the plan's order
+            self.assertEqual([(e["md5"], e["bytes"], e["files"]) for e in listed(many)],
+                             [(e["md5"], e["bytes"], e["files"]) for e in listed(one)])
+            self.assertEqual(len(said), len(listed(many)) + 1)
+            folders = [os.path.join(out, "downloads", "Eukore_2026.11") for out in (one, many)]
+            self.assertEqual(sorted(os.listdir(folders[0])), sorted(os.listdir(folders[1])))
+            for name in os.listdir(folders[0]):
+                if name != release.STATE:  # the state: the files' own mtimes
+                    self.assertEqual(content(os.path.join(folders[0], name)), content(os.path.join(folders[1], name)),
+                                     name)
+            for e in listed(many):
+                self.assertEqual(e["md5"], util.md5(os.path.join(folders[1], e["file"])))
+            with tarfile.open(os.path.join(folders[1], "Eukore_2026.11.tar.gz"), "r:gz") as tar:
+                self.assertEqual({(m.mtime, m.uid, m.gid, m.uname, m.gname) for m in tar.getmembers()},
+                                 {(built, 0, 0, "", "")})
+            # no build time in the manifest: one fixed time
+            with open(os.path.join(pkg, package.MANIFEST), "w") as fh:
+                json.dump({"format": 5, "version": "2026.11", "files": {}}, fh)
+            self.assertEqual(release.built_time(pkg), release.TAR_EPOCH)
+            self.assertEqual(release.built_time(os.path.join(tmp, "none")), release.TAR_EPOCH)
+
+    def test_a_cut_download_is_made_again_and_a_kept_one_not_read_again(self):
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = toy_package(os.path.join(tmp, "Eukore_2026.11"))
+            out = os.path.join(tmp, "release")
+            with mock.patch.object(util, "publish", wraps=util.publish) as published:
+                release.write(pkg, out, log=lambda line: None)
+            first = listed(out)
+            folder = os.path.join(out, "downloads", "Eukore_2026.11")
+            # every file of the release went into place through util.publish: on the disk before its rename
+            self.assertEqual(sorted(os.path.basename(c.args[1]) for c in published.call_args_list),
+                             sorted([e["file"] for e in first] + ["MD5SUMS", "stats.json", "taxonomy.json",
+                                                                  "downloads.json"] + 2 * [release.STATE]))
+            # a node that went down: a bundle cut in a block, a table without its end block
+            cut = {"Eukore_2026.11.tar.gz": lambda data: data[:len(data) // 2],
+                   "Eukore_2026.11_species.tsv.gz": lambda data: data[:-len(util.BGZF_EOF)]}
+            for name, short in cut.items():
+                data = content(os.path.join(folder, name))
+                with open(os.path.join(folder, name), "wb") as fh:
+                    fh.write(short(data))
+            kept = os.path.getmtime(os.path.join(folder, "Eukore_2026.11_marker_cds.tar.gz"))
+            said = []
+            release.write(pkg, out, log=said.append)
+            self.assertEqual(sorted(s for s in said if "cut short" in s),
+                             [f"release: {name} of an earlier run is cut short (no BGZF end block): made again"
+                              for name in sorted(cut)])
+            self.assertEqual(len(said), 5)  # each said and made, and the release's own line
+            self.assertEqual(listed(out), first)  # the same bytes again
+            for e in first:
+                blocks(os.path.join(folder, e["file"]))
+                self.assertEqual(e["md5"], util.md5(os.path.join(folder, e["file"])))
+            self.assertEqual(os.path.getmtime(os.path.join(folder, "Eukore_2026.11_marker_cds.tar.gz")), kept)
+            # a rerun: no download read again for its MD5, the sketches not loaded to count them
+            sketches = os.path.join(folder, "Eukore_2026.11_sketches.sig.gz")
+            with mock.patch.object(util, "md5", wraps=util.md5) as md5, \
+                    mock.patch.object(gzip, "open", wraps=gzip.open) as opened:
+                release.write(pkg, out, log=said.append)
+            self.assertEqual([c.args[0] for c in md5.call_args_list], [os.path.join(pkg, package.MANIFEST)])
+            self.assertNotIn(sketches, [c.args[0] for c in opened.call_args_list])
+            self.assertEqual(listed(out), first)
+            # but a file changed since (its mtime) is: its state is not its own any more
+            os.utime(sketches, (1_000_000_000, 1_000_000_000))
+            with mock.patch.object(util, "md5", wraps=util.md5) as md5, \
+                    mock.patch.object(gzip, "open", wraps=gzip.open) as opened:
+                release.write(pkg, out, log=said.append)
+            self.assertEqual([c.args[0] for c in md5.call_args_list], [os.path.join(pkg, package.MANIFEST), sketches])
+            self.assertIn(sketches, [c.args[0] for c in opened.call_args_list])
+            self.assertEqual(listed(out), first)
+            # an earlier Eukore's state (the manifest's MD5 alone): the downloads kept, measured once more
+            with open(os.path.join(folder, release.STATE)) as fh:
+                state = json.load(fh)
+            with open(os.path.join(folder, release.STATE), "w") as fh:
+                json.dump({"manifest_md5": state["manifest_md5"], "package": state["package"]}, fh)
+            said.clear()
+            release.write(pkg, out, log=said.append)
+            self.assertEqual((len(said), listed(out)), (1, first))
+
+    def test_a_cut_package_table_is_no_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = toy_package(os.path.join(tmp, "Eukore_2026.11"))
+            table = os.path.join(pkg, "metadata", "ncbi.tsv.gz")
+            with util.bgzf_open(table) as fh:
+                fh.write("genome\tfetched\n" + "GCA_000146045.2\tt\n" * 20000)
+            data = content(table)
+            with open(table, "wb") as fh:
+                fh.write(data[:-len(util.BGZF_EOF)])  # the copy of it broke off at a block's end: gzip reads it
+            out = os.path.join(tmp, "release")
+            with self.assertRaises(OSError) as failed:
+                release.write(pkg, out, log=lambda line: None)
+            self.assertIn("ncbi.tsv.gz is cut short (no BGZF end block)", str(failed.exception))
+            folder = os.path.join(out, "downloads", "Eukore_2026.11")
+            self.assertNotIn("Eukore_2026.11_ncbi.tsv.gz", os.listdir(folder))
+            # the website's data is written after the downloads: none of a release whose downloads failed
+            self.assertEqual(os.listdir(os.path.join(out, "data")), [])
+            with open(table, "wb") as fh:
+                fh.write(data)
+            release.write(pkg, out, log=lambda line: None)
+            self.assertEqual(content(os.path.join(folder, "Eukore_2026.11_ncbi.tsv.gz")), data)
+            self.assertEqual(sorted(os.listdir(os.path.join(out, "data"))),
+                             ["downloads.json", "stats.json", "taxonomy.json"])
+
+    def test_the_partials_of_killed_runs_are_cleared(self):
+        import socket  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = toy_package(os.path.join(tmp, "Eukore_2026.11"))
+            out = os.path.join(tmp, "release")
+            release.write(pkg, out, log=lambda line: None)
+            folder, data = os.path.join(out, "downloads", "Eukore_2026.11"), os.path.join(out, "data")
+            before = sorted(os.listdir(folder)), sorted(os.listdir(data))
+            gone = subprocess.Popen(["true"])
+            gone.wait()
+            dead, live = f".{socket.gethostname()}-{gone.pid}", ".elsewhere-7"  # a killed run's; another host's, now
+            for where, name in ((folder, "Eukore_2026.11.tar.gz"), (folder, "MD5SUMS"), (data, "stats.json")):
+                for whose in (dead, live):
+                    with open(os.path.join(where, f"{whose}.{name}.partial"), "w") as fh:
+                        fh.write("half")
+            release.write(pkg, out, log=lambda line: None)
+            self.assertEqual(sorted(os.listdir(folder)), sorted(
+                before[0] + [f"{live}.Eukore_2026.11.tar.gz.partial", f"{live}.MD5SUMS.partial"]))
+            self.assertEqual(sorted(os.listdir(data)), sorted(before[1] + [f"{live}.stats.json.partial"]))
+
+
 if __name__ == "__main__":
     unittest.main()

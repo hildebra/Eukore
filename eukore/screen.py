@@ -121,9 +121,12 @@ def genome_of(name, row):
 
 def representatives(seqs, owner):
     """Each owner's sequences ({name: sequence}; owner: {name: its genome}) in 99% types (rrna.types_of) -> {the type's
-    first name: [the names of its type]}. A genome's near-identical copies (an rDNA array: ~400 in a T2T human, its 18S
-    once as an 18S record and once in its rDNA record) are searched once: until 2026-11-06 they filled vsearch's
-    first hits, which were then dropped as the genome's own, and the screen and the own-species check found nothing."""
+    representative: [the names of its type]}, the representative the name of its longest sequence, of several the
+    first (since 2026-11-10; until then the type's first name whatever its length: a copy cut at a contig's end, of
+    one type with the whole copies as rrna.identity measures over the shorter, was searched in their place and its
+    verdict theirs). A genome's near-identical copies (an rDNA array: ~400 in a T2T human, its 18S once as an 18S
+    record and once in its rDNA record) are searched once: until 2026-11-06 they filled vsearch's first hits, which
+    were then dropped as the genome's own, and the screen and the own-species check found nothing."""
     from .rrna import types_of  # noqa: PLC0415 (rrna imports this module's users)
     by_owner = collections.defaultdict(list)
     for name in sorted(seqs):
@@ -131,10 +134,13 @@ def representatives(seqs, owner):
     out = {}
     for names in by_owner.values():
         types = types_of([seqs[k] for k in names]) if len(names) > 1 else {seqs[names[0]]: 1}
-        first = {}
+        rep = {}  # type -> its representative (names are sorted: the first of the longest stays)
         for k in names:
-            rep = first.setdefault(types[seqs[k]], k)
-            out.setdefault(rep, []).append(k)
+            t = types[seqs[k]]
+            if t not in rep or len(seqs[k]) > len(seqs[rep[t]]):
+                rep[t] = k
+        for k in names:  # the types in their first names' order, as before
+            out.setdefault(rep[types[seqs[k]]], []).append(k)
     return out
 
 

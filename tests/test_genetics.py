@@ -69,6 +69,15 @@ class IntronTest(unittest.TestCase):
                                                        dict(hmm_position=30, phase=2), dict(hmm_position="-", phase=0)]
         self.assertEqual(introns.sites(rows), {(10, 0): "10.0", (11, 0): "10.0", (10, 1): "10.1", (30, 2): "30.2"})
 
+    def test_a_genome_without_coding_bases(self):
+        # since 2026-11-10: a genome whose copies' coding sequences are all empty gets `-`, not a division by zero
+        row = dict(accession="B", locus="L1", intron=1, start=7, end=57, length=50, phase=0, donor="GT", acceptor="AG",
+                   u12="f", aa_position=2, **{"class": "GT-AG"})
+        collected = dict(intron_rows=[row], cds={("A", "L1"): "", ("A", "L2"): "", ("B", "L1"): "ATGAAA" * 100})
+        _rows, _sites, _shares, genome = introns.annotate(collected, {})
+        self.assertEqual(genome, {"A": dict(introns=0, introns_per_kb_cds="-", median_intron_length="-"),
+                                  "B": dict(introns=1, introns_per_kb_cds="1.67", median_intron_length=50)})
+
 
 class CodeTest(unittest.TestCase):
     def genome(self, table, times=12):

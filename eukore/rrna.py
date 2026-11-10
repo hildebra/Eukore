@@ -85,11 +85,19 @@ def barrnap_gff(barrnap, fasta, threads=1, kingdom="euk"):
     return run.stdout
 
 
-# an organelle molecule's FASTA title (organelle.py's too)
+# an organelle molecule's FASTA title (organelle.py's too, and metadata.py's: both read its word as the organelle,
+# mitochondrion or else a plastid, so that a word of another organelle is not added here: NOT_NUCLEAR's are)
 ORGANELLE_TITLE = re.compile(r"\b(mitochondrion|chloroplast|plastid|apicoplast)\b", re.IGNORECASE)
 # not the nucleus either: a cryptophyte's or chlorarachniophyte's nucleomorph (Guillardia theta, Bigelowiella natans),
-# the endosymbiont's red or green algal nucleus with rDNA operons of its own (until 2026-11-06 labelled the host's)
-NOT_NUCLEAR = re.compile(r"\b(mitochondrion|chloroplast|plastid|apicoplast|nucleomorph)\b", re.IGNORECASE)
+# the endosymbiont's red or green algal nucleus with rDNA operons of its own (until 2026-11-06 labelled the host's);
+# since 2026-11-10 the organelles' other titles too (until then read as the nucleus', their SSU an 18S): a
+# kinetoplastid's mitochondrial DNA (kinetoplast, maxicircle, minicircle), Paulinella's chromatophore, a glaucophyte's
+# cyanelle, and DDBJ's "mitochondrial DNA, complete genome". "mitochondrial" alone is not taken: a title may name a
+# nuclear gene's product by it (a clone "... gene for mitochondrial ribosomal protein", "mitochondrial DNA polymerase
+# gamma"), so only "mitochondrial DNA" or "mitochondrial genome" where the title's part ends
+NOT_NUCLEAR = re.compile(r"\b(mitochondrion|chloroplast|plastid|apicoplast|nucleomorph|kinetoplast|maxicircle|"
+                         r"minicircle|chromatophore|cyanelle)\b|\bmitochondrial\s+(?:DNA|genome)\s*(?:[,;]|$)",
+                         re.IGNORECASE)
 
 
 _CODE = np.full(256, 4, dtype=np.uint8)  # a base's 2 bits (either case); 4: not ACGT, no seed across it
@@ -483,16 +491,22 @@ def on_record(unit, length):
 # --- labels by NCBI taxid ----------------------------------------------------------------------------------------
 
 def name_index(ncbi):
-    """{lower-case name: taxid} of NCBI's scientific names and synonyms (a name two taxa share: none)."""
-    index, clash = {}, set()
+    """{lower-case name: taxid} of NCBI's scientific names and synonyms. A name several taxa share is the one's among
+    them that holds all the others (since 2026-11-10: NCBI names a genus and its nominate subgenus alike, Aedes, Culex,
+    Anopheles and ~160 more, a phylum and its class; until then every shared name was dropped, and EUKARYOME's records
+    of such a genus had no label). Unrelated taxa's (homonyms: Morus the plant and the bird): none, as before."""
+    index, shared = {}, {}
     for taxid, name in ncbi.name.items():
         for n in [name] + ncbi.synonyms.get(taxid, []):
             key = n.lower()
-            if key in index and index[key] != taxid:
-                clash.add(key)
-            index[key] = taxid
-    for key in clash:
-        index.pop(key, None)
+            if index.setdefault(key, taxid) != taxid:
+                shared.setdefault(key, {index[key]}).add(taxid)
+    for key, taxids in shared.items():
+        holder = set.intersection(*(set(ncbi.ancestors(t)) for t in taxids)) & taxids  # one at most
+        if holder:
+            index[key] = holder.pop()
+        else:
+            del index[key]
     return index
 
 
@@ -756,22 +770,17 @@ def element_counts(rows):
 
 
 def load(folder):
-    """A genome's saved extraction -> extract_genome's rows ([] where there is none; contig_length and introns None
-    in one saved before format 4)."""
-    path = os.path.join(folder, "rrna.tsv")
-    if not os.path.isfile(path):
-        return []
+    """A genome's saved extraction (folder: its done folder, or the packed genome's, store.py) -> extract_genome's
+    rows ([] where there is none; contig_length and introns None in one saved before format 4)."""
+    from . import store  # noqa: PLC0415
     rows = []
-    with open(path) as fh:
-        head = fh.readline().rstrip("\n").split("\t")
-        for line in fh:
-            f = dict(zip(head, line.rstrip("\n").split("\t")))
-            length = f.get("contig_length", "-")
-            rows.append(dict(kind=f["kind"], contig=f["contig"], start=int(f["start"]), end=int(f["end"]),
-                             strand=f["strand"], regions=parse_regions(f["regions"]),
-                             lsu_complete=f["lsu_complete"] == "t", sequence=f["sequence"],
-                             contig_length=int(length) if length.isdigit() else None,
-                             introns=parse_regions(f.get("introns", "-")) if "introns" in f else None))
+    for f in store.table(folder, "rrna.tsv"):
+        length = f.get("contig_length", "-")
+        rows.append(dict(kind=f["kind"], contig=f["contig"], start=int(f["start"]), end=int(f["end"]),
+                         strand=f["strand"], regions=parse_regions(f["regions"]),
+                         lsu_complete=f["lsu_complete"] == "t", sequence=f["sequence"],
+                         contig_length=int(length) if length.isdigit() else None,
+                         introns=parse_regions(f.get("introns", "-")) if "introns" in f else None))
     return rows
 
 
