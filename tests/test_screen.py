@@ -9,6 +9,7 @@ rrna.py's name index and its titles of molecules that are not the nucleus'.
 
 import os
 import random
+import re
 import sys
 import tempfile
 import unittest
@@ -166,11 +167,30 @@ class RrnaNamesTest(unittest.TestCase):
                          (9900001, "eukaryome_genus"))
         self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Aedes;s__aegypti", index, ncbi),
                          (9900004, "eukaryome_name"))
-        # unrelated taxa of one name: none, as before
+        # unrelated taxa of one name: not in the index, as before, but its homonyms (since 2026-11-10)
         for name in ("morus", "drosophila", "kluyveromyces lactis"):
             self.assertNotIn(name, index)
-        self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Drosophila;s__unclassified", index, ncbi), (None, None))
+        self.assertEqual(index.homonyms["drosophila"], [9900007, 9900008, 9900009])  # the fly's subgenus too
+        # C12's rest (since 2026-11-10): the homonym whose lineage holds a name of the label's own; until then none
+        self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Drosophila;s__unclassified", index, ncbi),
+                         (9900007, "eukaryome_genus"))
+        self.assertEqual(rrna.eukaryome_taxid("k__Fungi;g__Drosophila;s__unclassified", index, ncbi),
+                         (9900009, "eukaryome_genus"))
+        # EUKARYOME's own homonym mark, g__Name(Kingdom): its bracket a name of the lineage; a label naming no rank
+        # NCBI holds (EUKARYOME's mitochondrion set, all unclassified) gets none
+        self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Drosophila(Metazoa);s__unclassified", index, ncbi),
+                         (9900007, "eukaryome_genus"))
+        self.assertEqual(rrna.eukaryome_taxid("k___mitochondrion;p__unclassified;f__unclassified;"
+                                              "g__Drosophila(Metazoa);s__unclassified", index, ncbi), (None, None))
+        # a bracketed genus NCBI holds once, in another lineage (Amphisiella the thraustochytrid, NCBI's the ciliate):
+        # none; the same genus unbracketed, NCBI's one taxon of the name, as before
+        self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Saccharomyces(Metazoa);s__unclassified", index, ncbi),
+                         (None, None))
+        self.assertEqual(rrna.eukaryome_taxid("k__Fungi;g__Saccharomyces(Fungi);s__unclassified", index, ncbi),
+                         (4930, "eukaryome_genus"))
         self.assertEqual(rrna.eukaryome_taxid("k__Viridiplantae;g__Morus;s__alba", index, ncbi), (None, None))
+        self.assertEqual(rrna.eukaryome_taxid("k__Metazoa;g__Morus;s__unclassified", index, ncbi),
+                         (9900006, "eukaryome_genus"))
         # a name of one taxon as it was
         self.assertEqual((index["saccharomyces"], index["candida sphaerica"], index["mysteriella"]),
                          (4930, 28985, 9900010))
@@ -198,6 +218,14 @@ class RrnaNamesTest(unittest.TestCase):
         # organelle.py and metadata.py read ORGANELLE_TITLE's word as the organelle: no word of another added to it
         self.assertEqual({rrna.ORGANELLE_TITLE.search(t).group(1) for t in organelle[-2:-1]}, {"mitochondrion"})
         self.assertEqual([t for t in organelle[:5] if rrna.ORGANELLE_TITLE.search(t)], [])
+        # since 2026-11-10 one reading of the word (organelle_of, organelle.py's and metadata.py's): a pattern widened
+        # by the other organelles' words reads a kinetoplast as a mitochondrion, not (as before) as a plastid
+        self.assertEqual([rrna.organelle_of(t) for t in organelle + nuclear[:1]],
+                         [None] * 8 + ["mitochondrion", None, None])
+        self.assertEqual(rrna.organelle_of("X Toxoplasma gondii apicoplast, complete genome"), "plastid")
+        wide = re.compile(rrna.NOT_NUCLEAR.pattern.split("|\\bmito")[0], re.IGNORECASE)
+        self.assertEqual([rrna.organelle_of(t, wide) for t in organelle],
+                         ["mitochondrion"] * 3 + ["plastid"] * 2 + [None] * 3 + ["mitochondrion", None])
 
 
 if __name__ == "__main__":

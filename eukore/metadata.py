@@ -35,7 +35,7 @@ import zlib
 
 import numpy as np
 
-from . import util
+from . import rrna, util
 
 STATS, ORGANELLE, SKETCH = "stats.json", "organelle.fna.gz", "sketch.sig.gz"
 FOLDER = "metadata"
@@ -244,9 +244,10 @@ class Scan:
         self.length = self.contig = self.wpos = self.wgc = self.wat = 0
         self.pending, self.prev, self.head, self.tail = b"", b"", b"", b""
         self.digest = hashlib.md5()
-        m = self.organelle_title.search(title.decode("utf-8", "replace")) if self.organelle_title else None
-        self.organelle = ("mitochondrion" if m.group(1).lower() == "mitochondrion" else "plastid") if m else None
-        self.parts = [] if m else None
+        # its organelle by rrna.organelle_of (since 2026-11-10; one reading of the title's word with organelle.py's)
+        self.organelle = rrna.organelle_of(title.decode("utf-8", "replace"), self.organelle_title) \
+            if self.organelle_title else None
+        self.parts = [] if self.organelle else None
 
     def feed(self, data):
         if self.name is None:  # bases before any title

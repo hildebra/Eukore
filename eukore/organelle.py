@@ -64,12 +64,13 @@ GENE_COLUMNS = ("record", "gene", "organelle", "taxid", "species_taxid", "source
                 "cross")  # since 2026-11-09 (format 6): the other clade's species it is shared with (qc.verdict)
 CACHE_COLUMNS = ("seqid", "organelle", "taxid", "record_length", "gene", "start", "end", "strand", "exons", "copies",
                  "partial", "sequence", "spliced", "parts", "trans_spliced", "regions",
-                 "transl_table")  # since 2026-11-10: a CDS's own /transl_table, `-` where it names none (table_of)
+                 "transl_table",  # since 2026-11-10: a CDS's own /transl_table, `-` where it names none (table_of)
+                 "transl_except")  # since 2026-11-10 (cache 3): its /transl_except codons (transl_excepts), or `-`
 # What RefSeq's parsed genes (refseq_genes) and an assembly's search file (assembly_pass) were made by, part of their
 # keys since 2026-11-10: to be raised where record_genes', the searches' or the models' logic changes what they hold.
 # Until then (1, never written) a cache outlived such a change. 2: /pseudo, the longest feature, /codon_start,
-# /transl_table, the spacer across the origin.
-CACHE_VERSION = 2
+# /transl_table, the spacer across the origin. 3: /transl_except.
+CACHE_VERSION = 3
 ASSEMBLY_COLUMNS = ("gene", "organelle", "seqid", "start", "end", "strand", "exons", "copies", "partial", "sequence",
                     "parts", "model")  # parts, model: since 2026-11-07
 
@@ -348,6 +349,49 @@ def in_frame(parts, quals):
     return [(a + shift, b, strand) if strand == "+" else (a, b - shift, strand)] + list(parts[1:])
 
 
+TRANSL_EXCEPT = re.compile(r"pos:(complement\()?(\d+)(?:\.\.(\d+))?\)?,\s*aa:(\w+)")
+EXCEPT_AA = {"Ala": "A", "Arg": "R", "Asn": "N", "Asp": "D", "Cys": "C", "Gln": "Q", "Glu": "E", "Gly": "G",
+             "His": "H", "Ile": "I", "Leu": "L", "Lys": "K", "Met": "M", "Phe": "F", "Pro": "P", "Ser": "S",
+             "Thr": "T", "Trp": "W", "Tyr": "Y", "Val": "V", "Sec": "U", "Pyl": "O", "Other": "X", "Xaa": "X"}
+
+
+def transl_excepts(parts, quals):
+    """A CDS's /transl_except codons read otherwise than by its table (`(pos:a..b,aa:Trp)`, `(pos:complement(a..b),
+    aa:Sec)`; since 2026-11-10, until then not read and such a codon a stop inside the protein) -> `codon:aa,...` (the
+    codon's 0-based number in its coding sequence (parts: in_frame's), its amino acid's letter), `-` for none. A TERM
+    (an animal mitochondrion's stop completed by the mRNA's poly-A: a codon cut short at the gene's end) is no amino
+    acid, and a codon not on the coding sequence's frame is left out."""
+    out = []
+    for value in (v for n, v in quals if n == "transl_except"):
+        for minus, a, b, aa in TRANSL_EXCEPT.findall(value):
+            if aa not in EXCEPT_AA:
+                continue
+            first = int(b or a) if minus else int(a)  # the codon's first base, in the order transcribed
+            before = 0
+            for x, y, s in parts:
+                if x <= first <= y and (s == "-") == bool(minus):
+                    offset = before + (y - first if s == "-" else first - x)
+                    if offset % 3 == 0:
+                        out.append(f"{offset // 3}:{EXCEPT_AA[aa]}")
+                    break
+                before += y - x + 1
+    return ",".join(out) or "-"
+
+
+def with_excepts(protein, stops, excepts):
+    """A protein (gencode.protein_of's, its internal stops) with its /transl_except codons' amino acids (transl_excepts'
+    text) in place of the stops their codons read as -> (protein, internal stops)."""
+    if not excepts or excepts == "-":
+        return protein, stops
+    p = list(protein)
+    for item in excepts.split(","):
+        i, _colon, aa = item.partition(":")
+        if i.isdigit() and int(i) < len(p) and p[int(i)] == "*":
+            p[int(i)] = aa
+    p = "".join(p)
+    return p, p.count("*")
+
+
 def record_genes(rec, organelle, animal=False):
     """A RefSeq organelle record's genes -> {gene: dict(start, end, strand, exons, copies, partial, sequence, spliced
     (its exons joined), parts, trans_spliced, regions, transl_table)}. A trans-spliced gene's sequence is its exons
@@ -395,7 +439,8 @@ def record_genes(rec, organelle, animal=False):
         # the feature's own genetic code (a CDS's /transl_table; table_of reads it before NCBI's of the taxid)
         table = next((v for n, v in quals if n == "transl_table" and v.isdigit()), "-") if key == "CDS" else "-"
         row = dict(start=start, end=end, strand=strand, exons=len(parts), partial=partial, sequence=whole,
-                   spliced=joined, parts=parts_text(parts), trans_spliced=trans, regions="-", transl_table=table)
+                   spliced=joined, parts=parts_text(parts), trans_spliced=trans, regions="-", transl_table=table,
+                   transl_except=transl_excepts(parts, quals) if key == "CDS" else "-")
         # since 2026-11-10 the gene's best feature, not its first: whole before partial, then the longest; the first
         # of equals (an inverted repeat's two copies), as until then
         if gene not in found or (not partial, len(joined)) > (not found[gene]["partial"], len(found[gene]["spliced"])):
@@ -445,7 +490,7 @@ def spacer_of(seq, psba, his, circular=False):
         pieces = [(start, end, strand)] if start <= end else \
             [(start, length, strand), (1, end, strand)][::1 if strand == "+" else -1]  # in the order transcribed
         return dict(start=start, end=end, strand=strand, exons=1, partial=False, sequence=whole, spliced=whole,
-                    parts=parts_text(pieces), trans_spliced=False, copies=1, transl_table="-",
+                    parts=parts_text(pieces), trans_spliced=False, copies=1, transl_table="-", transl_except="-",
                     regions=",".join(f"{n}:{x}-{y}" for n, x, y in regions))
     return None
 
@@ -506,7 +551,7 @@ def refseq_genes(src_dir, work_folder, ncbi, log=print):
                         row = (rec["seqid"], organelle, rec["taxid"] or "-", rec["length"], gene, g["start"], g["end"],
                                g["strand"], g["exons"], g["copies"], "t" if g["partial"] else "f", g["sequence"],
                                g["spliced"], g["parts"], "t" if g["trans_spliced"] else "f", g["regions"],
-                               g["transl_table"])
+                               g["transl_table"], g["transl_except"])
                         fh.write("\t".join(map(str, row)) + "\n")
         os.replace(util.part_of(cache), cache)
     rows = []
@@ -563,11 +608,10 @@ def organelle_molecules(path):
     with util.open_text(path) as fh:
         for line in fh:
             if line.startswith(">"):
-                m = TITLE.search(line)
+                kind = rrna.organelle_of(line, TITLE)  # since 2026-11-10 one reading of the title's word
                 cur = None
-                if m:
-                    cur = (line[1:].split() or [""])[0], \
-                        "mitochondrion" if m.group(1).lower() == "mitochondrion" else "plastid", []
+                if kind:
+                    cur = (line[1:].split() or [""])[0], kind, []
                     out.append(cur)
             elif cur is not None:
                 cur[2].append(line.strip())
@@ -585,7 +629,8 @@ class Nearest:
                 if r["partial"] == "f" and r.get("trans_spliced", "f") != "t":
                     self.seq[(r["seqid"], r["gene"])] = r["spliced"]
                     if r["gene"] in CODING:  # its protein, by its own code (table_of; miniprot_genes' query)
-                        p, stops = gencode.protein_of(r["spliced"], table_of(dict(r, organelle=organelle), ncbi))
+                        p, stops = with_excepts(*gencode.protein_of(r["spliced"], table_of(
+                            dict(r, organelle=organelle), ncbi)), r.get("transl_except"))  # since 2026-11-10
                         if not stops:
                             self.protein[(r["seqid"], r["gene"])] = p
                     for a in ncbi.ancestors(sp):
@@ -952,7 +997,8 @@ def collect(ncbi, job_map, species_set, chosen, work_folder):
                                             parts=r.get("parts") or "-", trans_spliced=r.get("trans_spliced") or "f",
                                             regions=r.get("regions") or "-", cds=coding_of(r, seq),
                                             # not a column of genes.tsv: check reads it (table_of)
-                                            transl_table=r.get("transl_table") or "-")))
+                                            transl_table=r.get("transl_table") or "-",
+                                            transl_except=r.get("transl_except") or "-")))
     return out
 
 
@@ -987,7 +1033,8 @@ def check(records, ncbi, vsearch=None, threads=1):
     for name, seq, row in records:
         cds = row.get("cds")
         if row["gene"] in CODING and cds:
-            p, stops = gencode.protein_of(cds, table_of(row, ncbi))
+            # a /transl_except codon its amino acid, not a stop inside the protein (since 2026-11-10)
+            p, stops = with_excepts(*gencode.protein_of(cds, table_of(row, ncbi)), row.get("transl_except"))
             row.update(protein=p, internal_stops=stops)
             lengths[(name, row["organelle"] + ":" + row["gene"])] = len(p)
         key = (name, row["organelle"] + ":" + row["gene"])
