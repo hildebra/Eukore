@@ -122,6 +122,54 @@ class DuplicationTest(unittest.TestCase):
         self.assertEqual(package.copy_confidence(dict(r, status="Fragmented"), duplicated_genome=True),
                          ("medium", "fragmented"))
 
+    def test_collect_tells_the_class_by_the_other_copies_contigs(self):
+        # an unpurged diploid as its done genome holds it: 12 Single BUSCOs and 18 Duplicated ones 97% alike, the
+        # copy chosen on a long contig, the other (alternates.tsv) on a haplotig. collect gives duplication_of the
+        # other copies' contigs (without them: wgd_or_polyploid) and, the genome duplicated, its Duplicated copies
+        # no `duplicated` flag
+        from eukore import genomes  # noqa: PLC0415
+        rng = random.Random(3)
+        loci = [(f"{i}at2759", "Single" if i <= 12 else "Duplicated") for i in range(1, 31)]
+
+        def row(locus, status, contig_length, seq):
+            r = dict.fromkeys(genomes.LOCI_COLUMNS, "1")
+            r.update(locus=locus, status=status, contig="c1", contig_length=contig_length, start=1, end=len(seq),
+                     strand="+", length=len(seq), cds_length=len(seq), identity="0.9", coverage="1.000",
+                     hmm_score="100.0", cutoff="50.0", hmm_coverage="1.000", copies=2 if status == "Duplicated" else 1,
+                     query="q", protein_length=len(seq) // 3, window_class="eukarya", rescued="f", model="miniprot",
+                     dup_identity="97.0" if status == "Duplicated" else "-", cds_check="-")
+            return "\t".join(str(r[c]) for c in genomes.LOCI_COLUMNS)
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            folder = genomes.done_dir(tmp, "G1")
+            os.makedirs(folder)
+            seqs = {lo: "ATG" + "".join(rng.choice("ACGT") for _ in range(297)) for lo, _s in loci}
+            table, fasta, features = (os.path.join(folder, n) for n in genomes.ALTERNATES)
+            with open(os.path.join(folder, "loci.tsv"), "w") as fh, open(table, "w") as alt:
+                fh.write("\t".join(genomes.LOCI_COLUMNS) + "\n")
+                alt.write("\t".join(("alt",) + genomes.LOCI_COLUMNS) + "\n")
+                for lo, status in loci:
+                    fh.write(row(lo, status, LONG, seqs[lo]) + "\n")
+                    if status == "Duplicated":
+                        alt.write("1\t" + row(lo, status, SHORT, seqs[lo]) + "\n")
+            with open(os.path.join(folder, "copies.fna"), "w") as fh, open(fasta, "w") as alt:
+                fh.writelines(f">{lo}\n{s}\n" for lo, s in seqs.items())
+                alt.writelines(f">{lo}|1\n{seqs[lo]}\n" for lo, status in loci if status == "Duplicated")
+            with open(os.path.join(folder, "features.tsv"), "w") as fh, open(features, "w") as alt:
+                fh.write("locus\tkind\tstart\tend\n" + "".join(f"{lo}\texon\t0\t300\n" for lo, _s in loci))
+                alt.write("locus\talt\tkind\tstart\tend\n"
+                          + "".join(f"{lo}\t1\texon\t0\t300\n" for lo, status in loci if status == "Duplicated"))
+            with open(os.path.join(folder, "done.json"), "w") as fh:
+                json.dump(dict(accession="G1", genome_record=genomes.GENOME_RECORD), fh)
+            jobs = {"G1": dict(accession="G1", species_taxid=4932, why=["ncbi"])}
+            collected = package.collect(ncbi, jobs, [], tmp)
+            self.assertEqual(collected["genomes"]["G1"]["duplication"], "haplotigs")
+            rows = {r["locus"]: r for r in collected["copy_rows"]}
+            self.assertEqual((rows["20at2759"]["status"], rows["20at2759"]["copies"]), ("Duplicated", "2"))
+            self.assertNotIn("duplicated", rows["20at2759"]["flags"])
+            # the chosen copies' contigs alone say nothing of haplotigs (until 2026-11-10 all collect gave)
+            self.assertEqual(package.duplication_of(collected["copy_rows"])["duplication"], "wgd_or_polyploid")
+
 
 class CountsTest(unittest.TestCase):
     def setUp(self):

@@ -276,7 +276,9 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 A copy is `low` where a check calls it another organism's or not the locus: `own_species` (f), `fcs` (FCS-GX's EXCLUDE,
 TRIM or FIX), `window_prokaryote` (tiara's bacteria or archaea), `paralog` (format 6: a marker copy whose best profile
 is a decoy's, EFL called as EF-1a by a genome run before that decoy). It is `medium` where something may be wrong:
-`fragmented`, `duplicated`, `rescued` (the rescue pass': its span may fall short of the gene's ends), `length_short` or
+`fragmented`, `duplicated` (since 2026-11-10 not in a genome whose `duplication` is `haplotypes`, `haplotigs` or
+`wgd_or_polyploid`: two copies are that genome's truth, its `status` and `copies` still say so), `rescued` (the rescue
+pass': its span may fall short of the gene's ends), `length_short` or
 `length_long`, `gap`, `contig_edge` (under 1,000 bases), `window_organelle`, `fcs_review`, `transcript`, and since
 format 6 `internal_stops`, `cds_mismatch` and `cross_shared` (its sequence held by another clade's genome too, and
 neither clade's other species tell whose it is). It is `unverified` where none of these holds but `own_species` is `-`

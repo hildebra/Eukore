@@ -60,6 +60,8 @@ SHORT_CONTIG = 0.25  # a contig under this share of the Single copies' median co
 SHORT_EXCESS = 0.25  # the Duplicated loci with a copy on a short contig, over the share chance gives: haplotigs
 SHORT_NOISE = 3.0    # and that excess this many times its sampling error at least
 SHORT_SINGLE_MIN = 10  # Single copies with a contig length, to say what a short contig is
+# duplication_of's classes of a genome that holds its BUSCOs twice: a Duplicated copy is no flag there (collect)
+DUPLICATED_GENOME = ("haplotypes", "haplotigs", "wgd_or_polyploid")
 FEATURE_COLUMNS = ("accession", "locus", "kind", "start", "end")
 SPECIES_COLUMNS = ("taxid", "name", "representative", "source", "loci", "rrna_records", "organelle_genes",
                    "supergroup", "group", "ncbi_lineage", "ncbi_lineage_filled", "pr2", "pr2_match", "eukaryome",
@@ -341,8 +343,8 @@ def genome_part(args):
     their coding sequences, introns and proteins made in the one process): args (work, accession, its genetic code)
     -> None where the genome is not done, else dict(loci (its copies' count), rrna ((counts, element_counts) or None),
     molecules, searched, record, copies [(copy row, coding sequence, (protein, internal stops), intron rows)] in its
-    loci.tsv's order, alternates [(locus, alt, coding sequence, protein length)]). Its copies whole and its features
-    are not returned: write reads them again (the memory bound of 2026-11-08)."""
+    loci.tsv's order, alternates [(locus, alt, coding sequence, protein length, contig length)]). Its copies whole and
+    its features are not returned: write reads them again (the memory bound of 2026-11-08)."""
     from . import introns as introns_mod, rrna as rrna_mod  # noqa: PLC0415
     from .genomes import done_dir, done_summary, is_done, record_of  # noqa: PLC0415
     work, acc, table = args
@@ -372,8 +374,8 @@ def genome_part(args):
             copies.append((row, cds, gencode.protein_of(cds, table), introns))
     # a Duplicated locus' other complete copies (since 2026-11-09, genome record 2): their coding sequences checked
     # beside the copies, for the choice by lineage; their copies read again where one is taken
-    alternates = [(a["locus"], a["alt"], qc.spliced(a["copy"], a["features"]), int(a["protein_length"]))
-                  for a in done_alternates(work, acc)]
+    alternates = [(a["locus"], a["alt"], qc.spliced(a["copy"], a["features"]), int(a["protein_length"]),
+                   a.get("contig_length")) for a in done_alternates(work, acc)]
     return dict(loci=len(got), rrna=rrna, molecules=organelle_molecules_of(folder),
                 searched={r["locus"] for r in searched}, record=record_of(done_summary(work, acc)) or "-",
                 copies=copies, alternates=alternates)
@@ -396,6 +398,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     by_accession = {r["accession"]: r for r in assemblies}
     genomes, copy_rows, cds, intron_rows, done, count = {}, [], {}, [], [], 0
     alt_cds, alt_length = {}, {}  # a Duplicated locus' other copies' (since 2026-11-09)
+    alt_contigs = collections.defaultdict(list)  # the BUSCOs' other copies' contigs (duplication_of's haplotigs)
     made = {}  # {(accession, locus): (protein, internal stops)} of the copies as read (genome_part)
     jobs = sorted(job_map.items())
     parts = util.ordered(genome_part, [(work, acc, job.get("gencode", 1)) for acc, job in jobs],
@@ -435,8 +438,10 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             copy_rows.append(row)
             cds[(name, row["locus"])], made[(name, row["locus"])] = seq, protein
             intron_rows.extend(dict(i, accession=name, locus=row["locus"]) for i in introns)
-        for locus, k, seq, length in part["alternates"]:
+        for locus, k, seq, length, contig in part["alternates"]:
             alt_cds[(name, locus, k)], alt_length[(name, locus, k)] = seq, length
+            if locus not in kinds:
+                alt_contigs[name].append(dict(locus=locus, contig_length=contig))
         for other in job.get("others", ()):
             o = by_accession.get(other)
             if o and other not in genomes:
@@ -484,6 +489,16 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         swapped = {(a, lo) for a, s in swaps.items() for lo in s}
         intron_rows = [i for i in intron_rows if (i["accession"], i["locus"]) not in swapped] + new_introns
     paralogs = paralogs_of({k: v for k, v in cds.items() if k[1] in kinds}, genomes) if paralogs_of and kinds else set()
+    # each genome's duplication before its copies' tiers (since 2026-11-10; after them until then): a Duplicated copy
+    # of a genome that holds its BUSCOs twice is no flag (copy_confidence). With its other copies' contigs, which
+    # tell an unpurged diploid's haplotigs (duplication_of; until then the chosen copies' alone)
+    by_genome = collections.defaultdict(list)
+    for r in copy_rows:
+        if r["locus"] not in kinds:  # the BUSCOs' (single-copy by their choice): the markers' are not
+            by_genome[r["accession"]].append(r)
+    for acc, g in genomes.items():
+        if g["representative"] == "t" and g.get("source") != "tsa":  # a transcriptome's isoforms are no duplication
+            g.update(duplication_of(by_genome.get(acc, []), alt_contigs.get(acc)))
     proteins = {}
     for r in copy_rows:
         key = (r["accession"], r["locus"])
@@ -500,15 +515,13 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         swapped = r["locus"] in swaps.get(r["accession"], ())
         proteins[key], r["internal_stops"] = made[key] if not swapped else gencode.protein_of(
             cds[key], genomes[r["accession"]].get("gencode", 1))
-        r["confidence"], r["flags"] = copy_confidence(r, kinds.get(r["locus"]) == "family")
-    by_genome, all_rows = collections.defaultdict(list), collections.defaultdict(list)
+        r["confidence"], r["flags"] = copy_confidence(
+            r, kinds.get(r["locus"]) == "family",
+            genomes[r["accession"]].get("duplication") in DUPLICATED_GENOME)
+    all_rows = collections.defaultdict(list)
     for r in copy_rows:
         all_rows[r["accession"]].append(r)
-        if r["locus"] not in kinds:  # the BUSCOs' (single-copy by their choice): the markers' are not
-            by_genome[r["accession"]].append(r)
     for acc, g in genomes.items():
-        if g["representative"] == "t" and g.get("source") != "tsa":  # a transcriptome's isoforms are no duplication
-            g.update(duplication_of(by_genome.get(acc, [])))
         if g["representative"] == "t":  # its copies another clade's (since 2026-11-09: cross-contamination)
             g["foreign_copies"], g["foreign_source"] = qc.cross_summary(all_rows.get(acc, []), ncbi)
     taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"} \
