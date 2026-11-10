@@ -70,7 +70,9 @@ def to_fasta(path, dest, chunk=LINE * 16384):
     """A .2bit file as dest (gzipped FASTA, LINE bases a line), written whole or not at all -> its bases. chunk: the
     bases lined and written at a time (a multiple of LINE), the sequence itself never copied."""
     total = 0
-    part = dest + ".part"
+    # this process' own partial name (since 2026-11-10; until then dest.part, which two runs converting one genome
+    # both wrote); it ends in .part still, so the fetch stage removes a killed conversion's
+    part = util.fetch_part(dest)
     with util.bgzf_open(part, "wb", util.WORK_LEVEL) as out:
         for name, seq in records(path):
             out.write(b">" + name.encode() + b"\n")

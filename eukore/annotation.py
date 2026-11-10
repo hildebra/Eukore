@@ -256,19 +256,21 @@ def fetch_indexes(src_dir, download, log=print, refresh=False):
     folder = os.path.dirname(path)
     os.makedirs(folder, exist_ok=True)
     rows = []
-    species = os.path.join(folder, "ensembl_species.json")
+    # the listings under this process' own names (util.part_of; since 2026-11-10: fixed names, which two runs fetching
+    # the indexes at once wrote and deleted under each other)
+    species = util.part_of(os.path.join(folder, "ensembl_species.json"))
     download(f"{ENSEMBL_FTP}/species.json", species)
     rows += [(acc, "ensembl", f"{provider}/{date}", url)
              for acc, (provider, date, url) in sorted(ensembl_index(species).items())]
     os.remove(species)
-    organisms = os.path.join(folder, "veupathdb_organisms.json")
+    organisms = util.part_of(os.path.join(folder, "veupathdb_organisms.json"))
     download(VEUPATHDB_ORGANISMS, organisms)
     rows += [(acc, "veupathdb", build.replace("\t", " "), url)
              for acc, (build, url) in sorted(veupathdb_index(organisms).items())]
     os.remove(organisms)
-    table = os.path.join(folder, "toga2_assemblies.tsv")
+    table = util.part_of(os.path.join(folder, "toga2_assemblies.tsv"))
     download(f"{TOGA2_URL}/assemblies_and_species.tsv", table)
-    listing = os.path.join(folder, "toga2.html")
+    listing = util.part_of(os.path.join(folder, "toga2.html"))
     listings, classes = {}, {}
     for kind, into in (("TOGA2", listings), ("Genomes", classes)):
         download(f"{TOGA2_URL}/{kind}/", listing)

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Tests of the 2026-11-10 audit's fixes in eukore/annotation.py and eukore/twobit.py: the assembly report's
 submitter's and UCSC names as aliases (C20), a GTF's stop_codon lines made coding (C21), a .2bit record of length 0
-(C23). The modules' older tests are in test_paper.py and test_loci.py.
+(C23), temporary files under this process' own names (C9). The modules' older tests are in test_paper.py and
+test_loci.py.
 
     python3 -m unittest discover -s tests -t tests
 """
@@ -12,10 +13,11 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import annotation, twobit  # noqa: E402
+from eukore import annotation, twobit, util  # noqa: E402
 
 REPORT_HEAD = ("# Sequence-Name\tSequence-Role\tAssigned-Molecule\tAssigned-Molecule-Location/Type\tGenBank-Accn\t"
                "Relationship\tRefSeq-Accn\tAssembly-Unit\tSequence-Length\tUCSC-style-name\n")
@@ -143,6 +145,33 @@ class TwoBitTest(unittest.TestCase):
             self.assertEqual(twobit.to_fasta(path, dest), 13)
             with gzip.open(dest, "rt") as fh:
                 self.assertEqual(fh.read(), ">empty0\n>a\nACGTACGTAC\n>empty\n>b\nGGA\n")
+
+
+class PartNameTest(unittest.TestCase):
+    def test_temporary_files_are_this_process_own(self):
+        # C9's rest (since 2026-11-10): a .2bit's conversion and the indexes' listings under this process' own names,
+        # where two runs at once wrote and deleted one fixed name (dest.part, ensembl_species.json, ...)
+        with tempfile.TemporaryDirectory() as tmp:
+            path, dest = os.path.join(tmp, "g.2bit"), os.path.join(tmp, "g.fna.gz")
+            twobit_file(path, [("a", "ACGT")])
+            seen, real = [], util.bgzf_open
+            with mock.patch.object(util, "bgzf_open", lambda p, *a, **k: seen.append(p) or real(p, *a, **k)):
+                twobit.to_fasta(path, dest)
+            self.assertEqual(seen, [util.fetch_part(dest)])
+            self.assertTrue(seen[0].endswith(".part"))  # the fetch stage's leftover glob still finds a killed one's
+            self.assertEqual(sorted(os.listdir(tmp)), ["g.2bit", "g.fna.gz"])
+            got = []
+
+            def download(url, into):
+                got.append(os.path.basename(into))
+                with open(into, "w") as fh:
+                    fh.write("{}" if into.endswith(".json.partial") else
+                             "accession\tncbi_accession\n" if "assemblies" in into else "<html></html>")
+            annotation.fetch_indexes(tmp, download)
+            folder = os.path.dirname(annotation.index_file(tmp))
+            self.assertEqual(set(got), {os.path.basename(util.part_of(os.path.join(folder, n))) for n in (
+                "ensembl_species.json", "veupathdb_organisms.json", "toga2_assemblies.tsv", "toga2.html")})
+            self.assertEqual([n for n in os.listdir(folder) if n.endswith(".partial")], [])
 
 
 if __name__ == "__main__":
