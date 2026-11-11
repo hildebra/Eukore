@@ -727,10 +727,12 @@ class ChainTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir, log = os.path.join(tmp, "bin"), os.path.join(tmp, "calls")
             os.makedirs(bin_dir)
-            # sbatch --parsable says "<job id>;<cluster>"
-            sbatch = 'echo "sbatch $*" >> "$CALLS"; n=$(grep -c ^sbatch "$CALLS"); echo "$((100 + n));cluster"'
+            # sbatch --parsable says "<job id>;<cluster>"; it refuses the job named REFUSE as a QOS does
+            sbatch = ('if [[ -n ${REFUSE:-} && " $* " == *" -J $REFUSE "* ]]; then echo "QOS policy" >&2; exit 1; fi\n'
+                      'echo "sbatch $*" >> "$CALLS"; n=$(grep -c ^sbatch "$CALLS"); echo "$((100 + n));cluster"')
             python3 = 'echo "python3 $*" >> "$CALLS"'
-            for name, body in (("sbatch", sbatch), ("micromamba", "true"), ("python3", python3)):
+            scancel = 'echo "scancel $*" >> "$CALLS"'
+            for name, body in (("sbatch", sbatch), ("micromamba", "true"), ("python3", python3), ("scancel", scancel)):
                 with open(os.path.join(bin_dir, name), "w", newline="\n") as fh:
                     fh.write("#!/bin/bash\n" + body + "\n")
                 os.chmod(os.path.join(bin_dir, name), stat.S_IRWXU)
@@ -766,6 +768,16 @@ class ChainTest(unittest.TestCase):
             got, calls = run("build", "5", AFTER="77")
             self.assertIn("--array=1-5 --dependency=afterok:77 --kill-on-invalid-dep=yes", calls[0])
             self.assertIn("--dependency=afterany:101,afterok:77 --kill-on-invalid-dep=yes", calls[1])
+            # a job sbatch refuses ends the call (2026-11-10: the QOS refused the array, and `build` went on to a
+            # final job with a dependency on no job); a final job refused cancels the array before it
+            got, calls = run("build", REFUSE="Eukore-process")
+            self.assertEqual((got.returncode, calls, got.stdout), (1, [], ""))
+            self.assertIn("sbatch refused Eukore-process", got.stderr)
+            got, calls = run("build", REFUSE="Eukore-final")
+            self.assertEqual((got.returncode, calls[1:], got.stdout), (1, ["scancel 101"], ""))
+            self.assertIn("array job 101 cancelled", got.stderr)
+            got, calls = run("fetch", REFUSE="Eukore-fetch")
+            self.assertEqual((got.returncode, calls, got.stdout), (1, [], ""))
             # inside the jobs: one call of the build each
             job = dict(SLURM_JOB_ID="101", SLURM_CPUS_PER_TASK="64", SLURM_LOCAL_SCRATCH="/ssd", EUKORE_SH=script)
             common = "python3 /p/eukore_build.py --build_dir /w --out /o --version 2026.11 --stage "

@@ -41,13 +41,22 @@ BUILD_OPTS=(); FETCH_OPTS=(); FINAL_OPTS=(); SBATCH_ALL=(); SBATCH_FETCH=(); SBA
 source "$CONF"
 : "${PDIR:?$CONF: PDIR}" "${WORK:?$CONF: WORK}" "${OUT:?$CONF: OUT}" "${VERSION:?$CONF: VERSION}"
 
-submit() {  # submit NAME [sbatch's options] -- STEP: the job's ID
+submit() {  # submit NAME [sbatch's options] -- STEP: the job's ID; fails when sbatch refuses the job
     local name=$1 opts=() jid
     shift
     while [[ $1 != -- ]]; do opts+=("$1"); shift; done
     [[ -z $LOGS ]] || opts+=(-o "$LOGS/eukore.%j.otxt" -e "$LOGS/eukore.%j.etxt")
-    jid=$(EUKORE_SH=$SELF EUKORE_CONF=$CONF sbatch --parsable -J "$name" ${SBATCH_ALL[@]+"${SBATCH_ALL[@]}"} \
-        "${opts[@]}" "$SELF" "$2")
+    # checked here: submit runs inside $(...), where bash drops set -e (until 2026-11-10 a refused job gave an empty
+    # ID, and `build` went on to a final job with a dependency on no job)
+    if ! jid=$(EUKORE_SH=$SELF EUKORE_CONF=$CONF sbatch --parsable -J "$name" ${SBATCH_ALL[@]+"${SBATCH_ALL[@]}"} \
+        "${opts[@]}" "$SELF" "$2") || [[ -z $jid ]]; then
+        printf '%s\n' "sbatch refused $name. If by the QOS: each task of an array counts as one job against its" \
+            "submit limit (fewer tasks: build N). The limits and the jobs already queued:" \
+            "  sacctmgr show assoc user=\$USER format=account,partition,qos,maxsubmit,maxwall" \
+            "  sacctmgr show qos format=name,maxsubmitpu,maxjobspu,maxwall,maxtrespu,flags" \
+            "  squeue -u \$USER" >&2
+        exit 1  # leaves the $(...) only: the caller decides
+    fi
     echo "${jid%%;*}"
 }
 
@@ -105,8 +114,13 @@ build)
     after=${AFTER:+afterok:$AFTER}
     process=$(submit Eukore-process ${SBATCH_PROCESS[@]+"${SBATCH_PROCESS[@]}"} --array=1-"$tasks" \
         ${after:+--dependency=$after --kill-on-invalid-dep=yes} -- _process)
-    final=$(submit Eukore-final ${SBATCH_FINAL[@]+"${SBATCH_FINAL[@]}"} \
-        --dependency="afterany:$process${after:+,$after}" --kill-on-invalid-dep=yes -- _final)
+    # the chain whole or not at all: an array without its final job would never be packaged
+    if ! final=$(submit Eukore-final ${SBATCH_FINAL[@]+"${SBATCH_FINAL[@]}"} \
+        --dependency="afterany:$process${after:+,$after}" --kill-on-invalid-dep=yes -- _final); then
+        scancel "$process"
+        echo "array job $process cancelled: no final job after it" >&2
+        exit 1
+    fi
     echo "process: array job $process, $tasks tasks; final (the genomes left, the passes, the package): job $final"
     echo "to stop the chain: scancel $final $process (the final job first: it starts when the array ends)"
     ;;
