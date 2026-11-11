@@ -1659,6 +1659,12 @@ def _main(argv, held):
         if why:  # a damaged ITSx_db gives silently wrong borders: stop before any work
             sys.exit(f"{why}\n{shutil.which('ITSx')}: reinstall ITSx (bioconda's itsx) or give it its whole "
                      "ITSx_db/HMMs folder")
+        empty = rrna.empty_sets(shutil.which("ITSx"))
+        if empty:  # since 2026-11-11: a microsporidian's -t F,N failed every run on bioconda's empty N.hmm
+            names = {v: k for k, v in rrna.ITSX_SETS.items()}
+            say(f"ITSx has no profiles of its sets {', '.join(sorted(empty))} (taxa "
+                f"{', '.join(str(names[s]) for s in sorted(empty) if s in names)}; an empty or missing <set>.hmm): "
+                "their taxa searched with their other sets, or all")
     elif not shutil.which("barrnap"):
         say("WARNING: no barrnap: no rRNA records (install barrnap with nhmmer)")
     else:

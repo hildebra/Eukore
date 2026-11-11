@@ -395,6 +395,27 @@ class ResumeTest(unittest.TestCase):
             with open(log) as fh:
                 self.assertEqual(sorted(fh.read().split()), ["F", "M"])
 
+    def test_itsx_sets_without_profiles_are_left_out(self):
+        # bioconda's ITSx 1.1.3 has an empty N.hmm (Microsporidia): a microsporidian's -t F,N failed every run (since
+        # 2026-11-11 F alone), one of N alone all sets; an ITSx without its ITSx_db beside it keeps its sets
+        with tempfile.TemporaryDirectory() as tmp:
+            hmms = os.path.join(tmp, "ITSx_db", "HMMs")
+            os.makedirs(hmms)
+            for letter in set(rrna.ITSX_SETS.values()):
+                with open(os.path.join(hmms, f"{letter}.hmm"), "w") as fh:
+                    fh.write("" if letter == "N" else "HMMER3/f\n")
+            log = os.path.join(tmp, "itsx_calls.txt")
+            logging = tool(tmp, "ITSx", f"#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -t ] && echo \"$2\" >> {log}; "
+                                        "shift; done\nexit 0\n")
+            self.assertEqual(rrna.empty_sets(logging), {"N"})
+            self.assertEqual([rrna.usable_sets(s, logging) for s in ("F,N", "N", "M", "all")], ["F", "all", "M", "all"])
+            rrna.run_itsx(["AAAA", "CCCC", "GGGG"], logging, groups={"AAAA": "F,N", "CCCC": "N", "GGGG": "F"})
+            with open(log) as fh:
+                self.assertEqual(sorted(fh.read().split()), ["F", "all"])  # F,N's and F's stretches in one F run
+            os.makedirs(os.path.join(tmp, "elsewhere"))
+            alone = tool(os.path.join(tmp, "elsewhere"), "ITSx", "#!/bin/sh\nexit 0\n")
+            self.assertEqual((rrna.empty_sets(alone), rrna.usable_sets("F,N", alone)), (set(), "F,N"))
+
     def test_labels_and_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
