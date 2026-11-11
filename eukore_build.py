@@ -833,9 +833,15 @@ def genome_rrna_records(opts, job_map, ncbi, collected=None):
 
 
 def annotate_one(work, genomes_folder, may_fetch, veupathdb_key, job):
-    """annotation.annotate_genome in a worker -> (accession, copies compared or None, why it failed or None)."""
+    """annotation.annotate_genome in a worker, under the genome's claim (since 2026-11-11: a SLURM array's tasks run the
+    pass too) -> (accession, copies compared or None, why it failed or None); compared organelle_mod.ELSEWHERE where
+    another build holds the genome or compared it meanwhile."""
     try:
-        return job["accession"], annotation.annotate_genome(work, job, genomes_folder, may_fetch, veupathdb_key), None
+        with genomes.claimed(work, job["accession"]) as held:
+            if not held or not annotation.missing(work, job):
+                return job["accession"], organelle_mod.ELSEWHERE, None
+            return (job["accession"], annotation.annotate_genome(work, job, genomes_folder, may_fetch, veupathdb_key),
+                    None)
     except OSError as e:
         return job["accession"], None, str(e)[:100]
     except Exception as e:  # noqa: BLE001  one genome's failure, never the pass' (until 2026-11-08: OSError alone)
@@ -852,7 +858,7 @@ def annotate_pass(opts, job_map, may_fetch):
     if not todo:
         return
     say(f"gene models: {len(todo)} genomes' calls to compare with their annotation")
-    compared, left, failed = 0, 0, []
+    compared, left, elsewhere, failed = 0, 0, 0, []
     progress = progress_of(opts, "genomes compared", [1] * len(todo), "", 1)
     # -j at once, a GFF read on one core each (until 2026-11-08 one at a time, in this process)
     task = functools.partial(annotate_one, opts.work, opts.genomes, may_fetch, opts.veupathdb_key)
@@ -862,24 +868,35 @@ def annotate_pass(opts, job_map, may_fetch):
                 failed.append((acc, why))
                 progress.step(1, failed=True)
                 continue
-            compared, left = compared + (n is not None), left + (n is None)
+            if n == organelle_mod.ELSEWHERE:
+                elsewhere += 1
+            else:
+                compared, left = compared + (n is not None), left + (n is None)
             progress.step(1)
     say(f"  {compared} genomes compared, {left} without their annotation fetched yet (--stage fetch), "
-        f"{len(failed)} failed{' (e.g. ' + str(failed[:2]) + ')' if failed else ''}")
+        + (f"{elsewhere} by another build, " if elsewhere else "")
+        + f"{len(failed)} failed{' (e.g. ' + str(failed[:2]) + ')' if failed else ''}")
 
 
 def saved_molecules(opts, tmp, accession):
     """The organelle molecules a done genome's metadata scan kept (metadata.ORGANELLE, written with its stats.json),
     or None: the organelle pass reads them, not the genome again (since 2026-11-08). A packed genome's (store.py)
-    written into tmp for the pass."""
+    written into tmp for the pass. Asked by threads (organelle.assembly_pass): read by store.members, outside store's
+    lock (since 2026-11-11)."""
     folder = genomes.done_dir(opts.work, accession)
-    if not store.has(folder, metadata_mod.STATS):
-        return None
-    if not store.is_packed(folder):
-        path = os.path.join(folder, metadata_mod.ORGANELLE)
-        return path if os.path.isfile(path) else None
     path = os.path.join(tmp, f"{accession}.{metadata_mod.ORGANELLE}")
-    return path if os.path.isfile(path) or store.extract(folder, metadata_mod.ORGANELLE, path) else None
+    if os.path.isfile(path):
+        return path
+    got = store.members(folder, (metadata_mod.STATS, metadata_mod.ORGANELLE)) if store.is_packed(folder) else None
+    if got is None:  # a folder (or none): its file where it is
+        here = os.path.join(folder, metadata_mod.ORGANELLE)
+        return here if os.path.isfile(os.path.join(folder, metadata_mod.STATS)) and os.path.isfile(here) else None
+    if got[metadata_mod.STATS] is None or got[metadata_mod.ORGANELLE] is None:
+        return None
+    with open(util.part_of(path), "wb") as fh:
+        fh.write(got[metadata_mod.ORGANELLE])
+    os.replace(util.part_of(path), path)
+    return path
 
 
 def organelle_genes(opts, src_dir, job_map, ncbi):
@@ -900,7 +917,8 @@ def organelle_genes(opts, src_dir, job_map, ncbi):
                                         barrnap, nhmmer, opts.threads, 1, say,
                                         shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
                                         saved_of=functools.partial(saved_molecules, opts, tmp),
-                                        progress=functools.partial(progress_of, opts, unit="", scale=1))
+                                        progress=functools.partial(progress_of, opts, unit="", scale=1),
+                                        claim=functools.partial(genomes.claimed, opts.work))
     else:
         say("WARNING: no barrnap or nhmmer: the assemblies' organelle molecules not searched")
     return chosen
@@ -1195,8 +1213,9 @@ def banner(opts, argv, whence):
                  + ", then each species' genome and gene models into "
                  + ("--genomes" if separate_genomes(opts) else "OUT/genomes"),
         "process": "each genome's loci called and its rRNA extracted"
-                   + (" alone (--genomes_only: the passes after, the organelle genes among them, left to a run without "
-                      "it)" if opts.genomes_only else ", then the organelle genes"),
+                   + (", then the organelle genes and gene models under each genome's claim (--genomes_only: the "
+                      "passes over all genomes left to a run without it)" if opts.genomes_only
+                      else ", then the organelle genes"),
         "package": "the checks across species" + (", FCS-GX's screen" if opts.fcs_gx_db else "")
                    + ("" if opts.no_benchmarks else ", the benchmarks") + f", then OUT/{package_dir}/"
                    + ("" if opts.no_release else " and OUT/release/ (the website's data, the release's bundles)"),
@@ -1333,8 +1352,9 @@ def _main(argv, held):
     p.add_argument("--genomes_only", action="store_true",
                    help="with --stage process: run the genomes, then the passes that take one genome at a time under "
                         "its claim (since 2026-11-10: the backfill with its clade hold-outs, the assembly metadata, "
-                        "the done folders' packing), and stop: the passes over all genomes (organelle genes, "
-                        "intraspecific panel, gene models) left to a process run without it. For several runs on one "
+                        "the done folders' packing; since 2026-11-11 the organelle genes and the gene models' "
+                        "comparison, without fetching), and stop: the passes over all genomes (intraspecific panel, "
+                        "gene models to fetch) left to a process run without it. For several runs on one "
                         "WORK (a SLURM array: the genome claims share the genomes and those passes out); one run "
                         "without it after them all (--stage process,package: it waits for the genomes the others "
                         "still run, runs what they left, then makes the passes and the package; tools/eukore.sh "
@@ -1704,6 +1724,11 @@ def _main(argv, held):
         backfill_pass(opts, job_map, settings)
         if opts.genomes_only:
             describe_pass(opts, job_map)
+            # the organelle genes of the assemblies and the gene models' comparison too (since 2026-11-11: the last
+            # run's alone, on one node), each under its genome's claim; no fetch here (one fetch at a time: a GFF not
+            # beside its genome waits for a run that fetches)
+            organelle_genes(opts, src_dir, job_map, ncbi)
+            annotate_pass(opts, job_map, may_fetch=False)
         else:
             intraspecific_pass(opts, src_dir, ncbi, extras)
             describe_pass(opts, job_map)

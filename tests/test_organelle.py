@@ -239,6 +239,63 @@ class JoinTest(unittest.TestCase):
 
 
 class AssemblyTest(unittest.TestCase):
+    def test_the_pass_under_each_genomes_claim(self):
+        # since 2026-11-11 a SLURM array's tasks run the pass: an assembly is searched under its genome's claim, one
+        # another build holds or searched meanwhile left alone; RefSeq's release parsed by one build at a time
+        import functools  # noqa: PLC0415
+        import socket  # noqa: PLC0415
+        import threading  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            src = os.path.join(tmp, "sources")
+            release(src)
+            root = os.path.join(tmp, "work")
+            work = os.path.join(root, "organelle")
+            chosen = organelle.choose(organelle.refseq_genes(src, work, ncbi, lambda _t: 0), ncbi)
+            genomes_dir = os.path.join(tmp, "genomes")
+            os.makedirs(genomes_dir)
+            with gzip.open(genomes.genome_file(genomes_dir, YEAST), "wt") as fh:
+                fh.write(f">m1 Saccharomyces cerevisiae mitochondrion, complete genome\n{YEAST_MT}\n")
+            jobs = {YEAST: dict(accession=YEAST, species_taxid=4932, taxid=559292)}
+            barrnap, nhmmer = fx.tool(tmp, "barrnap", BARRNAP), fx.tool(tmp, "nhmmer", NHMMER)
+            claim = functools.partial(genomes.claimed, root)
+
+            def run():
+                return organelle.assembly_pass(work, jobs, lambda a: genomes.genome_file(genomes_dir, a), chosen,
+                                               ncbi, barrnap, nhmmer, 1, 1, lambda _t: 0, claim=claim)
+            held = genomes.claim(root, YEAST)  # another build's
+            self.assertEqual(run(), (0, 0))
+            out = organelle.assembly_file(work, YEAST)
+            self.assertFalse(os.path.exists(out))
+            os.remove(held)
+            self.assertEqual(run(), (1, 0))
+            self.assertTrue(os.path.isfile(out))
+            self.assertFalse(os.path.exists(genomes.claim_path(root, YEAST)))  # its claim let go
+            self.assertEqual(run(), (0, 0))  # searched: not asked again
+            # searched by another build between the plan and the claim: left
+            item = (YEAST, "unused", out, False, {}, barrnap, nhmmer, 1)
+            self.assertEqual(organelle.run_claimed((claim, ([], set(), "nhmmer"), item)),
+                             (YEAST, organelle.ELSEWHERE, None))
+            # one build at a time makes a file; the others wait for it
+            path, made = os.path.join(tmp, "once", "x.tsv"), []
+
+            def make():
+                made.append(1)
+                with open(path, "w") as fh:
+                    fh.write("x")
+            organelle.made_once(path, make, lambda _t: 0)
+            organelle.made_once(path, make, lambda _t: 0)
+            self.assertEqual(made, [1])
+            os.remove(path)
+            lock = os.path.join(tmp, "once", ".x.tsv.lock")
+            with open(lock, "w") as fh:  # another live process' (this host's: its parent)
+                fh.write(f"{socket.gethostname()} {os.getppid()}")
+            said = []
+            threading.Timer(0.3, make).start()  # that build's file, written while this one waits
+            organelle.made_once(path, make, said.append, poll=0.05)
+            self.assertEqual((len(made), len(said)), (2, 1))  # waited, said once, made nothing itself
+            self.assertTrue(os.path.isfile(lock))  # the other's lock left to it
+
     def test_an_assembly_into_the_package(self):
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))

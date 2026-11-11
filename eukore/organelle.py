@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 
 from . import gencode, rrna, util
 
@@ -544,6 +545,30 @@ def rules_text():
     return repr((rules, NUMBER.pattern, SMALL.pattern, LARGE.pattern, SPACER_FLANK, SPACER_MAX))
 
 
+MADE_POLL = 30  # seconds between a waiting build's looks for the file another build makes (made_once)
+
+
+def made_once(path, make, log=print, poll=MADE_POLL):
+    """path made by make() where it is not there, by one build at a time of all builds on its folder (since 2026-11-11:
+    a SLURM array's tasks run the organelle pass, and each parsed RefSeq's ~2.2 GB release at once): the build that
+    takes the lock (util.single_run: folder/.<name>.lock) makes it, the others wait for it; a waiting build whose maker
+    ended without it (killed) makes it in its place (a dead build's lock is taken over)."""
+    folder, name = os.path.split(path)
+    os.makedirs(folder, exist_ok=True)
+    said = False
+    while not os.path.isfile(path):
+        try:
+            with util.single_run(folder, name):
+                if not os.path.isfile(path):  # made by another meanwhile
+                    make()
+            return
+        except util.RunHeld as e:
+            if not said:
+                log(f"{name}: being made by another build ({e.host or '?'}, process {e.pid or '?'}): waiting for it")
+                said = True
+            time.sleep(poll)
+
+
 def refseq_genes(src_dir, work_folder, ncbi, log=print):
     """Every gene of RefSeq's organelle release (record_genes), parsed once into WORK/organelle/refseq_<release>.tsv.gz
     (CACHE_COLUMNS) -> [row dicts], [] where the release was not fetched."""
@@ -559,9 +584,9 @@ def refseq_genes(src_dir, work_folder, ncbi, log=print):
     key = hashlib.md5((util.md5(os.path.join(folder_of(src_dir), "release.txt")) + ",".join(GENES + CACHE_COLUMNS)
                        + release_sizes(files) + rules_text() + f"version:{CACHE_VERSION}").encode()).hexdigest()[:10]
     cache = os.path.join(work_folder, f"refseq_{key}.tsv.gz")
-    if not os.path.isfile(cache):
+
+    def parse():
         log(f"RefSeq organelles: parsing {len(files)} GenBank files")
-        os.makedirs(work_folder, exist_ok=True)
         with util.bgzf_open(util.part_of(cache), level=util.WORK_LEVEL) as fh:
             fh.write("\t".join(CACHE_COLUMNS) + "\n")
             for path in files:
@@ -575,6 +600,7 @@ def refseq_genes(src_dir, work_folder, ncbi, log=print):
                                g["transl_table"], g["transl_except"])
                         fh.write("\t".join(map(str, row)) + "\n")
         os.replace(util.part_of(cache), cache)
+    made_once(cache, parse, log)
     rows = []
     with gzip.open(cache, "rt") as fh:
         head = fh.readline().rstrip("\n").split("\t")
@@ -974,7 +1000,7 @@ def organelles_of(ncbi, taxid):
 
 
 def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer, workers=1, threads=1, log=print,
-                  miniprot=None, every=False, saved_of=None, progress=None):
+                  miniprot=None, every=False, saved_of=None, progress=None, claim=None):
     """The organelle genes of each species' assembly where RefSeq has not every organelle's record it can hold
     (chosen; organelles_of: until 2026-11-06 every animal and fungus was searched for a plastid, ~10,000 genomes), its
     organelle molecules there (saved_of(accession) -> the molecules metadata.describe kept, WORK/done/<accession>/
@@ -982,50 +1008,88 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
     genome_of(accession) -> its genome) and not done yet -> how many were run, failed. Only the organelles RefSeq lacks
     are searched; with miniprot (since 2026-11-07) its protein-coding genes' exons are miniprot's, by the species'
     organelle code (an assembly searched with the other models is searched again; since 2026-11-10 also one searched
-    with other inputs: search_key)."""
+    with other inputs: search_key). saved_of and genome_of are asked by threads (util.threaded). claim: genomes.claimed
+    of the WORK (picklable: a partial), each assembly searched under its genome's claim (run_claimed; since 2026-11-11:
+    a SLURM array's tasks run the pass) -> those run here."""
     nearest = Nearest(chosen, ncbi)
     models = "miniprot" if miniprot else "nhmmer"
-    todo = []
+    asked = []
     for acc, job in sorted(job_map.items()):
         sp = int(job["species_taxid"])
-        out = assembly_file(work_folder, acc)
         need = [k for k in organelles_of(ncbi, sp) if every or (sp, k) not in chosen]  # every: the panel's extras
         if job.get("path") or not need:
             continue
         animal = is_animal(ncbi, sp)
         queries, proteins = {k: nearest.queries(sp, k) for k in need}, {k: nearest.proteins(sp, k) for k in need}
         codes = {k: ncbi.code_of(sp, COMPARTMENT[k]) for k in need}
-        if os.path.isfile(out):  # searched; again for genes added since (CYTB, rbcL, matK, tufA: 2026-11-07)
-            got = searched_of(out)
-            # since 2026-11-10 also where it was searched with other inputs (search_key: the queries of another
-            # release, another genetic code, other thresholds, a CACHE_VERSION raised). A file of before holds no
-            # `inputs` and is searched again, once: accepted, as nothing says what it was searched with.
-            same = {f"{k}={search_key(k, animal, queries[k], proteins[k], codes[k], models)}" for k in need}
-            if all(set(GENES_OF[k]) <= got.get(k, set()) for k in need) and got.get("models", {"nhmmer"}) == {models} \
-                    and same <= got.get("inputs", set()):
-                continue
+        # since 2026-11-10 searched again also where it was searched with other inputs (search_key: the queries of
+        # another release, another genetic code, other thresholds, a CACHE_VERSION raised)
+        same = {f"{k}={search_key(k, animal, queries[k], proteins[k], codes[k], models)}" for k in need}
+        asked.append((acc, assembly_file(work_folder, acc), animal, queries, proteins, codes, (need, same, models)))
+
+    def look(item):
+        """An assembly's search file and its molecules, or None where it is searched already or not there: asked of
+        READ_THREADS assemblies at once (since 2026-11-11: one after another, each a file of WORK/organelle and its
+        packed genome's molecules read from the shared file system)."""
+        acc, out, *_x, check = item
+        if searched_already(out, *check):
+            return None
         # asked of the assemblies to search alone (since 2026-11-10: of every assembly; a packed genome's saved
         # molecules are written out for the search, store.py)
         path = (saved_of(acc) if saved_of else None) or genome_of(acc)
-        if not os.path.isfile(path):
-            continue
-        todo.append((acc, path, out, animal, queries, barrnap, nhmmer, threads, proteins, codes, miniprot))
+        return path if os.path.isfile(path) else None
+    todo = [(acc, path, out, animal, queries, barrnap, nhmmer, threads, proteins, codes, miniprot)
+            for (acc, out, animal, queries, proteins, codes, _c), path in zip(asked, util.threaded(look, asked))
+            if path]
     if not todo:
         return 0, 0
-    log(f"organelle genes: {len(todo)} assemblies to search")
-    failed = 0
+    log(f"organelle genes: {len(todo)} assemblies to search" + (", each under its genome's claim" if claim else ""))
+    failed, elsewhere = 0, 0
+    # under its genome's claim (since 2026-11-11), where several builds on a WORK (a SLURM array's tasks) share them
+    checks = {item[0]: item[-1] for item in asked}
+    tasks = [(claim, checks[t[0]], t) for t in todo] if claim else todo
     # progress(what, weights) -> its util.Progress (the build's: every --report_minutes, with the resources used;
     # until 2026-11-08 at each 5% of the assemblies)
     progress = (progress or (lambda what, w: util.Progress(what, w, log, unit="", scale=1)))(
         "assemblies searched", [1] * len(todo))
     with util.process_pool(workers) as pool:  # a worker that dies stops the build, not a wait forever
-        for acc, _n, why in util.unordered(pool, run_assembly, todo, progress,
-                                           lambda: f", {min(max(1, workers), progress.n - progress.done)} running"):
+        for acc, n, why in util.unordered(pool, run_claimed if claim else run_assembly, tasks, progress,
+                                          lambda: f", {min(max(1, workers), progress.n - progress.done)} running"):
             if why:
                 failed += 1
                 log(f"  {acc}: organelle genes failed: {why}")
+            elsewhere += n == ELSEWHERE
             progress.step(1, failed=bool(why))
-    return len(todo), failed
+    if elsewhere:
+        log(f"  organelle genes: {elsewhere} assemblies searched by another build, or under its claim")
+    return len(todo) - elsewhere, failed
+
+
+ELSEWHERE = "elsewhere"  # run_claimed's genes where another build holds the genome or searched it meanwhile
+
+
+def searched_already(out, need, same, models):
+    """Whether an assembly's search file (out) holds the organelles of need searched with these inputs (same:
+    search_key's) and models: searched again for genes added since (CYTB, rbcL, matK, tufA: 2026-11-07), other models,
+    or other inputs (since 2026-11-10; a file of before holds no `inputs` and is searched again, once: accepted, as
+    nothing says what it was searched with)."""
+    if not os.path.isfile(out):
+        return False
+    got = searched_of(out)
+    return all(set(GENES_OF[k]) <= got.get(k, set()) for k in need) and got.get("models", {"nhmmer"}) == {models} \
+        and set(same) <= got.get("inputs", set())
+
+
+def run_claimed(args):
+    """run_assembly under its genome's claim (a pool's task: claim, a function of an accession -> a context that
+    yields whether this build holds it (genomes.claimed's), searched_already's need, same and models, run_assembly's
+    args), since 2026-11-11: several builds on a WORK (a SLURM array's tasks) search each assembly once -> run_assembly's
+    (accession, genes, why), genes ELSEWHERE where another build holds the genome or searched it meanwhile."""
+    claim, check, item = args
+    with claim(item[0]) as held:
+        if not held or searched_already(item[2], *check):
+            return item[0], ELSEWHERE, None
+        return run_assembly(item)
 
 
 # --- the package ------------------------------------------------------------------------------------------------------
