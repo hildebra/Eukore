@@ -72,6 +72,14 @@ class StoreTest(unittest.TestCase):
                                              dict(locus="2at2759", status="Missing")]))
             self.assertIsNotNone(before[12])
             self.assertIsNone(before[13])
+            # several files in one look, as the threads of the package's passes read them (since 2026-11-11)
+            wanted = ("loci.tsv", "windows.fna.gz", "none.tsv")
+            looked = store.members(folder, wanted)
+            self.assertEqual((looked["loci.tsv"], looked["none.tsv"]), (LOCI.encode(), None))
+            self.assertEqual(store.decoded("windows.fna.gz", looked["windows.fna.gz"]), WINDOWS)
+            self.assertEqual(store.table_of(store.decoded("loci.tsv", looked["loci.tsv"])), before[11])
+            self.assertEqual((store.members(none, wanted), store.decoded("x.gz", None), store.table_of(None)),
+                             (None, None, []))
             self.assertFalse(store.is_packed(folder))
             with open(os.path.join(folder, ".host-1.fcs.tsv.partial"), "w") as fh:  # a killed change's
                 fh.write("half")
@@ -80,6 +88,7 @@ class StoreTest(unittest.TestCase):
             self.assertEqual(os.listdir(os.path.join(work, "done")), ["G1.zip"])
             self.assertTrue(store.is_packed(folder))
             self.assertEqual(read_all(folder), before)
+            self.assertEqual(store.members(folder, wanted), looked)
             self.assertEqual(store.unpacked(os.path.join(work, "done")), [])
             dest = os.path.join(work, "w.fna.gz")
             self.assertTrue(store.extract(folder, "windows.fna.gz", dest))
@@ -459,6 +468,53 @@ class PlanTest(unittest.TestCase):
             self.assertIsNone(genomes.names_of(work, "G1"))
             self.assertTrue(genomes.has(work, "G1", "loci.tsv"))
             self.assertEqual(genomes.done_stamp(work, "G1"), stamps["G1"])
+
+    def test_a_cache_inside_another_is_the_outers(self):
+        # since 2026-11-11 (the package's passes cache too): an inner block's end no longer ends the outer's cache
+        from eukore import util  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as work:
+            folder_of(work, "G1", {"accession": "G1"})
+            real, read = store.text, []
+
+            def text(folder, name):
+                read.append(name)
+                return real(folder, name)
+            with mock.patch.object(store, "text", text), genomes.cached_summaries():
+                self.assertTrue(genomes.is_done(work, "G1"))
+                with genomes.cached_summaries():
+                    self.assertTrue(genomes.is_done(work, "G1"))
+                self.assertTrue(genomes.is_done(work, "G1"))
+            self.assertEqual(read, ["done.json"])
+            # threads read in the items' order, whatever order they finish in
+            self.assertEqual(list(util.threaded(lambda i: (time.sleep(0.001 * (i % 3)), i)[1], range(50), 4)),
+                             list(range(50)))
+
+    def test_the_rrna_records_from_collects_reads(self):
+        # since 2026-11-11 the package's rRNA records are the rows collect's pool read, not each genome read again
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import eukore_build  # noqa: PLC0415
+        from eukore import rrna  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            work = os.path.join(tmp, "work")
+            folder = folder_of(work, YEAST, {"accession": YEAST})
+            with open(os.path.join(folder, "loci.tsv"), "w") as fh:
+                fh.write("locus\tstatus\n2at2759\tMissing\n")
+            with open(os.path.join(folder, "rrna.tsv"), "w") as fh:
+                fh.write("kind\tcontig\tstart\tend\tstrand\tregions\tlsu_complete\tsequence\tcontig_length\tintrons\n"
+                         "rDNA\tc1\t1\t40\t+\t18S:1-20,28S:21-40\tt\t" + "ACGT" * 10 + "\t5000\t-\n")
+            store.pack(folder)
+            part = package.genome_part((work, YEAST, 1))
+            self.assertEqual(part["rrna_rows"], rrna.load(folder))
+            self.assertEqual(len(part["rrna_rows"]), 1)
+            jobs = {YEAST: dict(accession=YEAST, species_taxid=4932, taxid=559292),
+                    "G0": dict(accession="G0", species_taxid=4932)}  # not done
+            opts = types.SimpleNamespace(work=work)
+            want = eukore_build.genome_rrna_records(opts, jobs, ncbi)
+            collected = {"rrna_rows": {YEAST: part["rrna_rows"]}}
+            with mock.patch.object(rrna, "load", side_effect=AssertionError("read again")):
+                self.assertEqual(eukore_build.genome_rrna_records(opts, jobs, ncbi, collected), want)
+            self.assertEqual((len(want), collected), (1, {}))  # taken from collect's: held once
 
     def test_stamping_an_older_record_keeps_a_packed_genome_packed(self):
         with tempfile.TemporaryDirectory() as work:

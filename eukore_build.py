@@ -819,11 +819,13 @@ def read_regions(path):
     return known
 
 
-def genome_rrna_records(opts, job_map, ncbi):
-    """Every done genome's rRNA as records, labelled by its assembly's taxid."""
+def genome_rrna_records(opts, job_map, ncbi, collected=None):
+    """Every done genome's rRNA as records, labelled by its assembly's taxid. collected: package.collect's, whose
+    rrna_rows (taken from it) its pool read (since 2026-11-11: each genome read again here, one after another)."""
+    saved = collected.pop("rrna_rows", None) if collected is not None else None
     out = []
     for acc, job in sorted(job_map.items()):
-        rows = rrna.load(genomes.done_dir(opts.work, acc))
+        rows = saved.get(acc) if saved is not None else rrna.load(genomes.done_dir(opts.work, acc))
         if rows:
             out += rrna.genome_records(acc, rows, job.get("taxid") or job["species_taxid"],
                                        ncbi.species_of(int(job["species_taxid"])))
@@ -843,7 +845,10 @@ def annotate_one(work, genomes_folder, may_fetch, veupathdb_key, job):
 def annotate_pass(opts, job_map, may_fetch):
     """The done genomes with an annotation (NCBI's, Ensembl's or TOGA2's) compared with it (annotation.py: its GFF
     beside the genome, from the fetch stage, or fetched here where may_fetch), the GFF deleted after."""
-    todo = [j for _a, j in sorted(job_map.items()) if annotation.missing(opts.work, j)]
+    # the done genomes read READ_THREADS at once (genomes.prefetch; since 2026-11-11: one after another)
+    with genomes.cached_summaries():
+        genomes.prefetch(opts.work, [a for a, j in job_map.items() if annotation.wanted(j)])
+        todo = [j for _a, j in sorted(job_map.items()) if annotation.missing(opts.work, j)]
     if not todo:
         return
     say(f"gene models: {len(todo)} genomes' calls to compare with their annotation")
@@ -1730,8 +1735,10 @@ def _main(argv, held):
         pack_pass(opts)
         backfill_pass(opts, job_map, settings_of(opts, src_dir, ncbi, staged_only=True))
     if "package" in opts.stages and opts.fcs_gx_db:
-        todo = [a for a in sorted(job_map) if genomes.is_done(opts.work, a)
-                and not store.has(genomes.done_dir(opts.work, a), "fcs.tsv")]
+        with genomes.cached_summaries():  # read READ_THREADS at once (since 2026-11-11: one after another)
+            genomes.prefetch(opts.work, job_map)
+            todo = [a for a in sorted(job_map) if genomes.is_done(opts.work, a)
+                    and not genomes.has(opts.work, a, "fcs.tsv")]
         # several genomes at once, FCS_THREADS cores each (since 2026-11-08: one at a time on every thread, each
         # run's ~13 Mb of windows mostly its start-up); the database in /dev/shm is mapped once for them all
         at_once = max(1, min(len(todo), opts.threads // FCS_THREADS))
@@ -1757,16 +1764,20 @@ def _main(argv, held):
                          + (util.dead_partials(opts.scratch, "read_benchmark") if opts.scratch else [])):
             shutil.rmtree(leftover, ignore_errors=True)
         loci = called_loci(opts, src_dir)
-        short = [a for a in job_map if genomes.is_done(opts.work, a) and not genomes.is_done(opts.work, a, loci)]
+        # each done genome's done.json read once, READ_THREADS at once (genomes.prefetch; since 2026-11-11: the three
+        # checks read each five times, one genome after another)
+        with genomes.cached_summaries():
+            genomes.prefetch(opts.work, job_map)
+            short = [a for a in job_map if genomes.is_done(opts.work, a) and not genomes.is_done(opts.work, a, loci)]
+            stale = sorted(a for a in job_map if genomes.is_done(opts.work, a) and genomes.record_stale(opts.work, a))
+            undone = sorted(a for a in job_map if not genomes.is_done(opts.work, a))
         if short:
             say(f"WARNING: {len(short)} genomes were not searched for all {len(loci)} loci called (run before a locus "
                 f"was, e.g. {short[:3]}): their call rates count them out; run --stage process again for them all")
-        stale = sorted(a for a in job_map if genomes.is_done(opts.work, a) and genomes.record_stale(opts.work, a))
         if stale:  # since 2026-11-09: their calls go into the package as they are, genomes.tsv's genome_record says so
             say(f"WARNING: {len(stale):,} genomes' calls are of an older genome record than {genomes.GENOME_RECORD} "
                 f"(e.g. {stale[:3]}): run --stage process again for them (their genomes fetched again where pruned), "
                 "or --reversion to keep them; genomes.tsv's genome_record names each one's")
-        undone = sorted(a for a in job_map if not genomes.is_done(opts.work, a))
         if undone:
             say(f"WARNING: {len(undone)} genomes of the plan are not done (e.g. {undone[:3]}): the package is written "
                 "without them (manifest: inputs.genomes_not_done)")
@@ -1790,7 +1801,7 @@ def _main(argv, held):
             hmm_of = odb_of(opts, src_dir).hmm
             package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say, opts.threads)
         with timed(stages, "rRNA records and their checks"):
-            records = genome_rrna_records(opts, job_map, ncbi) + published(opts, src_dir, ncbi)
+            records = genome_rrna_records(opts, job_map, ncbi, collected) + published(opts, src_dir, ncbi)
             # each 18S's SSU model (since 2026-11-09): a bacterium's or an organelle's SSU is no 18S
             models, cmsearch = regions_mod.models_path(src_dir), shutil.which("cmsearch")
             ssu = functools.partial(regions_mod.ssu_models, cm=models, cmsearch=cmsearch, threads=opts.threads,
@@ -1846,8 +1857,10 @@ def _main(argv, held):
             describe_pass(opts, job_map)  # before the prune: measured while the genomes are there
         drop_superseded(opts, job_map)
         # without --keep_gb, every genome kept (since 2026-11-08; the manifest written all the same)
-        rows_kept = genomes.prune(opts.genomes, opts.work, float("inf") if opts.keep_gb is None else opts.keep_gb * 1e9,
-                                  set(tests), firsts)
+        with genomes.cached_summaries():  # its done genomes read READ_THREADS at once (since 2026-11-11: one by one)
+            genomes.prefetch(opts.work, job_map)
+            rows_kept = genomes.prune(opts.genomes, opts.work,
+                                      float("inf") if opts.keep_gb is None else opts.keep_gb * 1e9, set(tests), firsts)
         kept = sum(s for _a, s, st in rows_kept if st != "deleted")
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB ("
             + ("no --keep_gb: none deleted)" if opts.keep_gb is None else

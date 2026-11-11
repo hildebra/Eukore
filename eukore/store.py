@@ -149,7 +149,11 @@ def read(folder, name):
 
 def text(folder, name):
     """A file's text (a .gz one's unpacked), or None."""
-    data = read(folder, name)
+    return decoded(name, read(folder, name))
+
+
+def decoded(name, data):
+    """A file's bytes (read's, members') as its text (a .gz one's unpacked), or None for None."""
     if data is None:
         return None
     return (gzip.decompress(data) if name.endswith(".gz") else data).decode()
@@ -172,9 +176,14 @@ def rows(folder, name):
 
 def table(folder, name):
     """A table of the genome (header first) -> [row dicts]; [] where it has none."""
-    fh = open_text(folder, name)
-    if fh is None:
+    return table_of(text(folder, name))
+
+
+def table_of(got):
+    """A table's text (header first; text's, decoded's) -> [row dicts]; [] for None."""
+    if got is None:
         return []
+    fh = io.StringIO(got)
     head = fh.readline().rstrip("\n").split("\t")
     return [dict(zip(head, line.rstrip("\n").split("\t"))) for line in fh if line.strip()]
 
@@ -216,6 +225,28 @@ def snapshot(folder, name="done.json"):
             files = {n for n in os.listdir(folder) if os.path.isfile(os.path.join(folder, n))}
             data = _file(os.path.join(folder, name)) if name in files else None
             return files, data, None if data is None else zlib.crc32(data)
+        except OSError:
+            if not is_packed(folder):  # neither form; else packed between the two looks: its zip read
+                return None
+    return None
+
+
+def members(folder, wanted):
+    """Several files of the genome in one look, read as snapshot reads (without the process' lock and its open zips:
+    threads read many genomes at once; since 2026-11-11 the package stage's passes over every genome, until then one
+    genome after another) -> {name: its bytes, or None where the genome has none of the name}, or None where it has no
+    results."""
+    for _again in range(2):
+        try:
+            with zipfile.ZipFile(packed(folder)) as z:
+                return {n: z.read(z.NameToInfo[n]) if n in z.NameToInfo else None for n in wanted}
+        except FileNotFoundError:
+            pass
+        except (OSError, zipfile.BadZipFile):
+            return None
+        try:
+            files = {n for n in os.listdir(folder) if os.path.isfile(os.path.join(folder, n))}
+            return {n: _file(os.path.join(folder, n)) if n in files else None for n in wanted}
         except OSError:
             if not is_packed(folder):  # neither form; else packed between the two looks: its zip read
                 return None

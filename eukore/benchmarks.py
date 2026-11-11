@@ -32,6 +32,7 @@ A benchmark whose inputs are missing (BUSCO's dataset, vsearch, the work folder)
 
 import argparse
 import collections
+import functools
 import json
 import os
 import re
@@ -497,10 +498,14 @@ def label_rows(species):
 
 
 def runtime_rows(work, genomes, species):
-    """runtime.tsv's rows: each species' genome's run (its done.json), those timed (run since 2026-11-06)."""
+    """runtime.tsv's rows: each species' genome's run (its done.json), those timed (run since 2026-11-06). The
+    done.json files read READ_THREADS at once (genomes.prefetch; since 2026-11-11: one after another)."""
     out = []
+    with genomes_mod.cached_summaries():
+        genomes_mod.prefetch(work, genomes)
+        summaries = {acc: genomes_mod.done_summary(work, acc) for acc in genomes}
     for acc, g in sorted(genomes.items()):
-        done = genomes_mod.done_summary(work, acc)
+        done = summaries[acc]
         if done is None or done.get("seconds") is None:
             continue
         out.append(dict(accession=acc, species_taxid=g["species_taxid"],
@@ -651,14 +656,18 @@ def odb_distance(odb, ncbi, held):
 
 def annotation_rows(work, genomes, species, distance):
     """annotation.tsv: each compared copy (WORK/done/<accession>/annotation.tsv, annotation.py) with its genome's
-    supergroup and distance to BUSCO's dataset."""
+    supergroup and distance to BUSCO's dataset. The genomes read READ_THREADS at once (util.threaded; since 2026-11-11:
+    one after another)."""
     from . import annotation as ann  # noqa: PLC0415
     from .genomes import done_dir  # noqa: PLC0415
     out = []
-    for acc, g in sorted(genomes.items()):
+    accs = sorted(genomes)
+    read = functools.partial(store.members, wanted=(ann.TABLE,))
+    for acc, got in zip(accs, util.threaded(read, [done_dir(work, acc) for acc in accs])):
+        g = genomes[acc]
         sp = int(g["species_taxid"])
         near, own = distance.get(sp, ("-", "-"))
-        for r in store.table(done_dir(work, acc), ann.TABLE):
+        for r in store.table_of(store.decoded(ann.TABLE, (got or {}).get(ann.TABLE))):
             out.append(dict(r, accession=acc, species_taxid=sp, odb_nearest=near, odb_self=own,
                             supergroup=species.get(str(sp), {}).get("supergroup", "-")))
     return out

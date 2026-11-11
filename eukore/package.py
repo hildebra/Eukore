@@ -343,7 +343,8 @@ def genome_part(args):
     their coding sequences, introns and proteins made in the one process): args (work, accession, its genetic code)
     -> None where the genome is not done, else dict(loci (its copies' count), rrna ((counts, element_counts) or None),
     molecules, searched, record, copies [(copy row, coding sequence, (protein, internal stops), intron rows)] in its
-    loci.tsv's order, alternates [(locus, alt, coding sequence, protein length, contig length)]). Its copies whole and
+    loci.tsv's order, alternates [(locus, alt, coding sequence, protein length, contig length)], rrna_rows (its saved
+    rRNA extraction, rrna.load's: the package's rRNA records, read here once)). Its copies whole and
     its features are not returned: write reads them again (the memory bound of 2026-11-08)."""
     from . import introns as introns_mod, rrna as rrna_mod  # noqa: PLC0415
     from .genomes import done_dir, done_summary, is_done, record_of  # noqa: PLC0415
@@ -354,7 +355,7 @@ def genome_part(args):
     # organelle records name it (until 2026-11-06 it was left out of genomes.tsv, their accession dangling)
     if not got and not is_done(work, acc):
         return None
-    rrna = None
+    rrna, rrna_rows = None, []
     if store.has(folder, "rrna.tsv"):
         rrna_rows = rrna_mod.load(folder)
         rrna = (rrna_mod.counts(rrna_rows), rrna_mod.element_counts(rrna_rows))
@@ -376,7 +377,7 @@ def genome_part(args):
     # beside the copies, for the choice by lineage; their copies read again where one is taken
     alternates = [(a["locus"], a["alt"], qc.spliced(a["copy"], a["features"]), int(a["protein_length"]),
                    a.get("contig_length")) for a in done_alternates(work, acc)]
-    return dict(loci=len(got), rrna=rrna, molecules=organelle_molecules_of(folder),
+    return dict(loci=len(got), rrna=rrna, rrna_rows=rrna_rows, molecules=organelle_molecules_of(folder),
                 searched={r["locus"] for r in searched}, record=record_of(done_summary(work, acc)) or "-",
                 copies=copies, alternates=alternates)
 
@@ -385,7 +386,8 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     """What the package holds of the BUSCO genes -> dict(genomes {accession: row}, copy_rows [COPY_COLUMNS dicts],
     taxids, cds and proteins {(accession, locus): sequence}, intron_rows (introns.of_copy's, accession and locus set),
     work and done (the genomes whose copies and features write reads from WORK/done), copy_count, swaps {accession:
-    {locus: alt}}: the copies taken by lineage among a Duplicated locus' alternates, since 2026-11-09). Each species'
+    {locus: alt}}: the copies taken by lineage among a Duplicated locus' alternates, since 2026-11-09), rrna_rows
+    {accession: its saved rRNA extraction} (the build's genome_rrna_records takes it). Each species'
     genome (its job) with the copies its run called; the species' other assemblies listed (source "assembly", no
     copies); the copies' checks across species (qc.check). kinds: {marker locus: clean or family} (markers.kinds): a
     genome's duplication is read on its BUSCOs alone, a family marker's Duplicated is no flag. paralogs_of: a function
@@ -400,6 +402,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     alt_cds, alt_length = {}, {}  # a Duplicated locus' other copies' (since 2026-11-09)
     alt_contigs = collections.defaultdict(list)  # the BUSCOs' other copies' contigs (duplication_of's haplotigs)
     made = {}  # {(accession, locus): (protein, internal stops)} of the copies as read (genome_part)
+    rrna_rows = {}  # {accession: its saved rRNA extraction} (since 2026-11-11: read again, one genome after another)
     jobs = sorted(job_map.items())
     parts = util.ordered(genome_part, [(work, acc, job.get("gencode", 1)) for acc, job in jobs],
                          max(1, min(threads, len(jobs))))
@@ -422,6 +425,8 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             genomes[acc].update(rrna_18s=n["18S"], rdna_units=n["rDNA"], rdna_complete=n["rDNA_complete"],
                                 rdna_contigs=n["rDNA_contigs"])
             genomes[acc]["_rrna_copies"] = elements  # copy_numbers.tsv's (no column)
+        if part["rrna_rows"]:
+            rrna_rows[acc] = part["rrna_rows"]
         genomes[acc]["_organelle_molecules"] = part["molecules"]
         # its copies and features read here and again by write, never all held (since 2026-11-08: every copy, introns
         # and all, and every feature as a dict were, ~1 KB a feature: tens of GB for all eukaryotes)
@@ -527,7 +532,8 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"} \
         | {int(g["foreign_source"]) for g in genomes.values() if str(g.get("foreign_source", "-")).isdigit()}
     return dict(genomes=genomes, copy_rows=copy_rows, taxids=taxids, cds=cds, proteins=proteins,
-                intron_rows=intron_rows, work=work, done=done, copy_count=count, swaps=dict(swaps))
+                intron_rows=intron_rows, work=work, done=done, copy_count=count, swaps=dict(swaps),
+                rrna_rows=rrna_rows)
 
 
 def copy_row(r, accession, fcs, gaps):
