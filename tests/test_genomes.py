@@ -353,7 +353,7 @@ class RunTest(unittest.TestCase):
                     got["files"] = json.dumps(manifest["files"]).encode()  # its time of building differs
                     files[threads] = got
                     store.close()
-            self.assertTrue(seen)
+            self.assertTrue(seen or not fx.pools_fork())  # forkserver's workers fork from its server (Python 3.14)
             self.assertEqual([names for names in seen if names], [])
             self.assertEqual(sorted(files[1]), sorted(files[3]))
             for name in files[1]:

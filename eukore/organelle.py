@@ -932,9 +932,11 @@ def run_assembly(args):
     {organelle: genetic code}, miniprot or None) into its out file (ASSEMBLY_COLUMNS; written, even empty, once done)
     -> (accession, genes, why). nhmmer's genes first; barrnap's rRNA where nhmmer found none; with miniprot, its
     models of the protein-coding genes nhmmer found in several hits, or (since 2026-11-10) in a single hit that is not
-    the gene's coding sequence (with_miniprot)."""
+    the gene's coding sequence (with_miniprot). Since 2026-11-11 a 12th item, the inputs assembly_pass keyed the search
+    by (search_key), written as they came: a worker that computed them again computed them by its own module, not
+    the caller's (a forkserver's or spawn's worker imports it anew: a CACHE_VERSION raised in the caller was not)."""
     acc, path, out, animal, queries, barrnap, nhmmer, threads, *more = args
-    proteins, codes, miniprot = more if more else ({}, {}, None)
+    proteins, codes, miniprot, *given = more if more else ({}, {}, None)
     try:  # the molecules metadata.describe kept (since 2026-11-08), else the genome read again
         molecules = saved_molecules(path) if os.path.basename(path) == SAVED else organelle_molecules(path)
         rows = []
@@ -954,8 +956,9 @@ def run_assembly(args):
         return acc, None, f"{type(e).__name__}: {e}"
     os.makedirs(os.path.dirname(out), exist_ok=True)
     models = "miniprot" if miniprot else "nhmmer"
-    inputs = [f"{k}={search_key(k, animal, queries[k], proteins.get(k, {}), codes.get(k, 1), models)}"
-              for k in KINDS if k in queries]  # what it was searched with: assembly_pass searches again where other
+    # what it was searched with: assembly_pass searches again where other inputs
+    inputs = given[0] if given else [f"{k}={search_key(k, animal, queries[k], proteins.get(k, {}), codes.get(k, 1),
+                                                       models)}" for k in KINDS if k in queries]
     with open(util.part_of(out), "w", newline="\n") as fh:
         fh.write("\t".join(["#searched"] + [f"{k}:{','.join(GENES_OF[k])}" for k in KINDS if k in queries]
                            + [f"models:{models}", f"inputs:{','.join(inputs)}"]) + "\n")
@@ -995,21 +998,22 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
         animal = is_animal(ncbi, sp)
         queries, proteins = {k: nearest.queries(sp, k) for k in need}, {k: nearest.proteins(sp, k) for k in need}
         codes = {k: ncbi.code_of(sp, COMPARTMENT[k]) for k in need}
+        # the search's key, made here alone and handed to the task (since 2026-11-11: made again in the worker)
+        inputs = [f"{k}={search_key(k, animal, queries[k], proteins[k], codes[k], models)}" for k in need]
         if os.path.isfile(out):  # searched; again for genes added since (CYTB, rbcL, matK, tufA: 2026-11-07)
             got = searched_of(out)
             # since 2026-11-10 also where it was searched with other inputs (search_key: the queries of another
             # release, another genetic code, other thresholds, a CACHE_VERSION raised). A file of before holds no
             # `inputs` and is searched again, once: accepted, as nothing says what it was searched with.
-            same = {f"{k}={search_key(k, animal, queries[k], proteins[k], codes[k], models)}" for k in need}
             if all(set(GENES_OF[k]) <= got.get(k, set()) for k in need) and got.get("models", {"nhmmer"}) == {models} \
-                    and same <= got.get("inputs", set()):
+                    and set(inputs) <= got.get("inputs", set()):
                 continue
         # asked of the assemblies to search alone (since 2026-11-10: of every assembly; a packed genome's saved
         # molecules are written out for the search, store.py)
         path = (saved_of(acc) if saved_of else None) or genome_of(acc)
         if not os.path.isfile(path):
             continue
-        todo.append((acc, path, out, animal, queries, barrnap, nhmmer, threads, proteins, codes, miniprot))
+        todo.append((acc, path, out, animal, queries, barrnap, nhmmer, threads, proteins, codes, miniprot, inputs))
     if not todo:
         return 0, 0
     log(f"organelle genes: {len(todo)} assemblies to search")

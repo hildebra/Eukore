@@ -6,6 +6,7 @@ import contextlib
 import gzip
 import io
 import math
+import multiprocessing
 import os
 import random
 import stat
@@ -455,10 +456,17 @@ if hasattr(os, "register_at_fork"):
     os.register_at_fork(before=_before_fork)
 
 
+def pools_fork():
+    """Whether this process' pools fork their workers from it (util.process_pool, Python's default start method; since
+    2026-11-11): fork on Linux until Python 3.14, where forks_watched sees each; forkserver since, whose workers fork
+    from its server, never from this process, so that forks_watched sees none."""
+    return multiprocessing.get_start_method() == "fork"
+
+
 @contextlib.contextmanager
 def forks_watched():
     """The compression threads (util's, named bgzf) alive at each fork of this process inside the block -> a list of
-    their names' lists, one a fork (since 2026-11-10)."""
+    their names' lists, one a fork (since 2026-11-10; none where the pools do not fork from it: pools_fork)."""
     seen = []
     _FORKS["watch"] += 1
     old, _FORKS["seen"] = _FORKS["seen"], seen

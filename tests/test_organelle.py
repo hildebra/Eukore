@@ -612,6 +612,21 @@ class AuditTest(unittest.TestCase):
             finally:
                 organelle.SPACER_MAX -= 1
 
+    def test_a_search_written_with_the_callers_key(self):
+        # since 2026-11-11 the search's key is assembly_pass' own, handed to the task and written as it came: a worker
+        # computed it again by its own module, and under forkserver (Python 3.14's) or spawn that is imported anew,
+        # so a CACHE_VERSION raised in the caller never reached it and the next pass searched again
+        with tempfile.TemporaryDirectory() as tmp:
+            path, out = os.path.join(tmp, "g.fna.gz"), os.path.join(tmp, "out", "a.tsv")
+            with gzip.open(path, "wt") as fh:
+                fh.write(f">c1 a nuclear contig\n{random_seq(500, 5)}\n")
+            args = (YEAST, path, out, False, {"mitochondrion": []}, "barrnap", "nhmmer", 1, {}, {}, None)
+            self.assertIsNone(organelle.run_assembly(args + (["mitochondrion=caller"],))[2])
+            self.assertEqual(organelle.searched_of(out)["inputs"], {"mitochondrion=caller"})
+            self.assertIsNone(organelle.run_assembly(args)[2])  # a caller of before: computed in the task
+            key = organelle.search_key("mitochondrion", False, [], {}, 1, "nhmmer")
+            self.assertEqual(organelle.searched_of(out)["inputs"], {f"mitochondrion={key}"})
+
 
 if __name__ == "__main__":
     unittest.main()

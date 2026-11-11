@@ -54,9 +54,11 @@ import datetime  # noqa: E402
 import glob  # noqa: E402
 import hashlib  # noqa: E402
 import itertools  # noqa: E402
+import multiprocessing  # noqa: E402
 import os  # noqa: E402
 import signal  # noqa: E402
 import socket  # noqa: E402
+import tempfile  # noqa: E402
 import time  # noqa: E402
 import urllib.error  # noqa: E402
 import urllib.parse  # noqa: E402
@@ -739,15 +741,33 @@ def vsearch_global(vsearch, queries, db, ident, threads=1, accepts=32, rejects=2
             return [(f[0], f[1], float(f[2])) for f in (line.rstrip("\n").split("\t") for line in fh) if len(f) >= 3]
 
 
+def _parents_state(environ, tempdir, threads):
+    """A pool's worker given its parent's environment, temporary folder and compression threads (process_pool)."""
+    os.environ.clear()
+    os.environ.update(environ)
+    tempfile.tempdir = tempdir
+    _BGZF_POOL.update(threads=threads, pid=None, executor=None)
+
+
 @contextlib.contextmanager
-def process_pool(workers):
+def process_pool(workers, method=None):
     """A pool of `workers` processes (concurrent.futures'; since 2026-11-08). A worker that dies (killed by the OOM
     killer or SLURM, a crash in a C library) breaks the pool: the build stops (SystemExit), a rerun goes on; until then
     multiprocessing.Pool lost its task and the build waited for it forever. On any other error or a stop (Ctrl-C) the
     workers are ended, not waited for, and the tools they started with them (_end_workers). This process'
-    idle compression threads ended first (bgzf_quiet; since 2026-11-10)."""
+    idle compression threads ended first (bgzf_quiet; since 2026-11-10).
+    method: how workers start (multiprocessing's; None: Python's default, fork on Linux until 3.14, forkserver
+    since). Fork is not asked for: a fork copies every lock another thread of this process held at that moment, never
+    let go of in the worker (why 3.14 left it), and the build runs threads (downloads, run locks' heartbeats, the
+    release's, the compression threads); its builds on 3.14 ran their pools by forkserver already. Since 2026-11-11
+    each worker is given this process' environment, temporary folder (--scratch) and compression threads as they are
+    now (_parents_state): a forked worker had them by the fork, but a forkserver's is forked from its server, made at
+    the first pool with the environment of then and its own temporary folder and threads, a spawned one from
+    nothing."""
     bgzf_quiet()
-    pool = concurrent.futures.ProcessPoolExecutor(max(1, workers))
+    pool = concurrent.futures.ProcessPoolExecutor(
+        max(1, workers), mp_context=multiprocessing.get_context(method), initializer=_parents_state,
+        initargs=(dict(os.environ), tempfile.tempdir, _BGZF_POOL["threads"]))
     pool.size = max(1, workers)
     try:
         yield pool
@@ -767,7 +787,8 @@ def forked_pool(workers):
     the compression threads ended first (process_pool), so that a caller opening BGZF writers inside it forks
     no process while their threads run. The parent's objects (the package's tens of GB) out of the collector's reach
     while workers fork from it: a collection in a worker would touch every one of them, and copy their pages into
-    each worker (Python's gc docs)."""
+    each worker (Python's gc docs). Under forkserver (Python 3.14's default on Linux) the workers start as tasks
+    come, forked from the server, which runs no thread and holds none of the parent's objects: safe either way."""
     if workers <= 1:
         yield None
         return
