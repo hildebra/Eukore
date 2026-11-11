@@ -46,13 +46,13 @@ class MarkerTest(unittest.TestCase):
         self.assertIn("K02999", got["RPB1"]["decoys"])  # RNA polymerase I's largest subunit
         self.assertTrue(all("_" not in m for m in got))  # refseq_db's names: <locus>_<taxid>_<id>
 
-    def test_any_failure_of_the_build_is_an_oserror(self):
+    def test_any_failure_of_the_fetch_is_an_oserror(self):
         # an NCBI reply without its count (AttributeError) or of bad XML: the fetch stage goes on without the markers
         # (until 2026-11-08 it stopped, every source after them unfetched)
         from unittest import mock  # noqa: PLC0415
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(markers, "ready", return_value=None), \
-                mock.patch.object(markers, "build", side_effect=AttributeError("'NoneType' has no attribute 'group'")):
-            with self.assertRaisesRegex(OSError, "marker set not built: AttributeError"):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+                markers, "fetch_inputs", side_effect=AttributeError("'NoneType' has no attribute 'group'")):
+            with self.assertRaisesRegex(OSError, "marker set's inputs not fetched: AttributeError"):
                 markers.fetch(tmp)
 
     def test_kofam_rule_and_members(self):
@@ -372,7 +372,7 @@ class BuildTest(unittest.TestCase):
         from unittest import mock  # noqa: PLC0415
         with mock.patch.object(markers, "MIN_MEMBERS", 3), mock.patch.object(markers, "release_of",
                                                                              return_value="2026_04"):
-            return markers.build(src, table, binary, 1, lambda *a: None, lambda url, dest: self.fail(url), decoys)
+            return markers.build(src, table, binary, 1, lambda *a: None, decoys)
 
     def ready(self, src, table, decoys=None):
         from unittest import mock  # noqa: PLC0415
@@ -391,9 +391,9 @@ class BuildTest(unittest.TestCase):
             self.assertEqual(folder, os.path.join(src, "eukore_markers"))
             self.assertEqual(sorted(os.listdir(src)), ["eukore_markers", "taxdump.tar.gz"])  # nothing left beside it
             self.assertTrue(set(markers.SET) <= set(os.listdir(folder)))
-            # the caches are the new folder's: the next build fetches nothing
-            self.assertTrue({"ko_list.gz", "kofam", "kofam.hmm", "uniprot_sprot.fasta.gz", "profiles.tar.gz",
-                             "ncbi"} <= set(os.listdir(folder)))
+            # the inputs and caches are the new folder's
+            self.assertTrue({"ko_list.gz", "kofam", "kofam.hmm", "uniprot_sprot.fasta.gz", "profiles.tar.gz"}
+                            <= set(os.listdir(folder)))
             self.assertTrue(any(f.startswith("scores.") for f in os.listdir(folder)))
             self.assertIn("NAME  MK1\n", self.text(folder, "hmms", "MK1.hmm"))
             self.assertIn("NAME  decoy-K2\n", self.text(folder, "decoys", "K2.hmm"))
@@ -443,7 +443,7 @@ class BuildTest(unittest.TestCase):
             self.assertEqual((self.ready(src, table, decoys), self.ready(src, table)), (None, folder))
             self.assertEqual(self.build(src, table, binary, decoys), folder)  # built from it
             self.assertEqual(self.ready(src, table, decoys), folder)
-            os.remove(sprot)  # an input deleted: fetched and built from at the next fetch stage
+            os.remove(sprot)  # an input deleted: fetched by the next fetch stage, built from by the process stage
             self.assertEqual((self.ready(src, table, decoys), self.ready(src, table)), (None, folder))
             state = json.loads(self.text(folder, "markers.json"))
             with open(os.path.join(folder, "markers.json"), "w") as fh:  # a set of before: neither recipe nor inputs
@@ -481,6 +481,88 @@ class BuildTest(unittest.TestCase):
                                                               os.path.basename(mine)]))
             self.assertIn("ko_list.gz", os.listdir(folder))
             self.assertEqual(self.ready(src, table, decoys), folder)
+
+    def test_the_fetch_fetches_and_the_build_computes(self):
+        # since 2026-11-11 the fetch stage fetches the set's inputs alone (until then it built the set too: its
+        # hmmsearch of ~230,000 candidates ran on the download node), and the build, the process stage's, fetches
+        # nothing
+        import json  # noqa: PLC0415
+        import shutil  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            src, table, _without, _none, binary = self.world(tmp)
+            folder = os.path.join(src, "eukore_markers")
+            decoys = os.path.join(tmp, "decoys.tsv")
+            with open(decoys, "w") as fh:
+                fh.write("locus\tdecoy\tname\tncbi\nMK1\tEFL\tits look-alike\tefl[title]\n")
+            sprot = os.path.join(folder, "uniprot_sprot.fasta.gz")
+            shutil.move(sprot, os.path.join(tmp, "sprot.gz"))
+            urls, queries = [], []
+
+            def download(url, dest):
+                urls.append(url)
+                if url == markers.SWISSPROT:
+                    shutil.copy(os.path.join(tmp, "sprot.gz"), dest)
+                else:
+                    with open(dest, "w") as fh:
+                        fh.write("UniProt Knowledgebase Release 2026_04 consists of:\n")
+
+            def proteins(term, path, log=print, scope=markers.NCBI_SCOPE):
+                queries.append((term, scope))
+                with gzip.open(path, "wt") as fh:
+                    fh.write(">XP_9.1 9606\nMSRQVAAAAA\n")
+            with mock.patch.object(markers, "score", side_effect=AssertionError("scored")), \
+                    mock.patch.object(markers, "ncbi_proteins", side_effect=proteins):
+                with self.assertRaisesRegex(OSError, r"2 of its inputs not fetched into .*--stage fetch"):
+                    markers.build(src, table, binary, 1, lambda *a: None, decoys)  # nothing fetched there
+                self.assertEqual(markers.fetch_inputs(src, table, download, lambda *a: None, decoys), folder)
+                self.assertEqual((urls[1:], queries), ([markers.SWISSPROT], [("efl[title]", markers.DECOY_SCOPE)]))
+                self.assertTrue(urls[0].endswith("/reldate.txt"))
+                self.assertEqual((markers.inputs_missing(src, table, decoys), self.ready(src, table)), ([], None))
+                urls.clear()
+                markers.fetch_inputs(src, table, download, lambda *a: None, decoys)  # all there: nothing fetched
+                self.assertEqual((urls, len(queries)), ([], 1))
+            self.assertEqual(markers.release_of(os.path.join(folder, markers.RELDATE)), "2026_04")
+            self.assertEqual(markers.release_of(os.path.join(folder, "none.txt")), "?")
+            with mock.patch.object(markers, "eutils", side_effect=AssertionError("NCBI asked")), \
+                    mock.patch.object(markers.urllib.request, "urlopen", side_effect=AssertionError("fetched")), \
+                    mock.patch.object(markers.urllib.request, "urlretrieve", side_effect=AssertionError("fetched")):
+                self.assertEqual(self.build(src, table, binary, decoys), folder)
+            self.assertEqual(self.ready(src, table, decoys), folder)
+            self.assertIn(markers.decoy_proteins({"decoy": "EFL", "ncbi": "efl[title]"}),
+                          json.loads(self.text(folder, "markers.json"))["inputs"])
+
+    def test_one_run_builds_the_set_the_others_wait(self):
+        # the process stage's (since 2026-11-11): a SLURM array's tasks start together, one builds, the others wait
+        # for its set and take it
+        import threading  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        from eukore import util  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            src, table, _without, decoys, binary = self.world(tmp)
+            folder = os.path.join(src, "eukore_markers")
+            said, got = [], []
+            with mock.patch.object(markers, "MIN_MEMBERS", 3), mock.patch.object(markers, "release_of",
+                                                                                 return_value="2026_04"):
+                with util.single_run(src, "markers"):  # another run's build
+                    waiter = threading.Thread(target=lambda: got.append(
+                        markers.prepare(src, binary, 1, said.append, table, decoys, wait=0.02)))
+                    waiter.start()
+                    waiter.join(0.3)
+                    self.assertTrue(waiter.is_alive())  # it waits
+                    markers.build(src, table, binary, 1, lambda *a: None, decoys)
+                waiter.join(10)
+                self.assertEqual(got, [folder])
+                self.assertEqual(len(said), 1)  # its one line: waiting; it built nothing
+                self.assertIn("another run builds the set", said[0])
+                self.assertFalse(os.path.exists(os.path.join(src, ".markers.lock")))
+                self.assertEqual(markers.prepare(src, binary, 1, said.append, table, decoys), folder)  # built: taken
+            # an input the fetch stage never fetched: said, no lock or half set left
+            os.remove(os.path.join(folder, "markers.json"))
+            os.remove(os.path.join(folder, "uniprot_sprot.fasta.gz"))
+            with self.assertRaisesRegex(OSError, r"marker set not built: 1 of its inputs not fetched .*--stage fetch"):
+                markers.prepare(src, binary, 1, said.append, table, decoys)
+            self.assertEqual(sorted(os.listdir(src)), ["eukore_markers", "taxdump.tar.gz"])
 
 
 if __name__ == "__main__":

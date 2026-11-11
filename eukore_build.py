@@ -10,9 +10,11 @@
 Stages:
 - fetch: the sources into WORK/sources or --sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
   BUSCO's eukaryota_odb12, EUKARYOME 2.1, ROD v1.2, RefSeq's organelle genomes, NCBI's FCS-GX and ANI reports, which
-  rank the genomes: eukore/quality.py, PR2's and KSGP's taxonomies, Eukore's marker set: KOfam's profiles, Swiss-Prot's
-  and NCBI's proteins, eukore/markers.py), then each species' genome (genomes.jobs) into OUT/genomes (--genomes);
-- process: each genome's BUSCO genes called (a genome searched for fewer than those called is run again) and its rRNA
+  rank the genomes: eukore/quality.py, PR2's and KSGP's taxonomies, the inputs of Eukore's marker set: KOfam's
+  profiles, Swiss-Prot's and NCBI's proteins, eukore/markers.py), then each species' genome (genomes.jobs) into
+  OUT/genomes (--genomes); downloads alone, nothing computed (since 2026-11-11);
+- process: Eukore's marker set built of its inputs where it is not (one process run at a time), then each genome's
+  BUSCO genes called (a genome searched for fewer than those called is run again) and its rRNA
   extracted (WORK/done/<accession>/); a genome not fetched yet waits for the next run; then the organelle genes
   (mitochondrial and plastid rRNA, mitochondrial COX1) of RefSeq's organelle genomes, and of the assemblies' own
   organelle molecules where RefSeq has none (WORK/organelle);
@@ -76,11 +78,12 @@ def say(text):
 
 # --- sources -----------------------------------------------------------------------------------------------------
 
-def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False, threads=1):
-    """Every source into src_dir (kept when there and whole). refresh (--refresh): those that choose the genomes and
-    their gene models fetched again (NCBI's assembly tables, its FCS-GX and ANI reports, the annotation indexes; each
-    old one kept where its download fails), so that the plan takes NCBI's newer assemblies and annotations. threads
-    (-t): the marker set's hmmsearch (its ~280,000 candidates; the fetch node is often a shared login node)."""
+def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False):
+    """Every source into src_dir (kept when there and whole), downloaded and unpacked, nothing computed (since
+    2026-11-11 the marker set's inputs alone, the process stage builds it: its hmmsearch of ~230,000 candidates ran on
+    the download node). refresh (--refresh): those that choose the genomes and their gene models fetched again
+    (NCBI's assembly tables, its FCS-GX and ANI reports, the annotation indexes; each old one kept where its download
+    fails), so that the plan takes NCBI's newer assemblies and annotations."""
     os.makedirs(os.path.join(src_dir, "ncbi_assemblies"), exist_ok=True)
     for group in groups:
         for kind, base in (("genbank", sources.ASSEMBLIES_URL), ("refseq", sources.REFSEQ_URL)):
@@ -104,9 +107,8 @@ def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False, threads=1):
     # (until 2026-11-06 one failure stopped the stage, NCBI's quality reports then missing from the genome ranking)
     for what, fetch in (("RefSeq's organelle release", lambda: organelle_mod.fetch(src_dir, sources.download, say)),
                         ("Rfam's SSU model", lambda: regions_mod.fetch(src_dir, sources.download, say)),
-                        ("Eukore's marker set (KOfam, Swiss-Prot, NCBI's proteins)",
-                         lambda: markers_mod.fetch(src_dir, sources.download, say, shutil.which("hmmsearch") or "hmmsearch",
-                                                   threads)),
+                        ("Eukore's marker set's inputs (KOfam, Swiss-Prot, NCBI's proteins)",
+                         lambda: markers_mod.fetch(src_dir, sources.download, say)),
                         ("ENA's list of TSA transcriptomes",
                          lambda: genomes.fetch_tsa(src_dir, sources.download, say, refresh)),
                         ("NCBI's FCS-GX and ANI reports",
@@ -223,17 +225,22 @@ def loci_of(opts, src_dir):
 
 
 def markers_of(opts, src_dir):
-    """Eukore's own marker dataset (markers.py; since 2026-11-07), or None (--no_markers, or not built: the fetch
-    stage builds it)."""
+    """Eukore's own marker dataset (markers.py; since 2026-11-07), or None (--no_markers, or not built: the process
+    stage builds it, since 2026-11-11; the fetch stage until then)."""
     return None if getattr(opts, "no_markers", False) else markers_mod.ready(src_dir)
 
 
-def called_loci(opts, src_dir):
+def called_loci(opts, src_dir, unbuilt=False):
     """The loci called: the BUSCOs (loci_of) and the markers, as every stage counts a genome done for them (since
     2026-11-08: the fetch stage and the package's warning counted the BUSCOs alone, so that a genome pruned before the
-    markers came was never fetched again for them)."""
+    markers came was never fetched again for them). unbuilt (the fetch stage's): data/markers.tsv's markers where the
+    set is not built from it yet (since 2026-11-11 the process stage builds it after the fetch)."""
     marker_folder = markers_of(opts, src_dir)
-    return loci_of(opts, src_dir) + (odb_mod.all_loci(marker_folder) if marker_folder else [])
+    if marker_folder:
+        return loci_of(opts, src_dir) + odb_mod.all_loci(marker_folder)
+    if unbuilt and not getattr(opts, "no_markers", False):
+        return loci_of(opts, src_dir) + [m["locus"] for m in markers_mod.read_table()]
+    return loci_of(opts, src_dir)
 
 
 def odb_of(opts, src_dir):
@@ -1418,7 +1425,7 @@ def _main(argv, held):
                 held.enter_context(util.single_run(src_dir, "fetch"))
         except util.RunHeld as e:
             sys.exit(f"--stage fetch: {e}")
-        fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh, opts.threads)
+        fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh)
     try:
         ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
     except FileNotFoundError:  # said so since 2026-11-11 (a new WORK's array crashed with a traceback in every task)
@@ -1436,7 +1443,8 @@ def _main(argv, held):
     # the genomes and their annotations fetched (--downloads at a time, through --local_tmp), by `all` too (until
     # 2026-11-06 `all` left them to the process stage's workers, --local_tmp and --downloads unused)
     if "fetch" in opts.stages:
-        loci = called_loci(opts, src_dir)  # the BUSCOs and the markers: a genome not searched for one is fetched again
+        # the BUSCOs and the markers: a genome not searched for one is fetched again
+        loci = called_loci(opts, src_dir, unbuilt=True)
         # a done genome no longer here is fetched again where better gene models than its run took are there
         # (genomes.better_annotation): the process stage runs it again with them
         again = {a for a, j in job_map.items() if j["url"] and not j.get("path")
@@ -1566,6 +1574,15 @@ def _main(argv, held):
         os.makedirs(opts.scratch, exist_ok=True)
         os.environ["TMPDIR"] = tempfile.tempdir = os.path.abspath(opts.scratch)
     if "process" in opts.stages:
+        # the marker set built of the inputs the fetch stage fetched, before the genomes it is called in (since
+        # 2026-11-11: the fetch stage built it, on the download node); one process run at a time, the others wait
+        if not getattr(opts, "no_markers", False):
+            try:
+                markers_mod.prepare(src_dir, opts.hmmsearch, opts.threads, say)
+            except OSError as e:
+                old = markers_of(opts, src_dir)
+                say(f"WARNING: {e}: the genomes are called " + (f"with the set of before ({old})" if old else
+                                                                "without Eukore's markers"))
         # a run without the fetch stage fetches nothing: a genome not here waits for a later run
         settings = settings_of(opts, src_dir, ncbi, staged_only="fetch" not in opts.stages)
         began = time.time()
@@ -1657,8 +1674,9 @@ def _main(argv, held):
             # since 2026-11-10 also a set built by other rules or from other input files (markers.ready's recipe and
             # inputs), not only one of before the decoys
             say("WARNING: the marker set was not built by this code's rules, tables and input files (a set of "
-                "before data/marker_decoys.tsv's decoys, EFL for EF-1a, among them): run --stage fetch to build it "
-                "again; until then the old set serves, a genome holding EFL alone may have it as its TEF1")
+                "before data/marker_decoys.tsv's decoys, EFL for EF-1a, among them): run --stage fetch, then --stage "
+                "process, to build it again; until then the old set serves, a genome holding EFL alone may have it as "
+                "its TEF1")
         with timed(stages, "BUSCO copies and their checks"):
             # the marker copies checked again by the set's profiles, decoys too (since 2026-11-09: markers.recheck)
             collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads,

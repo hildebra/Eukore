@@ -200,12 +200,15 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
     (`WORK/sources/labels`), Rfam's eukaryote SSU model (`WORK/sources/rfam`), ENA's list of eukaryote TSA sets
     (`WORK/sources/tsa`). MIDORI2 and BOLD are not fetched (their URLs change, BOLD's bulk data needs a login): give
     them with `--midori2` and `--bold_tsv`.
-  - since 0.2, Eukore's marker set (`WORK/sources/eukore_markers`, `eukore/markers.py`): KOfam's `ko_list` and its
-    markers' and decoys' profiles (out of KOfam's 1.6 GB archive, fetched in 16 ranges at once and deleted),
-    Swiss-Prot's eukaryote proteins (~90 MB, EBI's FTP) and NCBI's proteins named as each marker (`data/markers.tsv`'s
-    Entrez query: RefSeq's of every eukaryote, GenBank's of the protists; 3 per organism, by E-utilities), scored with
-    the profiles (hmmsearch, on `-t` threads) into the markers' query proteins, one per species. About an hour, most
-    of it NCBI's; what it was made of is the package manifest's `inputs.markers`.
+  - since 0.2, the inputs of Eukore's marker set (`WORK/sources/eukore_markers`, `eukore/markers.py`): KOfam's
+    `ko_list` and its markers' and decoys' profiles (out of KOfam's 1.6 GB archive, fetched in 16 ranges at once and
+    deleted), Swiss-Prot's eukaryote proteins (~90 MB, EBI's FTP) and NCBI's proteins named as each marker
+    (`data/markers.tsv`'s Entrez query: RefSeq's of every eukaryote, GenBank's of the protists; 3 per organism, by
+    E-utilities), and those of each decoy (`data/marker_decoys.tsv`). Most of an hour, NCBI's. The process stage
+    builds the set of them (below; since 2026-11-11 the fetch stage did, its hmmsearch on the download node).
+
+  The fetch stage downloads and unpacks; it computes nothing, so a cluster's download node (`tools/eukore.sh fetch`)
+  needs few cores.
 
   It also fetches the transcriptomes of species without a genome and the intraspecific panel's further assemblies,
   as it fetches genomes.
@@ -219,7 +222,12 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   `--veupathdb_key`), else Ensembl's, else TOGA2's (their indexes fetched once into `SRC/annotation_sources`); the process stage takes a BUSCO copy's
   model from it where the HMM confirms it ([methods.md](methods.md)), compares miniprot's models with it
   (`annotation.tsv`) and deletes it.
-- **process** calls each fetched genome's BUSCOs and extracts its rRNA into `WORK/done/<accession>.zip` (one file a
+- **process** first builds Eukore's marker set where it is not built from this code's tables, rules and inputs:
+  the candidates scored with the KOfam profiles (hmmsearch, on `-t` threads) into the markers' query proteins, one
+  per species, and the decoys' profiles (hmmalign, hmmbuild); the scores are kept for a rebuild; what it was made of is the package manifest's `inputs.markers`. One process run builds it at a time (a
+  lock in its folder): a SLURM array's other tasks wait for it. An input missing (the fetch stage never fetched it)
+  is said, and the genomes are called with the set of before, or without Eukore's markers. Then it
+  calls each fetched genome's BUSCOs and extracts its rRNA into `WORK/done/<accession>.zip` (one file a
   genome since 2026-11-10; `--done_folders`: a folder of 8-14 small files, as before), `-j` genomes at a
   time with `-t / -j` threads each, the largest first (since 2026-11-08; the rRNA and the assembly metadata run beside
   miniprot). A genome not fetched yet is left for the next run; so is one whose annotation the fetch stage has not

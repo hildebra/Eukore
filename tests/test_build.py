@@ -524,9 +524,10 @@ class ChainTest(unittest.TestCase):
             eukore_build.main(["--build_dir", tmp, "--out", tmp, "--stage", "fetch,package"])
         self.assertIn("stages that follow one another", err.getvalue())
 
-    def run_main(self, tmp, stage, waiting=(), extra=()):
+    def run_main(self, tmp, stage, waiting=(), extra=(), prepare=None):
         """main() of --stage (and the options extra), its plan empty and its passes stand-ins -> (its exit, or
-        "package" where it came to the package stage; the stand-ins by name, Ncbi's among them; its STDOUT)."""
+        "package" where it came to the package stage; the stand-ins by name, Ncbi's and the marker set's build
+        (prepare: its side effect) among them; its STDOUT)."""
         import contextlib  # noqa: PLC0415
         import io  # noqa: PLC0415
         import eukore_build  # noqa: PLC0415
@@ -543,6 +544,8 @@ class ChainTest(unittest.TestCase):
                       for name, value in (("inside_of", None), ("plan", ({}, {})), ("extras_of", {}),
                                           ("settings_of", {}), ("run_genomes", (list(waiting), [])))}
             called["Ncbi"] = stack.enter_context(mock.patch.object(eukore_build.ncbi_mod, "Ncbi"))
+            called["prepare"] = stack.enter_context(mock.patch.object(eukore_build.markers_mod, "prepare",
+                                                                      side_effect=prepare))
             stack.enter_context(mock.patch.object(eukore_build.shutil, "which", side_effect=lambda t: "/x/" + t))
             stack.enter_context(mock.patch.object(eukore_build.rrna, "check_itsx", return_value=None))
             called.update({n: stack.enter_context(mock.patch.object(eukore_build, n)) for n in passes})
@@ -578,6 +581,37 @@ class ChainTest(unittest.TestCase):
             got, _called, text, _tmpdir = self.run_main(tmp, "process", waiting)
             self.assertEqual(got, 0)
             self.assertIn("run again (--stage fetch first on a cluster)", text)
+
+    def test_the_process_stage_builds_the_marker_set(self):
+        # since 2026-11-11 the fetch stage fetches the set's inputs alone (it built the set, its hmmsearch of ~230,000
+        # candidates on the download node): the process stage builds it before its genomes, or says why not
+        import argparse  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "work", "sources")
+            before = []  # whether the genomes had run when it was built (run_genomes is run_main's stand-in then)
+            got, called, text, _tmpdir = self.run_main(
+                tmp, "process", prepare=lambda *a: before.append(eukore_build.run_genomes.called))
+            self.assertEqual((got, before), (0, [False]))
+            self.assertEqual(called["prepare"].call_args.args[:3], (src, "hmmsearch", 8))
+            got, called, text, _tmpdir = self.run_main(tmp, "process", prepare=OSError("marker set not built: no"))
+            self.assertEqual(got, 0)  # the genomes called all the same
+            self.assertIn("WARNING: marker set not built: no: the genomes are called without Eukore's markers", text)
+            self.assertEqual(called["run_genomes"].call_count, 1)
+            got, called, _text, _tmpdir = self.run_main(tmp, "process", extra=["--no_markers"])
+            self.assertFalse(called["prepare"].called)
+            with mock.patch.object(eukore_build, "fetch_sources"):
+                got, called, _text, _tmpdir = self.run_main(tmp, "fetch")
+            self.assertEqual(got, "package")  # stopped at run_main's called_loci
+            self.assertFalse(called["prepare"].called)  # the fetch stage builds nothing
+        # the fetch stage counts a done genome's markers before their set is built (data/markers.tsv's)
+        table = [m["locus"] for m in eukore_build.markers_mod.read_table()]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(eukore_build, "loci_of", return_value=["B1"]):
+            for no_markers, unbuilt, loci in ((False, False, ["B1"]), (False, True, ["B1"] + table),
+                                              (True, True, ["B1"])):
+                self.assertEqual(eukore_build.called_loci(argparse.Namespace(no_markers=no_markers), tmp, unbuilt),
+                                 loci)
 
     def test_sources_of_their_own(self):
         # --sources (since 2026-11-11): the sources apart from WORK, e.g. kept on a file system that keeps its files

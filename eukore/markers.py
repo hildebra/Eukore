@@ -8,7 +8,9 @@ by KEGG's KOfam profiles: its ortholog's (targets) and its paralogs' (decoys). T
 genome's candidates are scored against (odb.Odb.hmm_db): a region whose best profile is a decoy's is not the marker
 (loci.confirm's rule, the BUSCOs' own: the locus' HMM must score it best).
 
-The build (fetch, WORK/sources/eukore_markers):
+The build (SOURCES/eukore_markers): its inputs fetched by the fetch stage (fetch(), fetch_inputs()), the set built of
+them by the process stage, which fetches nothing (prepare(), build(); since 2026-11-11: the fetch stage built it too,
+its hmmsearch of ~230,000 candidates on the download node):
 - KOfam's ko_list (each KO's threshold and score type) and the targets' and decoys' profiles, taken out of its
   profiles archive (~1.6 GB, fetched in ranges at once and deleted; a copy beside the folder is read and kept);
 - the candidates: Swiss-Prot's eukaryote proteins (~90 MB from EBI's FTP; UniProt's REST export of the Pfam families
@@ -47,6 +49,7 @@ import statistics
 import subprocess
 import tarfile
 import tempfile
+import time
 import urllib.request
 
 from . import util
@@ -67,6 +70,8 @@ RECIPE = 1  # the build's rules: raised with a change of them that none of recip
 KOFAM = "https://www.genome.jp/ftp/db/kofam"
 SWISSPROT = ("https://ftp.ebi.ac.uk/pub/databases/uniprot/current_release/knowledgebase/complete/"
              "uniprot_sprot.fasta.gz")  # its eukaryote proteins: the candidates (UniProt's REST export is too slow)
+RELDATE = "uniprot_reldate.txt"  # Swiss-Prot's reldate.txt, fetched beside it (its release, the state's `swissprot`)
+WAIT = 30  # seconds between looks at the set another run builds (prepare)
 LENGTH_RANGE = (0.6, 1.6)
 TYPICAL = 0.1  # of a species' records, those within this share of the median length first
 CUTOFF_SHARE = 0.5
@@ -119,8 +124,8 @@ def ready(src_dir, table=TABLE, decoys=None):
     build saying so), else None. Given decoys, since 2026-11-10 it is also built by this code's rules (recipe()) and
     from the inputs its folder holds now (the state's `inputs`: KOfam's ko_list and profiles, Swiss-Prot's file,
     NCBI's proteins' files, by their MD5s; one that is replaced or deleted makes the set stale, so a newer Swiss-Prot
-    put there, or ncbi/ emptied, is built from at the next fetch stage): a set of before has neither and is built
-    again there, its caches read."""
+    put there, or ncbi/ emptied, is built from by the next process stage, after a fetch stage where one is missing):
+    a set of before has neither and is built again there, its caches read."""
     folder = folder_of(src_dir)
     try:
         with open(os.path.join(folder, STATE)) as fh:
@@ -360,6 +365,11 @@ def ncbi_proteins(term, path, log=print, scope=NCBI_SCOPE):
                 os.remove(util.part_of(path))
             raise
         os.replace(util.part_of(path), path)
+    return read_proteins(path)
+
+
+def read_proteins(path):
+    """ncbi_proteins' cache -> [dict(accession, organism_id, sequence)]."""
     out = []
     with gzip.open(path, "rt") as fh:
         for line in fh:
@@ -376,12 +386,13 @@ def release_id(text):
     return found.group(1) if found else text
 
 
-def release_of(url):
-    """UniProt's release (release_id of its reldate.txt), or "?"."""
+def release_of(path):
+    """UniProt's release (release_id of its reldate.txt, fetched into path: fetch_inputs), or "?" (since 2026-11-11 a
+    file: the build asked UniProt's site, which the process stage does not)."""
     try:
-        with urllib.request.urlopen(url, timeout=60) as r:
-            return release_id(r.read().decode().splitlines()[0].strip())
-    except (OSError, IndexError):
+        with open(path) as fh:
+            return release_id(fh.readline().strip()) or "?"
+    except OSError:
         return "?"
 
 
@@ -630,19 +641,20 @@ def swap(folder, new):
     shutil.rmtree(old, ignore_errors=True)
 
 
-def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, download=None, decoys=DECOYS):
-    """The marker dataset (module docstring) -> its folder. decoys: the table of decoys KEGG has no KO of
-    (decoy_profile; since 2026-11-09). Since 2026-11-10 the set is written to a folder of its own beside the final one
-    (util.part_of's name) and put in its place when it is whole (swap()), the caches staying in the final one until
-    then: until then hmms/ and decoys/ were emptied and written anew in the folder itself, under the old
-    markers.json, so that a build that failed half-way, or one going on, left a half set ready() took."""
+def build(src_dir, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, decoys=DECOYS):
+    """The marker dataset (module docstring) of the inputs fetched (fetch_inputs; nothing is fetched here) -> its
+    folder. decoys: the table of decoys KEGG has no KO of (decoy_profile; since 2026-11-09). Since 2026-11-10 the set is
+    written to a folder of its own beside the final one (util.part_of's name) and put in its place when it is whole
+    (swap()), the caches staying in the final one until then: until then hmms/ and decoys/ were emptied and written
+    anew in the folder itself, under the old markers.json, so that a build that failed half-way, or one going on, left
+    a half set ready() took."""
     folder, new = folder_of(src_dir), util.part_of(folder_of(src_dir))
     recover(src_dir, log)
     os.makedirs(folder, exist_ok=True)
     shutil.rmtree(new, ignore_errors=True)
     os.mkdir(new)
     try:
-        write_set(src_dir, new, table, hmmsearch, threads, log, download, decoys)
+        write_set(src_dir, new, table, hmmsearch, threads, log, decoys)
         swap(folder, new)
     except BaseException:
         if os.path.isdir(folder) and os.path.isdir(new):  # else a swap cut between its renames: recover()'s
@@ -660,16 +672,58 @@ def query_tag(term, scope):
     return hashlib.md5(f"{term} {scope}".encode()).hexdigest()[:8]
 
 
-def write_set(src_dir, new, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, download=None, decoys=DECOYS):
-    """build()'s work: the caches fetched into the marker folder, the set (SET) written into new, markers.json last."""
-    folder = folder_of(src_dir)
+def kofam_wanted(markers):
+    """The KOs whose profiles a marker table names (targets and decoys), sorted."""
+    return sorted({k for m in markers for k in m["targets"] + m["decoys"]})
+
+
+def marker_proteins(marker):
+    """A marker's NCBI proteins' file in the marker folder (its query's: an edited query is fetched anew)."""
+    return f"ncbi/{marker['locus']}.{query_tag(marker['ncbi'], NCBI_SCOPE)}.faa.gz"
+
+
+def decoy_proteins(row):
+    """A decoy's (data/marker_decoys.tsv's row) NCBI proteins' file in the marker folder."""
+    return f"ncbi/decoy-{row['decoy']}.{query_tag(row['ncbi'], DECOY_SCOPE)}.faa.gz"
+
+
+def inputs_wanted(table=TABLE, decoys=DECOYS):
+    """The files in the marker folder the build reads (fetch_inputs fetches them) -> [name]: KOfam's ko_list and the
+    table's KOs' profiles, Swiss-Prot's proteins, NCBI's proteins of each marker's query and of each decoy's."""
     markers = read_table(table)
-    decoy_rows = read_decoys(decoys)
+    loci = {m["locus"] for m in markers}
+    return (["ko_list.gz", "uniprot_sprot.fasta.gz"] + [f"kofam/{k}.hmm" for k in kofam_wanted(markers)]
+            + [marker_proteins(m) for m in markers if m.get("ncbi")]
+            + [decoy_proteins(d) for d in read_decoys(decoys) if d["locus"] in loci])
+
+
+def inputs_missing(src_dir, table=TABLE, decoys=DECOYS):
+    """inputs_wanted's files not in the marker folder -> [name]."""
+    folder = folder_of(src_dir)
+    return [n for n in inputs_wanted(table, decoys) if not os.path.isfile(os.path.join(folder, n))]
+
+
+def fetch_inputs(src_dir, table=TABLE, download=None, log=print, decoys=DECOYS):
+    """The files the build reads (inputs_wanted) and Swiss-Prot's release date fetched into the marker folder, each
+    kept where it is there; nothing is computed (the fetch stage's, since 2026-11-11: build() fetched them)."""
+    folder = folder_of(src_dir)
+    os.makedirs(os.path.join(folder, "ncbi"), exist_ok=True)
+    get = download or (lambda u, d: urllib.request.urlretrieve(u, d))
+    reldate = os.path.join(folder, RELDATE)
+    if not os.path.isfile(reldate):
+        try:
+            get(SWISSPROT.rsplit("/", 1)[0] + "/reldate.txt", reldate)
+        except OSError as e:  # the state's release then "?"
+            log(f"WARNING: markers: Swiss-Prot's release date not fetched ({e})")
+    if not inputs_missing(src_dir, table, decoys):
+        log(f"markers: the set's inputs are there ({folder})")
+        return folder
+    markers = read_table(table)
     listing = os.path.join(folder, "ko_list.gz")
     if not os.path.isfile(listing):
-        (download or (lambda u, d: urllib.request.urlretrieve(u, d)))(f"{KOFAM}/ko_list.gz", listing)
+        get(f"{KOFAM}/ko_list.gz", listing)
     kos = ko_list(listing)
-    wanted = sorted({k for m in markers for k in m["targets"] + m["decoys"]})
+    wanted = kofam_wanted(markers)
     missing = [k for k in wanted if k not in kos]
     if missing:
         raise ValueError(f"data/markers.tsv: KOs KOfam does not hold: {missing}")
@@ -678,19 +732,44 @@ def write_set(src_dir, new, table=TABLE, hmmsearch="hmmsearch", threads=1, log=p
     sprot = os.path.join(folder, "uniprot_sprot.fasta.gz")
     if not os.path.isfile(sprot):
         log(f"markers: fetching Swiss-Prot ({SWISSPROT})")
-        (download or (lambda u, d: urllib.request.urlretrieve(u, d)))(SWISSPROT, sprot)
+        get(SWISSPROT, sprot)
+    loci = {m["locus"] for m in markers}
+    for term, name, scope in ([(m["ncbi"], marker_proteins(m), NCBI_SCOPE) for m in markers if m.get("ncbi")]
+                              + [(d["ncbi"], decoy_proteins(d), DECOY_SCOPE) for d in read_decoys(decoys)
+                                 if d["locus"] in loci]):
+        if not os.path.isfile(os.path.join(folder, name)):
+            ncbi_proteins(term, os.path.join(folder, name), log, scope)
+    return folder
+
+
+def write_set(src_dir, new, table=TABLE, hmmsearch="hmmsearch", threads=1, log=print, decoys=DECOYS):
+    """build()'s work: the set (SET) written into new of the inputs in the marker folder (an input missing is an
+    OSError: nothing is fetched here), the caches into the marker folder, markers.json last."""
+    folder = folder_of(src_dir)
+    missing = inputs_missing(src_dir, table, decoys)
+    if missing:
+        raise OSError(f"{len(missing)} of its inputs not fetched into {folder} (e.g. {missing[:3]}): --stage fetch "
+                      "fetches them")
+    markers = read_table(table)
+    decoy_rows = read_decoys(decoys)
+    listing = os.path.join(folder, "ko_list.gz")
+    kos = ko_list(listing)
+    wanted = kofam_wanted(markers)
+    missing = [k for k in wanted if k not in kos]
+    if missing:
+        raise ValueError(f"data/markers.tsv: KOs KOfam does not hold: {missing}")
+    sprot = os.path.join(folder, "uniprot_sprot.fasta.gz")
     from .ncbi import Ncbi  # noqa: PLC0415
     ncbi = Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
     eukaryote = functools.lru_cache(maxsize=None)(lambda t: 2759 in ncbi.ancestors(ncbi.merged.get(t, t)))
     rows = {r["accession"]: r for r in swissprot(sprot, eukaryote)}
-    release = release_of(SWISSPROT.rsplit("/", 1)[0] + "/reldate.txt")
-    os.makedirs(os.path.join(folder, "ncbi"), exist_ok=True)
+    release = release_of(os.path.join(folder, RELDATE))
     from_ncbi = {}
     inputs = ["ko_list.gz", "kofam.hmm", "uniprot_sprot.fasta.gz"]  # the state's `inputs` (ready()), with ncbi/'s
     for m in markers:  # NCBI's proteins gathered by name (Swiss-Prot holds few species): the profiles decide
         if m.get("ncbi"):
-            name = f"ncbi/{m['locus']}.{query_tag(m['ncbi'], NCBI_SCOPE)}.faa.gz"
-            got = ncbi_proteins(m["ncbi"], os.path.join(folder, name), log)
+            name = marker_proteins(m)
+            got = read_proteins(os.path.join(folder, name))
             inputs.append(name)
             from_ncbi[m["locus"]] = len(got)
             for r in got:
@@ -738,7 +817,7 @@ def write_set(src_dir, new, table=TABLE, hmmsearch="hmmsearch", threads=1, log=p
         for d in [d for d in decoy_rows if d["locus"] == m["locus"]]:
             built[d["decoy"]], over = decoy_profile(d, m, kept, sorted(own[r["accession"]] for r in kept), folder, db,
                                                     hmmsearch, threads, log, new)
-            inputs.append(f"ncbi/decoy-{d['decoy']}.{query_tag(d['ncbi'], DECOY_SCOPE)}.faa.gz")
+            inputs.append(decoy_proteins(d))
             paralogs |= over
         kept = [r for r in kept if r["accession"] not in paralogs]
         if len(kept) < MIN_MEMBERS:
@@ -813,9 +892,7 @@ def decoy_profile(row, marker, members_, member_scores, folder, kofam_db, hmmsea
     (hmmbuild)."""
     from .benchmarks import kmers  # noqa: PLC0415
     tag = query_tag(row["ncbi"], DECOY_SCOPE)
-    os.makedirs(os.path.join(folder, "ncbi"), exist_ok=True)
-    got = ncbi_proteins(row["ncbi"], os.path.join(folder, "ncbi", f"decoy-{row['decoy']}.{tag}.faa.gz"), log,
-                        DECOY_SCOPE)
+    got = read_proteins(os.path.join(folder, decoy_proteins(row)))  # fetch_inputs fetched them
     seqs = {r["accession"]: r["sequence"] for r in got if r["sequence"]}
     scores = score(seqs, kofam_db, hmmsearch, threads,
                    os.path.join(folder, f"scores.decoy-{row['decoy']}.{tag}.tsv.gz"))
@@ -916,14 +993,47 @@ def recheck(folder, hmmsearch="hmmsearch", threads=1):
     return paralogs
 
 
-def fetch(src_dir, download=None, log=print, hmmsearch="hmmsearch", threads=1):
-    """The marker dataset, built where it is not built from this table yet (the fetch stage's) -> its folder; a build
-    that fails is an OSError (the fetch stage goes on without it), whatever failed (since 2026-11-08: an NCBI reply
-    without its count, or of bad XML, stopped the fetch stage and every source after this one)."""
+def fetch(src_dir, download=None, log=print):
+    """The marker dataset's inputs fetched (fetch_inputs; the fetch stage's) -> the marker folder. The set is built of
+    them by the process stage (prepare; since 2026-11-11: here, its hmmsearch on the download node). A fetch that fails
+    is an OSError (the fetch stage goes on without it), whatever failed (since 2026-11-08: an NCBI reply without its
+    count, or of bad XML, stopped the fetch stage and every source after this one)."""
     try:
-        return ready(src_dir, TABLE, DECOYS) or build(src_dir, TABLE, hmmsearch, threads, log, download, DECOYS)
+        return fetch_inputs(src_dir, TABLE, download, log, DECOYS)
     except Exception as e:  # noqa: BLE001
-        raise OSError(f"marker set not built: {type(e).__name__}: {e}") from e
+        raise OSError(f"marker set's inputs not fetched: {type(e).__name__}: {e}") from e
+
+
+def prepare(src_dir, hmmsearch="hmmsearch", threads=1, log=print, table=TABLE, decoys=DECOYS, wait=WAIT):
+    """The marker dataset built where it is not built from this table, decoy table, rules and inputs yet (ready()), of
+    the inputs the fetch stage fetched (the process stage's, since 2026-11-11) -> its folder. One run builds it at a
+    time (a lock in the marker folder: a SLURM array's tasks start together); the others wait for it and take its set,
+    or build it themselves where its build failed. A build that fails is an OSError (the stage goes on without it, or
+    with the set of before), whatever failed."""
+    said = False
+    while True:
+        folder = ready(src_dir, table, decoys)
+        if folder:
+            return folder
+        try:
+            # the lock beside the marker folder, not in it: swap() moves the folder's files that are not the set's
+            with util.single_run(src_dir, "markers"):
+                folder = ready(src_dir, table, decoys)
+                if folder:  # built by the run that held the lock
+                    return folder
+                missing = inputs_missing(src_dir, table, decoys)
+                if missing:
+                    raise OSError(f"marker set not built: {len(missing)} of its inputs not fetched into "
+                                  f"{folder_of(src_dir)} (e.g. {missing[:3]}): --stage fetch fetches them")
+                try:
+                    return build(src_dir, table, hmmsearch, threads, log, decoys)
+                except Exception as e:  # noqa: BLE001
+                    raise OSError(f"marker set not built: {type(e).__name__}: {e}") from e
+        except util.RunHeld as e:
+            if not said:
+                log(f"markers: another run builds the set ({e}): waiting for it")
+                said = True
+            time.sleep(wait)
 
 
 def state_of(folder):
