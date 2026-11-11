@@ -360,15 +360,46 @@ def itsx_groups(ncbi, taxid):
     return ",".join(sets) or "all"
 
 
+_EMPTY_SETS = {}  # {ITSx's path: its profile sets without profiles} (empty_sets), once per process
+
+
+def empty_sets(itsx):
+    """ITSx's profile sets without profiles: an empty or missing <set>.hmm in the ITSx_db/HMMs beside it (bioconda's
+    ITSx 1.1.3 of 2017: N.hmm, Microsporidia's, of 0 bytes; -t all searches the others, a microsporidian's -t F,N failed
+    every run) -> their letters; none where that folder is not found (the sets left as they are)."""
+    if itsx not in _EMPTY_SETS:
+        out = set()
+        for base in dict.fromkeys((os.path.dirname(itsx), os.path.dirname(os.path.realpath(itsx)))):
+            folder = os.path.join(base, "ITSx_db", "HMMs")
+            if os.path.isdir(folder):
+                for letter in set(ITSX_SETS.values()):
+                    path = os.path.join(folder, f"{letter}.hmm")
+                    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                        out.add(letter)
+                break
+        _EMPTY_SETS[itsx] = out
+    return _EMPTY_SETS[itsx]
+
+
+def usable_sets(sets, itsx):
+    """An ITSx -t (itsx_groups) without the sets ITSx has no profiles of (empty_sets; since 2026-11-11), "all" where
+    none is left, as for a taxon of no set."""
+    if sets == "all":
+        return sets
+    empty = empty_sets(itsx)
+    return ",".join(s for s in sets.split(",") if s not in empty) or "all"
+
+
 def run_itsx(stretches, itsx, threads=1, groups=None):
     """{stretch: ITSx's positions {region: (begin, end) 1-based}} for each distinct stretch. groups: {stretch: ITSx's
-    -t (itsx_groups)}, one ITSx run per distinct -t; none given: all sets."""
+    -t (itsx_groups)}, one ITSx run per distinct -t; none given: all sets. A set ITSx has no profiles of is left out
+    (usable_sets)."""
     if not stretches or not itsx:
         return {}
     groups = groups or {}
     by_set = collections.defaultdict(list)
     for s in dict.fromkeys(stretches):
-        by_set[groups.get(s, "all")].append(s)
+        by_set[usable_sets(groups.get(s, "all"), itsx)].append(s)
     out = {}
     for sets, part in sorted(by_set.items()):
         out.update(_itsx(part, itsx, threads, sets))
