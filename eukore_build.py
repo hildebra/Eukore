@@ -42,6 +42,7 @@ import json
 import multiprocessing
 import os
 import random
+import re
 import shlex
 import shutil
 import socket
@@ -433,7 +434,7 @@ def run_genomes(opts, job_map, settings, extras=None):
         + (f", {again} of them again for better gene models" if again else "")
         + (f", and {len(panel)} of the intraspecific panel's further assemblies" if panel else "")
         + ("" if settings["tiara"] else " (no tiara: windows not classified)"))
-    waiting, failed = [], []
+    waiting, failed, unnoted = [], [], 0
     # killed runs' partial folders and (a packed genome's half-written file; since 2026-11-10) files; not those of
     # another build's genomes going on (their claims live)
     for leftover in genomes.stale_partials(opts.work) + (genomes.stale_scratch(opts.work, opts.scratch)
@@ -465,6 +466,8 @@ def run_genomes(opts, job_map, settings, extras=None):
                     held.append(acc)
             elif why and acc in job_map:  # the panel's: a later run tries again, the package goes on without
                 (waiting if why == "not fetched yet" else failed).append((acc, why))
+            if not skipped:  # each failed genome's why in WORK/failed (the panel's too), its note gone once done
+                unnoted += not genomes.note_failed(opts.work, acc, why)
             progress.step(sizes[acc], failed=bool(why) and not skipped, skipped=skipped, note=note())
         if opts.genomes_only or not held:  # --genomes_only: those genomes are the other builds', as are the passes
             break
@@ -473,7 +476,19 @@ def run_genomes(opts, job_map, settings, extras=None):
         todo = genomes_to_run(opts, {a: job_map[a] for a in held if a in job_map}, settings)[0] \
             + genomes_to_run(opts, {a: extras[a] for a in held if a in extras}, panel_settings(settings))[0]
         say(f"  the other builds' {len(held):,} genomes ended: {len(todo):,} of them left to run here")
+    if unnoted:
+        say(f"WARNING: {unnoted:,} genomes' failures or ends could not be noted in "
+            f"{os.path.join(opts.work, genomes.FAILED)} (the WORK full?): the log's reasons alone tell them")
     return waiting, failed
+
+
+def failure_kinds(failed, top=6):
+    """[(accession, why)] -> the most common reasons as text ("12x OSError: [Errno 28] No space left on device: ..."),
+    each reason without its paths and quoted names (one genome's from another's)."""
+    kinds = collections.Counter(
+        re.sub(r"'[^']*'|\"[^\"]*\"|/\S+", "...", " ".join(why.split()))[:120] for _acc, why in failed)
+    shown = "; ".join(f"{n:,}x {why}" for why, n in kinds.most_common(top))
+    return shown + (f"; {len(kinds) - top:,} other reasons" if len(kinds) > top else "")
 
 
 def others_end(opts, held, poll=60):
@@ -1611,8 +1626,14 @@ def _main(argv, held):
         # call that failed (it fails again): `all` packages without those (until 2026-11-06 it waited for them forever)
         retry = waiting + [(a, w) for a, w in failed if w.startswith("fetch failed: ") and not placement.given_up(
             {"status": "failed: " + w[len("fetch failed: "):]})]
+        # every genome failed and not done since, of every build on the WORK (since 2026-11-11: this run's three
+        # alone, as examples, in its log)
+        noted = genomes.failed_table(opts.work)
         if failed:
-            say(f"{len(failed)} genomes failed (e.g. {failed[:3]})")
+            say(f"{len(failed)} genomes failed (e.g. {failed[:3]}), by reason: {failure_kinds(failed)}")
+        if noted:
+            say(f"{len(noted):,} genomes failed and not done, of every build on the WORK, with their reasons: "
+                f"{os.path.join(opts.work, genomes.FAILED_TABLE)}")
         if retry:
             # a run that fetches (`all`) stops here, its rerun fetches them; one that does not (a cluster's
             # process,package, since 2026-11-10) can not mend them and packages without them, as --stage package does

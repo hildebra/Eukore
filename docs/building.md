@@ -239,7 +239,10 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   genome at a time under its claim (the backfill, the metadata), the others left to one run after them all (since
   2026-11-09; above). A failed rRNA extraction no longer fails its genome (since 2026-11-10: its calls were
   thrown away and made again by every run): the genome is done, `done.json` notes `rrna_failed`, and the backfill
-  tries the rRNA again. A dataset species' genome, called again for each hold-out, has miniprot's index built
+  tries the rRNA again. A genome whose run fails has its reason noted in `WORK/failed/<accession>.txt` (with the
+  time, host and SLURM job) until a later run does it, and each run's process stage ends by listing those of every
+  run on the WORK in `WORK/failed.tsv` and its own failures by reason in its log (since 2026-11-11: the log named
+  three of them; a full WORK, which notes nothing, still gets its reasons counted in the log). A dataset species' genome, called again for each hold-out, has miniprot's index built
   once in `--local_tmp` and read by the later calls (since 2026-11-10; genomes up to 4 Gb, some 4-8 bytes a
   base on the node's disk while the genome runs). A worker process that dies (the OOM killer,
   a crash) stops the stage with a message; a rerun goes on (since 0.2.2: the stage waited for it forever). A genome

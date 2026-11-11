@@ -20,7 +20,8 @@ genome has a RefSeq copy (gbrs_paired_asm), that copy is fetched: RefSeq screens
 A genome is done when WORK/done/<accession>/done.json is written (last); a run calls and extracts only the genomes not
 done, so that one killed goes on where it stopped. Its results are a folder WORK/done/<accession>/ or, packed (since
 2026-11-10; store.py), the one file WORK/done/<accession>.zip: every read and change of them goes through store,
-which takes both.
+which takes both. A genome whose run failed has a note WORK/failed/<accession>.txt until it is done (note_failed),
+and WORK/failed.tsv lists those notes at the end of each build's process stage (failed_table; since 2026-11-11).
 """
 
 import collections
@@ -883,6 +884,72 @@ def stale_partials(work):
             live.append(os.path.basename(c)[1:-len(".claim")])
     return [p for p in glob.glob(os.path.join(work, "done", ".*.partial"))
             if not any(os.path.basename(p).endswith((f".{a}.partial", f".{a}{store.EXT}.partial")) for a in live)]
+
+
+FAILED = "failed"            # WORK/failed/<accession>.txt: a genome's last failed run (note_failed; since 2026-11-11)
+FAILED_TABLE = "failed.tsv"  # WORK/: those notes of the genomes not done, one row each (failed_table)
+FAILED_COLUMNS = ("accession", "when", "host", "slurm_job", "why")
+
+
+def note_failed(work, accession, why):
+    """A genome's run noted: where it failed (why), WORK/failed/<accession>.txt written whole (when, host, SLURM job,
+    why); where it was done (why None), its note removed -> whether it could be (a full WORK, often the failure
+    itself, takes none). Until 2026-11-11 a build kept no list of its failed genomes: its log named three of them."""
+    path = os.path.join(work, FAILED, safe(accession) + ".txt")
+    part = util.part_of(path)
+    try:
+        if why is None:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(path)
+            return True
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(part, "w", newline="\n") as fh:
+            fh.write("\t".join([accession, time.strftime("%Y-%m-%d %H:%M:%S"), socket.gethostname(),
+                                os.environ.get("SLURM_JOB_ID", "-"), " ".join(str(why).split()) or "-"]) + "\n")
+        os.replace(part, path)
+        return True
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(part)
+        return False
+
+
+def failed_table(work):
+    """WORK/failed.tsv written anew (whole, then renamed) from the notes (note_failed) of the genomes not done; the
+    notes of genomes done since (by another build) removed -> its rows [FAILED_COLUMNS], whether or not it could be
+    written (a full WORK). Every build writes it from the same notes, so two at once write the same table; a build
+    whose WORK has neither notes nor a table writes none."""
+    folder, table = os.path.join(work, FAILED), os.path.join(work, FAILED_TABLE)
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.endswith(".txt") and not n.startswith("."))
+    except OSError:
+        names = []
+    if not names and not os.path.isfile(table):
+        return []
+    rows = []
+    for name in names:
+        path = os.path.join(folder, name)
+        try:
+            with open(path) as fh:
+                row = fh.readline().rstrip("\n").split("\t")
+        except OSError:
+            continue
+        if len(row) != len(FAILED_COLUMNS):
+            continue
+        if is_done(work, row[0]):
+            with contextlib.suppress(OSError):
+                os.remove(path)
+            continue
+        rows.append(row)
+    part = util.part_of(table)
+    try:
+        with open(part, "w", newline="\n") as fh:
+            fh.write("\t".join(FAILED_COLUMNS) + "\n" + "".join("\t".join(r) + "\n" for r in rows))
+        os.replace(part, table)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(part)
+    return rows
 
 
 def side_dir(settings, folder):
