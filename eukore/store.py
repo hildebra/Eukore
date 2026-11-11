@@ -198,6 +198,30 @@ def stamp(folder, name="done.json"):
     return _of(folder, from_zip, lambda: zlib.crc32(_file(os.path.join(folder, name))), None)
 
 
+def snapshot(folder, name="done.json"):
+    """The genome as one look sees it -> (its files' names, name's bytes, their stamp), or None where it has no
+    results. Read without the process' lock and its open zips (since 2026-11-11), so that many threads read many
+    genomes at once: a plan's reads of some 30,000 genomes wait on the shared file system, one at a time half an hour
+    with 32 builds reading together."""
+    for _again in range(2):
+        try:
+            with zipfile.ZipFile(packed(folder)) as z:
+                info = z.NameToInfo.get(name)
+                return set(z.namelist()), None if info is None else z.read(info), None if info is None else info.CRC
+        except FileNotFoundError:
+            pass
+        except (OSError, zipfile.BadZipFile):
+            return None
+        try:
+            files = {n for n in os.listdir(folder) if os.path.isfile(os.path.join(folder, n))}
+            data = _file(os.path.join(folder, name)) if name in files else None
+            return files, data, None if data is None else zlib.crc32(data)
+        except OSError:
+            if not is_packed(folder):  # neither form; else packed between the two looks: its zip read
+                return None
+    return None
+
+
 def _method(name):
     return zipfile.ZIP_STORED if name.endswith((".gz", ".zst", ".zip")) else zipfile.ZIP_DEFLATED
 

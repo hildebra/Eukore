@@ -235,7 +235,10 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   e.g. one per node (since 2026-11-08): each genome is claimed by the run that takes it (`WORK/done/.<accession>.claim`;
   touched every minute, a claim of a killed job or a node that died is taken over after 5 minutes untouched, so a
   restart runs the genomes its killed job held), a genome another run finished after this one planned is left alone
-  (since 0.2.2: run again), and each run then makes the passes below too; with `--genomes_only` those that take a
+  (since 0.2.2: run again), and each run then makes the passes below too. Each run's plan, and its backfill and
+  metadata passes, read the done genomes 16 at a time (since 2026-11-11: one after another, 5-10 calls of the shared
+  file system each; with some 30,000 done genomes and 32 array tasks planning at once, half an hour with the cores
+  idle before the first genome began); with `--genomes_only` those that take a
   genome at a time under its claim (the backfill, the metadata), the others left to one run after them all (since
   2026-11-09; above). A failed rRNA extraction no longer fails its genome (since 2026-11-10: its calls were
   thrown away and made again by every run): the genome is done, `done.json` notes `rrna_failed`, and the backfill

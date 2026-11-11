@@ -291,11 +291,16 @@ def describe_pass(opts, job_map):
     their genomes) share them out."""
     sourmash = sourmash_of(opts)
     todo = []
-    for acc, j in sorted(job_map.items()):
-        folder, path = genomes.done_dir(opts.work, acc), genomes.genome_file(opts.genomes, acc)
-        if not j.get("path") and genomes.is_done(opts.work, acc) and os.path.isfile(path) \
-                and metadata_mod.missing(folder, sourmash):
-            todo.append((acc, path, opts.work, j.get("fetch", acc), sourmash))
+    # the done genomes read by threads at once (genomes.prefetch), the genome's file looked for last, where its
+    # metadata is missing (since 2026-11-11: each genome's reads one after another, the genome's file first)
+    with genomes.cached_summaries():
+        genomes.prefetch(opts.work, job_map)
+        for acc, j in sorted(job_map.items()):
+            folder, path = genomes.done_dir(opts.work, acc), genomes.genome_file(opts.genomes, acc)
+            if not j.get("path") and genomes.is_done(opts.work, acc) \
+                    and metadata_mod.missing(folder, sourmash, genomes.names_of(opts.work, acc)) \
+                    and os.path.isfile(path):
+                todo.append((acc, path, opts.work, j.get("fetch", acc), sourmash))
     if not todo:
         return 0, 0
     say(f"assembly metadata: {len(todo)} genomes to describe" + ("" if sourmash else " (no sourmash: no sketches)"))
@@ -397,8 +402,10 @@ def genomes_to_run(opts, job_map, settings):
     # and (since 2026-11-08) a done genome run without the rescue pass where this run makes it (genomes.rescue_missing)
     def here(a, j):
         return os.path.isfile(j.get("path") or genomes.genome_file(opts.genomes, a))
-    # each genome's done.json read once for all these questions (genomes.cached_summaries; since 2026-11-10)
+    # each genome's done.json read once for all these questions (genomes.cached_summaries; since 2026-11-10), by
+    # threads at once (genomes.prefetch; since 2026-11-11)
     with genomes.cached_summaries():
+        genomes.prefetch(opts.work, job_map)
         better = {a for a, j in job_map.items() if genomes.is_done(opts.work, a, settings["loci"])
                   and genomes.rerun_for_annotation(opts.work, j, opts.genomes, not settings["staged_only"])}
         # and (since 2026-11-09) a done genome of an older genome record (genomes.record_stale; --reversion stamps
@@ -609,6 +616,7 @@ def backfill_pass(opts, job_map, settings):
     2026-11-10: a pool of -j whatever the genomes' sizes): a clade hold-out is a call of the whole genome, with a
     genome run's memory, the other steps take a worker's alone."""
     with genomes.cached_summaries():
+        genomes.prefetch(opts.work, job_map)
         needs = {a: genomes.backfill_needs(j, settings) for a, j in sorted(job_map.items())
                  if genomes.is_done(opts.work, a)}
     todo = [(job_map[a], settings) for a, steps in needs.items() if steps]

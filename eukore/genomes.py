@@ -649,7 +649,8 @@ def done_stamp(work, accession):
     """A genome's done.json's checksum (store.stamp; until 2026-11-10 its modification time, which a pack of its
     folder would change), or None where it is not done: what a plan saw, so that its run leaves a genome another
     build finished meanwhile alone (genomes.run)."""
-    return store.stamp(done_dir(work, accession))
+    facts = _FACTS.get(done_dir(work, accession)) if _CACHING[0] else None  # what the plan's prefetch saw
+    return facts[1] if facts is not None else store.stamp(done_dir(work, accession))
 
 
 _ODB = {}
@@ -1268,6 +1269,7 @@ def backfill(args):
         def put(files=None):
             store.put(folder, dict(files or {}, **{"done.json": json.dumps(summary, indent=1).encode()}))
             _SUMMARIES.pop(folder, None)
+            _FACTS.pop(folder, None)
         if "tiara" in todo:
             fasta = store.text(folder, "windows.fna.gz")
             names = [line[1:].strip() for line in fasta.splitlines() if line.startswith(">")]
@@ -1329,13 +1331,13 @@ def backfill_needs(job, settings, summary=None):
     summary = summary or done_summary(settings["work"], job["accession"]) or {}
     out = []
     if settings.get("tiara") and job.get("kind") != "transcriptome" \
-            and summary.get("tiara") != "done" and store.has(folder, "windows.fna.gz"):
+            and summary.get("tiara") != "done" and has(settings["work"], job["accession"], "windows.fna.gz"):
         called = [r for r in store.rows(folder, "loci.tsv") if len(r) > TIARA_COLUMN and r[1] != "Missing"]
         state = summary.get("tiara")
         if called and (state in ("none", "failed") or (state is None and all(r[TIARA_COLUMN] == "-" for r in called))):
             out.append("tiara")
     if settings.get("rrna") and not job.get("path") and job.get("kind") != "transcriptome" \
-            and not store.has(folder, "rrna.tsv") \
+            and not has(settings["work"], job["accession"], "rrna.tsv") \
             and os.path.isfile(genome_file(settings["genomes"], job["accession"])):
         out.append("rrna")
     # a dataset species' clade hold-out (since 2026-11-09) where its run made the species' alone
@@ -1375,7 +1377,9 @@ def annotation_of(job, settings):
 
 
 _SUMMARIES = {}       # {done folder: its done.json's text or None}, filled while a plan reads (cached_summaries)
+_FACTS = {}           # {done folder: (its files' names, done.json's stamp)}, filled by prefetch
 _CACHING = [False]
+PREFETCH_THREADS = 16  # a plan's reads at once (prefetch): each waits on the shared file system, not on a core
 
 
 @contextlib.contextmanager
@@ -1385,12 +1389,57 @@ def cached_summaries():
     five to six reads each from the shared file system). For a plan alone: what another build writes meanwhile is
     not seen; this process' own changes are (write_summary)."""
     _SUMMARIES.clear()
+    _FACTS.clear()
     _CACHING[0] = True
     try:
         yield
     finally:
         _CACHING[0] = False
         _SUMMARIES.clear()
+        _FACTS.clear()
+
+
+def prefetch(work, accessions, threads=PREFETCH_THREADS):
+    """Inside cached_summaries: each done genome of accessions read once, by threads at once (store.snapshot: its
+    done.json, its files' names, its stamp), for the plan's questions after (is_done, done_summary, has, done_stamp);
+    a genome WORK/done's one listing does not name is not done, read no further (since 2026-11-11: each genome's
+    reads one after another, 5 to 10 calls of the shared file system, half an hour with 32 builds planning at once).
+    A genome done by another build after the listing is seen as not done: its run finds it done (done_stamp)."""
+    if not _CACHING[0]:
+        return
+    root = os.path.join(work, "done")
+    try:
+        listed = {n for n in os.listdir(root) if not n.startswith(".")}
+    except OSError:
+        listed = set()
+    todo = []
+    for acc in accessions:
+        name = safe(acc)
+        folder = os.path.join(root, name)
+        if name in listed or name + store.EXT in listed:
+            todo.append(folder)
+        else:
+            _SUMMARIES[folder], _FACTS[folder] = None, (set(), None)
+    if not todo:
+        return
+    with concurrent.futures.ThreadPoolExecutor(max(1, min(threads, len(todo)))) as pool:
+        for folder, got in zip(todo, pool.map(store.snapshot, todo)):
+            names, data, stamp = got or (set(), None, None)
+            _SUMMARIES[folder] = None if data is None else data.decode()
+            _FACTS[folder] = (names, stamp)
+
+
+def has(work, accession, name):
+    """Whether a genome's results have a file of the name: store.has, or what prefetch read."""
+    folder = done_dir(work, accession)
+    facts = _FACTS.get(folder) if _CACHING[0] else None
+    return name in facts[0] if facts is not None else store.has(folder, name)
+
+
+def names_of(work, accession):
+    """The names of a genome's files that prefetch read, or None where it read none (store's then)."""
+    facts = _FACTS.get(done_dir(work, accession)) if _CACHING[0] else None
+    return None if facts is None else facts[0]
 
 
 def _summary_text(work, accession):
@@ -1416,6 +1465,7 @@ def write_summary(work, accession, summary):
     folder = done_dir(work, accession)
     store.put(folder, {"done.json": json.dumps(summary, indent=1).encode()})
     _SUMMARIES.pop(folder, None)
+    _FACTS.pop(folder, None)
 
 
 def annotation_record(work, job):
@@ -1546,7 +1596,7 @@ def own_of(job, settings):
 
 def held_out_missing(work, job, settings):
     """Whether a done genome of a dataset species lacks its held-out calls (a run before 2026-11-06)."""
-    return bool(own_of(job, settings)) and not store.has(done_dir(work, job["accession"]), HELD_OUT)
+    return bool(own_of(job, settings)) and not has(work, job["accession"], HELD_OUT)
 
 
 INDEX_DIR = "mpi"         # miniprot's saved index of a genome called more than once, in the run's scratch
