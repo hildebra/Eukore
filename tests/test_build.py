@@ -657,7 +657,7 @@ class ChainTest(unittest.TestCase):
                 opts = types.SimpleNamespace(work=tmp, genomes=tmp, scratch=None, genomes_only=only, report_minutes=1)
                 seen, to_run = [], [[(j, {}) for j in jobs.values()], [(jobs["held"], {})]]
 
-                def planned(_opts, job_map, _settings):
+                def planned(_opts, job_map, _settings, share=None):
                     seen.append(sorted(job_map))
                     return (to_run[0] if len(job_map) == 3 else [it for it in to_run[1] if it[0]["accession"]
                                                                  in job_map]), 0
@@ -730,6 +730,89 @@ class ChainTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:  # nothing failed, ever: no table
             self.assertEqual(genomes.failed_table(tmp), [])
             self.assertFalse(os.path.exists(os.path.join(tmp, genomes.FAILED_TABLE)))
+
+    def test_an_arrays_tasks_share_one_plan(self):
+        # one task of a SLURM array plans for all (since 2026-11-11: each of 32 read every done genome at once), the
+        # others wait for its file; outside an array, a killed planner, a plan not written: each as before
+        import threading  # noqa: PLC0415
+        import time  # noqa: PLC0415
+        import types  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from eukore import util  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(eukore_build, "say") as said:
+            opts = types.SimpleNamespace(work=tmp)
+            made = []
+
+            def make(gate=None):
+                made.append(threading.current_thread().name)
+                if gate is not None:
+                    gate.wait(10)
+                return {"rows": [["G1", 7, None], ["G2", None, "annotation"]], "again": 1}
+            with mock.patch.dict(os.environ, {"SLURM_ARRAY_JOB_ID": ""}):  # no array: its own, no file
+                del os.environ["SLURM_ARRAY_JOB_ID"]
+                eukore_build.shared_plan(opts, "genomes", make)
+                self.assertFalse(os.path.exists(os.path.join(tmp, "plan")))
+            self.assertEqual(made, ["MainThread"])
+            del made[:]
+            with mock.patch.dict(os.environ, {"SLURM_ARRAY_JOB_ID": "77"}):
+                # two tasks at once: one plans, the other waits and reads its plan
+                gate, got = threading.Event(), {}
+                first = threading.Thread(name="first", target=lambda: got.setdefault(
+                    "first", eukore_build.shared_plan(opts, "genomes", lambda: make(gate), poll=0.05)))
+                first.start()
+                while not made:
+                    time.sleep(0.01)
+                second = threading.Thread(name="second", target=lambda: got.setdefault(
+                    "second", eukore_build.shared_plan(opts, "genomes", make, poll=0.05)))
+                second.start()
+                time.sleep(0.2)
+                gate.set()
+                first.join(10)
+                second.join(10)
+                self.assertEqual(made, ["first"])
+                self.assertEqual(got["first"], got["second"])
+                self.assertTrue(os.path.isfile(os.path.join(tmp, "plan", "77.genomes.json")))
+                self.assertTrue(any("waiting for it" in c.args[0] for c in said.call_args_list))
+                # a task begun later reads it; genomes_to_run makes its jobs of it
+                jobs = {a: {"accession": a} for a in ("G1", "G2")}
+                with mock.patch.object(eukore_build, "plan_of", side_effect=AssertionError("planned again")):
+                    todo, again = eukore_build.genomes_to_run(opts, jobs, {"s": 1}, share="genomes")
+                self.assertEqual((todo, again), ([({"accession": "G1", "done_stamp": 7}, {"s": 1}),
+                                                  ({"accession": "G2", "done_stamp": None, "rerun": "annotation"},
+                                                   {"s": 1})], 1))
+                # a killed planner's lock (another host's, untouched past RUN_STALE): taken over, planned here once
+                del made[:]
+                lock = util.run_lock(os.path.join(tmp, "plan"), "77.panel")
+                with open(lock, "w") as fh:
+                    fh.write("elsewhere\t1\n")
+                os.utime(lock, (time.time() - util.RUN_STALE - 10,) * 2)
+                eukore_build.shared_plan(opts, "panel", make, poll=0.05)
+                self.assertEqual(len(made), 1)
+                self.assertTrue(os.path.isfile(os.path.join(tmp, "plan", "77.panel.json")))
+                # a planner that could not write its plan (a full WORK): the waiting task makes its own
+                del made[:]
+                real, gate = os.replace, threading.Event()
+
+                def replace(src, dst):
+                    if dst.endswith("77.full.json"):
+                        raise OSError(28, "No space left on device")
+                    return real(src, dst)
+                with mock.patch.object(eukore_build.os, "replace", replace):
+                    first = threading.Thread(name="first", target=lambda: eukore_build.shared_plan(
+                        opts, "full", lambda: make(gate), poll=0.05))
+                    first.start()
+                    while not made:
+                        time.sleep(0.01)
+                    second = threading.Thread(name="second", target=lambda: got.update(
+                        full=eukore_build.shared_plan(opts, "full", make, poll=0.05)))
+                    second.start()
+                    time.sleep(0.2)
+                    gate.set()
+                    first.join(10)
+                    second.join(10)
+                self.assertEqual(made, ["first", "second"])
+                self.assertEqual(got["full"]["again"], 1)
 
     def test_another_builds_claims_end(self):
         import threading  # noqa: PLC0415

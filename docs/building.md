@@ -238,7 +238,11 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   (since 0.2.2: run again), and each run then makes the passes below too. Each run's plan, and its backfill and
   metadata passes, read the done genomes 16 at a time (since 2026-11-11: one after another, 5-10 calls of the shared
   file system each; with some 30,000 done genomes and 32 array tasks planning at once, half an hour with the cores
-  idle before the first genome began); with `--genomes_only` those that take a
+  idle before the first genome began), and a SLURM array's tasks share one plan of the genomes to run (since
+  2026-11-11): the first task makes it under a lock (`WORK/plan/.<array job>.genomes.lock`) and writes
+  `WORK/plan/<array job>.genomes.json`, the others wait for that file and read it (a killed planner's lock is taken
+  over after 5 minutes, by a task that plans in its place; a plan that could not be written, e.g. on a full WORK,
+  has each task make its own); with `--genomes_only` those that take a
   genome at a time under its claim (the backfill, the metadata), the others left to one run after them all (since
   2026-11-09; above). A failed rRNA extraction no longer fails its genome (since 2026-11-10: its calls were
   thrown away and made again by every run): the genome is done, `done.json` notes `rrna_failed`, and the backfill

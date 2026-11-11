@@ -392,8 +392,18 @@ def genome_size(opts, job):
     return job.get("size") or (os.path.getsize(path) / placement.GZIP_BYTES_PER_BASE if os.path.isfile(path) else 0)
 
 
-def genomes_to_run(opts, job_map, settings):
-    """The jobs of job_map to run, each with its settings -> ([(job, settings)], how many again for gene models)."""
+def genomes_to_run(opts, job_map, settings, share=None):
+    """The jobs of job_map to run, each with its settings -> ([(job, settings)], how many again for gene models).
+    share: the plan's name among a SLURM array's tasks, made by one of them for all (shared_plan)."""
+    plan = shared_plan(opts, share, lambda: plan_of(opts, job_map, settings)) if share \
+        else plan_of(opts, job_map, settings)
+    return [(dict(job_map[a], done_stamp=stamp, **({"rerun": rerun} if rerun else {})), settings)
+            for a, stamp, rerun in plan["rows"] if a in job_map], plan["again"]
+
+
+def plan_of(opts, job_map, settings):
+    """genomes_to_run's plan, as JSON can hold it -> {"rows": [[accession, its done_stamp, "annotation" or None]],
+    "again": how many again for gene models}."""
     # a done genome of a BUSCO dataset species without its held-out calls (run before 2026-11-06) is run again where
     # its genome is still there: never fetched again for a benchmark, its OrthoDB benchmark then left without them
     # and a done genome with better gene models than its run took (genomes.better_annotation: an index naming its
@@ -416,9 +426,70 @@ def genomes_to_run(opts, job_map, settings):
                       or genomes.record_stale(opts.work, a)) and here(a, j))}
         # each with its done.json as seen now: a genome another build on the WORK finishes meanwhile is left alone
         # (genomes.done_stamp; since 2026-11-08 it was run again whole)
-        return [(dict(j, done_stamp=genomes.done_stamp(opts.work, a)) if a in whole
-                 else dict(j, rerun="annotation", done_stamp=genomes.done_stamp(opts.work, a)), settings)
-                for a, j in sorted(job_map.items()) if a in whole or a in better], len(better - whole)
+        return {"rows": [[a, genomes.done_stamp(opts.work, a), None if a in whole else "annotation"]
+                         for a in sorted(job_map) if a in whole or a in better],
+                "again": len(better - whole)}
+
+
+PLAN_POLL = 10  # seconds between a task's looks for the plan another task of its array makes (shared_plan)
+
+
+def shared_plan(opts, name, make, poll=PLAN_POLL):
+    """make() -> a plan (JSON), made by one task of a SLURM array for all its tasks (since 2026-11-11: each of 32 tasks
+    made its own at once, every done genome read by each on the shared file system): the first task takes the lock
+    WORK/plan/.<array job>.<name>.lock (util.single_run: touched every minute; a killed task's, untouched 5 minutes,
+    taken over by a waiting task, which plans in its place) and writes WORK/plan/<array job>.<name>.json; the others
+    wait for that file and read it. A run outside an array (SLURM_ARRAY_JOB_ID: the final job, a run by hand) makes
+    its own, as does each task whose planner ended without writing one (a full WORK). A task begun later reads the
+    plan made earlier: a genome done since is left alone by its run (done_stamp)."""
+    array = os.environ.get("SLURM_ARRAY_JOB_ID")
+    if not array:
+        return make()
+    folder, key = os.path.join(opts.work, "plan"), f"{array}.{name}"
+    path, lock = os.path.join(folder, key + ".json"), util.run_lock(folder, key)
+
+    def read():
+        try:
+            with open(path) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+    waited = 0
+    while True:
+        ended = not os.path.exists(lock)  # before the read: a planner that wrote it and ended is read
+        got = read()
+        if got is not None:
+            if waited:
+                say(f"plan ({name}): the one another task of array {array} made, after {util.duration(waited)}")
+            return got
+        if waited and ended:  # its lock removed without a plan (a killed planner's lock stays: taken over below)
+            say(f"plan ({name}): the task that made it ended without writing it: made here")
+            return make()
+        mine = False
+        try:
+            with util.single_run(folder, key):
+                mine = True
+                got = read() or make()  # one written meanwhile, by a task that ended since
+                part = util.part_of(path)
+                try:
+                    with open(part, "w", newline="\n") as fh:
+                        json.dump(got, fh)
+                    os.replace(part, path)
+                except OSError as e:
+                    with contextlib.suppress(OSError):
+                        os.remove(part)
+                    say(f"WARNING: plan ({name}) not written for the array's other tasks ({e}): each makes its own")
+                return got
+        except util.RunHeld as e:
+            if not waited:
+                say(f"plan ({name}): made by another task of array {array} ({e.host}, process {e.pid}): waiting for it")
+        except OSError as e:
+            if mine:  # make's own failure
+                raise
+            say(f"plan ({name}): no lock in {folder} ({e}): made here")
+            return make()
+        time.sleep(poll)
+        waited += poll
 
 
 def panel_settings(settings):
@@ -435,8 +506,9 @@ def run_genomes(opts, job_map, settings, extras=None):
     after a SLURM array made its passes, and the package, without the genomes of a task still running or killed
     within genomes.CLAIM_STALE)."""
     extras = extras or {}
-    todo, again = genomes_to_run(opts, job_map, settings)
-    panel = genomes_to_run(opts, extras, panel_settings(settings))[0] if extras else []
+    # a SLURM array's tasks: one of them plans for all (shared_plan; since 2026-11-11)
+    todo, again = genomes_to_run(opts, job_map, settings, share="genomes")
+    panel = genomes_to_run(opts, extras, panel_settings(settings), share="panel")[0] if extras else []
     say(f"genomes to run: {len(todo)} of {len(job_map)}"
         + (f", {again} of them again for better gene models" if again else "")
         + (f", and {len(panel)} of the intraspecific panel's further assemblies" if panel else "")
