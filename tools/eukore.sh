@@ -5,6 +5,11 @@
 #   bash tools/eukore.sh build [N]    # N process jobs (an array; default TASKS), then the final job after them
 #   AFTER=<job id> bash tools/eukore.sh build   # the chain begun only once that job (the fetch) has ended well
 #   REVERSION=1 bash tools/eukore.sh build      # once, on a build whose genomes an older Eukore ran: --reversion
+#   bash tools/eukore.sh compare      # the read benchmark's other references into COMPARE, on the node with internet
+#
+# The final job hands the build every other reference whose files are there (since 2026-11-10): EukDetect2's
+# (EUKDETECT_FASTA, EUKDETECT_TABLE), MetaPhlAn 4's and PR2's (COMPARE/<name>.fna.gz and <name>_taxids.tsv, made by
+# `compare`): the read benchmark and Figure 1 compare Eukore with them; without any, with no other reference.
 #
 # `build` submits both jobs at once. The process jobs share the genomes out by their claims; each, once no genome
 # is left for it, goes on with the steps that take one done genome at a time under its claim (the backfill with its
@@ -22,7 +27,7 @@
 set -Eeuo pipefail
 trap 'rc=$?; echo "line $LINENO: \"$BASH_COMMAND\" exited $rc" >&2' ERR
 
-STEP=${1:?give fetch or build}
+STEP=${1:?give fetch, build or compare}
 # sbatch runs a copy of this script from its spool folder: a job gets the script's own path from the submitting call
 if [[ -n ${SLURM_JOB_ID:-} && -n ${EUKORE_SH:-} ]]; then SELF=$EUKORE_SH; else SELF=$(readlink -f "$0"); fi
 CONF=${EUKORE_CONF:-$(dirname "$(dirname "$SELF")")/local/eukore.conf}
@@ -31,6 +36,7 @@ if [[ ! -f $CONF ]]; then
     exit 1
 fi
 TASKS=8; MAMBA_ENV=eukore; GEN=; SCR=; LOGS=
+COMPARE=; PR2_VERSION=5.1.1; MPA_ARCHIVE=; MPA_INFO=; EUKDETECT_FASTA=; EUKDETECT_TABLE=
 BUILD_OPTS=(); FETCH_OPTS=(); FINAL_OPTS=(); SBATCH_ALL=(); SBATCH_FETCH=(); SBATCH_PROCESS=(); SBATCH_FINAL=()
 source "$CONF"
 : "${PDIR:?$CONF: PDIR}" "${WORK:?$CONF: WORK}" "${OUT:?$CONF: OUT}" "${VERSION:?$CONF: VERSION}"
@@ -50,14 +56,33 @@ run_stage() {  # run_stage STAGE [the stage's options]: Eukore's build with the 
     shift
     echo "SLURM job ${SLURM_JOB_ID:--} (array ${SLURM_ARRAY_JOB_ID:--} task ${SLURM_ARRAY_TASK_ID:--}) on" \
         "$HOSTNAME: --stage $stage"
-    set +eu  # an environment's activation scripts are not written for these
-    eval "$(micromamba shell hook -s bash)"
-    [[ ${CONDA_DEFAULT_ENV:-} == "$MAMBA_ENV" ]] || micromamba activate "$MAMBA_ENV"
-    set -eu
+    activate
     cmd=(python3 "$PDIR/eukore_build.py" --build_dir "$WORK" --out "$OUT" --version "$VERSION" --stage "$stage")
     [[ -z $GEN ]] || cmd+=(--genomes "$GEN")
     [[ -z ${REVERSION:-} ]] || cmd+=(--reversion)
     "${cmd[@]}" ${BUILD_OPTS[@]+"${BUILD_OPTS[@]}"} -t "${SLURM_CPUS_PER_TASK:-2}" "$@"
+}
+
+activate() {  # the settings' micromamba environment, inside a job
+    set +eu  # an environment's activation scripts are not written for these
+    eval "$(micromamba shell hook -s bash)"
+    [[ ${CONDA_DEFAULT_ENV:-} == "$MAMBA_ENV" ]] || micromamba activate "$MAMBA_ENV"
+    set -eu
+}
+
+compare_opts() {  # the --read_compare options of the other references whose files are there, EukDetect2's first
+    local name fasta table
+    while read -r name fasta table; do
+        if [[ -n $fasta && -s $fasta && -s $table ]]; then
+            printf '%s\n' --read_compare "$name=$fasta,$table"
+        else
+            echo "the read benchmark without $name: ${fasta:-its files not set} ${table} not there" >&2
+        fi
+    done <<EOF
+EukDetect2 $EUKDETECT_FASTA $EUKDETECT_TABLE
+MetaPhlAn4 ${COMPARE:+$COMPARE/MetaPhlAn4.fna.gz} ${COMPARE:+$COMPARE/MetaPhlAn4_taxids.tsv}
+PR2 ${COMPARE:+$COMPARE/PR2.fna.gz} ${COMPARE:+$COMPARE/PR2_taxids.tsv}
+EOF
 }
 
 need_local_tmp() {  # the node's local disk: the process and the final job need it (the shared file system's I/O)
@@ -94,10 +119,35 @@ _process)
     ;;
 _final)
     need_local_tmp
-    run_stage process,package --local_tmp "$SCR" ${FINAL_OPTS[@]+"${FINAL_OPTS[@]}"}
+    mapfile -t compared < <(compare_opts)
+    run_stage process,package --local_tmp "$SCR" ${compared[@]+"${compared[@]}"} ${FINAL_OPTS[@]+"${FINAL_OPTS[@]}"}
+    ;;
+compare)
+    : "${COMPARE:?$CONF: COMPARE, the folder of the other references of the read benchmark}"
+    [[ -z $LOGS ]] || mkdir -p "$LOGS"
+    jid=$(submit Eukore-compare ${SBATCH_FETCH[@]+"${SBATCH_FETCH[@]}"} -- _compare)
+    echo "compare: job $jid (the 18S of PR2${MPA_ARCHIVE:+ and the markers of MetaPhlAn 4} into $COMPARE)"
+    ;;
+_compare)  # PR2's 18S (downloaded) and MetaPhlAn 4's eukaryote markers (its archive given): tools/compare_references.py
+    activate
+    mkdir -p "$COMPARE"
+    pr2=$COMPARE/pr2_version_${PR2_VERSION}_SSU_taxo_long.fasta.gz
+    if [[ ! -s $pr2 ]]; then
+        curl -fsSL -o "$pr2.part" \
+            "https://github.com/pr2database/pr2database/releases/download/v$PR2_VERSION/${pr2##*/}"
+        mv "$pr2.part" "$pr2"
+    fi
+    python3 "$PDIR/tools/compare_references.py" pr2 --fasta "$pr2" --taxdump "$WORK/sources/taxdump.tar.gz" \
+        --out "$COMPARE"
+    if [[ -n $MPA_ARCHIVE && -n $MPA_INFO ]]; then
+        python3 "$PDIR/tools/compare_references.py" metaphlan --archive "$MPA_ARCHIVE" --marker_info "$MPA_INFO" \
+            --out "$COMPARE"
+    else
+        echo "no MetaPhlAn 4 reference: MPA_ARCHIVE and MPA_INFO of $CONF not set" >&2
+    fi
     ;;
 *)
-    echo "unknown step: $STEP (fetch or build)" >&2
+    echo "unknown step: $STEP (fetch, build or compare)" >&2
     exit 1
     ;;
 esac

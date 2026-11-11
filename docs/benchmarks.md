@@ -3,21 +3,52 @@
 Every Eukore build measures the package it writes: how complete its genomes are, whether its gene calls are the right
 genes, how well its markers tell species apart, how whole its rRNA operons are, how its species are named in the 18S
 references, and what the build cost. The tables go into the package (`Eukore_<version>/benchmarks/`,
-[FORMAT.md](FORMAT.md)) and its headline figures into `manifest.json`, so a release carries its own report.
-`docs/benchmarks/plot_benchmarks.py` draws them.
+[FORMAT.md](FORMAT.md)), its headline figures into `manifest.json` and `benchmarks/summary.md`, and (since
+2026-11-10) the figures drawn from them into `benchmarks/figures/` (`eukore/figures.py`), so a release carries its own
+report.
 
 ## Running them
 
-During a build, nothing to do: the package stage measures the package once its tables are written, before its
-manifest (`--no_benchmarks` skips them). A benchmark whose inputs are missing is left out, and
-`benchmarks/summary.json`'s `left_out` says why; a failing benchmark never stops the package.
+During a build, nothing to do: the package stage measures the package once its tables are written, then draws its
+figures, before its manifest (`--no_benchmarks` skips both, `--no_figures` the figures). A benchmark whose inputs are
+missing is left out, and `benchmarks/summary.json`'s `left_out` says why; a failing benchmark or figure never stops the
+package. One input is the user's: the other references the read benchmark and Figure 1 compare Eukore with
+(`--read_compare`; [The figures](#the-figures)). Without it the build says so, and the package compares itself with
+none.
 
 Any package can be measured again afterwards, and the figures drawn:
 
 ```bash
 python3 -m eukore.benchmarks OUT/Eukore_2026.11 --build_dir WORK -t 8      # into OUT/Eukore_2026.11/benchmarks/
-python3 docs/benchmarks/plot_benchmarks.py OUT/Eukore_2026.11         # into docs/benchmarks/figures/
+python3 -m eukore.figures OUT/Eukore_2026.11              # into OUT/Eukore_2026.11/benchmarks/figures/
+python3 docs/benchmarks/plot_benchmarks.py OUT/Eukore_2026.11         # the same into docs/benchmarks/figures/
 ```
+
+A package measured again by `eukore.benchmarks` alone has the benchmark tables but not the build's own: the
+selection, the comparisons with the `--read_compare` references and the read benchmark need the package stage.
+
+## The figures
+
+`benchmarks/figures/index.md` captions each figure and names its tables; `summary.md` beside it holds the headline
+figures and, per supergroup, what the package holds (`composition.tsv`). Figure 1 (`Fig1.png`, at a journal's
+two-column width) asks four questions:
+
+| panel | the question | what it shows | its tables | needs |
+|---|---|---|---|---|
+| a | How large? | species per supergroup: NCBI's with a genome, Eukore's (with a genome; any record), each other reference's | `breadth.tsv`, `overlap.tsv` | PR2, EUKARYOME, KSGP always; EukDetect2 and MetaPhlAn 4 with `--read_compare` |
+| b | How far from BUSCO's dataset does a call stay right? | left, the dataset's genomes called again without their genus', family's, order's dataset species: called, on the same gene, OrthoDB's gene model, by the rank shared with the nearest dataset species kept; right, each genome's calls laid on its own annotation (introns exact), at its distance, per annotation source | `holdout.tsv`, `annotation.tsv` | BUSCO's dataset (`--build_dir`); the genomes' annotations (the fetch stage) |
+| c | Why genes, not the 18S? | per marker kind (each BUSCO a dot, each of Eukore's own loci a dot; the 18S; the ITS): the copies under 99% identical to their nearest congener; the intraspecific panel's species told from their congeners (barcode gap) | `resolution.tsv`, `intraspecific/barcode_gap.tsv` | vsearch; `--intraspecific` (default 3) |
+| d | Does it place a metagenome's reads? | F1 of detecting a test genome's species (in the reference) and genus (held out) by the sample's depth, per reference; the held-out reads censored by minimap2's list of secondary hits noted | `detection.tsv`, `reads.tsv` | minimap2, `--read_genomes` (default 3 a supergroup); other references with `--read_compare` |
+
+A panel whose tables are missing says so in its place. `holdout.png` draws panel b's left half per genome,
+`detection_depth.png` panel d with precision, recall and the `novel` mode (the test species' order left out: in a
+trial package its whole class often goes with it, so detection at the class is not measured there).
+
+**The other references.** `tools/compare_references.py` makes PR2's 18S (from PR2's `taxo_long` FASTA) and MetaPhlAn
+4's eukaryote markers (from its database archive) into `<NAME>.fna.gz` and `<NAME>_taxids.tsv`; EukDetect2's database
+is used as it is (its FASTA and its record-to-taxid table). On a SLURM cluster, `bash tools/eukore.sh compare` makes
+PR2's (and MetaPhlAn 4's, given its archive) into the settings' `COMPARE` folder, and the final job passes every one
+whose files are there (`tools/eukore.conf.example`).
 
 `--build_dir` gives BUSCO's dataset (`WORK/sources/eukaryota_odb12`, for the OrthoDB benchmark), NCBI's whole taxonomy
 (`WORK/sources/taxdump.tar.gz`, else the package's own `taxonomy/`) and the genomes' run times (`WORK/done/`); each
@@ -258,8 +289,8 @@ Before the benchmarks, the first trial (the same seven clades, 30 BUSCOs) was co
 
 ## The paper's data (since 2026-11-06)
 
-The build also collects what the paper's figures need (`docs/paper/plot_paper.py` draws them; `docs/paper/figures/`
-holds a trial's, with `index.md` captioning each and naming its tables):
+The build also collects what the paper's figures need (`eukore/figures.py` draws them with the rest, since
+2026-11-10 into the package's `benchmarks/figures/`, with `index.md` captioning each and naming its tables):
 - **The genome set** (`selection.tsv`, `breadth.tsv`): what became of every NCBI taxon with an assembly, and the species
   per supergroup in NCBI, Eukore and another reference (`--read_compare`, EukDetect2's database).
 - **Gene models against the genome's own annotation** (`annotation.tsv`, `genes.tsv`): a truth set independent of
@@ -294,7 +325,7 @@ holds a trial's, with `index.md` captioning each and naming its tables):
   dataset and the `--read_compare` references, against Eukore's, per supergroup.
 
 ```bash
-python3 docs/paper/plot_paper.py OUT/Eukore_2026.11          # Figure 1 and the supplementary figures
+python3 -m eukore.figures OUT/Eukore_2026.11 --format pdf     # Figure 1 and the others, for print
 ```
 
 ## Not measured yet
