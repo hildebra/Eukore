@@ -420,6 +420,46 @@ class PlanTest(unittest.TestCase):
                 self.assertTrue(genomes.is_done(work, "G1") and genomes.is_done(work, "G1"))
                 self.assertEqual(len(read), 2)
 
+    def test_a_plan_reads_the_done_genomes_at_once_and_alone(self):
+        # prefetch (since 2026-11-11): each done genome read once by threads, outside store's lock and its open zips;
+        # a genome WORK/done does not list read no further; the plan's questions after it answered from what it read
+        from eukore import metadata  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as work:
+            for acc in ("G1", "G2"):
+                folder_of(work, acc, {"accession": acc, "searched": ["1at2759"], "genome_record": 1})
+            store.pack(genomes.done_dir(work, "G2"))
+            os.makedirs(genomes.done_dir(work, "G4"))  # a folder without its done.json: not done
+            stamps = {a: store.stamp(genomes.done_dir(work, a)) for a in ("G1", "G2")}
+            self.assertEqual(store.snapshot(genomes.done_dir(work, "G3")), None)
+            names, data, stamp = store.snapshot(genomes.done_dir(work, "G2"))
+            self.assertEqual((json.loads(data)["accession"], stamp), ("G2", stamps["G2"]))
+            self.assertIn("windows.fna.gz", names)
+            looked, real = [], store.snapshot
+
+            def snapshot(folder, name="done.json"):
+                looked.append(os.path.basename(folder))
+                return real(folder, name)
+            with mock.patch.object(store, "snapshot", snapshot), \
+                    mock.patch.object(store, "text", side_effect=AssertionError("read one at a time")), \
+                    mock.patch.object(store, "has", side_effect=AssertionError("read one at a time")), \
+                    mock.patch.object(store, "stamp", side_effect=AssertionError("read one at a time")):
+                with genomes.cached_summaries():
+                    genomes.prefetch(work, ["G1", "G2", "G3", "G4"], threads=3)
+                    self.assertEqual(sorted(looked), ["G1", "G2", "G4"])  # G3: not listed, not read
+                    self.assertEqual([genomes.is_done(work, a, ["1at2759"]) for a in ("G1", "G2", "G3", "G4")],
+                                     [True, True, False, False])
+                    self.assertEqual([genomes.done_stamp(work, a) for a in ("G1", "G2", "G3")],
+                                     [stamps["G1"], stamps["G2"], None])
+                    self.assertTrue(genomes.has(work, "G2", "loci.tsv"))
+                    self.assertFalse(genomes.has(work, "G2", genomes.HELD_OUT))
+                    self.assertEqual(metadata.missing(genomes.done_dir(work, "G1"), "sourmash",
+                                                      genomes.names_of(work, "G1")),
+                                     {metadata.STATS, metadata.SKETCH})
+            # outside a plan: store's own reads again
+            self.assertIsNone(genomes.names_of(work, "G1"))
+            self.assertTrue(genomes.has(work, "G1", "loci.tsv"))
+            self.assertEqual(genomes.done_stamp(work, "G1"), stamps["G1"])
+
     def test_stamping_an_older_record_keeps_a_packed_genome_packed(self):
         with tempfile.TemporaryDirectory() as work:
             folder = folder_of(work, "G1", {"accession": "G1", "genome_record": 1})

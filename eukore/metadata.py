@@ -401,14 +401,17 @@ def scan(path, digest=None):
 
 # --- a genome's metadata into its done folder -------------------------------------------------------------------
 
-def missing(folder, sourmash=None):
+def missing(folder, sourmash=None, names=None):
     """What a done genome's results (its folder, or the packed genome's: store.py) lack: STATS (and ORGANELLE),
-    SKETCH (where sourmash is there) -> a set."""
+    SKETCH (where sourmash is there) -> a set. names: its files' names where read already (genomes.names_of)."""
     from . import store  # noqa: PLC0415
+
+    def has(name):
+        return name in names if names is not None else store.has(folder, name)
     out = set()
-    if not store.has(folder, STATS):
+    if not has(STATS):
         out.add(STATS)
-    if sourmash and not store.has(folder, SKETCH):
+    if sourmash and not has(SKETCH):
         out.add(SKETCH)
     return out
 

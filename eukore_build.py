@@ -42,6 +42,7 @@ import json
 import multiprocessing
 import os
 import random
+import re
 import shlex
 import shutil
 import socket
@@ -290,11 +291,16 @@ def describe_pass(opts, job_map):
     their genomes) share them out."""
     sourmash = sourmash_of(opts)
     todo = []
-    for acc, j in sorted(job_map.items()):
-        folder, path = genomes.done_dir(opts.work, acc), genomes.genome_file(opts.genomes, acc)
-        if not j.get("path") and genomes.is_done(opts.work, acc) and os.path.isfile(path) \
-                and metadata_mod.missing(folder, sourmash):
-            todo.append((acc, path, opts.work, j.get("fetch", acc), sourmash))
+    # the done genomes read by threads at once (genomes.prefetch), the genome's file looked for last, where its
+    # metadata is missing (since 2026-11-11: each genome's reads one after another, the genome's file first)
+    with genomes.cached_summaries():
+        genomes.prefetch(opts.work, job_map)
+        for acc, j in sorted(job_map.items()):
+            folder, path = genomes.done_dir(opts.work, acc), genomes.genome_file(opts.genomes, acc)
+            if not j.get("path") and genomes.is_done(opts.work, acc) \
+                    and metadata_mod.missing(folder, sourmash, genomes.names_of(opts.work, acc)) \
+                    and os.path.isfile(path):
+                todo.append((acc, path, opts.work, j.get("fetch", acc), sourmash))
     if not todo:
         return 0, 0
     say(f"assembly metadata: {len(todo)} genomes to describe" + ("" if sourmash else " (no sourmash: no sketches)"))
@@ -386,8 +392,18 @@ def genome_size(opts, job):
     return job.get("size") or (os.path.getsize(path) / placement.GZIP_BYTES_PER_BASE if os.path.isfile(path) else 0)
 
 
-def genomes_to_run(opts, job_map, settings):
-    """The jobs of job_map to run, each with its settings -> ([(job, settings)], how many again for gene models)."""
+def genomes_to_run(opts, job_map, settings, share=None):
+    """The jobs of job_map to run, each with its settings -> ([(job, settings)], how many again for gene models).
+    share: the plan's name among a SLURM array's tasks, made by one of them for all (shared_plan)."""
+    plan = shared_plan(opts, share, lambda: plan_of(opts, job_map, settings)) if share \
+        else plan_of(opts, job_map, settings)
+    return [(dict(job_map[a], done_stamp=stamp, **({"rerun": rerun} if rerun else {})), settings)
+            for a, stamp, rerun in plan["rows"] if a in job_map], plan["again"]
+
+
+def plan_of(opts, job_map, settings):
+    """genomes_to_run's plan, as JSON can hold it -> {"rows": [[accession, its done_stamp, "annotation" or None]],
+    "again": how many again for gene models}."""
     # a done genome of a BUSCO dataset species without its held-out calls (run before 2026-11-06) is run again where
     # its genome is still there: never fetched again for a benchmark, its OrthoDB benchmark then left without them
     # and a done genome with better gene models than its run took (genomes.better_annotation: an index naming its
@@ -396,8 +412,10 @@ def genomes_to_run(opts, job_map, settings):
     # and (since 2026-11-08) a done genome run without the rescue pass where this run makes it (genomes.rescue_missing)
     def here(a, j):
         return os.path.isfile(j.get("path") or genomes.genome_file(opts.genomes, a))
-    # each genome's done.json read once for all these questions (genomes.cached_summaries; since 2026-11-10)
+    # each genome's done.json read once for all these questions (genomes.cached_summaries; since 2026-11-10), by
+    # threads at once (genomes.prefetch; since 2026-11-11)
     with genomes.cached_summaries():
+        genomes.prefetch(opts.work, job_map)
         better = {a for a, j in job_map.items() if genomes.is_done(opts.work, a, settings["loci"])
                   and genomes.rerun_for_annotation(opts.work, j, opts.genomes, not settings["staged_only"])}
         # and (since 2026-11-09) a done genome of an older genome record (genomes.record_stale; --reversion stamps
@@ -408,9 +426,70 @@ def genomes_to_run(opts, job_map, settings):
                       or genomes.record_stale(opts.work, a)) and here(a, j))}
         # each with its done.json as seen now: a genome another build on the WORK finishes meanwhile is left alone
         # (genomes.done_stamp; since 2026-11-08 it was run again whole)
-        return [(dict(j, done_stamp=genomes.done_stamp(opts.work, a)) if a in whole
-                 else dict(j, rerun="annotation", done_stamp=genomes.done_stamp(opts.work, a)), settings)
-                for a, j in sorted(job_map.items()) if a in whole or a in better], len(better - whole)
+        return {"rows": [[a, genomes.done_stamp(opts.work, a), None if a in whole else "annotation"]
+                         for a in sorted(job_map) if a in whole or a in better],
+                "again": len(better - whole)}
+
+
+PLAN_POLL = 10  # seconds between a task's looks for the plan another task of its array makes (shared_plan)
+
+
+def shared_plan(opts, name, make, poll=PLAN_POLL):
+    """make() -> a plan (JSON), made by one task of a SLURM array for all its tasks (since 2026-11-11: each of 32 tasks
+    made its own at once, every done genome read by each on the shared file system): the first task takes the lock
+    WORK/plan/.<array job>.<name>.lock (util.single_run: touched every minute; a killed task's, untouched 5 minutes,
+    taken over by a waiting task, which plans in its place) and writes WORK/plan/<array job>.<name>.json; the others
+    wait for that file and read it. A run outside an array (SLURM_ARRAY_JOB_ID: the final job, a run by hand) makes
+    its own, as does each task whose planner ended without writing one (a full WORK). A task begun later reads the
+    plan made earlier: a genome done since is left alone by its run (done_stamp)."""
+    array = os.environ.get("SLURM_ARRAY_JOB_ID")
+    if not array:
+        return make()
+    folder, key = os.path.join(opts.work, "plan"), f"{array}.{name}"
+    path, lock = os.path.join(folder, key + ".json"), util.run_lock(folder, key)
+
+    def read():
+        try:
+            with open(path) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+    waited = 0
+    while True:
+        ended = not os.path.exists(lock)  # before the read: a planner that wrote it and ended is read
+        got = read()
+        if got is not None:
+            if waited:
+                say(f"plan ({name}): the one another task of array {array} made, after {util.duration(waited)}")
+            return got
+        if waited and ended:  # its lock removed without a plan (a killed planner's lock stays: taken over below)
+            say(f"plan ({name}): the task that made it ended without writing it: made here")
+            return make()
+        mine = False
+        try:
+            with util.single_run(folder, key):
+                mine = True
+                got = read() or make()  # one written meanwhile, by a task that ended since
+                part = util.part_of(path)
+                try:
+                    with open(part, "w", newline="\n") as fh:
+                        json.dump(got, fh)
+                    os.replace(part, path)
+                except OSError as e:
+                    with contextlib.suppress(OSError):
+                        os.remove(part)
+                    say(f"WARNING: plan ({name}) not written for the array's other tasks ({e}): each makes its own")
+                return got
+        except util.RunHeld as e:
+            if not waited:
+                say(f"plan ({name}): made by another task of array {array} ({e.host}, process {e.pid}): waiting for it")
+        except OSError as e:
+            if mine:  # make's own failure
+                raise
+            say(f"plan ({name}): no lock in {folder} ({e}): made here")
+            return make()
+        time.sleep(poll)
+        waited += poll
 
 
 def panel_settings(settings):
@@ -427,13 +506,14 @@ def run_genomes(opts, job_map, settings, extras=None):
     after a SLURM array made its passes, and the package, without the genomes of a task still running or killed
     within genomes.CLAIM_STALE)."""
     extras = extras or {}
-    todo, again = genomes_to_run(opts, job_map, settings)
-    panel = genomes_to_run(opts, extras, panel_settings(settings))[0] if extras else []
+    # a SLURM array's tasks: one of them plans for all (shared_plan; since 2026-11-11)
+    todo, again = genomes_to_run(opts, job_map, settings, share="genomes")
+    panel = genomes_to_run(opts, extras, panel_settings(settings), share="panel")[0] if extras else []
     say(f"genomes to run: {len(todo)} of {len(job_map)}"
         + (f", {again} of them again for better gene models" if again else "")
         + (f", and {len(panel)} of the intraspecific panel's further assemblies" if panel else "")
         + ("" if settings["tiara"] else " (no tiara: windows not classified)"))
-    waiting, failed = [], []
+    waiting, failed, unnoted = [], [], 0
     # killed runs' partial folders and (a packed genome's half-written file; since 2026-11-10) files; not those of
     # another build's genomes going on (their claims live)
     for leftover in genomes.stale_partials(opts.work) + (genomes.stale_scratch(opts.work, opts.scratch)
@@ -465,6 +545,8 @@ def run_genomes(opts, job_map, settings, extras=None):
                     held.append(acc)
             elif why and acc in job_map:  # the panel's: a later run tries again, the package goes on without
                 (waiting if why == "not fetched yet" else failed).append((acc, why))
+            if not skipped:  # each failed genome's why in WORK/failed (the panel's too), its note gone once done
+                unnoted += not genomes.note_failed(opts.work, acc, why)
             progress.step(sizes[acc], failed=bool(why) and not skipped, skipped=skipped, note=note())
         if opts.genomes_only or not held:  # --genomes_only: those genomes are the other builds', as are the passes
             break
@@ -473,7 +555,19 @@ def run_genomes(opts, job_map, settings, extras=None):
         todo = genomes_to_run(opts, {a: job_map[a] for a in held if a in job_map}, settings)[0] \
             + genomes_to_run(opts, {a: extras[a] for a in held if a in extras}, panel_settings(settings))[0]
         say(f"  the other builds' {len(held):,} genomes ended: {len(todo):,} of them left to run here")
+    if unnoted:
+        say(f"WARNING: {unnoted:,} genomes' failures or ends could not be noted in "
+            f"{os.path.join(opts.work, genomes.FAILED)} (the WORK full?): the log's reasons alone tell them")
     return waiting, failed
+
+
+def failure_kinds(failed, top=6):
+    """[(accession, why)] -> the most common reasons as text ("12x OSError: [Errno 28] No space left on device: ..."),
+    each reason without its paths and quoted names (one genome's from another's)."""
+    kinds = collections.Counter(
+        re.sub(r"'[^']*'|\"[^\"]*\"|/\S+", "...", " ".join(why.split()))[:120] for _acc, why in failed)
+    shown = "; ".join(f"{n:,}x {why}" for why, n in kinds.most_common(top))
+    return shown + (f"; {len(kinds) - top:,} other reasons" if len(kinds) > top else "")
 
 
 def others_end(opts, held, poll=60):
@@ -594,6 +688,7 @@ def backfill_pass(opts, job_map, settings):
     2026-11-10: a pool of -j whatever the genomes' sizes): a clade hold-out is a call of the whole genome, with a
     genome run's memory, the other steps take a worker's alone."""
     with genomes.cached_summaries():
+        genomes.prefetch(opts.work, job_map)
         needs = {a: genomes.backfill_needs(j, settings) for a, j in sorted(job_map.items())
                  if genomes.is_done(opts.work, a)}
     todo = [(job_map[a], settings) for a, steps in needs.items() if steps]
@@ -1611,8 +1706,14 @@ def _main(argv, held):
         # call that failed (it fails again): `all` packages without those (until 2026-11-06 it waited for them forever)
         retry = waiting + [(a, w) for a, w in failed if w.startswith("fetch failed: ") and not placement.given_up(
             {"status": "failed: " + w[len("fetch failed: "):]})]
+        # every genome failed and not done since, of every build on the WORK (since 2026-11-11: this run's three
+        # alone, as examples, in its log)
+        noted = genomes.failed_table(opts.work)
         if failed:
-            say(f"{len(failed)} genomes failed (e.g. {failed[:3]})")
+            say(f"{len(failed)} genomes failed (e.g. {failed[:3]}), by reason: {failure_kinds(failed)}")
+        if noted:
+            say(f"{len(noted):,} genomes failed and not done, of every build on the WORK, with their reasons: "
+                f"{os.path.join(opts.work, genomes.FAILED_TABLE)}")
         if retry:
             # a run that fetches (`all`) stops here, its rerun fetches them; one that does not (a cluster's
             # process,package, since 2026-11-10) can not mend them and packages without them, as --stage package does
