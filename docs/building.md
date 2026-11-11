@@ -151,9 +151,11 @@ made once (`fetch,process` likewise).
 The process stage may run on several nodes at once, e.g. a SLURM array: each run claims the genomes it takes, so the
 runs share them out without a split. With `--genomes_only` (since 2026-11-09) each runs its genomes, then the passes
 that take one done genome at a time under its claim (since 2026-11-10: the backfill, whose clade hold-outs are whole
-miniprot calls, the assembly metadata, the packing of older done folders; until then the last run made them alone, on
-one node), and stops; one run without it, after them all, makes what they left and the passes over all genomes (the
-intraspecific panel, the organelle genes, the gene models), then the package. No task list is written: the claims
+miniprot calls, the assembly metadata, the packing of older done folders; since 2026-11-11 also the organelle genes of
+the assemblies and the comparison with their gene models; until then the last run made them alone, on one node), and
+stops; one run without it, after them all, makes what they left and the passes over all genomes (the intraspecific
+panel, the gene models still to fetch), then the package. RefSeq's organelle release is parsed by one run at a time
+(`WORK/organelle/.refseq_<key>.tsv.gz.lock`), the others wait for its file. No task list is written: the claims
 are the queue, and a killed task's genomes and steps fall to the others. After the download, that is one chain of
 two jobs, submitted together (since 2026-11-10):
 
@@ -243,7 +245,8 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   `WORK/plan/<array job>.genomes.json`, the others wait for that file and read it (a killed planner's lock is taken
   over after 5 minutes, by a task that plans in its place; a plan that could not be written, e.g. on a full WORK,
   has each task make its own); with `--genomes_only` those that take a
-  genome at a time under its claim (the backfill, the metadata), the others left to one run after them all (since
+  genome at a time under its claim (the backfill, the metadata, since 2026-11-11 the organelle genes and the gene
+  models' comparison), the others left to one run after them all (since
   2026-11-09; above). A failed rRNA extraction no longer fails its genome (since 2026-11-10: its calls were
   thrown away and made again by every run): the genome is done, `done.json` notes `rrna_failed`, and the backfill
   tries the rRNA again. A genome whose run fails has its reason noted in `WORK/failed/<accession>.txt` (with the
@@ -304,7 +307,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--genomes DIR` | `OUT/genomes` | the genomes' folder: the fetch stage downloads each species' genome, its gene models and NCBI's assembly report into it, the process stage reads them from it, the package stage cuts it back to `--keep_gb`; the same for every stage (since 2026-11-09) |
 | `--sources DIR` | `WORK/sources` | the sources' folder: the fetch stage downloads into it what every other stage reads (NCBI's taxonomy and assembly tables, BUSCO's dataset, the marker set, the references' files); a folder of its own keeps them on a file system that keeps its files while WORK is elsewhere, e.g. on scratch. Builds may share it: a fetch takes its lock there too, one at a time. A moved folder serves as it was. A stage other than fetch stops at once without it (its `taxdump.tar.gz`); the same for every stage (since 2026-11-11) |
 | `--stage` | `all` | `fetch`, `process`, `package` or `all` (the three in turn); stages that follow one another, with commas: `process,package`, `fetch,process` (one run, one plan; since 2026-11-10); `release`: `OUT/release/` again of a finished `OUT/Eukore_<version>/` (since 2026-11-09) |
-| `--genomes_only` | | with `--stage process`: run the genomes, then the passes that take one genome at a time under its claim (since 2026-11-10: the backfill, the assembly metadata, the done folders' packing), and stop; the passes over all genomes (intraspecific panel, organelle genes, gene models) left to a run without it after them all (`--stage process,package`: it waits for the genomes other runs still hold, runs what they left, then makes the passes and the package); for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages), `tools/eukore.sh`; since 2026-11-09) |
+| `--genomes_only` | | with `--stage process`: run the genomes, then the passes that take one genome at a time under its claim (since 2026-11-10: the backfill, the assembly metadata, the done folders' packing; since 2026-11-11 the organelle genes and the gene models' comparison, without fetching), and stop; the passes over all genomes (intraspecific panel, gene models to fetch) and what the runs left to a run without it after them all (`--stage process,package`: it waits for the genomes other runs still hold, runs what they left, then makes the passes and the package); for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages), `tools/eukore.sh`; since 2026-11-09) |
 | `--done_folders` | | keep each genome's results as a folder of 8-14 small files (`WORK/done/<accession>/`, as every build before 2026-11-10) rather than one file (`WORK/done/<accession>.zip`, the default: for all eukaryotes some 30,000 files in place of 300,000 in 30,000 folders on the shared file system). Either way a WORK holding the other form is read as it is; without this flag the process stage packs the folders it finds |
 | `--no_release` | | the package stage writes no `OUT/release/` (the website's data and the downloads, a second copy of the package: since 2026-11-09 written last by default) |
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |

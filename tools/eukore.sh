@@ -13,7 +13,8 @@
 #
 # `build` submits both jobs at once. The process jobs share the genomes out by their claims; each, once no genome
 # is left for it, goes on with the steps that take one done genome at a time under its claim (the backfill with its
-# clade hold-outs, the assembly metadata, the packing of older done folders), and stops
+# clade hold-outs, the assembly metadata, the packing of older done folders, since 2026-11-11 the organelle genes
+# and the gene models' comparison), and stops
 # (--stage process --genomes_only). The final job starts once every one of them has ended, however it ended
 # (afterany: a task that timed out or crashed does not leave the chain pending for good), runs the genomes and
 # steps they left, waits for any still claimed, makes the passes over all genomes and writes the package

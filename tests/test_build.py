@@ -168,9 +168,23 @@ class ResumeTest(unittest.TestCase):
         with mock.patch.object(eukore_build.rrna, "published_regions", side_effect=RuntimeError("barrnap failed")):
             self.assertEqual(eukore_build._annotate_batch([("EUK_1", "ACGT", "all")], "barrnap"),
                              ({}, "RuntimeError: barrnap failed"))
-        with mock.patch.object(eukore_build.annotation, "annotate_genome", side_effect=ValueError("bad GFF")):
-            self.assertEqual(eukore_build.annotate_one("w", "g", False, None, {"accession": "GCA_1.1"}),
+        with tempfile.TemporaryDirectory() as w, \
+                mock.patch.object(eukore_build.annotation, "missing", return_value=True), \
+                mock.patch.object(eukore_build.annotation, "annotate_genome",
+                                  side_effect=ValueError("bad GFF")) as annotate:
+            self.assertEqual(eukore_build.annotate_one(w, "g", False, None, {"accession": "GCA_1.1"}),
                              ("GCA_1.1", None, "ValueError: bad GFF"))
+            # under the genome's claim (since 2026-11-11: an array's tasks run the pass): one another build holds is
+            # left to it, its claim kept; one compared meanwhile is not compared again
+            held = eukore_build.genomes.claim(w, "GCA_2.1")
+            annotate.reset_mock()
+            self.assertEqual(eukore_build.annotate_one(w, "g", False, None, {"accession": "GCA_2.1"}),
+                             ("GCA_2.1", eukore_build.organelle_mod.ELSEWHERE, None))
+            self.assertTrue(os.path.isfile(held))
+            with mock.patch.object(eukore_build.annotation, "missing", return_value=False):
+                self.assertEqual(eukore_build.annotate_one(w, "g", False, None, {"accession": "GCA_3.1"})[1],
+                                 eukore_build.organelle_mod.ELSEWHERE)
+            annotate.assert_not_called()
 
     def test_the_banner_says_the_version_and_the_run(self):
         # since 2026-11-08 a run opens with Eukore's version and what it will do, before any work; a key never said
@@ -241,8 +255,8 @@ class ResumeTest(unittest.TestCase):
     def test_genomes_only_runs_the_genomes_alone(self):
         # several process runs on one WORK (a SLURM array, since 2026-11-09): with --genomes_only each runs its share
         # of the genomes and stops, the passes over all genomes left to one run without it once all have ended; the
-        # passes that take a genome at a time under its claim (the backfill, the metadata) are every run's (since
-        # 2026-11-10: the last run's alone, on one node)
+        # passes that take a genome at a time under its claim (the backfill, the metadata; since 2026-11-11 the
+        # organelle genes and gene models) are every run's (since 2026-11-10: the last run's alone, on one node)
         import contextlib  # noqa: PLC0415
         import io  # noqa: PLC0415
         import eukore_build  # noqa: PLC0415
@@ -265,8 +279,11 @@ class ResumeTest(unittest.TestCase):
                     stack.enter_context(mock.patch.object(eukore_build.rrna, "check_itsx", return_value=None))
                     called = {n: stack.enter_context(mock.patch.object(eukore_build, n)) for n in passes}
                     self.assertEqual(eukore_build.main(args + (["--genomes_only"] if only else [])), 0)
+                # since 2026-11-11 the organelle genes and the gene models too, the latter without fetching
                 self.assertEqual({n for n, m in called.items() if m.called},
-                                 {"backfill_pass", "describe_pass"} if only else set(passes))
+                                 {"backfill_pass", "describe_pass", "organelle_genes", "annotate_pass"} if only
+                                 else set(passes))
+                self.assertEqual(called["annotate_pass"].call_args.kwargs["may_fetch"], False)
                 self.assertEqual("left to a process run without it" in out.getvalue(), only)
 
     def test_the_folders_old_flags_still_taken(self):
