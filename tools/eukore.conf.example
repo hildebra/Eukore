@@ -14,6 +14,17 @@ TASKS=8                               # process jobs of the array (`build N` giv
 # a node's local disk for temporary files (--local_tmp); read inside the job, where SLURM names it
 SCR=${SLURM_LOCAL_SCRATCH:+$SLURM_LOCAL_SCRATCH/Eukore}
 
+# the read benchmark's other references (eukore_build.py --read_compare; Figure 1 compares Eukore with them): the
+# final job passes each whose files are there. `bash tools/eukore.sh compare` makes PR2's 18S (downloaded) and, given
+# MetaPhlAn 4's database archive and marker info, its eukaryote markers into COMPARE; EukDetect2's database is its own
+# download (its FASTA and its record<TAB>taxid table)
+COMPARE=/path/to/DB/Eukore/compare
+PR2_VERSION=5.1.1
+MPA_ARCHIVE=                          # e.g. mpa_vJan26_CHOCOPhlAnSGB_202605.tar
+MPA_INFO=                             # e.g. mpa_vJan26_CHOCOPhlAnSGB_202605_marker_info.txt.bz2
+EUKDETECT_FASTA=                      # e.g. eukdb.fasta
+EUKDETECT_TABLE=                      # e.g. busco_taxid_genome_link.txt
+
 # eukore_build.py's options: every stage's (the same --groups, --species, --ksgp_tax for each), the fetch job's,
 # the final job's (-t is the job's --cpus-per-task)
 BUILD_OPTS=(--ksgp_tax /path/to/KSGP_v4.5_plus2.tax)

@@ -37,7 +37,7 @@ micromamba activate eukore
 - p7zip: EUKARYOME's archive;
 - openpyxl: EUKARYOME's tables;
 - ncbi-fcs-gx: optional, the FCS-GX screen;
-- matplotlib: the benchmarks' figures (`docs/benchmarks/plot_benchmarks.py`).
+- matplotlib: the benchmarks' figures, drawn by the package stage (`eukore/figures.py`; without it, left out).
 
 Check that the tools are found:
 
@@ -291,7 +291,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
-| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.3, is in the manifest's `eukore`) |
+| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.4, is in the manifest's `eukore`) |
 | `-V` | | print Eukore's own version and exit |
 | `--keep_gb` | none: no genome deleted | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept); with it, a superseded assembly's and the intraspecific panel's genome files are deleted once done too (until 2026-11-08 the default was 1000) |
 | `-t`, `--threads` | 8 | threads in all; since 2026-11-09 also those that compress every `.gz` file the build writes (BGZF: the package's and the release's at level 9, the work folder's at 6) |

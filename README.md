@@ -33,7 +33,7 @@ Eukore is two things:
 
 It is made for tools that detect and profile eukaryotes in metagenomes (protal reads it as its eukaryote reference),
 and for anyone needing clean eukaryote marker genes: phylogenetics, primer design, contamination screens. Eukore's
-version is 0.2.3 (package format 6); it was named EUKDB until 2026-11-06.
+version is 0.2.4 (package format 6); it was named EUKDB until 2026-11-06.
 
 <p align="center">
   <img src="docs/figures/overview_slide.png" alt="Eukore at a glance: 21 sources, the build's three stages, the package's parts" width="860">
@@ -221,7 +221,8 @@ Details, and what was checked on real genomes, are in [docs/methods.md](docs/met
 Each build measures its package ([docs/benchmarks.md](docs/benchmarks.md)): BUSCO completeness per genome and
 supergroup; its calls against OrthoDB's own gene models of the same species; how far each marker tells species apart
 (the identity of each copy's nearest other species, by the rank they share); rRNA operon completeness; naming in
-PR2, EUKARYOME and KSGP; run time. `docs/benchmarks/plot_benchmarks.py` draws them for any package.
+PR2, EUKARYOME and KSGP; run time. The build draws them into the package's `benchmarks/figures/` (Figure 1 and one
+per benchmark; `eukore/figures.py`, or `python3 -m eukore.figures PACKAGE` for any package).
 
 On a trial package (seven clades, 2026-11-06, with the rescue pass; not a release):
 
@@ -276,7 +277,7 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 
 ## Status and limitations
 
-- Version 0.2.3. The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built; format 6 (2026-11-09: the four confidence tiers, coding sequences checked and recovered, a Duplicated locus' copy chosen by lineage, the owner of a shared sequence told, the 18S checked to be a nucleus', the genome record) is tested on stand-ins and four trial genomes, not yet on a built package.
+- Version 0.2.4 (2026-11-10: the build draws its figures, Figure 1 among them, into the package's `benchmarks/figures/`). The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built; format 6 (2026-11-09: the four confidence tiers, coding sequences checked and recovered, a Duplicated locus' copy chosen by lineage, the owner of a shared sequence told, the 18S checked to be a nucleus', the genome record) is tested on stand-ins and four trial genomes, not yet on a built package.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
 - The organelle genes have checks across species and a confidence tier since 0.2, measured on a trial without RefSeq's organelle release (assembly molecules alone). In assemblies, a protein-coding gene with introns takes miniprot's exons (median F1 0.96-0.99 against RefSeq's, against nhmmer's joined hits' 0.27-0.60), one without nhmmer's single hit ([methods.md](docs/methods.md)); a few splice sites stay off by some bases.
 - The genetic code check judges only the stop codons and CTG, where seen often enough at conserved positions (CTG-clade yeasts avoid CTG: not judged); a transcriptome's BUSCO copies (TSA, a species without a genome) have no introns and are at most `medium`.

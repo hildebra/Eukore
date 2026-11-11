@@ -22,7 +22,11 @@ docs/benchmarks.md describes them, docs/benchmarks/plot_benchmarks.py draws them
 - runtime.tsv: per genome its size, threads and seconds (WORK/done/<accession>/done.json, genomes run since
   2026-11-06), given the work folder;
 - stages.tsv: the package stage's steps and their seconds (the build's own run);
-- summary.json: the headline figures.
+- composition.tsv (since 2026-11-10): per supergroup what the package holds of its species (a genome, rRNA alone,
+  complete BUSCOs, an operon, an organelle gene);
+- summary.json: the headline figures; summary.md (since 2026-11-10) the same as Markdown tables.
+The paper's tables (paper(): selection, breadth, overlap, annotation, genes, holdout, reads, detection, ..) are
+described in docs/benchmarks.md; eukore/figures.py draws them all (the package stage into benchmarks/figures/).
 A benchmark whose inputs are missing (BUSCO's dataset, vsearch, the work folder) is left out, and summary.json says so.
 """
 
@@ -30,6 +34,7 @@ import argparse
 import collections
 import json
 import os
+import re
 import shutil
 import statistics
 import sys
@@ -262,6 +267,25 @@ def holdout_rows(tallies, records, species):
                         discordant=t["discordant"], missed=t["missed"], same_gene=t["same_gene"],
                         span_90=t["span_90"]))
     return out
+
+
+def reach_summary(rows):
+    """summary.json's orthodb.reach (since 2026-11-10; Figure 1b): holdout.tsv's rows pooled by the rank the genome
+    shares with the nearest dataset species kept (a genome's levels of one rank once: the first, the fewest left out)
+    -> {rank: genomes, loci, and the shares of the loci called, on the gene of the own-protein call, and OrthoDB's
+    gene model}, nearest rank first."""
+    pooled, seen = collections.defaultdict(collections.Counter), set()
+    for r in rows:
+        if r["nearest"] in ("-", None) or (r["accession"], r["nearest"]) in seen:
+            continue
+        seen.add((r["accession"], r["nearest"]))
+        c = pooled[r["nearest"]]
+        c["genomes"] += 1
+        for k in ("loci", "called", "same_gene", "concordant"):
+            c[k] += int(r[k])
+    return {rank: dict(genomes=c["genomes"], loci=c["loci"], called=round(c["called"] / c["loci"], 4),
+                       same_gene=round(c["same_gene"] / c["loci"], 4), concordant=round(c["concordant"] / c["loci"], 4))
+            for rank, c in ((rank, pooled.get(rank)) for rank in reversed(DEPTH_NAMES)) if c and c["loci"]}
 
 
 def holdout_summary(rows):
@@ -501,7 +525,10 @@ BREADTH_COLUMNS = ("supergroup", "ncbi_species", "eukore", "eukore_rrna_only", "
 GENE_COLUMNS = ("accession", "species_taxid", "supergroup", "odb_nearest", "odb_self", "exon_bases", "intron_bases")
 ANNOTATION_COLUMNS = ("accession", "species_taxid", "supergroup", "odb_nearest", "odb_self", "locus", "status",
                       "transcript", "gene", "exons", "ann_exons", "exact_exons", "introns", "ann_introns",
-                      "exact_introns", "bases", "ann_bases", "shared_bases")
+                      "exact_introns", "bases", "ann_bases", "shared_bases",
+                      "source")  # since 2026-11-10 (the last column): the annotation's (ncbi, ensembl, toga2, ..)
+COMPOSITION_COLUMNS = ("supergroup", "species", "with_genome", "rrna_only", "complete_median", "complete_90",
+                       "with_rrna", "with_operon", "with_organelle")
 FLAG_COLUMNS = ("supergroup", "confidence", "flags", "copies")
 REGION_COLUMNS = ("supergroup", "source", "region", "records") + tuple(q for q, _f in QUANTILES)
 ORGANELLE_COLUMNS = ("supergroup", "species", "organelle", "gene", "with_gene")
@@ -685,7 +712,11 @@ def read_summary(rows):
         for c in ("n", "assigned", "species_correct", "species_wrong", "genus_correct", "genus_wrong",
                   "phylum_wrong"):
             sums[key][c] += int(r[c])
+        sums[key]["censored"] += int(r.get("censored") or 0)  # since 2026-11-10
     for (ref, mode, kind, reads), s in sums.items():
+        if kind == "eukaryote" and reads == "genome" and mode != "in" and s["n"]:
+            # since 2026-11-10: the share of the genome reads whose secondary hits were all to records left out
+            out[ref].setdefault("censored", {})[mode] = round(s["censored"] / s["n"], 4)
         if kind == "eukaryote" and reads == "marker":
             out[ref][mode] = {f"{r}_{m}": round(v, 4) if v is not None else None for r in ("species", "genus")
                               for m, v in (("recall", s[f"{r}_correct"] / s["n"] if s["n"] else None),
@@ -696,6 +727,56 @@ def read_summary(rows):
             out[ref]["background_to_a_phylum_per_million"] = round(1e6 * s["phylum_wrong"] / s["n"], 1) \
                 if s["n"] else None
     return dict(out)
+
+
+def annotation_figures(rows):
+    """annotation.tsv's rows' headline: genomes, copies, the share on an annotated gene, of those copies' introns the
+    share exact, their coding bases' recall and precision."""
+    matched = [r for r in rows if r["transcript"] != "-"]
+    introns = sum(int(r["introns"]) for r in matched)
+    shared = sum(int(r["shared_bases"]) for r in matched)
+    return {"genomes": len({r["accession"] for r in rows}), "copies": len(rows),
+            "on_an_annotated_gene": round(len(matched) / len(rows), 4) if rows else None,
+            "introns_exact": round(sum(int(r["exact_introns"]) for r in matched) / introns, 4) if introns else None,
+            "bases_recall": round(shared / max(1, sum(int(r["ann_bases"]) for r in matched)), 4),
+            "bases_precision": round(shared / max(1, sum(int(r["bases"]) for r in matched)), 4)}
+
+
+def count_of(text):
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return 0
+
+
+def composition_rows(folder, species, complete):
+    """composition.tsv (since 2026-11-10): per supergroup (and `all`) what the package holds of its species
+    (species.tsv): with a genome (or a transcriptome, or records: a representative) and with rRNA records alone; their
+    genomes' median share of complete BUSCOs and the share at 90% or more (complete: completeness.tsv's rows); the
+    species with an rRNA record, with a whole operon (rrna/records.tsv's rDNA) and with an organelle gene."""
+    operon = {r["species_taxid"] for r in rows_of(os.path.join(folder, "rrna", "records.tsv")) if r["kind"] == "rDNA"}
+    shares = collections.defaultdict(list)
+    for r in complete:
+        for g in (r["supergroup"], "all"):
+            shares[g].append(float(r["complete"]))
+    counts = collections.defaultdict(collections.Counter)
+    for taxid, r in species.items():
+        for g in (r["supergroup"], "all"):
+            c = counts[g]
+            c["species"] += 1
+            c["with_genome"] += r["representative"] != "-"
+            c["rrna_only"] += r["representative"] == "-"
+            c["with_rrna"] += count_of(r.get("rrna_records")) > 0
+            c["with_operon"] += str(taxid) in operon
+            c["with_organelle"] += count_of(r.get("organelle_genes")) > 0
+    rows = []
+    for g in sorted(g for g in counts if g != "all") + ["all"]:
+        c, v = counts[g], shares.get(g, [])
+        rows.append(dict(supergroup=g, **{k: c[k] for k in COMPOSITION_COLUMNS[1:4]},
+                         complete_median=f"{statistics.median(v):.3f}" if v else "-",
+                         complete_90=f"{sum(x >= 0.9 for x in v) / len(v):.3f}" if v else "-",
+                         **{k: c[k] for k in COMPOSITION_COLUMNS[6:]}))
+    return rows
 
 
 def paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside, reads, flags, gene_bases, threads,
@@ -744,18 +825,17 @@ def paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside
         rows = annotation_rows(work, genomes, species, distance)
         if rows:
             write(out, "annotation.tsv", ANNOTATION_COLUMNS, rows)
-            matched = [r for r in rows if r["transcript"] != "-"]
-            introns = sum(int(r["introns"]) for r in matched)
-            summary["annotation"] = {
-                "genomes": len({r["accession"] for r in rows}), "copies": len(rows),
-                "sources": dict(collections.Counter(r.get("source", "ncbi") for r in rows)),
-                "on_an_annotated_gene": round(len(matched) / len(rows), 4),
-                "introns_exact": round(sum(int(r["exact_introns"]) for r in matched) / introns, 4) if introns else None,
-                "bases_recall": round(sum(int(r["shared_bases"]) for r in matched) /
-                                      max(1, sum(int(r["ann_bases"]) for r in matched)), 4),
-                "bases_precision": round(sum(int(r["shared_bases"]) for r in matched) /
-                                         max(1, sum(int(r["bases"]) for r in matched)), 4)}
-            log(f"benchmarks: {len(rows)} copies against their genome's annotation ({summary['annotation']})")
+            summary["annotation"] = dict(annotation_figures(rows),
+                                         sources=dict(collections.Counter(r.get("source", "ncbi") for r in rows)))
+            # since 2026-11-10: per annotation source, and per rank shared with BUSCO's dataset (Figure 1b)
+            for key, of in (("by_source", lambda r: r.get("source") or "ncbi"),
+                            ("by_distance", lambda r: "own" if r["odb_self"] == "t" else r["odb_nearest"])):
+                groups = collections.defaultdict(list)
+                for r in rows:
+                    groups[of(r)].append(r)
+                summary["annotation"][key] = {g: annotation_figures(rs) for g, rs in sorted(groups.items())}
+            log(f"benchmarks: {len(rows)} copies against their genome's annotation "
+                f"({ {k: v for k, v in summary['annotation'].items() if not k.startswith('by_')} })")
         else:
             summary["left_out"]["annotation"] = "no genome compared with its annotation (annotation.py)"
     write(out, "flags.tsv", FLAG_COLUMNS, [dict(supergroup=g, confidence=t, flags=f, copies=n)
@@ -782,9 +862,11 @@ def paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside
 
 
 def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, nearest=None, stages=None, out=None,
-        log=print, fates=None, compare=None, inside=None, reads=None, databases=None, marker_folder=None):
+        log=print, fates=None, compare=None, inside=None, reads=None, databases=None, marker_folder=None,
+        clades=None):
     """The benchmarks of the package in `folder` (finished, or the build's unfinished one once its tables are written)
-    into out (default folder/benchmarks) -> summary.json's figures. ncbi: the taxonomy (the build's, or the package's
+    into out (default folder/benchmarks), with summary.json and (since 2026-11-10) summary.md -> summary.json's
+    figures. clades: a trial's number of clades (summary.md says so). ncbi: the taxonomy (the build's, or the package's
     taxonomy/); odb_folder: BUSCO's dataset (orthodb.tsv); vsearch: resolution.tsv; nearest: the build's own
     {(accession, locus): (identity, depth)} of its checks (qc.check), so that the BUSCOs are not searched again;
     work: the build's work folder (runtime.tsv, annotation.tsv); stages: [(step, seconds)] of the package stage
@@ -842,6 +924,9 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
                                "at_least_90": round(sum(v >= 0.9 for v in every) / len(every), 4) if every else None,
                                "by_supergroup": {g: median_of(v) for g, v in sorted(by_group.items())}}
     log(f"benchmarks: completeness of {len(rows)} genomes, median {summary['completeness']['median']}")
+    composition = composition_rows(folder, species, rows)  # since 2026-11-10: what the package holds per supergroup
+    write(out, "composition.tsv", COMPOSITION_COLUMNS, composition)
+    summary["composition"] = {k: v for k, v in composition[-1].items() if k != "supergroup"}
 
     # the copies' coding sequences, where a benchmark needs them: exons from features.tsv, copies per locus
     exons = collections.defaultdict(list)
@@ -908,6 +993,7 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
         if any(r["level"] != "species" for r in rows):  # the clade hold-out (since 2026-11-09)
             write(out, "holdout.tsv", HOLDOUT_COLUMNS, rows)
             summary["orthodb"]["clade_hold_out"] = holdout_summary(rows)
+            summary["orthodb"]["reach"] = reach_summary(rows)
             log(f"benchmarks: clade hold-out of {len({r['accession'] for r in rows})} genomes: "
                 + ", ".join(f"{lv} {s['concordant_of_called']} of {s['called']} called"
                             for lv, s in summary["orthodb"]["clade_hold_out"].items()))
@@ -924,11 +1010,15 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
         rows = resolution_rows({m: v for m, v in markers.items() if v})
         write(out, "resolution.tsv", RESOLUTION_COLUMNS, rows)
         summary["resolution"] = {}
-        for r in rows:
-            if r["marker"] in (ALL_BUSCOS, "18S") and r["shared_rank"] == "all":
-                summary["resolution"][r["marker"]] = {"copies": r["copies"],
-                                                      "under_99": round(r["under_99"] / r["copies"], 4),
-                                                      "under_97": round(r["under_97"] / r["copies"], 4)}
+        for r in rows:  # every copy, and (since 2026-11-10, `congeners`) those whose nearest other species is a congener
+            if r["marker"] in (ALL_BUSCOS, "18S") and r["shared_rank"] in ("all", "genus"):
+                figures = {"copies": r["copies"], "under_99": round(r["under_99"] / r["copies"], 4),
+                           "under_97": round(r["under_97"] / r["copies"], 4)}
+                entry = summary["resolution"].setdefault(r["marker"], {})
+                if r["shared_rank"] == "all":
+                    entry.update(figures)
+                else:
+                    entry["congeners"] = figures
         log(f"benchmarks: resolution of {len(busco_nearest)} BUSCOs and {len(ssu)} species' 18S")
 
     rows = rrna_rows(folder)
@@ -993,7 +1083,115 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
               [dict(step="benchmarks", seconds=f"{time.time() - started:.1f}")])
     with open(os.path.join(out, "summary.json"), "w", newline="\n") as fh:
         json.dump(summary, fh, indent=1)
+    # since 2026-11-10: the headline figures as Markdown tables, for a reader without a JSON viewer
+    name = re.sub(r"^\..+-\d+\.(.+)\.partial$", r"\1", os.path.basename(os.path.normpath(folder)))  # util.part_of's
+    with open(os.path.join(out, "summary.md"), "w", newline="\n") as fh:
+        fh.write(summary_md(summary, name, clades, composition))
     return summary
+
+
+def pct(v):
+    return "-" if v is None else f"{100 * v:.1f}%"
+
+
+def summary_md(s, name, clades=None, composition=None):
+    """summary.json's figures (s) as Markdown: the headline table (the README's), then (composition.tsv's rows given)
+    what the package holds per supergroup."""
+    lines = ["| benchmark | figure |", "|---|---|",
+             f"| package | {name}{f' (a trial: {clades} clades)' if clades else ''}, {s['species']:,} species' "
+             f"genomes, {s['busco_loci']} BUSCOs |"]
+    c = s.get("composition")
+    if c:
+        lines.append(f"| species; with a genome; with rRNA records alone | {c['species']:,}; {c['with_genome']:,}; "
+                     f"{c['rrna_only']:,} |")
+        lines.append(f"| species with an rRNA record; a whole operon; an organelle gene | {c['with_rrna']:,}; "
+                     f"{c['with_operon']:,}; {c['with_organelle']:,} |")
+    c = s.get("completeness") or {}
+    lines.append(f"| median complete BUSCOs per genome | {pct(c.get('median'))} "
+                 f"({pct(c.get('at_least_90'))} of genomes at 90% or more) |")
+    o = s.get("orthodb")
+    if o:
+        lines.append(f"| BUSCOs OrthoDB has a gene model of, called | {pct(o['called'])} of {o['pairs']:,} "
+                     f"({o['species']} species) |")
+        lines.append(f"| of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | "
+                     f"{pct(o['concordant_of_called'])} |")
+        h = o.get("held_out")
+        if h:
+            lines.append(f"| the same, called without the species' own proteins | {pct(h['called'])} called, "
+                         f"{pct(h['concordant_of_called'])} of them OrthoDB's gene model ({h['species']} species) |")
+            p = h.get("place")
+            if p and p.get("both_called"):
+                lines.append(f"| of those also called with its own proteins, on the same gene | {pct(p['same_gene'])} "
+                             f"of {p['both_called']:,}, {pct(p['span_at_least_90'])} of them sharing 90% of the "
+                             f"span; {p['rescued']} called by the rescue pass |")
+        for rank, r in (o.get("reach") or {}).items():
+            lines.append(f"| nearest dataset species kept shares the {rank} (clade hold-out, {r['genomes']} genomes): "
+                         f"called; on the same gene; OrthoDB's gene model | {pct(r['called'])}; {pct(r['same_gene'])}; "
+                         f"{pct(r['concordant'])} of {r['loci']:,} |")
+    a = s.get("annotation")
+    if a:
+        lines.append(f"| calls laid on their genome's annotation ({a['genomes']:,} genomes): introns exact; coding "
+                     f"bases' recall, precision | {pct(a['introns_exact'])}; {pct(a['bases_recall'])}, "
+                     f"{pct(a['bases_precision'])} |")
+        for source, r in (a.get("by_source") or {}).items():
+            lines.append(f"| the same, {source}'s annotation ({r['genomes']:,} genomes) | {pct(r['introns_exact'])}; "
+                         f"{pct(r['bases_recall'])}, {pct(r['bases_precision'])} |")
+    for marker, r in (s.get("resolution") or {}).items():
+        label = "BUSCO" if marker.startswith("BUSCO") else marker
+        if "under_99" in r:
+            lines.append(f"| {label} copies under 99% identical to any other species | {pct(r['under_99'])} of "
+                         f"{r['copies']:,} |")
+        if r.get("congeners"):
+            lines.append(f"| {label} copies under 99% identical to their nearest congener | "
+                         f"{pct(r['congeners']['under_99'])} of {r['congeners']['copies']:,} |")
+    for marker, r in (s.get("barcode_gap") or {}).items():
+        lines.append(f"| panel species told from their congeners by {marker} (barcode gap) | {pct(r['resolved'])} of "
+                     f"{r['species_markers']:,} |")
+    m = s.get("markers")
+    if m:
+        lines.append("| Eukore's own loci against UniProt's same species: concordant | " + ", ".join(
+            f"{k} {v['concordant']}/{v['species']}" for k, v in m.items()) + " |")
+    r = s.get("rrna")
+    if r:
+        lines.append(f"| rRNA records; operons with a whole 28S | {r['records']:,}; "
+                     f"{pct(r['lsu_complete_of_operons'])} of {r['operons']:,} |")
+    p = s.get("primers")
+    if p:
+        lines.append("| primer pairs: species amplified of those with a record it runs on | " + ", ".join(
+            f"{k} {pct(v)}" for k, v in sorted(p.items(), key=lambda kv: -kv[1])) + " |")
+    for ref, modes in (s.get("detection") or {}).items():
+        cells = []
+        for mode, rank in (("in", "species"), ("held_out", "genus"), ("novel", "class")):
+            got = sorted((int(k.rsplit("_", 1)[1]), v.get("f1")) for k, v in modes.items()
+                         if k.rsplit("_", 1)[0] == mode)
+            if got:
+                cells.append(f"{rank}{' held out' if mode != 'in' else ''} " + "/".join(
+                    "-" if f is None else f"{f:.2f}" for _d, f in got))
+        depths = "/".join(f"{d:,}" for d in sorted({int(k.rsplit('_', 1)[1]) for k in modes}))
+        lines.append(f"| detection F1, {ref} ({depths} reads) | {'; '.join(cells)} |")
+    for ref, r in (s.get("reads") or {}).items():
+        if r.get("censored"):
+            lines.append(f"| {ref}'s genome reads censored (all secondary hits left out) | " + ", ".join(
+                f"{mode} {pct(v)}" for mode, v in r["censored"].items()) + " |")
+    for ref, v in (s.get("labels") or {}).items():
+        lines.append(f"| species named in {ref} by name or synonym | {pct(v)} |")
+    t = s.get("runtime")
+    if t:
+        per_gb = f", {t['seconds_per_gb'] / 60:.0f} min per Gb of genome" if t.get("seconds_per_gb") else ""
+        lines.append(f"| genome run (BUSCOs, rRNA, tiara), median | {t['median_seconds'] / 60:.1f} min on "
+                     f"{t.get('threads', '?')} threads{per_gb} |")
+    for what, why in (s.get("left_out") or {}).items():
+        lines.append(f"| {what} | not measured: {why} |")
+    if composition:
+        lines += ["", "| supergroup | species | with a genome | rRNA alone | complete BUSCOs, median | genomes ≥ 90% "
+                      "complete | with rRNA | with an operon | with an organelle gene |",
+                  "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+        for r in composition:
+            lines.append("| " + " | ".join(
+                [str(r["supergroup"])] + [f"{int(r[k]):,}" for k in ("species", "with_genome", "rrna_only")] +
+                [pct(float(r[k])) if r[k] != "-" else "-" for k in ("complete_median", "complete_90")] +
+                [f"{int(r[k]):,}" for k in ("with_rrna", "with_operon", "with_organelle")]) + " |")
+    return "\n".join(lines) + "\n"
 
 
 def main(argv=None):

@@ -945,9 +945,10 @@ def databases_of(src_dir, ncbi, references, inside=None):
 
 
 def measure(part, opts, src_dir, ncbi, collected, vsearch, stages, fates=None, tests=(), references=()):
-    """The package's benchmarks (eukore/benchmarks.py) into its unfinished folder -> their figures, or None where
-    they failed: a benchmark never stops the package. fates: genomes.fates (selection.tsv); tests: the read
-    benchmark's genomes (reads.choose), kept through the prune; references: labels.references (overlap.tsv)."""
+    """The package's benchmarks (eukore/benchmarks.py) into its unfinished folder, and (since 2026-11-10, without
+    --no_figures) their figures (eukore/figures.py) -> summary.json's figures, or None where they failed: a benchmark
+    never stops the package. fates: genomes.fates (selection.tsv); tests: the read benchmark's genomes
+    (reads.choose), kept through the prune; references: labels.references (overlap.tsv)."""
     nearest = {(r["accession"], r["locus"]): (r.get("nearest_id"), r.get("nearest_depth"))
                for r in collected["copy_rows"]} if vsearch else None
     minimap2 = shutil.which(opts.minimap2)
@@ -961,15 +962,43 @@ def measure(part, opts, src_dir, ncbi, collected, vsearch, stages, fates=None, t
                  background=reads_mod.read_background(READ_BACKGROUND, os.path.join(src_dir, "read_background")),
                  work=util.part_of(os.path.join(getattr(opts, "scratch", None) or opts.work, "read_benchmark")))
     inside = opts.inside if opts.wanted is not None else None
+    if not opts.read_compare:
+        say("NOTE: no --read_compare: the read benchmark and breadth.tsv compare Eukore with no other reference "
+            "(tools/compare_references.py makes them; tools/eukore.sh takes them from its COMPARE folder)")
     try:
-        return benchmarks.run(part, ncbi, odb_mod.folder_of(src_dir), vsearch, opts.threads, opts.work, nearest,
-                              stages, log=say, fates=fates, compare=opts.read_compare, inside=inside, reads=reads,
-                              databases=databases_of(src_dir, ncbi, references, inside),
-                              marker_folder=markers_of(opts, src_dir))
+        measured = benchmarks.run(part, ncbi, odb_mod.folder_of(src_dir), vsearch, opts.threads, opts.work, nearest,
+                                  stages, log=say, fates=fates, compare=opts.read_compare, inside=inside, reads=reads,
+                                  databases=databases_of(src_dir, ncbi, references, inside),
+                                  marker_folder=markers_of(opts, src_dir),
+                                  clades=len(opts.wanted) if opts.wanted is not None else None)
     except Exception as e:  # noqa: BLE001
         say(f"WARNING: the benchmarks failed ({type(e).__name__}: {e}): the package is written without them")
         shutil.rmtree(os.path.join(part, benchmarks.FOLDER), ignore_errors=True)
         return None
+    if not opts.no_figures:  # since 2026-11-10: Figure 1 and the rest, before the manifest lists them
+        draw_figures(part)
+    return measured
+
+
+def draw_figures(part):
+    """The package's figures (eukore/figures.py) into its benchmarks/figures/; without matplotlib, or failed, left
+    out: never the package's end."""
+    started = time.time()
+    try:
+        from eukore import figures  # noqa: PLC0415 (matplotlib: only where figures are drawn)
+    except ImportError as e:
+        say(f"WARNING: no figures ({e}: envs/eukore.yaml's matplotlib-base): python3 -m eukore.figures draws them "
+            "later")
+        return
+    try:
+        made = figures.draw(part, log=say)
+    except Exception as e:  # noqa: BLE001
+        say(f"WARNING: the figures failed ({type(e).__name__}: {e}): the package is written without them")
+        shutil.rmtree(os.path.join(part, benchmarks.FOLDER, figures.FOLDER), ignore_errors=True)
+        return
+    drawn = [n for n, p in made.items() if p and n not in ("index", "summary")]
+    say(f"figures: {len(drawn)} drawn into {benchmarks.FOLDER}/{figures.FOLDER}/ ({time.time() - started:.0f} s); "
+        f"left out: {', '.join(n for n, p in made.items() if not p) or 'none'}")
 
 
 def clades(spec):
@@ -1092,7 +1121,10 @@ def banner(opts, argv, whence):
     off = [what for what, flag in (("rescue pass", opts.no_rescue), ("transcriptomes", opts.no_tsa),
                                    ("tiara", opts.no_tiara), ("sketches", opts.no_sketches),
                                    ("benchmarks", opts.no_benchmarks),
+                                   ("figures", opts.no_figures and not opts.no_benchmarks),
                                    ("read benchmark", not opts.read_genomes and not opts.no_benchmarks),
+                                   ("other references in the read benchmark (--read_compare)",
+                                    not opts.read_compare and not opts.no_benchmarks),
                                    ("intraspecific panel", not opts.intraspecific)) if flag]
     if off:
         rows.append(("off", ", ".join(off)))
@@ -1278,6 +1310,9 @@ def _main(argv, held):
                                       "crossrefs.tsv")
     p.add_argument("--no_benchmarks", action="store_true", help="write the package without its benchmarks/ "
                                                                   "(eukore/benchmarks.py; docs/benchmarks.md)")
+    p.add_argument("--no_figures", action="store_true",
+                   help="write the benchmarks without their figures (benchmarks/figures/: Figure 1 and the rest, "
+                        "eukore/figures.py; since 2026-11-10; python3 -m eukore.figures draws them later)")
     p.add_argument("-t", "--threads", type=int, default=8)
     p.add_argument("-j", "--jobs", type=int, default=None,
                    help="genomes at a time at most (default threads / 4; fewer where --memory_gb holds fewer, each "

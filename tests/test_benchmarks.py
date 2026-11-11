@@ -181,6 +181,48 @@ class PackageTest(unittest.TestCase):
             self.assertEqual(summary["resolution"], manifest["benchmarks"]["resolution"])
             self.assertEqual(summary["orthodb"], manifest["benchmarks"]["orthodb"])
             self.assertFalse(os.path.isfile(os.path.join(again, "stages.tsv")))
+            # since 2026-11-10: what the package holds per supergroup, the summary as Markdown (named by the package,
+            # not by its unfinished folder), the copies whose nearest other species is a congener
+            comp = {r["supergroup"]: r for r in table("composition.tsv")}
+            self.assertEqual((comp["all"]["species"], comp["all"]["with_genome"], comp["Fungi"]["species"]),
+                             ("2", "2", "2"))
+            self.assertEqual(manifest["benchmarks"]["composition"]["with_genome"], 2)
+            self.assertEqual(manifest["benchmarks"]["resolution"][benchmarks.ALL_BUSCOS]["congeners"]["copies"], 4)
+            self.assertIn("benchmarks/summary.md", manifest["files"])
+            with open(os.path.join(folder, "summary.md")) as fh:
+                md = fh.read()
+            self.assertIn("| package | Eukore_2026.11, 2 species' genomes", md)
+            self.assertIn("| Fungi | 2 | 2 | 0 |", md)
+            import importlib.util  # noqa: PLC0415
+            if importlib.util.find_spec("matplotlib") is None:  # the figures need it; the benchmarks do not
+                return
+            from eukore import figures  # noqa: PLC0415
+            warnings = []
+            made = figures.draw(out, out=os.path.join(tmp, "figures"), log=warnings.append)
+            self.assertEqual(warnings, [])  # no figure failed
+            self.assertTrue(all(made[n] for n in ("Fig1", "completeness", "orthodb", "resolution", "index",
+                                                  "summary")))
+            with open(made["index"]) as fh:
+                self.assertIn("## Figure 1", fh.read())
+
+
+class FigureTablesTest(unittest.TestCase):
+    def test_reach_pooled_by_the_nearest_rank(self):
+        # since 2026-11-10 (Figure 1b): a genome's levels of one nearest rank count once (its first)
+        rows = [dict(accession="A", nearest="genus", loci=10, called=9, same_gene=9, concordant=8),
+                dict(accession="A", nearest="class", loci=10, called=8, same_gene=8, concordant=5),
+                dict(accession="A", nearest="class", loci=10, called=1, same_gene=1, concordant=1),
+                dict(accession="B", nearest="class", loci=10, called=10, same_gene=10, concordant=7),
+                dict(accession="C", nearest="-", loci=10, called=10, same_gene=10, concordant=10)]
+        got = benchmarks.reach_summary(rows)
+        self.assertEqual(list(got), ["genus", "class"])
+        self.assertEqual(got["class"], dict(genomes=2, loci=20, called=0.9, same_gene=0.9, concordant=0.6))
+
+    def test_summary_md_of_a_bare_summary(self):
+        text = benchmarks.summary_md({"species": 3, "busco_loci": 129, "left_out": {"reads": "no test genomes"}},
+                                     "Eukore_x", clades=2)
+        self.assertIn("| package | Eukore_x (a trial: 2 clades), 3 species' genomes, 129 BUSCOs |", text)
+        self.assertIn("| reads | not measured: no test genomes |", text)
 
 
 class CladeHoldOutTest(unittest.TestCase):
