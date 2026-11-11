@@ -948,11 +948,14 @@ def intraspecific_pass(opts, src_dir, ncbi, extras):
     chosen = organelle_mod.choose(organelle_mod.refseq_genes(src_dir, folder, ncbi, say), ncbi)
     barrnap, nhmmer = shutil.which("barrnap"), shutil.which("nhmmer")
     if barrnap and nhmmer:
-        organelle_mod.assembly_pass(folder, extras, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
-                                    barrnap, nhmmer, opts.threads, 1, say,
-                                    shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
-                                    every=True, saved_of=functools.partial(saved_molecules, opts),
-                                    progress=functools.partial(progress_of, opts, unit="", scale=1))
+        # the packed genomes' molecules written into a folder of the pass' (since 2026-11-11: none was given, and a
+        # packed extra still to search stopped the build with a TypeError)
+        with tempfile.TemporaryDirectory() as tmp:
+            organelle_mod.assembly_pass(folder, extras, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
+                                        barrnap, nhmmer, opts.threads, 1, say,
+                                        shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
+                                        every=True, saved_of=functools.partial(saved_molecules, opts, tmp),
+                                        progress=functools.partial(progress_of, opts, unit="", scale=1))
     for acc in extras if opts.keep_gb is not None else ():  # without --keep_gb, kept
         path = genomes.genome_file(opts.genomes, acc)
         if genomes.is_done(opts.work, acc) and os.path.isfile(organelle_mod.assembly_file(folder, acc)) \

@@ -252,6 +252,37 @@ class ResumeTest(unittest.TestCase):
             finally:
                 os.chmod(locked, 0o700)
 
+    def test_the_panels_packed_assemblies_molecules_read(self):
+        # the intraspecific panel's organelle pass gave saved_molecules no folder (2026-11-10 to -11): a packed extra
+        # still to search stopped the final job with a TypeError
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        from eukore import genomes, metadata, store  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            work, acc = os.path.join(tmp, "work"), "GCA_000000005.1"
+            folder = genomes.done_dir(work, acc)
+            os.makedirs(folder)
+            for name, data in ((metadata.STATS, "{}"), (metadata.ORGANELLE, "x"), ("done.json", "{}")):
+                with open(os.path.join(folder, name), "w") as fh:
+                    fh.write(data)
+            store.pack(folder)
+            opts = mock.Mock(work=work, genomes=os.path.join(tmp, "genomes"), threads=1, keep_gb=None,
+                             organelle_models="nhmmer")
+            got = []
+
+            def assembly_pass(*_a, saved_of=None, **_k):
+                path = saved_of(acc)
+                with open(path) as fh:
+                    got.append(fh.read())
+                return 1, 0
+            with mock.patch.object(eukore_build.organelle_mod, "refseq_genes", return_value=[]), \
+                    mock.patch.object(eukore_build.organelle_mod, "choose", return_value={}), \
+                    mock.patch.object(eukore_build.shutil, "which", side_effect=lambda t: "/x/" + t), \
+                    mock.patch.object(eukore_build.organelle_mod, "assembly_pass", side_effect=assembly_pass):
+                eukore_build.intraspecific_pass(opts, tmp, None, {acc: {"accession": acc}})
+            self.assertEqual(got, ["x"])
+            store.close()
+
     def test_genomes_only_runs_the_genomes_alone(self):
         # several process runs on one WORK (a SLURM array, since 2026-11-09): with --genomes_only each runs its share
         # of the genomes and stops, the passes over all genomes left to one run without it once all have ended; the
