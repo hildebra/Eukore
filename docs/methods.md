@@ -223,7 +223,16 @@ So that a user (protal's build) has what it needs without computing it again:
   `differs:CTG>L`, best table 1. Given table 1, *C. albicans* is not caught: it uses CTG at 3 conserved positions
   only (CTG-clade yeasts avoid the codon), so `gencode_codons` does not list CTG. The ciliate *Euplotes raikovi*'s
   transcriptome (TSA GKLH01; NCBI's table 10, TGA Cys) agrees with table 10; given table 1 it is called
-  `differs:TGA>C`, best table 10 (TGA at 8 conserved positions).
+  `differs:TGA>C`, best table 10 (TGA at 8 conserved positions). A stop NCBI's table reads as an amino acid but the
+  genome does not use is at no conserved position, and neither is one used rarely: oligotrich ciliates read TAA and
+  TAG as Gln at 1–4 of their 22–34 conserved Gln positions. Since 2026-11-11 such a stop is judged by every in-frame
+  codon inside the copies (their last left out): where it is 1% or less of its amino acid's other codons there, and
+  those 200 or more, it is called a stop (`differs:TGA>*`) and `best_table` reads it as one. Measured on 18
+  ciliates of NCBI's tables 1, 4, 6, 10, 28 and 29 and the 34 genomes of the standard code of the 2026-11-10 build: a
+  stop truly read as an amino acid was 7.1% or more of its amino acid's codons (*Strombidium stylifer*'s TAA), *Fabrea
+  salina*'s TGA (NCBI's table 10, Cys) 0.4%: called a stop, best table 1. Copies mispredicted through an intron add
+  stops (up to 41% of Cys in *Blastocystis*), so these counts can hide an unused stop but never call a used one so;
+  for the same reason they are not used to call a stop read as an amino acid.
 - **Duplication** (`loci.dup_identity`, `package.duplication_of`). Each Duplicated BUSCO's other complete copies are
   kept by the run, and vsearch measures the nearest one's identity to the chosen copy (`dup_identity`). A genome with
   many duplicated BUSCOs whose copies are 99.5% alike holds both haplotypes of a diploid (or a recent hybrid); less

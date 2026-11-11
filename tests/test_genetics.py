@@ -130,6 +130,29 @@ class CodeTest(unittest.TestCase):
         self.assertEqual(next(r["inferred_aa"] for r in rows if r["codon"] == "ATG"), "L")
         self.assertEqual((verdict, best, codecheck.judged(tallies)), ("agrees", 1, "CTG"))  # no stop seen
 
+    def test_a_stop_the_table_reads_but_the_genome_does_not_use(self):
+        # since 2026-11-11: Fabrea salina's case, NCBI's table 10 (TGA Cys), no TGA inside its copies: TGA a stop
+        cds, states, emissions = self.genome(1, times=100)  # 200 TGT and TGC, no TGA
+        tallies = codecheck.tally([(cds, states, "L1")], emissions)
+        within = codecheck.inside([cds])
+        self.assertEqual((within["TGA"], within["TGT"] + within["TGC"]), (0, 200))
+        self.assertEqual(codecheck.check(tallies, 10, within)[1:], ("differs:TGA>*", 1))
+        self.assertEqual(codecheck.check(tallies, 10)[1:], ("agrees", 10))  # not judged without the copies' codons
+        self.assertEqual(codecheck.check(tallies, 1, within)[1:], ("agrees", 1))  # a stop read as one: not judged
+        # 1% of the other codons is unused; more is a codon used rarely; fewer than 200 other codons say nothing
+        self.assertEqual(codecheck.unused(dict(TGA=2, TGT=100, TGC=100), gencode.code(10)), ["TGA"])
+        self.assertEqual(codecheck.unused(dict(TGA=3, TGT=100, TGC=100), gencode.code(10)), [])
+        self.assertEqual(codecheck.unused(dict(TGT=100, TGC=99), gencode.code(10)), [])
+        # Strombidium's TAA, read as Q at 7% of its Q codons, Oxytricha's TAG at 26%: used
+        self.assertEqual(codecheck.unused(dict(TAA=98, TAG=351, CAA=700, CAG=677), gencode.code(6)), [])
+        self.assertEqual(codecheck.unused(dict(TAA=98, CAA=700, CAG=677), gencode.code(6)), ["TAG"])
+
+    def test_a_ciliate_using_its_stops_inside(self):
+        cds, states, emissions = self.genome(6, times=100)  # TAA and TAG Q, as often as CAA and CAG
+        tallies = codecheck.tally([(cds, states, "L1")], emissions)
+        self.assertEqual(codecheck.check(tallies, 6, codecheck.inside([cds]))[1:], ("agrees", 6))
+        self.assertEqual(codecheck.inside(["ATGTAATAGTGA"]), {"ATG": 1, "TAA": 1, "TAG": 1})  # the last left out
+
     def test_too_little_to_say(self):
         cds, states, emissions = self.genome(1, times=2)
         self.assertEqual(codecheck.check(codecheck.tally([(cds, states, "L1")], emissions), 1)[1:], ("undecided", "-"))
