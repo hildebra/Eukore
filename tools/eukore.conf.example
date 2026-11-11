@@ -31,7 +31,8 @@ BUILD_OPTS=(--ksgp_tax /path/to/KSGP_v4.5_plus2.tax)
 FETCH_OPTS=(--downloads 12)
 FINAL_OPTS=(--keep_gb 1000)
 
-# sbatch's options: every job's, then each kind's
+# sbatch's options: every job's, then each kind's. A list of partitions (-p a,b,c) is refused whole when one of
+# them refuses the job: try each alone with `sbatch --test-only` (a large-memory partition may refuse a small job)
 SBATCH_ALL=(--time=124:00:00)
 SBATCH_FETCH=(-p download --cpus-per-task=2 --mem=8G)
 SBATCH_PROCESS=(-p medium --cpus-per-task=64 --mem=200G --localscratch=ssd:500)

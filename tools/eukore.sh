@@ -42,19 +42,25 @@ source "$CONF"
 : "${PDIR:?$CONF: PDIR}" "${WORK:?$CONF: WORK}" "${OUT:?$CONF: OUT}" "${VERSION:?$CONF: VERSION}"
 
 submit() {  # submit NAME [sbatch's options] -- STEP: the job's ID; fails when sbatch refuses the job
-    local name=$1 opts=() jid
+    local name=$1 opts=() call jid
     shift
     while [[ $1 != -- ]]; do opts+=("$1"); shift; done
     [[ -z $LOGS ]] || opts+=(-o "$LOGS/eukore.%j.otxt" -e "$LOGS/eukore.%j.etxt")
+    call=(sbatch --parsable -J "$name" ${SBATCH_ALL[@]+"${SBATCH_ALL[@]}"} "${opts[@]}" "$SELF" "$2")
     # checked here: submit runs inside $(...), where bash drops set -e (until 2026-11-10 a refused job gave an empty
     # ID, and `build` went on to a final job with a dependency on no job)
-    if ! jid=$(EUKORE_SH=$SELF EUKORE_CONF=$CONF sbatch --parsable -J "$name" ${SBATCH_ALL[@]+"${SBATCH_ALL[@]}"} \
-        "${opts[@]}" "$SELF" "$2") || [[ -z $jid ]]; then
-        printf '%s\n' "sbatch refused $name. If by the QOS: each task of an array counts as one job against its" \
-            "submit limit (fewer tasks: build N). The limits and the jobs already queued:" \
-            "  sacctmgr show assoc user=\$USER format=account,partition,qos,maxsubmit,maxwall" \
-            "  sacctmgr show qos format=name,maxsubmitpu,maxjobspu,maxwall,maxtrespu,flags" \
-            "  squeue -u \$USER" >&2
+    if ! jid=$(EUKORE_SH=$SELF EUKORE_CONF=$CONF "${call[@]}") || [[ -z $jid ]]; then
+        {
+            echo "sbatch refused $name, submitted as:"
+            printf ' %q' "${call[@]}"
+            echo
+            # 2026-11-10 on the EI cluster: not the job count, as first thought; the list qib-medium,ei-medium,
+            # ei-largemem refused even a single job, since ei-largemem alone refused it
+            printf '%s\n' "SLURM gives this one message for limits on the number of jobs, their size and their time;" \
+                "with several partitions (-p a,b,c), one partition that refuses refuses the whole job. The same" \
+                "call with --test-only, each partition alone, then one option changed at a time, finds which." \
+                "The limits: sacctmgr show qos format=name%20,mintres%30,maxwall,maxsubmitpu,maxjobspu,maxtrespu%30"
+        } >&2
         exit 1  # leaves the $(...) only: the caller decides
     fi
     echo "${jid%%;*}"

@@ -772,7 +772,8 @@ class ChainTest(unittest.TestCase):
             # final job with a dependency on no job); a final job refused cancels the array before it
             got, calls = run("build", REFUSE="Eukore-process")
             self.assertEqual((got.returncode, calls, got.stdout), (1, [], ""))
-            self.assertIn("sbatch refused Eukore-process", got.stderr)
+            self.assertIn("sbatch refused Eukore-process, submitted as:\n sbatch --parsable -J Eukore-process "
+                          "--time=1:00:00 --mem=200G --array=1-3 -o", got.stderr)
             got, calls = run("build", REFUSE="Eukore-final")
             self.assertEqual((got.returncode, calls[1:], got.stdout), (1, ["scancel 101"], ""))
             self.assertIn("array job 101 cancelled", got.stderr)
