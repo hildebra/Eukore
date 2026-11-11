@@ -147,9 +147,8 @@ def found(genomes_folder, accession):
 
 def missing(work, job):
     """Whether a done genome with an annotation to try has not been compared with it yet."""
-    from .genomes import done_dir, is_done  # noqa: PLC0415
-    return wanted(job) and is_done(work, job["accession"]) and \
-        not store.has(done_dir(work, job["accession"]), TABLE)
+    from .genomes import has, is_done  # noqa: PLC0415
+    return wanted(job) and is_done(work, job["accession"]) and not has(work, job["accession"], TABLE)
 
 
 def ensembl_index(species_json):

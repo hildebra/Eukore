@@ -21,8 +21,10 @@ The package's metadata/ (write): assembly.tsv.gz (STATS, ASSEMBLY_COLUMNS), tetr
 
 import collections
 import contextlib
+import functools
 import gzip
 import hashlib
+import io
 import itertools
 import json
 import os
@@ -554,21 +556,29 @@ def write(part, genomes, work, tables=(), jobs=None):
             if name in rows:
                 out.append(dict(rows[name], genome=acc, fetched="t" if name == fetched[acc] else "f"))
     _gz_table(os.path.join(folder, "ncbi.tsv.gz"), NCBI_EXTRA + tuple(c for c in columns if c not in NCBI_EXTRA), out)
-    described, listed, sketches = [], [], []
+    from .genomes import cached_summaries, prefetch  # noqa: PLC0415
+    described, listed, n_sketches = [], [], 0
     molecules = os.path.join(part, "organelle", "molecules.fna.gz")
+    sketch_zip = os.path.join(folder, "sketches.zip")  # a zip of signatures sourmash reads as one collection
     n_molecules = 0
-    with util.bgzf_open(util.part_of(molecules)) as mol:
-        for acc in sorted(genomes):
-            if genomes[acc].get("representative") != "t":
-                continue
-            d = done_dir(work, acc)  # its folder, or its packed file (store.py; since 2026-11-10)
+    reps = [acc for acc in sorted(genomes) if genomes[acc].get("representative") == "t"]
+    # each genome's stats, molecules and sketch read in one look, READ_THREADS genomes at once, and its done.json
+    # (annotation_source) by prefetch (since 2026-11-11: one genome after another, some 30,000 from the shared file
+    # system, and the sketches a second time after)
+    with cached_summaries(), util.bgzf_open(util.part_of(molecules)) as mol, \
+            zipfile.ZipFile(util.part_of(sketch_zip), "w", zipfile.ZIP_STORED) as sketches:
+        prefetch(work, reps)
+        read = functools.partial(store.members, wanted=(STATS, ORGANELLE, SKETCH))
+        for acc, got in zip(reps, util.threaded(read, [done_dir(work, acc) for acc in reps])):
+            got = got or {}
             try:
-                stats = json.loads(store.text(d, STATS) or "")
+                stats = json.loads(store.decoded(STATS, got.get(STATS)) or "")
             except ValueError:
                 stats = None
-            sketched = store.has(d, SKETCH)
-            if sketched:
-                sketches.append((acc, d))
+            sketched = got.get(SKETCH) is not None
+            if sketched:  # stored: each is gzipped
+                sketches.writestr(f"signatures/{acc}.sig.gz", got[SKETCH])
+                n_sketches += 1
             g, job = genomes[acc], jobs.get(acc)
             row = dict(stats or {}, accession=acc, fetched=g.get("fetched") or acc,
                        genome_source=genome_source(g, job), genome_url=(job or {}).get("url") or "-",
@@ -578,22 +588,20 @@ def write(part, genomes, work, tables=(), jobs=None):
             if stats is None:
                 continue
             described.append(row)
-            for line in store.open_text(d, ORGANELLE) or ():
+            for line in io.StringIO(store.decoded(ORGANELLE, got.get(ORGANELLE)) or ""):
                 if line.startswith(">"):
                     n_molecules += 1
                     line = f">{acc}|{line[1:]}"
                 mol.write(line)
     os.replace(util.part_of(molecules), molecules)
+    if n_sketches:
+        os.replace(util.part_of(sketch_zip), sketch_zip)
+    else:  # none sketched: no sketches.zip, as before
+        os.remove(util.part_of(sketch_zip))
     _gz_table(os.path.join(folder, "assembly.tsv.gz"), ASSEMBLY_COLUMNS, listed)
     _gz_table(os.path.join(folder, "tetranucleotides.tsv.gz"), ("accession",) + tuple(CANONICAL),
               [dict(accession=r["accession"], **dict(zip(CANONICAL, r["tetranucleotides"]))) for r in described])
-    if sketches:  # a zip of signatures sourmash reads as one collection (stored: each is gzipped)
-        path = os.path.join(folder, "sketches.zip")
-        with zipfile.ZipFile(util.part_of(path), "w", zipfile.ZIP_STORED) as z:
-            for acc, d in sketches:
-                z.writestr(f"signatures/{acc}.sig.gz", store.read(d, SKETCH))
-        os.replace(util.part_of(path), path)
     return {"ncbi_rows": len(out), "genomes": len(listed), "assemblies_described": len(described),
-            "sketches": len(sketches), "organelle_molecules": n_molecules,
+            "sketches": n_sketches, "organelle_molecules": n_molecules,
             "genome_sources": dict(collections.Counter(r["genome_source"] for r in listed)),
             "annotation_sources": dict(collections.Counter(r["annotation_source"] for r in listed))}

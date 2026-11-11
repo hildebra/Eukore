@@ -802,6 +802,18 @@ def ordered(task, items, workers=1, ahead=None, pool=None):
             yield pending.popleft().result()
 
 
+READ_THREADS = 16  # reads of done genomes at once (genomes.prefetch, threaded): each waits on the file system
+
+
+def threaded(task, items, threads=READ_THREADS):
+    """ordered's results, task(item) run by a pool of threads (since 2026-11-11): reads that wait on a shared file
+    system, not on a core (file reads and zlib let go of the GIL), at most 4 x threads read ahead of the result
+    awaited. task must not take the process' locks for long (store.members, not store.read)."""
+    with concurrent.futures.ThreadPoolExecutor(max(1, threads)) as pool:
+        pool.size = max(1, threads)
+        yield from ordered(task, items, pool=pool)
+
+
 def descendants(pids, proc="/proc"):
     """The processes under pids (their children, and theirs), by /proc's parents -> their pids; [] without /proc."""
     try:

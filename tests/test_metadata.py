@@ -20,7 +20,9 @@ import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import genomes, metadata, ncbi as ncbi_mod, package, util  # noqa: E402
+from unittest import mock  # noqa: E402
+
+from eukore import genomes, metadata, ncbi as ncbi_mod, package, store, util  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 YEAST, YEAST_GCF, OTHER = "GCA_000146045.2", "GCF_000146045.2", "GCA_000000003.1"
@@ -192,8 +194,18 @@ class PackageTest(unittest.TestCase):
                               source="no_assembly", representative="t", loci=0)},
                 copies={YEAST: {}, toga2: {}, eukprot: {}}, features=[], copy_rows=[], taxids=set())
             hook = lambda part, g: metadata.write(part, g, work, tables, jobs)  # noqa: E731
-            out = package.write(os.path.join(tmp, "out", "Eukore_2026.11"), "2026.11", ncbi, collected, [],
-                                metadata=hook)
+            # each genome read in one look by threads (store.members, prefetch's snapshot; since 2026-11-11), never by
+            # store's one-at-a-time reads
+            one = AssertionError("read one genome after another")
+            with mock.patch.object(store, "text", side_effect=one), mock.patch.object(store, "read", side_effect=one), \
+                    mock.patch.object(store, "has", side_effect=one):
+                out = package.write(os.path.join(tmp, "out", "Eukore_2026.11"), "2026.11", ncbi, collected, [],
+                                    metadata=hook)
+            # none sketched: no sketches.zip, no partial of it left
+            alone = os.path.join(tmp, "alone")
+            got = metadata.write(alone, {toga2: collected["genomes"][toga2]}, work, tables, jobs)
+            self.assertEqual((got["sketches"], sorted(os.listdir(os.path.join(alone, metadata.FOLDER)))),
+                             (0, ["assembly.tsv.gz", "ncbi.tsv.gz", "tetranucleotides.tsv.gz"]))
             self.assertIsNone(package.check(out, deep=True))
             with open(os.path.join(out, "manifest.json")) as fh:
                 counts = json.load(fh)["counts"]

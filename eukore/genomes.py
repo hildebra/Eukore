@@ -877,13 +877,19 @@ def stale_partials(work):
     """The killed runs' partial done folders under WORK/done (util.part_of's .<host>-<pid>.<accession>.partial; a
     packed genome's half-written zip, ...<accession>.zip.partial; a step's temporary folder, side_dir), not those of
     a run going on (since 2026-11-08: every one was deleted, another node's running genomes' too): a partial is kept
-    while a live claim (claim_live) names its genome."""
+    while a live claim (claim_live) names its genome. The partials are listed first, the claims after (since
+    2026-11-11: the claims first, and a genome claimed and begun between the two listings, seconds of a WORK/done of
+    30,000 genomes, had its partial deleted under it; an array's tasks, beginning together, did so for dozens): a run
+    claims its genome before it makes its partial, so a partial listed has its claim listed after, while it is live."""
     import glob  # noqa: PLC0415
+    partials = glob.glob(os.path.join(work, "done", ".*.partial"))
+    if not partials:
+        return []
     live = []
     for c in glob.glob(os.path.join(work, "done", ".*.claim")):
         if claim_live(c):
             live.append(os.path.basename(c)[1:-len(".claim")])
-    return [p for p in glob.glob(os.path.join(work, "done", ".*.partial"))
+    return [p for p in partials
             if not any(os.path.basename(p).endswith((f".{a}.partial", f".{a}{store.EXT}.partial")) for a in live)]
 
 
@@ -1379,15 +1385,19 @@ def annotation_of(job, settings):
 _SUMMARIES = {}       # {done folder: its done.json's text or None}, filled while a plan reads (cached_summaries)
 _FACTS = {}           # {done folder: (its files' names, done.json's stamp)}, filled by prefetch
 _CACHING = [False]
-PREFETCH_THREADS = 16  # a plan's reads at once (prefetch): each waits on the shared file system, not on a core
+PREFETCH_THREADS = util.READ_THREADS  # a plan's reads at once (prefetch): each waits on the shared file system
 
 
 @contextlib.contextmanager
 def cached_summaries():
     """While the block runs, each genome's done.json is read once by this process (since 2026-11-10: a plan asked
     is_done, searched, the gene models' record, the rescue's and the genome record of each of some 30,000 genomes,
-    five to six reads each from the shared file system). For a plan alone: what another build writes meanwhile is
-    not seen; this process' own changes are (write_summary)."""
+    five to six reads each from the shared file system). For a plan, or a pass over the done genomes, alone: what
+    another build writes meanwhile is not seen; this process' own changes are (write_summary). A block inside another
+    is the outer one's (since 2026-11-11: its end ended the outer's cache)."""
+    if _CACHING[0]:
+        yield
+        return
     _SUMMARIES.clear()
     _FACTS.clear()
     _CACHING[0] = True

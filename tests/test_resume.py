@@ -97,6 +97,31 @@ class FcsTsaTest(unittest.TestCase):
 
 
 class ClaimTest(unittest.TestCase):
+    def test_a_genome_begun_while_partials_are_looked_for_is_left_alone(self):
+        # another build claims a genome and makes its partial between this build's two listings (since 2026-11-11:
+        # the claims were listed first, and such a partial was deleted under the run): the partials are listed first
+        import glob  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as work:
+            acc = "GCA_000000002.1"
+            os.makedirs(os.path.join(work, "done"))
+            stale = os.path.join(work, "done", ".deadhost-1.GCA_000000003.1.partial")
+            os.makedirs(stale)  # a killed run's: no claim
+            real, calls = glob.glob, []
+
+            def listing(pattern, *a, **k):
+                got = real(pattern, *a, **k)
+                calls.append(pattern)
+                if len(calls) == 1:  # the genome begun right after the first listing: its claim, then its partial
+                    self.assertIsNotNone(genomes.claim(work, acc))
+                    os.makedirs(os.path.join(work, "done", f".otherhost-2.{acc}.partial"))
+                return got
+            with mock.patch.object(glob, "glob", listing):
+                self.assertEqual(genomes.stale_partials(work), [stale])
+            self.assertTrue(calls[0].endswith(".*.partial"))
+            # and once it lives: its partial seen, its claim too
+            self.assertEqual(genomes.stale_partials(work), [stale])
+
     def test_one_build_a_genome(self):
         with tempfile.TemporaryDirectory() as work:
             acc = "GCA_000000001.1"
