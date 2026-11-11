@@ -137,7 +137,7 @@ python3 eukore_build.py --build_dir WORK --out OUT --stage package --groups fung
 python3 eukore_build.py --build_dir WORK --out OUT --stage release --version 2026.11 -t 64
 ```
 
-Give every stage the same `--build_dir`, `--out`, `--genomes`, `--groups` and `--species`: each stage plans the same
+Give every stage the same `--build_dir`, `--out`, `--genomes`, `--sources`, `--groups` and `--species`: each stage plans the same
 genome set from them. `--build_dir` is the build's own state, kept for every rerun (the sources, each genome's
 results, the caches); `--out` what it makes (the package, the release); `--local_tmp` a node's throwaway temporary
 files. Until 2026-11-09 `--build_dir` was `--work` and `--local_tmp` `--scratch`: both old names are still taken, as
@@ -188,7 +188,7 @@ Each run opens with a banner on STDOUT (since 2026-11-08): Eukore's version, the
 (a `--veupathdb_key` on it hidden), then what each of its stages will do and with what: the groups and species, the
 loci, the folders, the threads, the process stage's memory, the package stage's `--keep_gb`, and what is switched off.
 
-- **fetch** gets the sources into `WORK/sources`, each kept once there and whole:
+- **fetch** gets the sources into `WORK/sources` (or the folder `--sources` names), each kept once there and whole:
   - NCBI's GenBank and RefSeq assembly tables of the `--groups`;
   - NCBI's taxdump;
   - NCBI's FCS-GX summaries of its assemblies and its Saccharomycotina ANI report (~70 MB);
@@ -281,9 +281,10 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 
 | option | default | |
 |---|---|---|
-| `--build_dir WORK` | required | the build's own folder, kept for the whole build and every rerun: the sources (`WORK/sources`), each genome's results (`WORK/done/<accession>/`: a full build's weeks of runs), the package stage's caches; not a scratch folder (`--work` before 2026-11-09, still taken) |
+| `--build_dir WORK` | required | the build's own folder, kept for the whole build and every rerun: the sources (`WORK/sources`, unless `--sources`), each genome's results (`WORK/done/<accession>/`: a full build's weeks of runs), the package stage's caches; not a scratch folder (`--work` before 2026-11-09, still taken) |
 | `--out DIR` | required | where `Eukore_<version>/`, `release/` and `genomes/` (unless `--genomes`) go |
 | `--genomes DIR` | `OUT/genomes` | the genomes' folder: the fetch stage downloads each species' genome, its gene models and NCBI's assembly report into it, the process stage reads them from it, the package stage cuts it back to `--keep_gb`; the same for every stage (since 2026-11-09) |
+| `--sources DIR` | `WORK/sources` | the sources' folder: the fetch stage downloads into it what every other stage reads (NCBI's taxonomy and assembly tables, BUSCO's dataset, the marker set, the references' files); a folder of its own keeps them on a file system that keeps its files while WORK is elsewhere, e.g. on scratch. Builds may share it: a fetch takes its lock there too, one at a time. A moved folder serves as it was. A stage other than fetch stops at once without it (its `taxdump.tar.gz`); the same for every stage (since 2026-11-11) |
 | `--stage` | `all` | `fetch`, `process`, `package` or `all` (the three in turn); stages that follow one another, with commas: `process,package`, `fetch,process` (one run, one plan; since 2026-11-10); `release`: `OUT/release/` again of a finished `OUT/Eukore_<version>/` (since 2026-11-09) |
 | `--genomes_only` | | with `--stage process`: run the genomes, then the passes that take one genome at a time under its claim (since 2026-11-10: the backfill, the assembly metadata, the done folders' packing), and stop; the passes over all genomes (intraspecific panel, organelle genes, gene models) left to a run without it after them all (`--stage process,package`: it waits for the genomes other runs still hold, runs what they left, then makes the passes and the package); for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages), `tools/eukore.sh`; since 2026-11-09) |
 | `--done_folders` | | keep each genome's results as a folder of 8-14 small files (`WORK/done/<accession>/`, as every build before 2026-11-10) rather than one file (`WORK/done/<accession>.zip`, the default: for all eukaryotes some 30,000 files in place of 300,000 in 30,000 folders on the shared file system). Either way a WORK holding the other form is read as it is; without this flag the process stage packs the folders it finds |
@@ -375,7 +376,7 @@ Without it, these sources stay as first fetched. For a newer taxonomy, delete `W
 | `OUT/Eukore_<version>/` | the package ([FORMAT.md](FORMAT.md)), with its `benchmarks/` ([benchmarks.md](benchmarks.md)); its `manifest.json` is written last, so a folder without one is unfinished |
 | `OUT/release/` | since 2026-11-09, the package's release, laid out as Eukore's website (`website/`) is, so that `rsync -a OUT/release/ <site>/` publishes it: `data/stats.json` (species by genome source and supergroup, the marker categories, the headline benchmarks), `data/taxonomy.json` (the species as a tree, each taxon's counts), `data/downloads.json`; `downloads/Eukore_<version>/`: the complete package (`Eukore_<version>.tar.gz`), the marker genes with introns (`_marker_genes.tar.gz`) and without (`_marker_cds.tar.gz`: coding sequences, proteins), the rDNA and organelle markers (`_rrna_organelle.tar.gz`), the genomes' sourmash sketches as one collection (`_sketches.sig.gz`), each metadata table alone (`_species.tsv.gz`, `_genomes.tsv.gz`, `_assembly.tsv.gz`, ...) and `MD5SUMS`. A bundle's files sit under `Eukore_<version>/` as in the package. A rerun keeps the downloads of the same package (its manifest's MD5). `--stage release` writes it again; `--no_release`, none |
 | `OUT/genomes/` | the genomes kept after the prune (`<accession>.fna.gz`, as NCBI serves them; `manifest.tsv` lists kept and deleted). `genomes.tsv`'s `local` column names them |
-| `WORK/sources/` | the sources, with their versions and checks (`source.json`, `labels.json`, ...) |
+| `WORK/sources/` (or `--sources`) | the sources, with their versions and checks (`source.json`, `labels.json`, ...) |
 | `WORK/done/<accession>.zip` (`WORK/done/<accession>/` before 2026-11-10 and with `--done_folders`) | each genome's calls (`loci.tsv`, `copies.fna`, `features.tsv`), windows, rRNA (`rrna.tsv`), FCS-GX's ranges; for a species of BUSCO's dataset, its calls made without its own proteins (`held_out.tsv`, the OrthoDB benchmark's) |
 | `WORK/organelle/`, `WORK/published/` | the organelle genes' searches; the published rRNA reads' annotation |
 

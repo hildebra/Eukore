@@ -1200,9 +1200,11 @@ def main(argv=None):
     p.add_argument("--build_dir", "--work", dest="work", metavar="WORK",
                    help="the build's folder (eukore_build.py --build_dir; --work before 2026-11-09): runtime.tsv, and "
                         "the defaults of --odb and --taxdump")
-    p.add_argument("--odb", help="BUSCO's dataset the package was called with (default WORK/sources/eukaryota_odb12): "
+    p.add_argument("--sources", metavar="DIR", help="the build's sources (eukore_build.py --sources; default "
+                                                    "WORK/sources): the defaults of --odb and --taxdump")
+    p.add_argument("--odb", help="BUSCO's dataset the package was called with (default SOURCES/eukaryota_odb12): "
                                  "orthodb.tsv")
-    p.add_argument("--taxdump", help="NCBI's taxdump (default WORK/sources/taxdump.tar.gz, else the package's "
+    p.add_argument("--taxdump", help="NCBI's taxdump (default SOURCES/taxdump.tar.gz, else the package's "
                                      "taxonomy/): the whole taxonomy finds the dataset's strains' species")
     p.add_argument("--vsearch", default="vsearch", help="vsearch (resolution.tsv)")
     p.add_argument("--out", help="where the tables go (default PACKAGE/benchmarks; the package's manifest does not "
@@ -1210,7 +1212,7 @@ def main(argv=None):
     p.add_argument("-t", "--threads", type=int, default=4)
     opts = p.parse_args(argv)
     from . import ncbi as ncbi_mod  # noqa: PLC0415
-    src = os.path.join(opts.work, "sources") if opts.work else None
+    src = opts.sources or (os.path.join(opts.work, "sources") if opts.work else None)
     odb_folder = opts.odb or (odb_mod.folder_of(src) if src else None)
     taxdump = opts.taxdump or (os.path.join(src, "taxdump.tar.gz") if src else None)
     ncbi = ncbi_mod.Ncbi(taxdump if taxdump and os.path.isfile(taxdump) else os.path.join(opts.package, "taxonomy"))

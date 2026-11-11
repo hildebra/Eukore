@@ -524,9 +524,9 @@ class ChainTest(unittest.TestCase):
             eukore_build.main(["--build_dir", tmp, "--out", tmp, "--stage", "fetch,package"])
         self.assertIn("stages that follow one another", err.getvalue())
 
-    def run_main(self, tmp, stage, waiting=()):
-        """main() of --stage, its plan empty and its passes stand-ins -> (its exit, or "package" where it came to
-        the package stage; the stand-ins by name; its STDOUT)."""
+    def run_main(self, tmp, stage, waiting=(), extra=()):
+        """main() of --stage (and the options extra), its plan empty and its passes stand-ins -> (its exit, or
+        "package" where it came to the package stage; the stand-ins by name, Ncbi's among them; its STDOUT)."""
         import contextlib  # noqa: PLC0415
         import io  # noqa: PLC0415
         import eukore_build  # noqa: PLC0415
@@ -534,15 +534,15 @@ class ChainTest(unittest.TestCase):
         passes = ("backfill_pass", "intraspecific_pass", "describe_pass", "drop_superseded", "organelle_genes",
                   "annotate_pass")
         args = ["--build_dir", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"), "--stage", stage,
-                "--local_tmp", os.path.join(tmp, "local")]
+                "--local_tmp", os.path.join(tmp, "local"), *extra]
         with contextlib.ExitStack() as stack:
             out = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             stack.enter_context(mock.patch.dict(os.environ))  # main sets TMPDIR
             stack.enter_context(mock.patch.object(tempfile, "tempdir", None))
-            stack.enter_context(mock.patch.object(eukore_build.ncbi_mod, "Ncbi"))
             called = {name: stack.enter_context(mock.patch.object(eukore_build, name, return_value=value))
                       for name, value in (("inside_of", None), ("plan", ({}, {})), ("extras_of", {}),
                                           ("settings_of", {}), ("run_genomes", (list(waiting), [])))}
+            called["Ncbi"] = stack.enter_context(mock.patch.object(eukore_build.ncbi_mod, "Ncbi"))
             stack.enter_context(mock.patch.object(eukore_build.shutil, "which", side_effect=lambda t: "/x/" + t))
             stack.enter_context(mock.patch.object(eukore_build.rrna, "check_itsx", return_value=None))
             called.update({n: stack.enter_context(mock.patch.object(eukore_build, n)) for n in passes})
@@ -578,6 +578,36 @@ class ChainTest(unittest.TestCase):
             got, _called, text, _tmpdir = self.run_main(tmp, "process", waiting)
             self.assertEqual(got, 0)
             self.assertIn("run again (--stage fetch first on a cluster)", text)
+
+    def test_sources_of_their_own(self):
+        # --sources (since 2026-11-11): the sources apart from WORK, e.g. kept on a file system that keeps its files
+        # while WORK is on scratch: every stage reads them there, a fetch holds them under a lock of their own too
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "kept", "sources")
+            got, called, text, _tmpdir = self.run_main(tmp, "process,package", extra=["--sources", src])
+            self.assertEqual(got, "package")
+            called["Ncbi"].assert_called_once_with(os.path.join(src, "taxdump.tar.gz"))
+            self.assertEqual(called["plan"].call_args.args[1], src)
+            self.assertIn(f"; the sources in {src} (--sources)", text)
+            seen = []
+
+            def fetched(src_dir, *_args):
+                seen.append((src_dir, os.path.isfile(os.path.join(src_dir, ".fetch.lock")),
+                             os.path.isfile(os.path.join(tmp, "work", ".fetch.lock"))))
+            with mock.patch.object(eukore_build, "fetch_sources", side_effect=fetched):
+                got, _called, _text, _tmpdir = self.run_main(tmp, "fetch", extra=["--sources", src])
+            self.assertEqual((got, seen), ("package", [(src, True, True)]))  # stopped at run_main's called_loci
+            self.assertFalse(os.path.exists(os.path.join(src, ".fetch.lock")))  # let go after the run
+            # no sources there: a stage other than fetch says so (a traceback in every task of an array until then)
+            with mock.patch.dict(os.environ), mock.patch.object(tempfile, "tempdir", None), \
+                    contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as stop:
+                eukore_build.main(["--build_dir", os.path.join(tmp, "new"), "--out", os.path.join(tmp, "out"),
+                                   "--stage", "process", "--local_tmp", os.path.join(tmp, "local")])
+            self.assertIn(f"no sources in {os.path.join(tmp, 'new', 'sources')}", str(stop.exception.code))
 
     def test_a_run_waits_for_another_builds_genomes(self):
         # the final job after an array: a genome another build's claim holds is waited for, then run here where that
@@ -738,7 +768,8 @@ class ChainTest(unittest.TestCase):
                 os.chmod(os.path.join(bin_dir, name), stat.S_IRWXU)
             conf = os.path.join(tmp, "eukore.conf")
             with open(conf, "w", newline="\n") as fh:
-                fh.write(f"PDIR=/p\nWORK=/w\nOUT=/o\nGEN=/g\nVERSION=2026.11\nLOGS={tmp}/runs\nTASKS=3\n"
+                fh.write(f"PDIR=/p\nWORK={tmp}/w\nOUT=/o\nGEN=/g\nVERSION=2026.11\nLOGS={tmp}/runs\nTASKS=3\n"
+                         "SOURCES=${TEST_SOURCES:-}\n"
                          "SCR=${SLURM_LOCAL_SCRATCH:+$SLURM_LOCAL_SCRATCH/Eukore}\nBUILD_OPTS=(--groups fungi)\n"
                          "FINAL_OPTS=(--keep_gb 1000)\nFETCH_OPTS=(--downloads 12)\nSBATCH_ALL=(--time=1:00:00)\n"
                          "SBATCH_PROCESS=(--mem=200G)\nSBATCH_FINAL=(--mem=800G)\n")
@@ -753,6 +784,16 @@ class ChainTest(unittest.TestCase):
                         calls = fh.read().splitlines()
                     os.remove(log)
                 return got, calls
+            # no chain on a WORK no fetch filled (2026-11-11: every task crashed on NCBI's taxonomy missing), unless
+            # it waits for a fetch job
+            got, calls = run("build")
+            self.assertEqual((got.returncode, calls), (1, []))
+            self.assertIn(f"no sources in {tmp}/w", got.stderr)
+            got, calls = run("build", AFTER="77")
+            self.assertEqual((got.returncode, len(calls)), (0, 2), got.stderr)
+            os.makedirs(os.path.join(tmp, "w", "sources"))
+            with open(os.path.join(tmp, "w", "sources", "taxdump.tar.gz"), "w") as fh:
+                fh.write("its taxonomy")
             got, calls = run("build")
             self.assertEqual(got.returncode, 0, got.stderr)
             self.assertEqual(len(calls), 2)
@@ -781,7 +822,7 @@ class ChainTest(unittest.TestCase):
             self.assertEqual((got.returncode, calls, got.stdout), (1, [], ""))
             # inside the jobs: one call of the build each
             job = dict(SLURM_JOB_ID="101", SLURM_CPUS_PER_TASK="64", SLURM_LOCAL_SCRATCH="/ssd", EUKORE_SH=script)
-            common = "python3 /p/eukore_build.py --build_dir /w --out /o --version 2026.11 --stage "
+            common = f"python3 /p/eukore_build.py --build_dir {tmp}/w --out /o --version 2026.11 --stage "
             got, calls = run("_process", **job)
             self.assertEqual(calls, [common + "process --genomes /g --groups fungi -t 64 --genomes_only "
                                      "--local_tmp /ssd/Eukore"], got.stderr)
@@ -790,6 +831,12 @@ class ChainTest(unittest.TestCase):
                                      "--local_tmp /ssd/Eukore --keep_gb 1000"], got.stderr)
             got, calls = run("_fetch", **dict(job, SLURM_LOCAL_SCRATCH=""))  # no local disk there: beside the genomes
             self.assertEqual(calls, [common + "fetch --genomes /g --groups fungi -t 64 --downloads 12"], got.stderr)
+            # SOURCES (since 2026-11-11): each job's --sources, and the folder `build` looks for the fetch's files in
+            got, calls = run("_process", TEST_SOURCES="/s", **job)
+            self.assertIn("--genomes /g --sources /s --groups fungi", calls[0])
+            got, calls = run("build", TEST_SOURCES=f"{tmp}/kept")
+            self.assertEqual((got.returncode, calls), (1, []))
+            self.assertIn(f"no sources in {tmp}/kept", got.stderr)
             got, calls = run("_process", **dict(job, SLURM_LOCAL_SCRATCH=""))  # the process stage needs one
             self.assertEqual((got.returncode, calls), (1, []))
             self.assertIn("no local temporary folder", got.stderr)

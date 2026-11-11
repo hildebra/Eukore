@@ -35,7 +35,7 @@ if [[ ! -f $CONF ]]; then
     echo "no settings at $CONF: copy tools/eukore.conf.example there, or name the file with EUKORE_CONF" >&2
     exit 1
 fi
-TASKS=8; MAMBA_ENV=eukore; GEN=; SCR=; LOGS=
+TASKS=8; MAMBA_ENV=eukore; GEN=; SOURCES=; SCR=; LOGS=
 COMPARE=; PR2_VERSION=5.1.1; MPA_ARCHIVE=; MPA_INFO=; EUKDETECT_FASTA=; EUKDETECT_TABLE=
 BUILD_OPTS=(); FETCH_OPTS=(); FINAL_OPTS=(); SBATCH_ALL=(); SBATCH_FETCH=(); SBATCH_PROCESS=(); SBATCH_FINAL=()
 source "$CONF"
@@ -74,6 +74,7 @@ run_stage() {  # run_stage STAGE [the stage's options]: Eukore's build with the 
     activate
     cmd=(python3 "$PDIR/eukore_build.py" --build_dir "$WORK" --out "$OUT" --version "$VERSION" --stage "$stage")
     [[ -z $GEN ]] || cmd+=(--genomes "$GEN")
+    [[ -z $SOURCES ]] || cmd+=(--sources "$SOURCES")
     [[ -z ${REVERSION:-} ]] || cmd+=(--reversion)
     "${cmd[@]}" ${BUILD_OPTS[@]+"${BUILD_OPTS[@]}"} -t "${SLURM_CPUS_PER_TASK:-2}" "$@"
 }
@@ -115,6 +116,13 @@ fetch)
     ;;
 build)
     tasks=${2:-$TASKS}
+    # no chain on sources the fetch stage never filled, unless it waits for a fetch job (2026-11-11: on a new WORK,
+    # every task of the array crashed in seconds, NCBI's taxonomy missing, and the final job would have too)
+    if [[ -z ${AFTER:-} && ! -s ${SOURCES:-$WORK/sources}/taxdump.tar.gz ]]; then
+        echo "no sources in ${SOURCES:-$WORK/sources} (its taxdump.tar.gz missing): the fetch stage first, the chain" \
+            "after it: bash $SELF fetch, then AFTER=<its job id> bash $SELF build" >&2
+        exit 1
+    fi
     [[ -z $LOGS ]] || mkdir -p "$LOGS"
     # a fetch job that failed cancels the chain (both jobs wait for it), rather than leaving it pending
     after=${AFTER:+afterok:$AFTER}
@@ -157,7 +165,7 @@ _compare)  # PR2's 18S (downloaded) and MetaPhlAn 4's eukaryote markers (its arc
             "https://github.com/pr2database/pr2database/releases/download/v$PR2_VERSION/${pr2##*/}"
         mv "$pr2.part" "$pr2"
     fi
-    python3 "$PDIR/tools/compare_references.py" pr2 --fasta "$pr2" --taxdump "$WORK/sources/taxdump.tar.gz" \
+    python3 "$PDIR/tools/compare_references.py" pr2 --fasta "$pr2" --taxdump "${SOURCES:-$WORK/sources}/taxdump.tar.gz" \
         --out "$COMPARE"
     if [[ -n $MPA_ARCHIVE && -n $MPA_INFO ]]; then
         python3 "$PDIR/tools/compare_references.py" metaphlan --archive "$MPA_ARCHIVE" --marker_info "$MPA_INFO" \

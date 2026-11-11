@@ -8,7 +8,7 @@
     python3 eukore_build.py --build_dir WORK --out OUT --stage process,package -t 32  # or both in one run
 
 Stages:
-- fetch: the sources into WORK/sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
+- fetch: the sources into WORK/sources or --sources (NCBI's GenBank and RefSeq assembly tables of the --groups, NCBI's taxdump,
   BUSCO's eukaryota_odb12, EUKARYOME 2.1, ROD v1.2, RefSeq's organelle genomes, NCBI's FCS-GX and ANI reports, which
   rank the genomes: eukore/quality.py, PR2's and KSGP's taxonomies, Eukore's marker set: KOfam's profiles, Swiss-Prot's
   and NCBI's proteins, eukore/markers.py), then each species' genome (genomes.jobs) into OUT/genomes (--genomes);
@@ -1073,6 +1073,11 @@ def separate_genomes(opts):
     return os.path.abspath(opts.genomes) != os.path.abspath(os.path.join(opts.out, "genomes"))
 
 
+def separate_sources(opts):
+    """Whether --sources puts the sources elsewhere than WORK/sources."""
+    return os.path.abspath(opts.sources) != os.path.abspath(os.path.join(opts.work, "sources"))
+
+
 def banner(opts, argv, whence):
     """The run's opening lines on STDOUT (since 2026-11-08): Eukore's version, where and when, the command, what each
     stage of the run will do and with what (the folders, the genome set, the cores, memory and downloads)."""
@@ -1100,7 +1105,8 @@ def banner(opts, argv, whence):
     rows += [("groups", ", ".join(opts.groups)), ("species", species),
              ("loci", (f"the BUSCOs of --loci {opts.loci}" if opts.loci else f"every BUSCO of {odb_mod.LINEAGE}")
               + ("" if opts.no_markers else ", and Eukore's markers")),
-             ("build_dir", os.path.abspath(opts.work)),
+             ("build_dir", os.path.abspath(opts.work) + (f"; the sources in {os.path.abspath(opts.sources)} (--sources)"
+                                                         if separate_sources(opts) else "")),
              ("out", os.path.abspath(opts.out) + (f"; the genomes in {os.path.abspath(opts.genomes)} (--genomes)"
                                                   if separate_genomes(opts) else ""))]
     if opts.scratch:
@@ -1196,7 +1202,7 @@ def _main(argv, held):
     p.add_argument("-V", action="version", version=f"Eukore {__version__}", help="Eukore's own version, and exit")
     p.add_argument("--build_dir", dest="work", metavar="WORK", required=True,
                    help="the build's own folder, kept for the whole build and every rerun: the sources the fetch stage "
-                        "gets (sources/), each genome's results (done/<accession>/: a full build's weeks of runs), "
+                        "gets (sources/, unless --sources), each genome's results (done/<accession>/: a full build's weeks of runs), "
                         "the package stage's caches. Not a scratch folder: a file system that keeps its files "
                         "(--work before 2026-11-09)")
     p.add_argument("--out", required=True,
@@ -1206,6 +1212,12 @@ def _main(argv, held):
                    help="the genomes' folder: the fetch stage downloads each species' genome, its gene models and "
                         "NCBI's assembly report into it, the process stage reads them from it, the package stage cuts "
                         "it back to --keep_gb (default OUT/genomes). Give every stage the same")
+    p.add_argument("--sources", metavar="DIR",
+                   help="the sources' folder: the fetch stage downloads into it what every other stage reads (NCBI's "
+                        "taxonomy and assembly tables, BUSCO's dataset, the marker set, the references' files; "
+                        "default WORK/sources). A folder of its own keeps them on a file system that keeps its files "
+                        "while WORK is elsewhere; builds may share it, one fetch at a time (since 2026-11-11). Give "
+                        "every stage the same")
     p.add_argument("--stage", default="all", metavar="STAGE[,STAGE]",
                    help="fetch, process or package; all (the default): the three in turn; stages that follow one "
                         "another, comma-separated, in one run (process,package: a cluster's last job, one plan for "
@@ -1377,6 +1389,7 @@ def _main(argv, held):
     opts.jobs = opts.jobs or max(1, opts.threads // 4)
     opts.threads_per_genome = max(1, opts.threads // opts.jobs)
     opts.genomes = opts.genomes or os.path.join(opts.out, "genomes")  # --genomes since 2026-11-09
+    opts.sources = opts.sources or os.path.join(opts.work, "sources")  # --sources since 2026-11-11
     wanted = opts.wanted = clades(opts.species)
     # the process stage's memory (since 2026-11-08): genomes begun while their estimates fit (schedule)
     memory, whence = (opts.memory_gb * 1e9, "--memory_gb") if opts.memory_gb else util.memory_budget()
@@ -1395,16 +1408,22 @@ def _main(argv, held):
     # the resources the build uses, said with the process stage's progress (since 2026-11-08)
     opts.usage = util.Usage([("WORK", opts.work), ("GENOMES" if separate_genomes(opts) else "OUT", opts.genomes)],
                             opts.threads)
-    src_dir = os.path.join(opts.work, "sources")
+    src_dir = opts.sources
     if "fetch" in opts.stages:
         # one fetch at a time on a WORK (since 2026-11-10: nothing stopped a second one, e.g. a job submitted twice;
         # the downloads have no claims of their own, and both wrote the same sources and genomes)
         try:
             held.enter_context(util.single_run(opts.work, "fetch"))
+            if separate_sources(opts):  # builds may share --sources (since 2026-11-11): one fetch at a time on it too
+                held.enter_context(util.single_run(src_dir, "fetch"))
         except util.RunHeld as e:
             sys.exit(f"--stage fetch: {e}")
         fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh, opts.threads)
-    ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
+    try:
+        ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
+    except FileNotFoundError:  # said so since 2026-11-11 (a new WORK's array crashed with a traceback in every task)
+        sys.exit(f"--stage {opts.stage}: no sources in {src_dir} (its taxdump.tar.gz missing): --stage fetch first, "
+                 "or --sources where a fetch put them")
     opts.inside = inside_of(ncbi, wanted)
     job_map, assemblies = plan(opts, src_dir, ncbi)
     extras = extras_of(opts, src_dir, ncbi, job_map, assemblies)  # the barcode gap's panel (since 2026-11-07)
