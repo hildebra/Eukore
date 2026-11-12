@@ -57,7 +57,7 @@ sys.path.insert(0, HERE)
 from eukore import genomes, ncbi as ncbi_mod, odb as odb_mod, package, rrna, sources, species, util  # noqa: E402
 from eukore import annotation, benchmarks, labels, metadata as metadata_mod, organelle as organelle_mod  # noqa: E402
 from eukore import groups as groups_mod, intraspecific as intraspecific_mod, markers as markers_mod, quality  # noqa: E402
-from eukore import placement, primers as primers_mod, reads as reads_mod, regions as regions_mod  # noqa: E402
+from eukore import placement, primers as primers_mod, regions as regions_mod  # noqa: E402
 from eukore import refscreen, release as release_mod  # noqa: E402
 from eukore import __version__  # noqa: E402
 from eukore import store  # noqa: E402
@@ -69,7 +69,6 @@ PUBLISHED_BATCH = 250  # published reads a barrnap + ITSx run
 # borders no longer taken, 2026-11-06; 3: regions on the record, not the unit, and the read's strand, 2026-11-06), so
 # that a rerun annotates them again
 PUBLISHED_REGIONS = "regions.3.tsv"
-READ_BACKGROUND = os.path.join(sources.DATA, "read_background.tsv")  # the read benchmark's bacteria and archaea
 FCS_THREADS = 4  # cores of each FCS-GX run (GX_NUM_CORES); -t / FCS_THREADS runs at once
 PACK_THREADS = 8  # done folders packed at once (pack_pass: small files read, one written)
 LEFTOVER_AGE = 86400  # a download's .part (or a TOGA2 .2bit) untouched this long (seconds) is a killed run's
@@ -118,10 +117,8 @@ def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False):
                          lambda: quality.fetch(src_dir, sources.download, say, refresh)),
                         ("PR2's and KSGP's taxonomies", lambda: labels.fetch(src_dir, sources.download, say, ksgp_tax)),
                         ("Ensembl's, VEuPathDB's and TOGA2's annotation indexes",
-                         lambda: annotation.fetch_indexes(src_dir, sources.download, say, refresh)),
-                        ("the read benchmark's background", lambda: reads_mod.fetch_background(
-                            READ_BACKGROUND, os.path.join(src_dir, "read_background"), say)
-                         if os.path.isfile(READ_BACKGROUND) else None)):
+                         lambda: annotation.fetch_indexes(src_dir, sources.download, say, refresh))):
+        # (the read benchmark's background: benchmarks/eukore-bench-prep.sh's since 2026-11-12)
         try:
             fetch()
         except OSError as e:
@@ -1261,61 +1258,80 @@ def databases_of(src_dir, ncbi, references, inside=None):
     return out
 
 
-def measure(part, opts, src_dir, ncbi, collected, vsearch, stages, fates=None, tests=(), references=()):
-    """The package's benchmarks (eukore/benchmarks.py) into its unfinished folder, and (since 2026-11-10, without
-    --no_figures) their figures (eukore/figures.py) -> summary.json's figures, or None where they failed: a benchmark
-    never stops the package. fates: genomes.fates (selection.tsv); tests: the read benchmark's genomes
-    (reads.choose), kept through the prune; references: labels.references (overlap.tsv)."""
+EVALUATION_TABLES = ("manifest.json", "species.tsv", "genomes.tsv", "busco/loci.tsv", "intraspecific/barcode_gap.tsv")
+EVALUATION_WORK = ("failed.tsv", genomes.GENOME_SET, genomes.SUPERSEDED)
+EVALUATION_LOG_BYTES = 20_000_000  # of each log, its last bytes
+
+
+def evaluation_bundle(opts, package_dir):
+    """OUT/Eukore_<version>_evaluation.tar.gz (since 2026-11-12): what it takes to judge a run away from the cluster,
+    tens of MB: the run report (eukore/run_report.py: the plan's genomes done, failed and why, the package's weak
+    points), the package's manifest, species.tsv, genomes.tsv, busco/loci.tsv and its benchmarks/ tables, WORK's
+    failed.tsv, genome_set.tsv and superseded.tsv, and the logs EUKORE_LOGS names (colon-separated; tools/eukore.sh's
+    final job gives its own), each's last EVALUATION_LOG_BYTES. A failure is said, never the build's end -> its path or
+    None."""
+    import io  # noqa: PLC0415
+    import tarfile  # noqa: PLC0415
+    from eukore import run_report  # noqa: PLC0415
+    base = os.path.basename(os.path.normpath(package_dir))
+    path = os.path.join(opts.out, f"{base}_evaluation.tar.gz")
+    started = time.time()
+    try:
+        text = run_report.report(opts.work, package_dir, opts.genomes, opts.threads)
+    except Exception as e:  # noqa: BLE001
+        text = f"# Eukore run report\n\nThe report failed: {type(e).__name__}: {e}\n"
+    try:
+        with tarfile.open(util.part_of(path), "w:gz") as tar:
+            def add_bytes(name, data):
+                info = tarfile.TarInfo(f"{base}_evaluation/{name}")
+                info.size, info.mtime = len(data), int(time.time())
+                tar.addfile(info, io.BytesIO(data))
+            add_bytes("run_report.md", text.encode())
+            for name in EVALUATION_TABLES:
+                if os.path.isfile(os.path.join(package_dir, name)):
+                    tar.add(os.path.join(package_dir, name), f"{base}_evaluation/package/{name}")
+            bench = os.path.join(package_dir, benchmarks.FOLDER)
+            for name in sorted(os.listdir(bench)) if os.path.isdir(bench) else ():
+                if os.path.isfile(os.path.join(bench, name)):
+                    tar.add(os.path.join(bench, name), f"{base}_evaluation/package/{benchmarks.FOLDER}/{name}")
+            for name in EVALUATION_WORK:
+                if os.path.isfile(os.path.join(opts.work, name)):
+                    tar.add(os.path.join(opts.work, name), f"{base}_evaluation/work/{name}")
+            for log in filter(None, os.environ.get("EUKORE_LOGS", "").split(":")):
+                if os.path.isfile(log):
+                    with open(log, "rb") as fh:
+                        fh.seek(max(0, os.path.getsize(log) - EVALUATION_LOG_BYTES))
+                        add_bytes(f"logs/{os.path.basename(log)}", fh.read())
+        os.replace(util.part_of(path), path)
+    except OSError as e:
+        say(f"WARNING: no evaluation bundle ({e})")
+        with contextlib.suppress(OSError):
+            os.remove(util.part_of(path))
+        return None
+    say(f"evaluation bundle: {path} ({os.path.getsize(path) / 1e6:.1f} MB, {time.time() - started:.0f} s): the run "
+        "report, the package's tables and benchmarks, WORK's failures; copy it into local/ of the checkout to have it "
+        "looked at")
+    return path
+
+
+def measure(part, opts, src_dir, ncbi, collected, vsearch, stages, fates=None, references=()):
+    """The package's own benchmarks (eukore/benchmarks.py) into its unfinished folder -> summary.json's figures, or
+    None where they failed: a benchmark never stops the package. fates: genomes.fates (selection.tsv); references:
+    labels.references (overlap.tsv). Since 2026-11-12 the comparisons with other references, the read benchmark and
+    the figures are benchmarks/'s, run on the finished package (benchmarks/README.md)."""
     nearest = {(r["accession"], r["locus"]): (r.get("nearest_id"), r.get("nearest_depth"))
                for r in collected["copy_rows"]} if vsearch else None
-    minimap2 = shutil.which(opts.minimap2)
-    if tests and not minimap2:
-        say(f"WARNING: {opts.minimap2} not found: no read benchmark (bioconda's minimap2)")
-    # its files in a folder of this run's (since 2026-11-08: WORK/read_benchmark, which two package stages on one WORK
-    # wrote and deleted under each other); a killed run's removed by the next (util.dead_partials). Since 2026-11-10
-    # in --local_tmp where given: the whole package's FASTAs and minimap2's index, written and read once each, until
-    # then on WORK's shared file system
-    reads = dict(genomes_folder=opts.genomes, tests=list(tests), minimap2=minimap2,
-                 background=reads_mod.read_background(READ_BACKGROUND, os.path.join(src_dir, "read_background")),
-                 work=util.part_of(os.path.join(getattr(opts, "scratch", None) or opts.work, "read_benchmark")))
     inside = opts.inside if opts.wanted is not None else None
-    if not opts.read_compare:
-        say("NOTE: no --read_compare: the read benchmark and breadth.tsv compare Eukore with no other reference "
-            "(tools/compare_references.py makes them; tools/eukore.sh takes them from its COMPARE folder)")
     try:
-        measured = benchmarks.run(part, ncbi, odb_mod.folder_of(src_dir), vsearch, opts.threads, opts.work, nearest,
-                                  stages, log=say, fates=fates, compare=opts.read_compare, inside=inside, reads=reads,
-                                  databases=databases_of(src_dir, ncbi, references, inside),
-                                  marker_folder=markers_of(opts, src_dir),
-                                  clades=len(opts.wanted) if opts.wanted is not None else None)
+        return benchmarks.run(part, ncbi, odb_mod.folder_of(src_dir), vsearch, opts.threads, opts.work, nearest,
+                              stages, log=say, fates=fates, inside=inside,
+                              databases=databases_of(src_dir, ncbi, references, inside),
+                              marker_folder=markers_of(opts, src_dir),
+                              clades=len(opts.wanted) if opts.wanted is not None else None)
     except Exception as e:  # noqa: BLE001
         say(f"WARNING: the benchmarks failed ({type(e).__name__}: {e}): the package is written without them")
         shutil.rmtree(os.path.join(part, benchmarks.FOLDER), ignore_errors=True)
         return None
-    if not opts.no_figures:  # since 2026-11-10: Figure 1 and the rest, before the manifest lists them
-        draw_figures(part)
-    return measured
-
-
-def draw_figures(part):
-    """The package's figures (eukore/figures.py) into its benchmarks/figures/; without matplotlib, or failed, left
-    out: never the package's end."""
-    started = time.time()
-    try:
-        from eukore import figures  # noqa: PLC0415 (matplotlib: only where figures are drawn)
-    except ImportError as e:
-        say(f"WARNING: no figures ({e}: envs/eukore.yaml's matplotlib-base): python3 -m eukore.figures draws them "
-            "later")
-        return
-    try:
-        made = figures.draw(part, log=say)
-    except Exception as e:  # noqa: BLE001
-        say(f"WARNING: the figures failed ({type(e).__name__}: {e}): the package is written without them")
-        shutil.rmtree(os.path.join(part, benchmarks.FOLDER, figures.FOLDER), ignore_errors=True)
-        return
-    drawn = [n for n, p in made.items() if p and n not in ("index", "summary")]
-    say(f"figures: {len(drawn)} drawn into {benchmarks.FOLDER}/{figures.FOLDER}/ ({time.time() - started:.0f} s); "
-        f"left out: {', '.join(n for n, p in made.items() if not p) or 'none'}")
 
 
 def clades(spec):
@@ -1445,10 +1461,6 @@ def banner(opts, argv, whence):
     off = [what for what, flag in (("rescue pass", opts.no_rescue), ("transcriptomes", opts.no_tsa),
                                    ("tiara", opts.no_tiara), ("sketches", opts.no_sketches),
                                    ("benchmarks", opts.no_benchmarks),
-                                   ("figures", opts.no_figures and not opts.no_benchmarks),
-                                   ("read benchmark", not opts.read_genomes and not opts.no_benchmarks),
-                                   ("other references in the read benchmark (--read_compare)",
-                                    not opts.read_compare and not opts.no_benchmarks),
                                    ("intraspecific panel", not opts.intraspecific)) if flag]
     if off:
         rows.append(("off", ", ".join(off)))
@@ -1573,15 +1585,7 @@ def _main(argv, held):
     p.add_argument("--species", help="a partial build (a trial run): only the species inside these NCBI taxids' clades, "
                                      "comma-separated or a file of one per line; the manifest records them")
     p.add_argument("--miniprot", default="miniprot")
-    p.add_argument("--minimap2", default="minimap2", help="minimap2, the read benchmark's aligner")
-    p.add_argument("--read_genomes", type=int, default=reads_mod.PER_GROUP,
-                   help=f"the read benchmark's test genomes per supergroup, kept through the prune (default "
-                        f"{reads_mod.PER_GROUP}; 0: no read benchmark)")
-    p.add_argument("--read_compare", metavar="NAME=FASTA,TABLE", action="append",
-                   help="another reference for the read benchmark and overlap.tsv (TABLE: record<TAB>NCBI taxid), "
-                        "e.g. EukDetect2=eukdb.fasta,busco_taxid_genome_link.txt; again for each further one "
-                        "(tools/compare_references.py: MetaPhlAn 4's eukaryote markers, PR2's 18S); the first is "
-                        "breadth.tsv's")
+    p.add_argument("--minimap2", default="minimap2", help="minimap2, the reference screen's aligner (--midori2)")
     p.add_argument("--hmmsearch", default="hmmsearch")
     p.add_argument("--fcs_gx_db", help="NCBI FCS-GX's database (the gxdb folder's prefix, ~470 GB, best copied to "
                                        "/dev/shm; a node of ~512 GB): the package stage screens each genome's windows "
@@ -1641,9 +1645,6 @@ def _main(argv, held):
                                       "crossrefs.tsv")
     p.add_argument("--no_benchmarks", action="store_true", help="write the package without its benchmarks/ "
                                                                   "(eukore/benchmarks.py; docs/benchmarks.md)")
-    p.add_argument("--no_figures", action="store_true",
-                   help="write the benchmarks without their figures (benchmarks/figures/: Figure 1 and the rest, "
-                        "eukore/figures.py; since 2026-11-10; python3 -m eukore.figures draws them later)")
     p.add_argument("-t", "--threads", type=int, default=8)
     p.add_argument("-j", "--jobs", type=int, default=None,
                    help="genomes at a time at most (default threads / 4; fewer where --memory_gb holds fewer, each "
@@ -1675,15 +1676,6 @@ def _main(argv, held):
                         "10; a report every minute of a pass's first 10)")
     opts = p.parse_args(renamed(sys.argv[1:] if argv is None else argv))
     opts.groups = [g for g in opts.groups.split(",") if g]
-    compare = []
-    for spec in opts.read_compare or ():
-        name, _eq, files = spec.partition("=")
-        fasta, _comma, table = files.partition(",")
-        if not (name and os.path.isfile(fasta) and os.path.isfile(table)) or name in reads_mod.REFERENCES or \
-                name in {c[0] for c in compare}:
-            p.error(f"--read_compare {spec}: NAME=FASTA,TABLE, both files there, a name of its own")
-        compare.append((name, fasta, table))
-    opts.read_compare = compare
     for path in opts.midori2 or ():
         if not os.path.isfile(path):
             p.error(f"--midori2 {path}: no such file")
@@ -2084,10 +2076,6 @@ def _main(argv, held):
         # every genome is called and extracted: the kept ones cut back to the budget, then the package names those kept
         firsts = {a for r in species.read_table() for a in species.accessions(r)}
         annotate_pass(opts, job_map, may_fetch="fetch" in opts.stages)
-        # the read benchmark's genomes (reads.py), chosen while all are on disk and kept through the prune
-        reps = {a: (int(g["species_taxid"]), genomes.genome_file(opts.genomes, a))
-                for a, g in collected["genomes"].items() if g["representative"] == "t" and not job_map[a].get("path")}
-        tests = reads_mod.choose(ncbi, reps, opts.read_genomes) if opts.read_genomes and not opts.no_benchmarks else []
         with timed(stages, "assembly metadata", opts):
             describe_pass(opts, job_map)  # before the prune: measured while the genomes are there
         drop_superseded(opts, job_map)
@@ -2095,7 +2083,7 @@ def _main(argv, held):
         with genomes.cached_summaries():  # its done genomes read READ_THREADS at once (since 2026-11-11: one by one)
             genomes.prefetch(opts.work, job_map)
             rows_kept = genomes.prune(opts.genomes, opts.work,
-                                      float("inf") if opts.keep_gb is None else opts.keep_gb * 1e9, set(tests), firsts)
+                                      float("inf") if opts.keep_gb is None else opts.keep_gb * 1e9, set(), firsts)
         kept = sum(s for _a, s, st in rows_kept if st != "deleted")
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB ("
             + ("no --keep_gb: none deleted)" if opts.keep_gb is None else
@@ -2119,7 +2107,7 @@ def _main(argv, held):
             groups_mod.check(ncbi, say)  # data/supergroups.tsv's clades against this taxdump
         hook = None if opts.no_benchmarks else functools.partial(
             measure, opts=opts, src_dir=src_dir, ncbi=ncbi, collected=collected, vsearch=vsearch, stages=stages,
-            fates=genomes.fates(ncbi, assemblies, job_map, opts.inside if wanted is not None else None), tests=tests,
+            fates=genomes.fates(ncbi, assemblies, job_map, opts.inside if wanted is not None else None),
             references=references)
         meta = functools.partial(metadata_mod.write, work=opts.work, tables=tables(src_dir, "genbank", opts.groups)
                                  + tables(src_dir, "refseq", opts.groups), jobs=job_map)
@@ -2127,6 +2115,7 @@ def _main(argv, held):
                             loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook,
                             metadata=meta, tables=extra_tables, writers=writers, threads=opts.threads)
         say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")
+        evaluation_bundle(opts, out)  # since 2026-11-12: the run's report and tables, to be looked at elsewhere
         if not opts.no_release:  # the website's data and the downloads (since 2026-11-09; --stage release again)
             release_mod.write(out, os.path.join(opts.out, "release"), say, threads=opts.threads)
     return 0

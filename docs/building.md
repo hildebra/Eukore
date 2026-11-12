@@ -37,7 +37,7 @@ micromamba activate eukore
 - p7zip: EUKARYOME's archive;
 - openpyxl: EUKARYOME's tables;
 - ncbi-fcs-gx: optional, the FCS-GX screen;
-- matplotlib: the benchmarks' figures, drawn by the package stage (`eukore/figures.py`; without it, left out).
+- matplotlib: no longer the build's (since 2026-11-12 the figures are benchmarks/'s, in their own environment).
 
 Check that the tools are found:
 
@@ -370,9 +370,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--ksgp_tax FILE` | KSGP 4.0, fetched | the KSGP release `species.tsv`'s KSGP lineages come from |
 | `--miniprot`, `--hmmsearch` | on the PATH | the tools, where not on the PATH |
 | `--no_benchmarks` | | write the package without its `benchmarks/` ([benchmarks.md](benchmarks.md)) |
-| `--read_genomes N` | 3 | the read benchmark's test genomes per supergroup, kept through the prune (0: none) |
-| `--read_compare NAME=FASTA,TABLE` | | another reference for the read benchmark and `overlap.tsv` (TABLE: record, tab, NCBI taxid), given again for each further one; the first is also `breadth.tsv`'s. E.g. EukDetect2's `eukdb.fasta` and `busco_taxid_genome_link.txt`; `tools/compare_references.py` makes MetaPhlAn 4's eukaryote markers and PR2's 18S into such pairs |
-| `--minimap2` | on the PATH | the read benchmark's aligner |
+| `--minimap2` | on the PATH | the reference screen's aligner (`--midori2`) |
 
 ### Resuming and rebuilding
 
@@ -431,14 +429,23 @@ Without it, these sources stay as first fetched. For a newer taxonomy, delete `W
 | `WORK/done/<accession>.zip` (`WORK/done/<accession>/` before 2026-11-10 and with `--done_folders`) | each genome's calls (`loci.tsv`, `copies.fna`, `features.tsv`), windows, rRNA (`rrna.tsv`), FCS-GX's ranges; for a species of BUSCO's dataset, its calls made without its own proteins (`held_out.tsv`, the OrthoDB benchmark's) |
 | `WORK/organelle/`, `WORK/published/` | the organelle genes' searches; the published rRNA reads' annotation |
 
+### The evaluation bundle
+
+Since 2026-11-12 the package stage ends by writing `OUT/Eukore_<version>_evaluation.tar.gz` (tens of MB), before the
+release. It holds what it takes to judge the run away from the cluster: the run report (below), the package's
+`manifest.json`, `species.tsv`, `genomes.tsv`, `busco/loci.tsv`, `intraspecific/barcode_gap.tsv` and its `benchmarks/`
+tables, `WORK`'s `failed.tsv`, `genome_set.tsv` and `superseded.tsv`, and the logs `EUKORE_LOGS` names (colon-separated;
+`tools/eukore.sh`'s final job gives its own two), the last 20 MB of each. Copy it into `local/` of a checkout to have
+the run looked at. A failure to write it is said and never stops the build.
+
 ### How a run went
 
 ```bash
-python3 tools/run_report.py --work WORK --package OUT/Eukore_2026.11 --genomes OUT/genomes -t 16 --out run_report.md
+python3 -m eukore.run_report --work WORK --package OUT/Eukore_2026.11 --genomes OUT/genomes -t 16 --out run_report.md
 ```
 
-`tools/run_report.py` (since 2026-11-11) reads a build's work folder, and the package where given, and writes one
-Markdown report. It changes nothing in either. Its findings come first, most severe first, each with what to do. The
+`eukore/run_report.py` (since 2026-11-11; `tools/run_report.py` until 2026-11-12) reads a build's work folder, and the
+package where given, and writes one Markdown report. The package stage writes it into its evaluation bundle (below). It changes nothing in either. Its findings come first, most severe first, each with what to do. The
 tables follow:
 
 - **The plan's genomes** (`WORK/genome_set.tsv`), each counted as done, failed (a note in `WORK/failed/`), killed (a

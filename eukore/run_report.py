@@ -1,9 +1,10 @@
-#!/usr/bin/env python3
-"""How a Eukore run went, and what to improve (since 2026-11-11): one report from a build's work folder and, where
-given, the package it wrote. It only reads: nothing in WORK or the package is changed (genomes.failed_table, which
-the build runs, removes the notes of genomes done since; this report leaves them).
+"""How a Eukore run went, and what to improve (since 2026-11-11; until 2026-11-12 tools/run_report.py): one report
+from a build's work folder and, where given, the package it wrote. It only reads: nothing in WORK or the package is
+changed (genomes.failed_table, which the build runs, removes the notes of genomes done since; this report leaves
+them). The package stage writes it into its evaluation bundle (eukore_build.evaluation_bundle); any run can be
+reported on again:
 
-    python3 tools/run_report.py --work WORK [--package OUT/Eukore_<v>] [--genomes DIR] [-t 16] [--out report.md]
+    python3 -m eukore.run_report --work WORK [--package OUT/Eukore_<v>] [--genomes DIR] [-t 16] [--out report.md]
 
 The run (WORK):
 - the plan's genomes (WORK/genome_set.tsv) done, and of those not done: failed (a note in WORK/failed/), running
@@ -33,9 +34,7 @@ import shutil
 import statistics
 import sys
 
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, HERE)
-from eukore import genomes, store  # noqa: E402
+from . import genomes, store
 
 FREE_SHARE = 0.05        # a file system with less free is full for a build (the 2026-11-11 run: scratch 100%)
 FREE_BYTES = 200e9       # or less than this free
@@ -323,8 +322,8 @@ def report_package(rep, folder):
     if left:
         parts.append("Left out:\n\n" + table(["benchmark", "why"], sorted(left.items())))
         rep.find("medium", f"{len(left)} benchmarks left out: {', '.join(sorted(left))}",
-                 "give their inputs (--build_dir for BUSCO's dataset and the run times, vsearch and minimap2 on PATH, "
-                 "--read_compare) and measure again")
+                 "give their inputs (--build_dir for BUSCO's dataset and the run times, vsearch on PATH) and measure "
+                 "again: python3 -m eukore.benchmarks PACKAGE --build_dir WORK")
     comp = s.get("completeness") or {}
     weak = {g: m for g, m in (comp.get("by_supergroup") or {}).items() if m is not None and m < SUPERGROUP_COMPLETE}
     parts.append(f"Completeness: median {comp.get('median')}, {comp.get('at_least_90')} of genomes 90% or more.")
@@ -424,6 +423,16 @@ def supergroups(folder):
             for r in rows_of(os.path.join(folder, "species.tsv"))}
 
 
+def report(work, package=None, genomes_folder=None, threads=16):
+    """The report of a run (WORK) and the package it wrote, as Markdown."""
+    rep = Report()
+    facts = run_facts(work, genomes_folder, threads)
+    report_run(rep, work, facts, supergroups(package) if package else None)
+    if package:
+        report_package(rep, package)
+    return rep.text(f"Eukore run report: {work}" + (f", {package}" if package else ""))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--work", required=True, help="the build's work folder (--build_dir)")
@@ -432,12 +441,7 @@ def main(argv=None):
     p.add_argument("-t", "--threads", type=int, default=16, help="done.json read at once (shared file system)")
     p.add_argument("--out", help="the report (Markdown); else printed")
     a = p.parse_args(argv)
-    rep = Report()
-    facts = run_facts(a.work, a.genomes, a.threads)
-    report_run(rep, a.work, facts, supergroups(a.package) if a.package else None)
-    if a.package:
-        report_package(rep, a.package)
-    text = rep.text(f"Eukore run report: {a.work}" + (f", {a.package}" if a.package else ""))
+    text = report(a.work, a.package, a.genomes, a.threads)
     if a.out:
         with open(a.out, "w", newline="\n") as fh:
             fh.write(text)

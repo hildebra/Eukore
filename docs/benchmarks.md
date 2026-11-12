@@ -3,57 +3,32 @@
 Every Eukore build measures the package it writes: how complete its genomes are, whether its gene calls are the right
 genes, how well its markers tell species apart, how whole its rRNA operons are, how its species are named in the 18S
 references, and what the build cost. The tables go into the package (`Eukore_<version>/benchmarks/`,
-[FORMAT.md](FORMAT.md)), its headline figures into `manifest.json` and `benchmarks/summary.md`, and (since
-2026-11-10) the figures drawn from them into `benchmarks/figures/` (`eukore/figures.py`), so a release carries its own
-report.
+[FORMAT.md](FORMAT.md)), its headline figures into `manifest.json` and `benchmarks/summary.md`; the website shows them.
+
+The comparisons with other references (EukDetect2, MetaPhlAn 4, PR2), the read benchmark and every figure are not the
+build's (since 2026-11-12; until then `--read_compare`, `--read_genomes` and `eukore/figures.py`): they run on a
+finished package, in their own environment, from [benchmarks/](../benchmarks/README.md).
 
 ## Running them
 
-During a build, nothing to do: the package stage measures the package once its tables are written, then draws its
-figures, before its manifest (`--no_benchmarks` skips both, `--no_figures` the figures). A benchmark whose inputs are
-missing is left out, and `benchmarks/summary.json`'s `left_out` says why; a failing benchmark or figure never stops the
-package. One input is the user's: the other references the read benchmark and Figure 1 compare Eukore with
-(`--read_compare`; [The figures](#the-figures)). Without it the build says so, and the package compares itself with
-none.
+During a build, nothing to do: the package stage measures the package once its tables are written, before its
+manifest (`--no_benchmarks` skips them). A benchmark whose inputs are missing is left out, and
+`benchmarks/summary.json`'s `left_out` says why; a failing benchmark never stops the package.
 
-Any package can be measured again afterwards, and the figures drawn:
+Any package can be measured again afterwards:
 
 ```bash
 python3 -m eukore.benchmarks OUT/Eukore_2026.11 --build_dir WORK -t 8      # into OUT/Eukore_2026.11/benchmarks/
-python3 -m eukore.figures OUT/Eukore_2026.11              # into OUT/Eukore_2026.11/benchmarks/figures/
-python3 docs/benchmarks/plot_benchmarks.py OUT/Eukore_2026.11         # the same into docs/benchmarks/figures/
 ```
 
-A package measured again by `eukore.benchmarks` alone has the benchmark tables but not the build's own: the
-selection, the comparisons with the `--read_compare` references and the read benchmark need the package stage.
-
-## The figures
-
-`benchmarks/figures/index.md` captions each figure and names its tables; `summary.md` beside it holds the headline
-figures and, per supergroup, what the package holds (`composition.tsv`). Figure 1 (`Fig1.png`, at a journal's
-two-column width) asks four questions:
-
-| panel | the question | what it shows | its tables | needs |
-|---|---|---|---|---|
-| a | How large? | species per supergroup: NCBI's with a genome, Eukore's (with a genome; any record), each other reference's | `breadth.tsv`, `overlap.tsv` | PR2, EUKARYOME, KSGP always; EukDetect2 and MetaPhlAn 4 with `--read_compare` |
-| b | How far from BUSCO's dataset does a call stay right? | left, the dataset's genomes called again without their genus', family's, order's dataset species: called, on the same gene, OrthoDB's gene model, by the rank shared with the nearest dataset species kept; right, each genome's calls laid on its own annotation (introns exact), at its distance, per annotation source | `holdout.tsv`, `annotation.tsv` | BUSCO's dataset (`--build_dir`); the genomes' annotations (the fetch stage) |
-| c | Why genes, not the 18S? | per marker kind (each BUSCO a dot, each of Eukore's own loci a dot; the 18S; the ITS): the copies under 99% identical to their nearest congener; the intraspecific panel's species told from their congeners (barcode gap) | `resolution.tsv`, `intraspecific/barcode_gap.tsv` | vsearch; `--intraspecific` (default 3) |
-| d | Does it place a metagenome's reads? | F1 of detecting a test genome's species (in the reference) and genus (held out) by the sample's depth, per reference; the held-out reads censored by minimap2's list of secondary hits noted | `detection.tsv`, `reads.tsv` | minimap2, `--read_genomes` (default 3 a supergroup); other references with `--read_compare` |
-
-A panel whose tables are missing says so in its place. `holdout.png` draws panel b's left half per genome,
-`detection_depth.png` panel d with precision, recall and the `novel` mode (the test species' order left out: in a
-trial package its whole class often goes with it, so detection at the class is not measured there).
-
-**The other references.** `tools/compare_references.py` makes PR2's 18S (from PR2's `taxo_long` FASTA) and MetaPhlAn
-4's eukaryote markers (from its database archive) into `<NAME>.fna.gz` and `<NAME>_taxids.tsv`; EukDetect2's database
-is used as it is (its FASTA and its record-to-taxid table). On a SLURM cluster, `bash tools/eukore.sh compare` makes
-PR2's (and MetaPhlAn 4's, given its archive) into the settings' `COMPARE` folder, and the final job passes every one
-whose files are there (`tools/eukore.conf.example`).
-
+A package measured again this way has the benchmark tables but not the build's own selection (`selection.tsv`).
 `--build_dir` gives BUSCO's dataset (`WORK/sources/eukaryota_odb12`, for the OrthoDB benchmark), NCBI's whole taxonomy
 (`WORK/sources/taxdump.tar.gz`, else the package's own `taxonomy/`) and the genomes' run times (`WORK/done/`); each
 can also be given alone (`--odb`, `--taxdump`). `--out` writes the tables elsewhere (a measured-again package's
-manifest does not list them). The plots need matplotlib (in `envs/eukore.yaml`); `--format svg` or `pdf` for print.
+manifest does not list them).
+
+The figures, Figure 1 among them, are drawn by `benchmarks/eukore-figures.sh` ([benchmarks/](../benchmarks/README.md));
+the ones below are a trial package's.
 
 ## What is measured
 
@@ -207,8 +182,8 @@ published rRNA reads annotated in an earlier run). Its genomes ran while other j
 time (`runtime.png`, the table's last row) is that of the same trial built before the rescue pass, on 6 threads (26
 minutes for the genomes, 6 for the package stage). The rescue pass itself, measured alone on *Drosophila*'s 144 Mb
 genome (one BUSCO missed): 8 seconds for its six-frame ORFs, 2.5 seconds per missed BUSCO's HMM search. They show
-what the benchmarks look like; a release's own are in its `benchmarks/` (`python3 docs/benchmarks/plot_benchmarks.py`
-redraws these).
+what the benchmarks look like; a release's own tables are in its `benchmarks/`, and `benchmarks/eukore-figures.sh`
+draws its figures.
 
 What the trial shows:
 - **Completeness** follows BUSCO's dataset: the plant 100%, the fungi 85%, the animals 90%, *Blastocystis* (SAR, 16
@@ -289,10 +264,10 @@ Before the benchmarks, the first trial (the same seven clades, 30 BUSCOs) was co
 
 ## The paper's data (since 2026-11-06)
 
-The build also collects what the paper's figures need (`eukore/figures.py` draws them with the rest, since
-2026-11-10 into the package's `benchmarks/figures/`, with `index.md` captioning each and naming its tables):
+The build also collects what the paper's figures need of the package alone (benchmarks/'s `eukore-figures.sh`
+draws them, with `index.md` captioning each and naming its tables):
 - **The genome set** (`selection.tsv`, `breadth.tsv`): what became of every NCBI taxon with an assembly, and the species
-  per supergroup in NCBI, Eukore and another reference (`--read_compare`, EukDetect2's database).
+  per supergroup in NCBI and Eukore (another reference's columns: benchmarks/'s comparisons).
 - **Gene models against the genome's own annotation** (`annotation.tsv`, `genes.tsv`): a truth set independent of
   BUSCO's dataset. The fetch stage takes each genome's annotation (NCBI's GFF, RefSeq's or a submitter's, not asked
   for where the assembly summary gives no protein-coding genes; else Ensembl's, else TOGA2's: `source`) and NCBI's
@@ -301,31 +276,15 @@ The build also collects what the paper's figures need (`eukore/figures.py` draws
   sharing most coding bases, the exons and splice sites exact, the coding bases shared; then deletes them. (The copy
   itself takes the annotation's model where its HMM confirms it, `model` its source; the table measures miniprot's.) `genes.tsv` gives each genome's distance to BUSCO's dataset
   (the x of Figure 1b) and its copies' intron bases (what an exon-only reference leaves out).
-- **Reads** (`reads.tsv`, `eukore/reads.py`): up to `--read_genomes` genomes per supergroup (those with the most
-  congeners first), kept through the prune. Reads simulated from their markers' loci (introns and all) and from
-  anywhere in them, and from 7 bacteria and an archaeon (`data/read_background.tsv`), aligned by minimap2 to Eukore,
-  Eukore's exons alone, Eukore's 18S alone and each compared reference (`--read_compare`: EukDetect2's
-  database, MetaPhlAn 4's eukaryote markers and PR2's 18S, the latter two made by `tools/compare_references.py`);
-  each read's hits within 1 point of its best
-  (90% identical at least, 80% of the read) name their lowest common ancestor, with its own species in the reference
-  and held out. No profiler is involved: the benchmark measures the reference. Detection (`detection.tsv`): each
-  test genome is a sample of its reads from anywhere in it (1,000, 5,000 and 20,000) with as many bacterial reads;
-  a taxon with 3 reads or more, and 1% or more of the reads placed at its rank, is detected. Per reference: F1 of detecting the right species (it in the reference)
-  and genus (held out), and the samples missed, split into taxa the reference does not hold and those it holds but
-  placed too few reads to.
-  Since 2026-11-09 a harder test: the mode `novel` leaves the test species' whole order out of the reference (a
-  metagenome's eukaryote of a lineage no genome holds), its reads right at their class at best and wrong at their
-  order or below, detection scored at the class; and the background holds a eukaryote's DNA, human chromosome 21 (the
-  host of a gut or skin metagenome, its repeats and all: `data/read_background.tsv`'s rows of a taxid), whose reads
-  are right on its own lineage and wrong elsewhere (in a trial package, which holds no human, every placement of
-  them below Eukaryota's ranks is wrong), and whose own taxon in a sample is no false detection.
+- **Reads** (`reads.tsv`, `detection.tsv`): the read benchmark, since 2026-11-12 benchmarks/'s
+  (`eukore-benchmark.sh`; [benchmarks/README.md](../benchmarks/README.md#the-read-benchmark)).
 - **The checks** (`flags.tsv`), **rRNA regions' and mitochondrial genes' lengths** (`rrna_regions.tsv`),
   **organelle coverage** (`organelle.tsv`), **rRNA copies per genome as assembled** (`rrna_copies.tsv`).
 - **Other databases** (`overlap.tsv`): the species of PR2, EUKARYOME's long reads, KSGP, ROD, BUSCO's OrthoDB
-  dataset and the `--read_compare` references, against Eukore's, per supergroup.
+  dataset, against Eukore's, per supergroup; the other references' rows are benchmarks/'s comparisons.
 
 ```bash
-python3 -m eukore.figures OUT/Eukore_2026.11 --format pdf     # Figure 1 and the others, for print
+bash benchmarks/eukore-figures.sh BENCH OUT/Eukore_2026.11 RESULTS --format pdf   # Figure 1 and the others
 ```
 
 ## Not measured yet

@@ -1,21 +1,21 @@
 """The read benchmark (since 2026-11-06): how well reads of a eukaryote are told apart by the package, by any read
-aligner, with no profiler in between (benchmarks.py's reads.tsv; docs/benchmarks.md).
+aligner, with no profiler in between (compare.py's reads.tsv; benchmarks/README.md).
 
 Test genomes: up to PER_GROUP species' genomes per supergroup (choose: those with the most other species of their
-genus in the package first, so that a held-out species has relatives to be placed by), kept on disk through the
-build's prune. From each, simulated reads (READ_LEN, ERROR substitutions, either strand):
+genus in the package first, so that a held-out species has relatives to be placed by), placed in BENCH/read_genomes
+by prep.py. From each, simulated reads (READ_LEN, ERROR substitutions, either strand):
 - marker reads: from its BUSCO copies' and rRNA records' spans in its assembly, introns and all, COVERAGE-fold: the
   reads a reference should place;
 - genome reads: GENOME_READS from anywhere in its genome: the reads it should mostly leave alone (off-target);
-and BACKGROUND_READS from each of a few bacterial and archaeal genomes (data/read_background.tsv), which any
+and BACKGROUND_READS from each of a few bacterial and archaeal genomes (benchmarks/read_background.tsv), which any
 assignment gets wrong.
 
 The references, each aligned to by minimap2 (-x sr, secondary alignments kept):
 - Eukore: the BUSCO copies whole and the rRNA records;
 - Eukore exons: the copies' coding sequences alone (an exon-level reference, EukDetect's kind) and the rRNA records;
 - Eukore 18S: the rRNA records' 18S alone (an 18S reference, PR2's kind);
-- other references (compare: EukDetect2's database, MetaPhlAn 4's eukaryote markers, PR2's 18S; tools/
-  compare_references.py makes the latter two), each's records labelled by its own taxid table, cut to the package's
+- other references (compare: EukDetect2's database, MetaPhlAn 4's eukaryote markers, PR2's 18S; references.py
+  makes the latter two), each's records labelled by its own taxid table, cut to the package's
   clades in a trial package.
 
 A read's hits covering MIN_COVER of it, MIN_ID identical or more and within NEAR of its best hit name the lowest
@@ -39,19 +39,19 @@ import random
 import shutil
 import subprocess
 
-from . import labels, package, qc, rrna, util
-from . import odb as odb_mod
-from .benchmarks import rows_of as benchmarks_rows  # a package table's rows, streamed
-from .genomes import genome_file
-from .placement import contig_lengths
-from .rrna import revcomp
+from eukore import labels, package, qc, rrna, util
+from eukore import odb as odb_mod
+from eukore.benchmarks import rows_of as benchmarks_rows  # a package table's rows, streamed
+from eukore.genomes import genome_file
+from eukore.placement import contig_lengths
+from eukore.rrna import revcomp
 
 READ_LEN = 150
 ERROR = 0.005          # substitutions per base
 COVERAGE = 3           # marker reads: each locus' bases read this many times
 GENOME_READS = 20_000  # reads of a test genome from anywhere in it
 BACKGROUND_READS = 20_000
-PER_GROUP = 3          # test genomes per supergroup (eukore_build.py --read_genomes)
+PER_GROUP = 3          # test genomes per supergroup (prep.py --read_genomes)
 MIN_ID = 0.90
 MIN_COVER = 0.8
 NEAR = 0.01
@@ -537,7 +537,7 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
 
 
 def background_rows(table):
-    """data/read_background.tsv's rows -> [(accession, assembly, organism, NCBI taxid or None)]: a eukaryote's taxid
+    """The background list's rows -> [(accession, assembly, organism, NCBI taxid or None)]: a eukaryote's taxid
     (since 2026-11-09) makes its reads right on its own lineage (the host's), a prokaryote's are wrong wherever
     placed."""
     out = []
@@ -553,7 +553,7 @@ def background_rows(table):
 
 
 def read_background(table, folder):
-    """data/read_background.tsv's genomes in folder (fetched by the fetch stage) -> [(name, path, taxid or None)] of
+    """The background list's genomes in folder (fetched by prep.py) -> [(name, path, taxid or None)] of
     those there."""
     out = []
     for acc, _assembly, organism, taxid in background_rows(table):
@@ -578,7 +578,7 @@ EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
 
 def fetch_background(table, folder, log=print):
-    """data/read_background.tsv's genomes into folder (kept when there); a sequence's plain FASTA compressed there."""
+    """The background list's genomes into folder (kept when there); a sequence's plain FASTA compressed there."""
     os.makedirs(folder, exist_ok=True)
     for acc, assembly, organism, _taxid in background_rows(table):
         path = os.path.join(folder, f"{acc}.fna.gz")

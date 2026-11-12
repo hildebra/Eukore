@@ -221,8 +221,8 @@ Details, and what was checked on real genomes, are in [docs/methods.md](docs/met
 Each build measures its package ([docs/benchmarks.md](docs/benchmarks.md)): BUSCO completeness per genome and
 supergroup; its calls against OrthoDB's own gene models of the same species; how far each marker tells species apart
 (the identity of each copy's nearest other species, by the rank they share); rRNA operon completeness; naming in
-PR2, EUKARYOME and KSGP; run time. The build draws them into the package's `benchmarks/figures/` (Figure 1 and one
-per benchmark; `eukore/figures.py`, or `python3 -m eukore.figures PACKAGE` for any package).
+PR2, EUKARYOME and KSGP; run time. The comparisons with other references (EukDetect2, MetaPhlAn 4, PR2), the read
+benchmark and every figure, Figure 1 among them, run on a finished package from [benchmarks/](benchmarks/README.md).
 
 On a trial package (seven clades, 2026-11-06, with the rescue pass; not a release):
 
@@ -257,7 +257,8 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 | [docs/building.md](docs/building.md) | install, a trial, a full build on a cluster, options, resources, resuming, outputs |
 | [docs/methods.md](docs/methods.md) | how the genomes are chosen and the genes, operons and organelle genes made and checked; since 0.2 the copies' genetics (proteins, introns, code check, duplication), the organelle genes' models and checks, the 18S regions and primers, the taxonomy and references, the barcode gap and transcriptomes |
 | [docs/FORMAT.md](docs/FORMAT.md) | the package format, file by file and column by column ([every file](docs/FORMAT.md#every-file) at a glance; [what changed](docs/FORMAT.md#changes)) |
-| [docs/benchmarks.md](docs/benchmarks.md) | what each benchmark measures, how to run and draw them, the figures |
+| [docs/benchmarks.md](docs/benchmarks.md) | what each of the build's benchmarks measures, how to run them |
+| [benchmarks/README.md](benchmarks/README.md) | the comparisons with other references, the read benchmark and every figure, on a finished package |
 | [docs/loci.md](docs/loci.md) | choosing BUSCOs for a use; the BUSCOs with prokaryote homologues; the classic markers (none is a BUSCO) |
 | [docs/read_depth.md](docs/read_depth.md) | rDNA and organelle copies by read depth (`tools/rdna_depth.py`, a prototype) |
 
@@ -269,15 +270,16 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 | `eukore/` | the package: `genomes.py` (genome set, one genome's run), `odb.py`, `loci.py` (BUSCO calls), `rrna.py`, `screen.py` (rRNA and its chimera screen), `organelle.py`, `qc.py` (checks across species), `quality.py` (NCBI's FCS-GX and ANI reports), `labels.py` (PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2; crossrefs), `refscreen.py` (the reference screen: MIDORI2's misnamed and chimeric records), `groups.py` (supergroups, groups), `gencode.py` (NCBI's genetic codes), `align.py` (hmmalign), `introns.py`, `codecheck.py` (genetic code check), `regions.py` (18S V1-V9, cmalign), `primers.py` (in-silico PCR), `intraspecific.py` (barcode gap), `markers.py` (Eukore's marker set: KOfam, Swiss-Prot, NCBI), `package.py` (write, read, check), `benchmarks.py`, `release.py` (the website's data and the downloads), `util.py` (BGZF, downloads, progress) |
 | `data/` | the model species, curated rDNA units, the records of species without an assembly; since 0.2 `supergroups.tsv` (supergroups and groups), `primers.tsv` and `primer_pairs.tsv` (the in-silico PCR), `primer_references.fna` (their test records), `rrna_regions.tsv` (the 18S V-regions on yeast), `intraspecific_panel.tsv` (the barcode gap's species), `classic_markers.*`, `markers.tsv` (Eukore's marker loci: their KOfam targets and decoys) |
 | `envs/` | the micromamba environments (`eukore.yaml`; `tiara.yaml`, tiara needing an older Python) |
-| `tools/` | choosing loci: `rank_loci.py`, `eukaryote_panel.py`, `prokaryote_panel.py`, `prokaryote_separation.py`; `classic_markers.py` (classic markers among the BUSCOs), `primer_references.py` (the primers' test records), `organelle_models.py` (nhmmer against miniprot on RefSeq's exons), `validate_markers.py` (the marker loci against each species' own reference protein, held out), `screen_reference.py` (the reference screen on MIDORI2's files: KSGP's lists and the screened FASTA), `run_report.py` (how a run went: its failed genomes and the package's weak points; [building.md](docs/building.md#how-a-run-went)) |
+| `tools/` | choosing loci: `rank_loci.py`, `eukaryote_panel.py`, `prokaryote_panel.py`, `prokaryote_separation.py`; `classic_markers.py` (classic markers among the BUSCOs), `primer_references.py` (the primers' test records), `organelle_models.py` (nhmmer against miniprot on RefSeq's exons), `validate_markers.py` (the marker loci against each species' own reference protein, held out), `screen_reference.py` (the reference screen on MIDORI2's files: KSGP's lists and the screened FASTA), (`eukore/run_report.py`, how a run went, is in every build's evaluation bundle: [building.md](docs/building.md#the-evaluation-bundle)) |
 | `tests/` | unit and end-to-end tests with stand-in tools |
-| `docs/` | documentation, the format, the benchmarks' plot script and figures, the logo |
+| `docs/` | documentation, the format, a trial's benchmark figures, the logo |
+| `benchmarks/` | (since 2026-11-12) what a paper needs and the build does not: the comparisons with EukDetect2, MetaPhlAn 4 and PR2, the read benchmark, every figure (`eukore-bench-prep.sh`, `eukore-benchmark.sh`, `eukore-figures.sh`; `eukore_bench/`), in their own environment |
 | `website/` | Eukore's website (PHP): home, statistics, downloads, tutorial, acknowledgements; it reads a build's `OUT/release/` |
 | `LICENSE` | GPL-2.0 |
 
 ## Status and limitations
 
-- Version 0.2.4 (2026-11-10: the build draws its figures, Figure 1 among them, into the package's `benchmarks/figures/`). The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built; format 6 (2026-11-09: the four confidence tiers, coding sequences checked and recovered, a Duplicated locus' copy chosen by lineage, the owner of a shared sequence told, the 18S checked to be a nucleus', the genome record) is tested on stand-ins and four trial genomes, not yet on a built package.
+- Version 0.2.4 (2026-11-12: the comparisons with other references, the read benchmark and the figures, Figure 1 among them, moved out of the build into `benchmarks/`; the build writes an evaluation bundle). The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built; format 6 (2026-11-09: the four confidence tiers, coding sequences checked and recovered, a Duplicated locus' copy chosen by lineage, the owner of a shared sequence told, the 18S checked to be a nucleus', the genome record) is tested on stand-ins and four trial genomes, not yet on a built package.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
 - The organelle genes have checks across species and a confidence tier since 0.2, measured on a trial without RefSeq's organelle release (assembly molecules alone). In assemblies, a protein-coding gene with introns takes miniprot's exons (median F1 0.96-0.99 against RefSeq's, against nhmmer's joined hits' 0.27-0.60), one without nhmmer's single hit ([methods.md](docs/methods.md)); a few splice sites stay off by some bases.
 - The genetic code check judges only the stop codons and CTG, where seen often enough at conserved positions (CTG-clade yeasts avoid CTG: not judged); a transcriptome's BUSCO copies (TSA, a species without a genome) have no introns and are at most `medium`.

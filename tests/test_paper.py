@@ -19,7 +19,9 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import annotation, benchmarks, genomes, labels, ncbi as ncbi_mod, reads, sources, twobit  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmarks"))  # the benchmarks (since 2026-11-12)
+from eukore import annotation, benchmarks, genomes, labels, ncbi as ncbi_mod, sources, twobit  # noqa: E402
+from eukore_bench import reads  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 YEAST, PARADOXUS, LACTIS = "GCA_000146045.2", "GCA_000000013.1", "GCA_000002515.1"
@@ -477,8 +479,7 @@ class TablesTest(unittest.TestCase):
 
 class CompareReferencesTest(unittest.TestCase):
     def test_metaphlan_and_pr2_labelled_by_ncbi(self):
-        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
-        import compare_references as cr  # noqa: PLC0415
+        from eukore_bench import references as cr  # noqa: PLC0415
         info = ["27987__gene-1\t{'clade': 't__EUK27987', 'ext': [], 'len': 259, 'taxon': 'k__Eukaryota|t__EUK27987'}",
                 "UniRef90_X|1__2|SGB1\t{'clade': 't__SGB1', 'ext': [], 'len': 900, 'taxon': 'k__Bacteria|t__SGB1'}"]
         self.assertEqual(cr.euk_markers(info), {"27987__gene-1": 27987})
