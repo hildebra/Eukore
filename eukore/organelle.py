@@ -715,8 +715,7 @@ def barrnap_genes(molecules, barrnap, kingdom, threads=1):
         return {}
     with tempfile.TemporaryDirectory() as tmp:
         fasta = os.path.join(tmp, "m.fna")
-        with open(fasta, "w", newline="\n") as fh:
-            fh.writelines(f">{n}\n{s}\n" for n, _k, s in molecules)
+        rrna.barrnap_fasta(fasta, [(n, s) for n, _k, s in molecules])  # nhmmer's alphabet guessable (since 2026-11-12)
         feats = rrna.parse_gff(rrna.barrnap_gff(barrnap, fasta, threads, kingdom))
     seqs = {n: (k, s) for n, k, s in molecules}
     hits = collections.defaultdict(list)
@@ -1150,7 +1149,7 @@ def coding_of(r, seq):
 MAX_AMBIGUOUS = 0.005  # a record with this share of other bases than ACGT: low
 
 
-def check(records, ncbi, vsearch=None, threads=1):
+def check(records, ncbi, vsearch=None, threads=1, progress=None, searches=None):
     """The organelle genes' checks across species (since 2026-11-07; qc.check, each gene of each organelle a locus;
     a protein-coding gene's coding sequence compared where it has one, else its record) and their proteins by the
     species' organelle code (since 2026-11-10 a RefSeq CDS's own /transl_table before it: table_of) -> records, their
@@ -1168,7 +1167,8 @@ def check(records, ncbi, vsearch=None, threads=1):
         key = (name, row["organelle"] + ":" + row["gene"])
         seqs[key], species[name] = (cds or seq), int(row["species_taxid"])
         lengths.setdefault(key, len(cds or seq) // 3)
-    checks = qc.check(seqs, species, ncbi, vsearch, threads, lengths)
+    # its searches reported, kept and shared with other nodes (qc.searched_loci)
+    checks = qc.check(seqs, species, ncbi, vsearch, threads, lengths, progress=progress, searches=searches)
     for name, _seq, row in records:
         c = checks[(name, row["organelle"] + ":" + row["gene"])]
         row.update(own_species=c["own_species"], same_as=c["same_as"], length_check=c["length"],

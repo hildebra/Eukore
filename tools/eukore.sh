@@ -5,6 +5,7 @@
 #   bash tools/eukore.sh build [N]    # N process jobs (an array; default TASKS), then the final job after them
 #   AFTER=<job id> bash tools/eukore.sh build   # the chain begun only once that job (the fetch) has ended well
 #   REVERSION=1 bash tools/eukore.sh build      # once, on a build whose genomes an older Eukore ran: --reversion
+#   bash tools/eukore.sh qc [N]       # N helpers of the package stage's vsearch checks (the final job submits them)
 #   bash tools/eukore.sh compare      # the read benchmark's other references into COMPARE, on the node with internet
 #
 # The final job hands the build every other reference whose files are there (since 2026-11-10): EukDetect2's
@@ -36,9 +37,9 @@ if [[ ! -f $CONF ]]; then
     echo "no settings at $CONF: copy tools/eukore.conf.example there, or name the file with EUKORE_CONF" >&2
     exit 1
 fi
-TASKS=8; MAMBA_ENV=eukore; GEN=; SOURCES=; SCR=; LOGS=
+TASKS=8; QC_TASKS=0; MAMBA_ENV=eukore; GEN=; SOURCES=; SCR=; LOGS=
 COMPARE=; PR2_VERSION=5.1.1; MPA_ARCHIVE=; MPA_INFO=; EUKDETECT_FASTA=; EUKDETECT_TABLE=
-BUILD_OPTS=(); FETCH_OPTS=(); FINAL_OPTS=(); SBATCH_ALL=(); SBATCH_FETCH=(); SBATCH_PROCESS=(); SBATCH_FINAL=()
+BUILD_OPTS=(); FETCH_OPTS=(); FINAL_OPTS=(); SBATCH_ALL=(); SBATCH_FETCH=(); SBATCH_PROCESS=(); SBATCH_FINAL=(); SBATCH_QC=()
 source "$CONF"
 : "${PDIR:?$CONF: PDIR}" "${WORK:?$CONF: WORK}" "${OUT:?$CONF: OUT}" "${VERSION:?$CONF: VERSION}"
 
@@ -149,7 +150,29 @@ _process)
 _final)
     need_local_tmp
     mapfile -t compared < <(compare_opts)
-    run_stage process,package --local_tmp "$SCR" ${compared[@]+"${compared[@]}"} ${FINAL_OPTS[@]+"${FINAL_OPTS[@]}"}
+    # the vsearch checks across species shared with QC_TASKS helper jobs, which the package stage submits itself once
+    # their inputs are written (since 2026-11-11)
+    helpers=()
+    if (( ${QC_TASKS:-0} > 0 )); then helpers=(--qc_helpers "bash $(printf %q "$SELF") qc"); fi
+    run_stage process,package --local_tmp "$SCR" ${compared[@]+"${compared[@]}"} ${helpers[@]+"${helpers[@]}"} \
+        ${FINAL_OPTS[@]+"${FINAL_OPTS[@]}"}
+    ;;
+qc)  # the helpers of the package stage's vsearch checks: QC_TASKS (or N) jobs, each searching loci till none is left
+    tasks=${2:-$QC_TASKS}
+    if (( tasks < 1 )); then
+        echo "no helpers: QC_TASKS of $CONF is 0, and no number given (bash $SELF qc N)" >&2
+        exit 1
+    fi
+    [[ -z $LOGS ]] || mkdir -p "$LOGS"
+    jid=$(submit Eukore-qc ${SBATCH_QC[@]+"${SBATCH_QC[@]}"} --array=1-"$tasks" -- _qc)
+    echo "qc: array job $jid, $tasks helpers searching the loci of $WORK/qc" >&2
+    echo "$jid"  # the last line: the package stage cancels the helpers once every locus is searched
+    ;;
+_qc)
+    activate
+    echo "SLURM job ${SLURM_JOB_ID:--} (array ${SLURM_ARRAY_JOB_ID:--} task ${SLURM_ARRAY_TASK_ID:--}) on $HOSTNAME: qc"
+    cd "$PDIR"
+    python3 -m eukore.qc helper "$WORK/qc" -t "${SLURM_CPUS_PER_TASK:-2}"
     ;;
 compare)
     : "${COMPARE:?$CONF: COMPARE, the folder of the other references of the read benchmark}"

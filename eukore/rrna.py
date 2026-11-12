@@ -22,6 +22,7 @@ labelled by NCBI taxid, checked without any KSGP.
 
 import collections
 import os
+import random
 import re
 import subprocess
 import tempfile
@@ -92,11 +93,48 @@ def check_itsx(itsx, threads=2):
 
 
 def barrnap_gff(barrnap, fasta, threads=1, kingdom="euk"):
+    """barrnap's GFF of a FASTA (written by barrnap_fasta), ALPHABET_GUARD's lines left out."""
     command = [barrnap, "--kingdom", kingdom, "--threads", str(threads), "--quiet", fasta]
     run = subprocess.run(command, capture_output=True, text=True, check=False)
     if run.returncode != 0:
         raise BarrnapError(f"barrnap failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
-    return run.stdout
+    return "".join(line for line in run.stdout.splitlines(keepends=True) if not line.startswith(ALPHABET_GUARD + "\t"))
+
+
+# nhmmer (barrnap's search) guesses its target's alphabet from the start of the FASTA's first sequence (HMMER's Easel)
+# and stops ("Unable to guess alphabet for target sequence database file") where that start lacks a base: a window at
+# a chromosome's end, its first thousands of bases the telomere's repeat. Since 2026-11-12 (until then a genome's
+# windows went in their contigs' order: every backfilled genome of 2026-11-11 failed so, Eupithecia's (TTAGG)n, its
+# first window's first 4,000 bases with no G): the first sequence whose start holds each base (GUESS_SHARE of it at
+# least) goes first, the others in their order; where none does, ALPHABET_GUARD before them all (a random sequence of
+# all four, no rRNA's: barrnap_gff drops its lines).
+GUESS_BASES = 4000
+GUESS_SHARE = 0.05
+ALPHABET_GUARD = "eukore_alphabet_guard"
+_GUARD_RNG = random.Random(ALPHABET_GUARD)
+_GUARD_SEQUENCE = "".join(_GUARD_RNG.choice("ACGT") for _ in range(1000))
+
+
+def guessable(seq):
+    """Whether a sequence's start (GUESS_BASES) holds each of A, C, G and T, GUESS_SHARE of it at least."""
+    head = seq[:GUESS_BASES].upper()
+    return len(head) >= 100 and all(head.count(b) >= GUESS_SHARE * len(head) for b in "ACGT")
+
+
+def alphabet_first(records):
+    """[(name, sequence)] -> the same, the first guessable one first, the others in their order; ALPHABET_GUARD first
+    where none is guessable."""
+    records = list(records)
+    good = next((i for i, (_n, s) in enumerate(records) if guessable(s)), None)
+    if good is None:
+        return [(ALPHABET_GUARD, _GUARD_SEQUENCE)] + records if records else records
+    return [records[good]] + records[:good] + records[good + 1:]
+
+
+def barrnap_fasta(path, records):
+    """records [(name, sequence)] written as barrnap's input, nhmmer's alphabet guessable (alphabet_first)."""
+    with open(path, "w", newline="\n") as fh:
+        fh.writelines(f">{n}\n{s}\n" for n, s in alphabet_first(records))
 
 
 # an organelle molecule's FASTA title (organelle.py's too, and metadata.py's), its word read as the organelle by
@@ -483,13 +521,12 @@ def extract_genome(path, barrnap, itsx=None, threads=1, itsx_sets="all"):
     seqs, origin = {}, {}
     with tempfile.TemporaryDirectory() as tmp:
         win = os.path.join(tmp, "windows.fna")
-        with open(win, "w") as fh:
-            order = {n: i for i, n in enumerate(lengths)}
-            for name in sorted(found, key=order.get):
-                for a, b in found[name]:
-                    wid = f"w{len(seqs)}"
-                    seqs[wid], origin[wid] = spans[name][a:b].upper(), (name, a)
-                    fh.write(f">{wid}\n{seqs[wid]}\n")
+        order = {n: i for i, n in enumerate(lengths)}
+        for name in sorted(found, key=order.get):
+            for a, b in found[name]:
+                wid = f"w{len(seqs)}"
+                seqs[wid], origin[wid] = spans[name][a:b].upper(), (name, a)
+        barrnap_fasta(win, seqs.items())  # a telomere's window not first (since 2026-11-12)
         gff = barrnap_gff(barrnap, win, threads) if seqs else ""
     feats = parse_gff(gff)
     items = []
@@ -526,8 +563,7 @@ def published_regions(reads, barrnap, itsx=None, threads=1, sets=None):
         return {}
     with tempfile.TemporaryDirectory() as tmp:
         fasta = os.path.join(tmp, "reads.fna")
-        with open(fasta, "w") as fh:
-            fh.writelines(f">{n}\n{s}\n" for n, s in reads)
+        barrnap_fasta(fasta, reads)
         gff = barrnap_gff(barrnap, fasta, threads)
     feats = parse_gff(gff)
     seqs = dict(reads)

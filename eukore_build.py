@@ -46,8 +46,10 @@ import re
 import shlex
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -677,6 +679,34 @@ def progress_of(opts, what, weights, unit="Gb", scale=1e9):
                          usage=opts.usage.line)
 
 
+def qc_searches(opts, kind):
+    """qc.check's searches (since 2026-11-11): each locus' vsearch search kept in WORK/qc/<kind>/ and, with
+    --qc_helpers, shared with the nodes its command starts."""
+    def helpers(n):
+        say(f"  {n:,} loci to search: their inputs in {folder}; helpers started by: {opts.qc_helpers}")
+        try:
+            run = subprocess.run(shlex.split(opts.qc_helpers), capture_output=True, text=True, timeout=300,
+                                 check=False)
+        except (OSError, subprocess.SubprocessError) as e:
+            run = None
+            why = f"{type(e).__name__}: {e}"
+        else:
+            why = f"exit {run.returncode}: {run.stderr.strip()[-300:]}"
+        if run is None or run.returncode:
+            say(f"WARNING: the helpers were not started ({why}): this node searches every locus; another node can "
+                f"help all the same: python3 -m eukore.qc helper {os.path.dirname(folder)} -t <threads>")
+            return None
+        job = (run.stdout.strip().splitlines() or [""])[-1].strip()
+        say(f"  helpers: job {job or '?'}")
+
+        def stop():
+            if job.isdigit() and shutil.which("scancel"):  # the helpers still pending or idle: not needed now
+                subprocess.run(["scancel", job], capture_output=True, check=False)
+        return stop
+    folder = os.path.join(opts.work, "qc", kind)
+    return {"folder": folder, "helpers": helpers if getattr(opts, "qc_helpers", None) else None}
+
+
 def running(opts, progress, workers=None):
     """', 4 running': a pool's items under way (at most its workers, default -j)."""
     return f", {min(max(1, workers or opts.jobs), progress.n - progress.done):,} running"
@@ -1012,11 +1042,31 @@ def intraspecific_writer(opts, ncbi, extras, collected, records, organelle, vsea
 
 
 @contextlib.contextmanager
-def timed(stages, step):
-    """A step of the package stage, its seconds added to stages ([(step, seconds)]: benchmarks' stages.tsv)."""
+def timed(stages, step, opts=None):
+    """A step of the package stage, its seconds added to stages ([(step, seconds)]: benchmarks' stages.tsv). Since
+    2026-11-11 said when it begins and ends, and with opts every --report_minutes while it runs (with opts.usage's
+    cores, memory and disk): until then a step of hours (the copies' vsearch checks) said nothing at all."""
     started = time.time()
-    yield
-    stages.append((step, time.time() - started))
+    usage = getattr(opts, "usage", None)
+    say(f"package: {step} ..")
+    stop = threading.Event()
+
+    def beat(every):
+        while not stop.wait(every):
+            say(f"  {step}: {util.duration(time.time() - started)} so far" + (usage.line() if usage else ""))
+    heart = None
+    if opts is not None:
+        heart = threading.Thread(target=beat, args=(max(1.0, opts.report_minutes * 60),), daemon=True)
+        heart.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        if heart is not None:
+            heart.join()
+    seconds = time.time() - started
+    stages.append((step, seconds))
+    say(f"package: {step}: took {util.duration(seconds)}" + (usage.line() if usage else ""))
 
 
 def reference_screen(opts, src_dir, ncbi):
@@ -1474,6 +1524,12 @@ def _main(argv, held):
                         "genome, miniprot's pieces of a large one, the rescue's ORFs, up to ~3 times a genome's size "
                         "each; and TMPDIR's, barrnap's and ITSx's), only the results written to --build_dir (default: "
                         "beside them, and TMPDIR; --scratch before 2026-11-09)")
+    p.add_argument("--qc_helpers", metavar="COMMAND",
+                   help="the package stage's vsearch checks across species shared with other nodes (since "
+                        "2026-11-11): the loci's inputs written to WORK/qc/, then this command run (e.g. 'bash "
+                        "tools/eukore.sh qc': a SLURM array of helpers, each running python3 -m eukore.qc helper "
+                        "WORK/qc); its last line of output, a job ID, is cancelled once all loci are searched. "
+                        "Without it, this node searches them all (each search kept in WORK/qc/ all the same)")
     p.add_argument("--report_minutes", type=float, default=util.REPORT_EVERY / 60,
                    help="minutes between progress reports of the genomes' downloads and the process stage's passes: "
                         "items left, time left and, in the process stage, the cores, memory and disk used (default "
@@ -1778,7 +1834,7 @@ def _main(argv, held):
         at_once = max(1, min(len(todo), opts.threads // FCS_THREADS))
         say(f"FCS-GX: {len(todo)} genomes' windows to screen ({opts.fcs_gx_db}), {at_once} at a time")
         failed = 0
-        with timed(stages, "FCS-GX"):
+        with timed(stages, "FCS-GX", opts):
             def screen(acc):
                 return genomes.fcs_screen(opts.work, acc, job_map[acc]["taxid"], opts.fcs_gx_db, opts.run_gx,
                                           max(1, opts.threads // at_once), opts.scratch)
@@ -1823,18 +1879,20 @@ def _main(argv, held):
                 "before data/marker_decoys.tsv's decoys, EFL for EF-1a, among them): run --stage fetch, then --stage "
                 "process, to build it again; until then the old set serves, a genome holding EFL alone may have it as "
                 "its TEF1")
-        with timed(stages, "BUSCO copies and their checks"):
+        with timed(stages, "BUSCO copies and their checks", opts):
             # the marker copies checked again by the set's profiles, decoys too (since 2026-11-09: markers.recheck)
             collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads,
                                         markers_mod.kinds(marker_folder),
-                                        markers_mod.recheck(marker_folder, opts.hmmsearch, opts.threads))
-        with timed(stages, "introns and genetic codes"):
+                                        markers_mod.recheck(marker_folder, opts.hmmsearch, opts.threads),
+                                        progress=functools.partial(progress_of, opts, unit=""),
+                                        searches=qc_searches(opts, "busco"))
+        with timed(stages, "introns and genetic codes", opts):
             hmmalign = shutil.which("hmmalign")
             if not hmmalign:
                 say("WARNING: no hmmalign: introns without their places in the genes, no genetic code check")
             hmm_of = odb_of(opts, src_dir).hmm
             package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say, opts.threads)
-        with timed(stages, "rRNA records and their checks"):
+        with timed(stages, "rRNA records and their checks", opts):
             records = genome_rrna_records(opts, job_map, ncbi, collected) + published(opts, src_dir, ncbi)
             # each 18S's SSU model (since 2026-11-09): a bacterium's or an organelle's SSU is no 18S
             models, cmsearch = regions_mod.models_path(src_dir), shutil.which("cmsearch")
@@ -1845,7 +1903,7 @@ def _main(argv, held):
                     "told from a bacterium's or an organelle's SSU (records.tsv's ssu_model -)")
             records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say, ssu_models=ssu)
         extra_tables = []
-        with timed(stages, "18S variable regions and amplicons"):
+        with timed(stages, "18S variable regions and amplicons", opts):
             cm, cmalign = regions_mod.cm_path(src_dir), shutil.which("cmalign")
             if cmalign and os.path.isfile(cm):
                 extra_tables.append(("rrna/regions.tsv", regions_mod.REGION_COLUMNS,
@@ -1855,17 +1913,19 @@ def _main(argv, held):
                     "regions")
             extra_tables.append(("rrna/amplicons.tsv", primers_mod.AMPLICON_COLUMNS,
                                  primers_mod.run(records, "rrna", threads=opts.threads)))
-        with timed(stages, "organelle genes"):
+        with timed(stages, "organelle genes", opts):
             chosen = organelle_genes(opts, src_dir, job_map, ncbi)  # before the prune: the genomes searched while there
             held = {int(g["species_taxid"]) for g in collected["genomes"].values() if g["representative"] == "t"}
             organelle = organelle_mod.collect(ncbi, job_map, held | {int(r["species_taxid"]) for _n, _s, r in records},
                                               chosen, os.path.join(opts.work, "organelle"))
-            organelle = organelle_mod.check(organelle, ncbi, vsearch, opts.threads)
+            organelle = organelle_mod.check(organelle, ncbi, vsearch, opts.threads,
+                                            progress=functools.partial(progress_of, opts, unit=""),
+                                            searches=qc_searches(opts, "organelle"))
             extra_tables.append(("organelle/amplicons.tsv", primers_mod.AMPLICON_COLUMNS,
                                  primers_mod.run(organelle, "organelle", threads=opts.threads)))
         writers = []
         if extras:
-            with timed(stages, "intraspecific barcode gap"):
+            with timed(stages, "intraspecific barcode gap", opts):
                 writers.append(intraspecific_writer(opts, ncbi, extras, collected, records, organelle, vsearch))
         inputs = {"odb": odb_mod.state_of(src_dir), "taxdump_md5": util.md5(os.path.join(src_dir, "taxdump.tar.gz")),
                   "sources": {n: sources.state_of(src_dir, n).get("version") for n in ("EUKARYOME", "ROD")},
@@ -1887,7 +1947,7 @@ def _main(argv, held):
         reps = {a: (int(g["species_taxid"]), genomes.genome_file(opts.genomes, a))
                 for a, g in collected["genomes"].items() if g["representative"] == "t" and not job_map[a].get("path")}
         tests = reads_mod.choose(ncbi, reps, opts.read_genomes) if opts.read_genomes and not opts.no_benchmarks else []
-        with timed(stages, "assembly metadata"):
+        with timed(stages, "assembly metadata", opts):
             describe_pass(opts, job_map)  # before the prune: measured while the genomes are there
         drop_superseded(opts, job_map)
         # without --keep_gb, every genome kept (since 2026-11-08; the manifest written all the same)
@@ -1901,12 +1961,12 @@ def _main(argv, held):
                f"--keep_gb {opts.keep_gb:g}), {sum(st == 'deleted' for *_x, st in rows_kept)} deleted"))
         screened = None
         if opts.midori2 and not opts.no_reference_screen:  # since 2026-11-10: MIDORI2's misnamed, chimeric records
-            with timed(stages, "reference screen"):
+            with timed(stages, "reference screen", opts):
                 screened = reference_screen(opts, src_dir, ncbi)
             if screened:
                 extra_tables.append(("reference_screen.tsv", refscreen.TABLE_COLUMNS,
                                      refscreen.table_rows("MIDORI2", screened[0])))
-        with timed(stages, "reference labels"):
+        with timed(stages, "reference labels", opts):
             references = labels.references(
                 src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say, opts.midori2,
                 (refscreen.dropped(screened[0]), refscreen.stamp(screened[1])) if screened else None)
