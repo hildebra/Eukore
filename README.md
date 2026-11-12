@@ -222,7 +222,10 @@ Each build measures its package ([docs/benchmarks.md](docs/benchmarks.md)): BUSC
 supergroup; its calls against OrthoDB's own gene models of the same species; how far each marker tells species apart
 (the identity of each copy's nearest other species, by the rank they share); rRNA operon completeness; naming in
 PR2, EUKARYOME and KSGP; run time. The comparisons with other references (EukDetect2, MetaPhlAn 4, PR2), the read
-benchmark and every figure, Figure 1 among them, run on a finished package from [benchmarks/](benchmarks/README.md).
+benchmark and every figure, Figure 1 among them, run on a finished package from [benchmarks/](benchmarks/README.md);
+so does (since 2026-11-12) what describes the package as a resource: its breadth at every rank, the markers one species
+links, Eukore beside the other databases as collections of records, the checks' shares, the tree of the BUSCO proteins
+against NCBI's taxonomy, the identity that parts taxa, and the changes from one release to the next.
 
 On a trial package (seven clades, 2026-11-06, with the rescue pass; not a release):
 
@@ -258,7 +261,8 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 | [docs/methods.md](docs/methods.md) | how the genomes are chosen and the genes, operons and organelle genes made and checked; since 0.2 the copies' genetics (proteins, introns, code check, duplication), the organelle genes' models and checks, the 18S regions and primers, the taxonomy and references, the barcode gap and transcriptomes |
 | [docs/FORMAT.md](docs/FORMAT.md) | the package format, file by file and column by column ([every file](docs/FORMAT.md#every-file) at a glance; [what changed](docs/FORMAT.md#changes)) |
 | [docs/benchmarks.md](docs/benchmarks.md) | what each of the build's benchmarks measures, how to run them |
-| [benchmarks/README.md](benchmarks/README.md) | the comparisons with other references, the read benchmark and every figure, on a finished package |
+| [benchmarks/README.md](benchmarks/README.md) | on a finished package: what it holds as a resource (breadth at every rank, linked markers, named lists), Eukore beside the other databases, the records' quality and the tree, the identity that parts taxa, the release among releases, the read benchmark and every figure |
+| [docs/use_cases.md](docs/use_cases.md) | four short uses of a package: loci for a clade, a primer pair, a tree, a mapping reference |
 | [docs/loci.md](docs/loci.md) | choosing BUSCOs for a use; the BUSCOs with prokaryote homologues; the classic markers (none is a BUSCO) |
 | [docs/read_depth.md](docs/read_depth.md) | rDNA and organelle copies by read depth (`tools/rdna_depth.py`, a prototype) |
 

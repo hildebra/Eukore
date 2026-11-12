@@ -1,0 +1,14 @@
+# Published identity thresholds per rank, shown beside the package's own (benchmarks/eukore_bench/guidance.py's
+# thresholds.tsv; since 2026-11-12). Written by hand: check each value against its paper before printing. They are
+# of other markers and other taxa than the package's (fungal ITS and 28S D1/D2), so they are context, not a test.
+# Columns: marker, rank, threshold (% identity at or above which two sequences are of one taxon of that rank), taxa,
+# reference.
+marker	rank	threshold	taxa	reference
+ITS (published)	species	99.6	filamentous fungi	Vu et al. 2019 (Stud Mycol 92:135)
+ITS (published)	genus	94.3	filamentous fungi	Vu et al. 2019 (Stud Mycol 92:135)
+ITS (published)	family	88.5	filamentous fungi	Vu et al. 2019 (Stud Mycol 92:135)
+ITS (published)	order	81.2	filamentous fungi	Vu et al. 2019 (Stud Mycol 92:135)
+28S D1/D2 (published)	species	99.8	filamentous fungi	Vu et al. 2019 (Stud Mycol 92:135)
+28S D1/D2 (published)	genus	98.2	filamentous fungi	Vu et al. 2019 (Stud Mycol 92:135)
+28S D1/D2 (published)	family	96.2	filamentous fungi	Vu et al. 2019 (Stud Mycol 92:135)
+28S D1/D2 (published)	order	94.7	filamentous fungi	Vu et al. 2019 (Stud Mycol 92:135)

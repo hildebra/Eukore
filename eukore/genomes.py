@@ -484,24 +484,40 @@ FATES = ("chosen", "chosen, flagged", "model species", "no assembly (records)", 
          "every assembly excluded", "placeholder", "hybrid", "not a species", "not in the taxdump", "no download")
 
 
+class Fates(dict):
+    """fates' {taxid: fate}, with `reasons` {taxid: (NCBI's assemblies of it, {flag: assemblies})}."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reasons = {}
+
+
 def fates(ncbi, assemblies, job_map, inside=None):
     """What became of each NCBI taxon with a GenBank assembly (the benchmarks' selection funnel) -> {taxid: fate}:
     chosen (its genome unflagged, or flagged: the best it has), a model species' reference, no assembly (EukProt's
     records), every assembly excluded (EXCLUDE: NCBI's or its FCS-GX and ANI reports'), or left out as a placeholder,
     an interspecies hybrid, a taxon above species (assemblies labelled by a genus) or one the taxdump does not hold (a
-    taxdump older than the assembly tables: until 2026-11-06 called "not a species")."""
-    out = {}
+    taxdump older than the assembly tables: until 2026-11-06 called "not a species"). The dict's `reasons` (since
+    2026-11-12: selection_taxa.tsv's) are {taxid: (its assemblies, their flags with the assemblies of each)} of
+    NCBI's assemblies: a chosen genome's own flags, an excluded taxon's assemblies' flags that excluded them."""
+    out = Fates()
+    counted = collections.Counter(ncbi.species_of(row["species_taxid"]) for row in assemblies)
     for job in job_map.values():
         why = job["why"][0]
-        out[int(job["species_taxid"])] = ("model species" if why == "model" else "no assembly (records)"
-                                          if why == "no_assembly" else "TOGA2's genome" if why == "toga2"
-                                          else "chosen, flagged" if job.get("flags") else "chosen")
-    excluded = collections.defaultdict(list)
+        sp = int(job["species_taxid"])
+        out[sp] = ("model species" if why == "model" else "no assembly (records)"
+                   if why == "no_assembly" else "TOGA2's genome" if why == "toga2"
+                   else "chosen, flagged" if job.get("flags") else "chosen")
+        out.reasons[sp] = (counted[sp], {f: 1 for f in job.get("flags") or ()})
+    excluded, why_not = collections.defaultdict(list), collections.defaultdict(collections.Counter)
     for row in assemblies:
         sp = ncbi.species_of(row["species_taxid"])
         if sp in out or (inside and not inside(sp)):
             continue
         excluded[sp].append(bool(set(row.get("flags") or ()) & EXCLUDE))
+        why_not[sp].update(set(row.get("flags") or ()) & EXCLUDE)
+    for sp in excluded:
+        out.reasons[sp] = (counted[sp], dict(why_not[sp]))
     for sp, flagged in excluded.items():
         out[sp] = ("not in the taxdump" if sp not in ncbi.parent else "not a species" if ncbi.rank.get(sp) != "species"
                    else "placeholder" if ncbi.is_placeholder(sp)

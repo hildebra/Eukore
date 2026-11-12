@@ -1,0 +1,10 @@
+# Published rDNA copy numbers per haploid genome, to set a package's copies by read depth beside
+# (benchmarks/eukore_bench/checks.py's rdna_published.tsv; since 2026-11-12). The values and references are those of
+# docs/read_depth.md's trial table; add a species with its own source. Columns: species (NCBI's name), the range
+# published (low, high), reference, note.
+species	low	high	reference	note
+Saccharomyces cerevisiae	100	200	Petes 1979	about 150
+Candida albicans	20	180	Rustchenko et al. 1993	varies by strain
+Caenorhabditis elegans	55	55	Ellis et al. 1986	about 55
+Arabidopsis thaliana	570	750	Copenhaver & Pikaard 1996
+Drosophila melanogaster	200	250	docs/read_depth.md	per X or Y array

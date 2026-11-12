@@ -361,6 +361,25 @@ def resolution_rows(by_marker):
     return out
 
 
+HIST_COLUMNS = ("marker", "shared_rank", "identity", "copies")
+HIST_STEP = 0.5
+
+
+def resolution_hist(by_marker):
+    """resolution_hist.tsv's rows (since 2026-11-12): resolution.tsv's identities themselves, counted per marker,
+    shared rank and step of HIST_STEP points (`identity`: the step's lower bound; `unmatched`: `-`), so that the
+    identity that parts two ranks' copies can be worked out (benchmarks/eukore_bench/guidance.py's thresholds.tsv)."""
+    counts = collections.Counter()
+    for marker, found in by_marker.items():
+        for ident, depth in found:
+            if ident is None:
+                counts[(marker, "unmatched", "-")] += 1
+            else:
+                step = min(100.0, int(float(ident) / HIST_STEP) * HIST_STEP)
+                counts[(marker, DEPTHS[depth], f"{step:.1f}")] += 1
+    return [dict(marker=m, shared_rank=r, identity=i, copies=n) for (m, r, i), n in sorted(counts.items())]
+
+
 def best_ssu(records):
     """Each species' best rRNA record for its 18S (records: records.tsv's rows) -> {record: (species, 18S start, end)}:
     the most confident, then a genome's, then the longest 18S of SSU_MIN bases or more. A record labelled by its genus
@@ -559,6 +578,26 @@ def selection_rows(fates, ncbi):
     for taxid, fate in fates.items():
         counts[(supergroup_of(ncbi, taxid, cache), fate)] += 1
     return [dict(supergroup=g, fate=f, taxa=n) for (g, f), n in sorted(counts.items())]
+
+
+TAXA_COLUMNS = ("taxid", "name", "rank", "supergroup", "fate", "assemblies", "reasons")
+
+
+def taxa_rows(fates, ncbi):
+    """selection_taxa.tsv (since 2026-11-12): selection.tsv's taxa one by one, each NCBI taxon with an assembly and
+    what became of it (genomes.fates): the list a reader checks a species against, the published list of the genomes
+    left out with why, and what the taxa NCBI holds a genome of are counted by at every rank
+    (benchmarks/eukore_bench/resource.py). `assemblies`: NCBI's of the taxon; `reasons`: a chosen genome's flags, or
+    the flags that excluded an excluded taxon's assemblies with the assemblies of each (`contaminated:2`), `;`
+    between them (fates' `reasons`; `-` for none, or a fates dict without them)."""
+    cache, reasons = {}, getattr(fates, "reasons", {})
+    rows = []
+    for t, fate in sorted(fates.items()):
+        n, flags = reasons.get(t, ("-", {}))
+        rows.append(dict(taxid=t, name=ncbi.name.get(t, "-"), rank=ncbi.rank.get(t, "-"),
+                         supergroup=supergroup_of(ncbi, t, cache), fate=fate, assemblies=n or "-",
+                         reasons="; ".join(f"{f}:{c}" if c > 1 else f for f, c in sorted(flags.items())) or "-"))
+    return rows
 
 
 def compared_species(table, ncbi, inside=None):
@@ -768,6 +807,7 @@ def paper(folder, out, ncbi, genomes, species, odb, work, fates, inside, flags, 
     BUSCO's dataset)."""
     if fates:
         write(out, "selection.tsv", SELECTION_COLUMNS, selection_rows(fates, ncbi))
+        write(out, "selection_taxa.tsv", TAXA_COLUMNS, taxa_rows(fates, ncbi))
     rows = breadth_rows(species, fates, None, ncbi)
     write(out, "breadth.tsv", BREADTH_COLUMNS, rows)
     summary["breadth"] = next(({k: v for k, v in r.items() if k != "supergroup"} for r in rows
@@ -781,6 +821,10 @@ def paper(folder, out, ncbi, genomes, species, odb, work, fates, inside, flags, 
         write(out, "overlap.tsv", OVERLAP_COLUMNS, rows)
         summary["overlap"] = {r["database"]: {k: r[k] for k in ("species", "both", "eukore_only", "database_only")}
                               for r in rows if r["supergroup"] == "all"}
+        # since 2026-11-12: the databases' species themselves, which overlap.tsv counts two by two: what the species
+        # several databases share are counted from (benchmarks/eukore_bench/databases.py's upset.tsv)
+        write(out, "database_species.tsv", ("database", "species_taxid"),
+              [dict(database=name, species_taxid=sp) for name, held in databases.items() for sp in sorted(held)])
     write(out, "rrna_copies.tsv", COPY_COLUMNS, copy_rows(genomes, species))
     held = {int(g["species_taxid"]) for g in genomes.values()}
     distance = odb_distance(odb, ncbi, held) if odb else {}
@@ -966,6 +1010,7 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
             markers["18S"] = ssu
         rows = resolution_rows({m: v for m, v in markers.items() if v})
         write(out, "resolution.tsv", RESOLUTION_COLUMNS, rows)
+        write(out, "resolution_hist.tsv", HIST_COLUMNS, resolution_hist({m: v for m, v in markers.items() if v}))
         summary["resolution"] = {}
         for r in rows:  # every copy, and (since 2026-11-10, `congeners`) those whose nearest other species is a congener
             if r["marker"] in (ALL_BUSCOS, "18S") and r["shared_rank"] in ("all", "genus"):
@@ -1063,6 +1108,48 @@ def summary_md(s, name, clades=None, composition=None):
                      f"{c['rrna_only']:,} |")
         lines.append(f"| species with an rRNA record; a whole operon; an organelle gene | {c['with_rrna']:,}; "
                      f"{c['with_operon']:,}; {c['with_organelle']:,} |")
+    for rank, r in (s.get("breadth_ranks") or {}).items():  # benchmarks/eukore_bench/resource.py's (2026-11-12)
+        if rank in ("genus", "family", "order", "class", "phylum"):
+            of = f" of NCBI's {r['ncbi_genome']:,} with a genome" if isinstance(r.get("ncbi_genome"), int) else ""
+            named = f" ({r['ncbi_named']:,} named)" if isinstance(r.get("ncbi_named"), int) else ""
+            plural = {"genus": "genera", "family": "families", "class": "classes", "phylum": "phyla"}
+            lines.append(f"| {plural.get(rank, rank + 's')} with a genome; with any record | {r['eukore_genome']:,}{of}{named}; {r['eukore']:,} |")
+    c = s.get("content")
+    if c:
+        lines.append("| species holding it from their own assembly (from any source) | " + "; ".join(
+            f"{m} {v['same_assembly']:,} ({v['species']:,})" for m, v in c.items()) + " |")
+    for panel, r in (s.get("panels") or {}).items():
+        rest = ", ".join(f"{r[k]} {label}" for k, label in (("records", "with rRNA records alone"),
+                                                           ("absent", "absent"), ("not found", "not found in NCBI"))
+                         if r.get(k))
+        lines.append(f"| {panel}: entries with a genome | {r['genome']} of {r['entries']}"
+                     f"{f' ({rest})' if rest else ''} |")
+    u = s.get("upset")  # benchmarks/eukore_bench/databases.py's (2026-11-12)
+    if u and len(u.get("databases", ())) > 1:
+        lines.append(f"| species in Eukore and in none of {len(u['databases']) - 1} other databases | "
+                     f"{u['eukore_alone']:,} |")
+    for marker, r in (s.get("novel") or {}).items():
+        if r.get("new") not in (None, "-"):
+            lines.append(f"| species with a genome's {marker} named in none of {r['references']} | {r['new']:,} of "
+                         f"{r['genome']:,} |")
+    for name, r in (s.get("agreement") or {}).items():
+        lines.append(f"| {name}: records agreeing with Eukore's genomes; another species'; unlike | "
+                     f"{r['agree']:,}; {r['disagree']:,}; {r.get('unlike', 0):,} of {r['records']:,} |")
+    q = (s.get("quality") or {}).get("genome")  # benchmarks/eukore_bench/checks.py's and tree.py's (2026-11-12)
+    if q and q.get("of"):
+        flagged, foreign = q["checks"].get("any flag", 0), q["checks"].get("copies another clade's", 0)
+        lines.append(f"| genomes NCBI or its reports flag; with copies another clade's | "
+                     f"{pct(flagged / q['of'])}; {pct(foreign / q['of'])} of {q['of']:,} |")
+    g = s.get("gencode")
+    if g:
+        lines.append(f"| genetic codes checked against the BUSCO genes: agree with NCBI's; differ; undecided | "
+                     f"{g['agrees']:,}; {g['differs']:,}; {g['undecided']:,} of {g['genomes']:,} genomes |")
+    t = s.get("tree")
+    if t:
+        lines.append(f"| NCBI's taxa that are one branch of the BUSCO tree ({t['genomes']:,} genomes, {t['loci']} "
+                     f"loci) | " + "; ".join(f"{rank} {pct(v['share'])} of {v['taxa']:,}"
+                                            for rank, v in t["ranks"].items()) + " |")
+        lines.append(f"| genomes placed apart from their taxon in that tree | {t['strays']:,} |")
     c = s.get("completeness") or {}
     lines.append(f"| median complete BUSCOs per genome | {pct(c.get('median'))} "
                  f"({pct(c.get('at_least_90'))} of genomes at 90% or more) |")
@@ -1101,6 +1188,10 @@ def summary_md(s, name, clades=None, composition=None):
         if r.get("congeners"):
             lines.append(f"| {label} copies under 99% identical to their nearest congener | "
                          f"{pct(r['congeners']['under_99'])} of {r['congeners']['copies']:,} |")
+    for marker, by in (s.get("thresholds") or {}).items():  # benchmarks/eukore_bench/guidance.py's (2026-11-12)
+        label = "BUSCOs" if marker.startswith("BUSCO") else marker
+        lines.append(f"| identity that parts taxa, {label} | " + "; ".join(
+            f"{rank} {v['threshold']:g}% ({pct(v['accuracy'])} right)" for rank, v in by.items()) + " |")
     for marker, r in (s.get("barcode_gap") or {}).items():
         lines.append(f"| panel species told from their congeners by {marker} (barcode gap) | {pct(r['resolved'])} of "
                      f"{r['species_markers']:,} |")
@@ -1137,6 +1228,25 @@ def summary_md(s, name, clades=None, composition=None):
         per_gb = f", {t['seconds_per_gb'] / 60:.0f} min per Gb of genome" if t.get("seconds_per_gb") else ""
         lines.append(f"| genome run (BUSCOs, rRNA, tiara), median | {t['median_seconds'] / 60:.1f} min on "
                      f"{t.get('threads', '?')} threads{per_gb} |")
+    z = s.get("sizes")  # benchmarks/eukore_bench/history.py's (2026-11-12)
+    if z:
+        size = f"{z['bytes'] / 1e9:.2f} GB" if z['bytes'] >= 1e9 else f"{z['bytes'] / 1e6:.1f} MB"
+        lines.append(f"| the package's size | {size} in {z['files']:,} files |")
+    c = s.get("cost")
+    if c:
+        parts = ([f"genome runs {c['genome_runs_seconds'] / 3600:.1f} h (on {c.get('genome_runs_threads', '?')} "
+                  "threads each)"] if c.get("genome_runs_seconds") else []) + \
+                ([f"package stage {c['package_stage_seconds'] / 60:.0f} min"] if c.get("package_stage_seconds") else [])
+        lines.append(f"| the build's cost | {'; '.join(parts)} |")
+    g = s.get("growth")
+    if g:
+        lines.append(f"| genomes NCBI released in {g['last_year'] - 1} and {g['last_year']} | "
+                     f"{pct(g['released_in_last_two_years'])} of {g['genomes']:,} |")
+    c = s.get("changes")
+    if c:
+        lines.append(f"| since {c.get('previous_version', 'the earlier release')}: species added; removed; genomes "
+                     f"replaced; updated | {c.get('added', 0):,}; {c.get('removed', 0):,}; {c.get('replaced', 0):,}; "
+                     f"{c.get('updated', 0):,} ({c.get('previous', 0):,} to {c.get('species', 0):,} species) |")
     for what, why in (s.get("left_out") or {}).items():
         lines.append(f"| {what} | not measured: {why} |")
     if composition:

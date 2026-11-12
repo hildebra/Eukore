@@ -8,6 +8,7 @@ step. Its font (Mukta) comes from Google Fonts: host it with the site to send vi
 |---|---|---|
 | Home | `index.php` | what Eukore is, why, its workflow (`images/overview_slide.png`, from `docs/figures/`), the release's totals |
 | Statistics | `main.php?site=stats` (`pages/stats.php`) | the release's species by genome source and supergroup (open a supergroup for its groups), its taxonomy as a tree (open a taxon for its subtaxa, each with a bar of its share of the taxon's species; a search), its marker categories, its headline benchmarks |
+| Benchmarks | `main.php?site=benchmarks` (`pages/benchmarks.php`) | the release measured as a resource (`data/benchmarks.json`, `data/figures/`: benchmarks/'s `eukore_bench.site`, after the build): Eukore beside the other databases, its breadth at every rank, the markers one species links, named lists' organisms, the checks, the same species in two databases, the tree, the identity that parts taxa, the changes since the release before. Without the file the page says how to make it |
 | Downloads | `main.php?site=downloads` (`pages/downloads.php`) | every file of the release with its size and MD5, grouped |
 | Tutorial | `main.php?site=tutorial` (`pages/tutorial.php`) | getting, using and building a release, pointing to the GitHub README |
 | Acknowledgements | `main.php?site=acknowledgements` (`pages/acknowledgements.php`) | the BBSRC's funding, the lab (https://hildebra.github.io/), the data and tools |
@@ -38,6 +39,13 @@ Publishing a release is copying that folder onto the site:
 ```bash
 rsync -a website/ user@server:/var/www/eukore/              # the pages (once, and after a change)
 rsync -a OUT/release/ user@server:/var/www/eukore/          # a release: its data and its downloads
+```
+
+The Benchmarks page's data is made after the build, from the benchmarks' results
+([benchmarks/README.md](../benchmarks/README.md)), into the same release folder before it is copied:
+
+```bash
+PYTHONPATH=benchmarks python3 -m eukore_bench.site RESULTS --release OUT/release   # data/benchmarks.json, data/figures/
 ```
 
 The downloads can live elsewhere (another disk, a file server): copy `OUT/release/downloads/` there and set

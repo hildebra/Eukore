@@ -1,0 +1,116 @@
+# Named lists of organisms a reader looks a eukaryote reference up by (benchmarks/eukore_bench/resource.py; since
+# 2026-11-12): each entry is found in NCBI's taxonomy by its name (a scientific name or a synonym; a species, or a
+# genus or higher taxon: then every species of it counts), and panels.tsv of the results says what the package holds of
+# it. Columns: panel, name, an NCBI taxid (only where the name does not find the taxon: resource.py warns), a note.
+# The lists are a starting point, to be edited: add a line, or a panel.
+# - WHO fungal priority pathogens: WHO fungal priority pathogens list to guide research, development and public health
+#   action (2022), its 19 entries; the note is WHO's priority group.
+# - human parasites: a selection of the protozoa and helminths of CDC's DPDx and WHO's neglected tropical diseases.
+# - model organisms: the eukaryote model organisms of genetics, cell and evolutionary biology.
+# - mock communities: the eukaryotes of ZymoBIOMICS' microbial community standards (D6300, D6331) and ATCC's mycobiome
+#   mix (MSA-1010).
+panel	name	taxid	note
+WHO fungal priority pathogens	Cryptococcus neoformans		critical
+WHO fungal priority pathogens	Candida auris		critical
+WHO fungal priority pathogens	Aspergillus fumigatus		critical
+WHO fungal priority pathogens	Candida albicans		critical
+WHO fungal priority pathogens	Nakaseomyces glabratus		high (Candida glabrata)
+WHO fungal priority pathogens	Histoplasma		high (Histoplasma spp.)
+WHO fungal priority pathogens	Madurella mycetomatis		high (eumycetoma causative agents: the commonest)
+WHO fungal priority pathogens	Mucorales		high
+WHO fungal priority pathogens	Fusarium		high (Fusarium spp.)
+WHO fungal priority pathogens	Candida tropicalis		high
+WHO fungal priority pathogens	Candida parapsilosis	5480	high (NCBI: Lodderomyces parapsilosis, its synonym with its authors)
+WHO fungal priority pathogens	Scedosporium		medium (Scedosporium spp.)
+WHO fungal priority pathogens	Lomentospora prolificans		medium
+WHO fungal priority pathogens	Coccidioides		medium (Coccidioides spp.)
+WHO fungal priority pathogens	Pichia kudriavzevii		medium (Candida krusei)
+WHO fungal priority pathogens	Cryptococcus gattii		medium
+WHO fungal priority pathogens	Talaromyces marneffei		medium
+WHO fungal priority pathogens	Pneumocystis jirovecii		medium
+WHO fungal priority pathogens	Paracoccidioides		medium (Paracoccidioides spp.)
+human parasites	Plasmodium falciparum		malaria
+human parasites	Plasmodium vivax		malaria
+human parasites	Plasmodium malariae		malaria
+human parasites	Plasmodium ovale		malaria
+human parasites	Plasmodium knowlesi		malaria
+human parasites	Toxoplasma gondii		toxoplasmosis
+human parasites	Cryptosporidium parvum		cryptosporidiosis
+human parasites	Cryptosporidium hominis		cryptosporidiosis
+human parasites	Cyclospora cayetanensis		cyclosporiasis
+human parasites	Babesia microti		babesiosis
+human parasites	Giardia intestinalis		giardiasis
+human parasites	Entamoeba histolytica		amoebiasis
+human parasites	Dientamoeba fragilis		gut
+human parasites	Blastocystis		gut (Blastocystis spp.)
+human parasites	Trichomonas vaginalis		trichomoniasis
+human parasites	Trypanosoma brucei		sleeping sickness
+human parasites	Trypanosoma cruzi		Chagas disease
+human parasites	Leishmania donovani		visceral leishmaniasis
+human parasites	Leishmania major		cutaneous leishmaniasis
+human parasites	Naegleria fowleri		amoebic meningoencephalitis
+human parasites	Acanthamoeba castellanii		keratitis
+human parasites	Balantioides coli		balantidiasis
+human parasites	Ascaris lumbricoides		soil-transmitted helminth
+human parasites	Trichuris trichiura		soil-transmitted helminth
+human parasites	Necator americanus		soil-transmitted helminth
+human parasites	Ancylostoma duodenale		soil-transmitted helminth
+human parasites	Strongyloides stercoralis		soil-transmitted helminth
+human parasites	Enterobius vermicularis		pinworm
+human parasites	Toxocara canis		toxocariasis
+human parasites	Trichinella spiralis		trichinellosis
+human parasites	Wuchereria bancrofti		lymphatic filariasis
+human parasites	Brugia malayi		lymphatic filariasis
+human parasites	Onchocerca volvulus		river blindness
+human parasites	Loa loa		loiasis
+human parasites	Dracunculus medinensis		Guinea worm
+human parasites	Schistosoma mansoni		schistosomiasis
+human parasites	Schistosoma haematobium		schistosomiasis
+human parasites	Schistosoma japonicum		schistosomiasis
+human parasites	Fasciola hepatica		fascioliasis
+human parasites	Clonorchis sinensis		clonorchiasis
+human parasites	Opisthorchis viverrini		opisthorchiasis
+human parasites	Taenia solium		taeniasis, cysticercosis
+human parasites	Taenia saginata		taeniasis
+human parasites	Echinococcus granulosus		echinococcosis
+human parasites	Hymenolepis nana		dwarf tapeworm
+model organisms	Homo sapiens
+model organisms	Mus musculus
+model organisms	Rattus norvegicus
+model organisms	Gallus gallus
+model organisms	Xenopus tropicalis
+model organisms	Danio rerio
+model organisms	Ciona intestinalis
+model organisms	Strongylocentrotus purpuratus
+model organisms	Drosophila melanogaster
+model organisms	Caenorhabditis elegans
+model organisms	Nematostella vectensis
+model organisms	Monosiga brevicollis
+model organisms	Capsaspora owczarzaki
+model organisms	Saccharomyces cerevisiae
+model organisms	Schizosaccharomyces pombe
+model organisms	Neurospora crassa
+model organisms	Aspergillus nidulans
+model organisms	Dictyostelium discoideum
+model organisms	Arabidopsis thaliana
+model organisms	Oryza sativa
+model organisms	Zea mays
+model organisms	Physcomitrium patens
+model organisms	Chlamydomonas reinhardtii
+model organisms	Phaeodactylum tricornutum
+model organisms	Thalassiosira pseudonana
+model organisms	Tetrahymena thermophila
+model organisms	Paramecium tetraurelia
+model organisms	Emiliania huxleyi
+model organisms	Naegleria gruberi
+model organisms	Trypanosoma brucei
+mock communities	Saccharomyces cerevisiae		ZymoBIOMICS D6300, D6331; ATCC MSA-1010
+mock communities	Cryptococcus neoformans		ZymoBIOMICS D6300; ATCC MSA-1010
+mock communities	Candida albicans		ZymoBIOMICS D6331; ATCC MSA-1010
+mock communities	Aspergillus fumigatus		ATCC MSA-1010
+mock communities	Nakaseomyces glabratus		ATCC MSA-1010 (Candida glabrata)
+mock communities	Trichophyton interdigitale		ATCC MSA-1010
+mock communities	Penicillium chrysogenum		ATCC MSA-1010
+mock communities	Fusarium keratoplasticum		ATCC MSA-1010
+mock communities	Malassezia globosa		ATCC MSA-1010
+mock communities	Cutaneotrichosporon dermatis		ATCC MSA-1010

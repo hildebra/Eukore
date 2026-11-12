@@ -184,7 +184,8 @@ $categories = $stats['markers'] ?? [];
 <?php $b = $stats['benchmarks'] ?? null; if ($b): ?>
 <h2 id="benchmarks">Benchmarks</h2>
 <hr>
-<p>Each build measures its own package (<a href="<?= h(DOCS_URL) ?>/benchmarks.md">what each benchmark measures</a>):</p>
+<p>Each build measures its own package (<a href="<?= h(DOCS_URL) ?>/benchmarks.md">what each benchmark measures</a>);
+  what the release holds beside other databases is on <a href="main.php?site=benchmarks">Benchmarks</a>:</p>
 <section class="tiles">
 <?php if (isset($b['completeness'])): ?>
   <div class="tile"><span class="tile-label">Median complete BUSCOs per genome</span><span class="tile-value"><?= pct($b['completeness']['median']) ?></span>
