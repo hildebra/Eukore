@@ -4,7 +4,7 @@ figures as `benchmarks`); any package can be measured again afterwards:
 
     python3 -m eukore.benchmarks OUT/Eukore_2026.11 --build_dir WORK -t 8    # into OUT/Eukore_2026.11/benchmarks/
 
-docs/benchmarks.md describes them, docs/benchmarks/plot_benchmarks.py draws them. Each is a table of benchmarks/:
+docs/benchmarks.md describes them. Each is a table of benchmarks/:
 - completeness.tsv: per species' genome its BUSCOs Single, Duplicated, Fragmented and Missing, its copies'
   confidence, its assembly's level and contigs, its rRNA in the assembly: BUSCO's completeness, on Eukore's calls;
 - orthodb.tsv: per BUSCO of each package species that BUSCO's dataset holds a protein of (OrthoDB's gene model in
@@ -25,8 +25,10 @@ docs/benchmarks.md describes them, docs/benchmarks/plot_benchmarks.py draws them
 - composition.tsv (since 2026-11-10): per supergroup what the package holds of its species (a genome, rRNA alone,
   complete BUSCOs, an operon, an organelle gene);
 - summary.json: the headline figures; summary.md (since 2026-11-10) the same as Markdown tables.
-The paper's tables (paper(): selection, breadth, overlap, annotation, genes, holdout, reads, detection, ..) are
-described in docs/benchmarks.md; eukore/figures.py draws them all (the package stage into benchmarks/figures/).
+The paper's tables of the package alone (paper(): selection, breadth, overlap, annotation, genes, holdout, ..) are
+described in docs/benchmarks.md. Since 2026-11-12 the comparisons with other references (EukDetect2, MetaPhlAn 4,
+PR2), the read benchmark and every figure are benchmarks/'s, run on a finished package (benchmarks/README.md): the
+build makes the database and its own checks alone.
 A benchmark whose inputs are missing (BUSCO's dataset, vsearch, the work folder) is left out, and summary.json says so.
 """
 
@@ -708,36 +710,6 @@ def organelle_rows(folder, species):
     return out
 
 
-def read_summary(rows):
-    """reads.tsv's headline: per reference and mode the marker reads' precision and recall at species and genus (held
-    out: of the test genomes with another species of their genus in the package, the only ones a held-out read can be
-    placed right to its genus), and the background reads assigned per million, and to a phylum or deeper."""
-    out = collections.defaultdict(dict)
-    sums = collections.defaultdict(collections.Counter)
-    for r in rows:
-        if r["mode"] == "held_out" and not int(r["congeners"]):
-            continue
-        key = (r["reference"], r["mode"], r["kind"], r["reads"])
-        for c in ("n", "assigned", "species_correct", "species_wrong", "genus_correct", "genus_wrong",
-                  "phylum_wrong"):
-            sums[key][c] += int(r[c])
-        sums[key]["censored"] += int(r.get("censored") or 0)  # since 2026-11-10
-    for (ref, mode, kind, reads), s in sums.items():
-        if kind == "eukaryote" and reads == "genome" and mode != "in" and s["n"]:
-            # since 2026-11-10: the share of the genome reads whose secondary hits were all to records left out
-            out[ref].setdefault("censored", {})[mode] = round(s["censored"] / s["n"], 4)
-        if kind == "eukaryote" and reads == "marker":
-            out[ref][mode] = {f"{r}_{m}": round(v, 4) if v is not None else None for r in ("species", "genus")
-                              for m, v in (("recall", s[f"{r}_correct"] / s["n"] if s["n"] else None),
-                                           ("precision", s[f"{r}_correct"] / (s[f"{r}_correct"] + s[f"{r}_wrong"])
-                                            if s[f"{r}_correct"] + s[f"{r}_wrong"] else None))}
-        elif kind == "background":
-            out[ref]["background_per_million"] = round(1e6 * s["assigned"] / s["n"], 1) if s["n"] else None
-            out[ref]["background_to_a_phylum_per_million"] = round(1e6 * s["phylum_wrong"] / s["n"], 1) \
-                if s["n"] else None
-    return dict(out)
-
-
 def annotation_figures(rows):
     """annotation.tsv's rows' headline: genomes, copies, the share on an annotated gene, of those copies' introns the
     share exact, their coding bases' recall and precision."""
@@ -788,24 +760,19 @@ def composition_rows(folder, species, complete):
     return rows
 
 
-def paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside, reads, flags, gene_bases, threads,
-          summary, log, databases=None):
-    """The tables of the paper's figures beyond the benchmarks' own (each where its inputs are there). databases:
-    {name: its NCBI species} of the other references the build read (overlap.tsv, with BUSCO's dataset and the
-    compared reference)."""
+def paper(folder, out, ncbi, genomes, species, odb, work, fates, inside, flags, gene_bases, summary, log,
+          databases=None):
+    """The tables of the paper's figures beyond the benchmarks' own, of the package alone (each where its inputs are
+    there; the other references' columns and rows and the read benchmark: benchmarks/eukore_bench/compare.py, since
+    2026-11-12). databases: {name: its NCBI species} of the other references the build read (overlap.tsv, with
+    BUSCO's dataset)."""
     if fates:
         write(out, "selection.tsv", SELECTION_COLUMNS, selection_rows(fates, ncbi))
-    from .reads import compared as compared_refs  # noqa: PLC0415
-    others = {name: compared_species(table, ncbi, inside) for name, _fasta, table in compared_refs(compare)}
-    first = next(iter(others), None)  # breadth.tsv's: the first --read_compare
-    rows = breadth_rows(species, fates, others[first] if first else None, ncbi)
+    rows = breadth_rows(species, fates, None, ncbi)
     write(out, "breadth.tsv", BREADTH_COLUMNS, rows)
     summary["breadth"] = next(({k: v for k, v in r.items() if k != "supergroup"} for r in rows
                                if r["supergroup"] == "all"), {})
-    if first:
-        summary["breadth"]["compared_name"] = first
     databases = dict(databases or {})
-    databases.update(others)
     if odb:
         databases[ODB_NAME] = {sp for sp in (ncbi.species_of(t) for t in odb.species())
                                if sp and ncbi.rank.get(sp) == "species" and (inside is None or inside(sp))}
@@ -851,38 +818,19 @@ def paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside
                                            for (g, t, f), n in sorted(flags.items())])
     write(out, "rrna_regions.tsv", REGION_COLUMNS, region_rows(folder, species))
     write(out, "organelle.tsv", ORGANELLE_COLUMNS, organelle_rows(folder, species))
-    if reads and reads.get("tests") and reads.get("minimap2"):
-        from . import reads as reads_mod  # noqa: PLC0415
-        detections = []
-        try:  # the last and largest benchmark: its failure (minimap2 out of memory) costs the others nothing
-            rows = reads_mod.run(folder, ncbi, reads["genomes_folder"], reads["tests"], reads["minimap2"], threads,
-                                 reads["work"], compare, reads.get("background", ()), inside, log,
-                                 detections=detections)
-            write(out, "reads.tsv", reads_mod.COLUMNS, rows)
-            write(out, "detection.tsv", reads_mod.DETECT_COLUMNS, detections)
-            summary["reads"] = read_summary(rows)
-            summary["detection"] = reads_mod.detection_summary(detections)
-        except Exception as e:  # noqa: BLE001 (until 2026-11-06 it took every benchmark with it)
-            log(f"WARNING: the read benchmark failed ({type(e).__name__}: {e}): the other benchmarks kept")
-            summary["left_out"]["reads"] = f"failed: {type(e).__name__}: {e}"
-        shutil.rmtree(reads["work"], ignore_errors=True)
-    else:
-        summary["left_out"]["reads"] = "no test genomes or no minimap2 (eukore_build.py --read_genomes)"
 
 
 def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, nearest=None, stages=None, out=None,
-        log=print, fates=None, compare=None, inside=None, reads=None, databases=None, marker_folder=None,
-        clades=None):
+        log=print, fates=None, inside=None, databases=None, marker_folder=None, clades=None):
     """The benchmarks of the package in `folder` (finished, or the build's unfinished one once its tables are written)
     into out (default folder/benchmarks), with summary.json and (since 2026-11-10) summary.md -> summary.json's
     figures. clades: a trial's number of clades (summary.md says so). ncbi: the taxonomy (the build's, or the package's
     taxonomy/); odb_folder: BUSCO's dataset (orthodb.tsv); vsearch: resolution.tsv; nearest: the build's own
     {(accession, locus): (identity, depth)} of its checks (qc.check), so that the BUSCOs are not searched again;
     work: the build's work folder (runtime.tsv, annotation.tsv); stages: [(step, seconds)] of the package stage
-    (stages.tsv). The paper's (paper()): fates, genomes.fates' {taxid: fate} (selection.tsv); compare: another
-    reference (name, FASTA, record<TAB>taxid table: breadth.tsv, reads.tsv); inside: a trial's clades, which the other
-    reference is cut to; reads: dict(genomes_folder, tests, minimap2, background, work) (reads.py: reads.tsv);
-    databases: {name: NCBI species} of the other references read (overlap.tsv: reference_species, ROD's)."""
+    (stages.tsv). The paper's (paper()): fates, genomes.fates' {taxid: fate} (selection.tsv); inside: a trial's
+    clades; databases: {name: NCBI species} of the other references read (overlap.tsv: reference_species, ROD's).
+    The other references and the read benchmark: benchmarks/eukore_bench/compare.py (since 2026-11-12)."""
     started = time.time()
     out = out or os.path.join(folder, FOLDER)
     os.makedirs(out, exist_ok=True)
@@ -1084,8 +1032,8 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
             summary["left_out"]["runtime"] = "no genome timed (genomes run before 2026-11-06)"
     else:
         summary["left_out"]["runtime"] = "no build folder (--build_dir)"
-    paper(folder, out, ncbi, genomes, species, odb, work, fates, compare, inside, reads, flags,
-          {a: tuple(v) for a, v in gene_bases.items()}, threads, summary, log, databases)
+    paper(folder, out, ncbi, genomes, species, odb, work, fates, inside, flags,
+          {a: tuple(v) for a, v in gene_bases.items()}, summary, log, databases)
     if stages is not None:
         write(out, "stages.tsv", ("step", "seconds"),
               [dict(step=s, seconds=f"{t:.1f}") for s, t in stages] +

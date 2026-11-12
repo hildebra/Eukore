@@ -1,18 +1,18 @@
-"""A Eukore package's figures (since 2026-11-10; until then docs/benchmarks/plot_benchmarks.py and a paper's own script),
-drawn from its benchmarks (eukore/benchmarks.py; docs/benchmarks.md). The package stage draws them into the package's
-benchmarks/figures/ before its manifest (eukore_build.py; --no_figures leaves them out); any package can be drawn
-again:
+"""A Eukore package's figures (since 2026-11-10; until 2026-11-12 eukore/figures.py, drawn by the package stage into
+the package): drawn from a benchmarks folder, compare.py's (the package's own benchmarks and the comparisons with
+other references), or a package's own benchmarks/ alone (its figures that need no other reference):
 
-    python3 -m eukore.figures OUT/Eukore_2026.11                     # into OUT/Eukore_2026.11/benchmarks/figures
-    python3 -m eukore.figures PKG --benchmarks DIR --out DIR --format pdf
+    python3 -m eukore_bench.figures PKG --benchmarks OUT_BENCH                  # into OUT_BENCH/figures
+    python3 -m eukore_bench.figures PKG --benchmarks OUT_BENCH --out DIR --format pdf
 
-Needs matplotlib (envs/eukore.yaml). A figure whose tables are missing is left out, one that fails is logged and left
+benchmarks/eukore-figures.sh runs it in the benchmarks' environment (benchmarks/env.yaml: matplotlib). A figure
+whose tables are missing is left out, one that fails is logged and left
 out: neither stops the others. Writes the figures of FIGURES (Figure 1, then the supplementary ones in their order),
 index.md (each one's caption and tables) and summary.md (benchmarks.summary_md: the headline figures as tables).
 
 Figure 1 (at a journal's two-column width, 180 mm), four panels, each a reviewer's question:
   a  How large? Species per supergroup: NCBI's with a genome (the gray track), Eukore's (with a genome; any record),
-     and each other reference's (overlap.tsv: the --read_compare references, PR2, EUKARYOME, KSGP).
+     and each other reference's (overlap.tsv: compare.py's references, PR2, EUKARYOME, KSGP).
   b  How far from BUSCO's dataset does a call stay right? Left, the dataset species' genomes called again without
      their genus', family's, order's dataset species (holdout.tsv; orthodb.tsv's own-protein calls at `own`): the
      share of OrthoDB's genes called, on the gene of the own-protein call, and OrthoDB's gene model. Right, each
@@ -41,7 +41,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 
-from . import benchmarks  # noqa: E402
+from eukore import benchmarks  # noqa: E402
 
 FOLDER = "figures"  # in the package's benchmarks/
 
@@ -159,7 +159,7 @@ def short_name(name):
 
 
 def compared_refs(bench):
-    """The other references of reads.tsv, in the build's --read_compare order."""
+    """The other references of reads.tsv, in compare.py's order (BENCH/compare/references.tsv)."""
     return list(dict.fromkeys(r["reference"] for r in read(os.path.join(bench, "reads.tsv"))
                               if r["reference"] not in EUKORE_REFS))
 
@@ -233,7 +233,7 @@ def nearest_axis(ax):
 
 
 def breadth_refs(bench, overlap):
-    """Panel a's references: the read benchmark's (--read_compare, in its order), then the 18S references; five at
+    """Panel a's references: the read benchmark's (compare.py's, in its order), then the 18S references; five at
     most."""
     names = list(dict.fromkeys(r["database"] for r in overlap))
     compared = [n for n in compared_refs(bench) if n in names]
@@ -526,7 +526,7 @@ def panel_detection(left, right, bench):
     det = detection(bench)
     refs = detection_refs(bench, det)
     if not refs:
-        not_measured([left, right], "detection.tsv (eukore_build.py --read_genomes)")
+        not_measured([left, right], "detection.tsv (eukore_bench.compare)")
         return False
     others = [r for r in refs if r not in EUKORE_REFS]
     depths = sorted({split_key(k)[1] for r in refs for k in det[r]})
@@ -1507,7 +1507,7 @@ def draw(package, bench=None, out=None, fmt="png", log=print):
     """Every figure of FIGURES of a package (its benchmarks in bench, default PACKAGE/benchmarks) into out (default
     bench/figures), with index.md and summary.md -> {name: path, or None where left out}."""
     bench = bench or os.path.join(package, benchmarks.FOLDER)
-    out = out or os.path.join(bench, FOLDER)
+    out = out or os.path.join(bench, FOLDER)  # OUT_BENCH/figures, or PACKAGE/benchmarks/figures
     os.makedirs(out, exist_ok=True)
     made = {}
     for name, fn, _caption, _tables in FIGURES:
@@ -1543,7 +1543,7 @@ def main(argv=None, default_out=None):
     opts = p.parse_args(argv)
     bench = opts.benchmarks or os.path.join(opts.package, benchmarks.FOLDER)
     if not os.path.isdir(bench):
-        p.error(f"{bench}: no benchmarks (python3 -m eukore.benchmarks {opts.package} measures them)")
+        p.error(f"{bench}: no benchmarks (python3 -m eukore_bench.compare makes them)")
     made = draw(opts.package, bench, opts.out, opts.format, log=lambda t: print(t, file=sys.stderr))
     for path in filter(None, made.values()):
         print(path)

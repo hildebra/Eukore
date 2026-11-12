@@ -10,11 +10,15 @@ import gzip
 import json
 import os
 import sys
+import tarfile
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmarks"))  # the benchmarks (since 2026-11-12)
 from eukore import benchmarks, genomes, ncbi as ncbi_mod, odb as odb_mod, package, sources  # noqa: E402
 import fixtures as fx  # noqa: E402
 
@@ -59,7 +63,7 @@ class HelpersTest(unittest.TestCase):
         # genome reads from anywhere, each within its contig (bisect over the contigs' ends), in random order: the
         # first `depth` a sample of the whole genome, not of its first contigs
         import random  # noqa: PLC0415
-        from eukore import reads  # noqa: PLC0415
+        from eukore_bench import reads  # noqa: PLC0415
         rng = random.Random(3)
         with tempfile.TemporaryDirectory() as tmp:
             genome = os.path.join(tmp, "g.fna")
@@ -193,12 +197,58 @@ class PackageTest(unittest.TestCase):
                 md = fh.read()
             self.assertIn("| package | Eukore_2026.11, 2 species' genomes", md)
             self.assertIn("| Fungi | 2 | 2 | 0 |", md)
+            # since 2026-11-12: the build writes no comparison, read benchmark or figure
+            self.assertFalse(os.path.isdir(os.path.join(folder, "figures")))
+            self.assertNotIn("reads", manifest["benchmarks"].get("left_out", {}))
+            # the benchmarks on the finished package (benchmarks/eukore_bench): another reference of two species,
+            # the yeast and Kluyveromyces lactis
+            from eukore_bench import compare, prep  # noqa: PLC0415
+            bench = os.path.join(tmp, "bench")
+            os.makedirs(os.path.join(bench, "compare"))
+            os.makedirs(os.path.join(bench, "downloads"))  # NCBI's whole taxonomy (prep.py's taxdump step)
+            fx.taxdump(os.path.join(bench, "downloads", "taxdump.tar.gz"))
+            fasta, taxa = os.path.join(bench, "compare", "Other.fna.gz"), os.path.join(bench, "compare", "Other.tsv")
+            with gzip.open(fasta, "wt") as fh:
+                fh.write(">r1\n" + "ACGT" * 50 + "\n>r2\n" + "AACC" * 50 + "\n")
+            with open(taxa, "w") as fh:
+                fh.write("r1\t4932\nr2\t28985\n")
+            with open(os.path.join(bench, "compare", prep.REFERENCES), "w") as fh:
+                fh.write(f"name\tfasta\ttable\nOther\t{fasta}\t{taxa}\n")
+            self.assertEqual(prep.read_references(bench), [("Other", fasta, taxa)])
+            # the read benchmark's test genomes linked from the build's genomes folder, none downloaded
+            with mock.patch.object(prep, "fetch", side_effect=AssertionError("downloaded")):
+                tests = prep.test_genomes(bench, out, genomes_dir, per_group=2, log=lambda t: None)
+            self.assertTrue(tests)
+            self.assertTrue(all(os.path.islink(genomes.genome_file(os.path.join(bench, "read_genomes"), a))
+                                for a in tests))
+            results = os.path.join(tmp, "results")
+            with mock.patch.object(compare.shutil, "which", return_value=None):  # no minimap2: no read benchmark
+                got = compare.run(out, bench, results, 1, log=lambda t: None)
+            self.assertIsNone(package.check(out, deep=True))  # the package untouched
+            over = {(r["database"], r["supergroup"]): r for r in fx.read_tsv(os.path.join(results, "overlap.tsv"))}
+            self.assertEqual((over[("Other", "all")]["species"], over[("Other", "all")]["both"]), ("2", "1"))
+            self.assertIn((benchmarks.ODB_NAME, "all"), over)  # the build's rows kept
+            self.assertEqual((got["breadth"]["compared_name"], got["breadth"]["both"]), ("Other", 1))
+            self.assertEqual(got["left_out"]["reads"], "no minimap2 (the benchmarks' environment)")
+            self.assertTrue(os.path.isfile(os.path.join(results, "completeness.tsv")))  # the package's own, copied
+            # the evaluation bundle the package stage writes (since 2026-11-12)
+            import eukore_build  # noqa: PLC0415
+            opts = types.SimpleNamespace(out=os.path.join(tmp, "out"), work=work, genomes=genomes_dir, threads=1)
+            with mock.patch.object(eukore_build, "say", lambda t: None):
+                bundle = eukore_build.evaluation_bundle(opts, out)
+            with tarfile.open(bundle) as tar:
+                names = set(tar.getnames())
+                report = tar.extractfile("Eukore_2026.11_evaluation/run_report.md").read().decode()
+            self.assertTrue({f"Eukore_2026.11_evaluation/{n}" for n in (
+                "package/manifest.json", "package/genomes.tsv", "package/benchmarks/summary.json",
+                "package/benchmarks/completeness.tsv")} <= names)
+            self.assertTrue(report.startswith("# Eukore run report"))
             import importlib.util  # noqa: PLC0415
             if importlib.util.find_spec("matplotlib") is None:  # the figures need it; the benchmarks do not
                 return
-            from eukore import figures  # noqa: PLC0415
+            from eukore_bench import figures  # noqa: PLC0415
             warnings = []
-            made = figures.draw(out, out=os.path.join(tmp, "figures"), log=warnings.append)
+            made = figures.draw(out, results, os.path.join(tmp, "figures"), log=warnings.append)
             self.assertEqual(warnings, [])  # no figure failed
             self.assertTrue(all(made[n] for n in ("Fig1", "completeness", "orthodb", "resolution", "index",
                                                   "summary")))
@@ -292,7 +342,7 @@ class CensoredReadsTest(unittest.TestCase):
     took minimap2's whole list of secondary alignments; counted apart, the classes as they were."""
 
     def test_a_full_list_of_records_left_out(self):
-        from eukore import reads  # noqa: PLC0415
+        from eukore_bench import reads  # noqa: PLC0415
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
             taxa = dict({f"y{i}": 4932 for i in range(60)}, p=27291, h=9606)
@@ -316,7 +366,7 @@ class CensoredReadsTest(unittest.TestCase):
 
     def test_counted_apart_in_the_table(self):
         from unittest import mock  # noqa: PLC0415
-        from eukore import reads  # noqa: PLC0415
+        from eukore_bench import reads  # noqa: PLC0415
         self.assertEqual((reads.COLUMNS[9], reads.COLUMNS[10], reads.COLUMNS[-1], len(reads.COLUMNS)),
                          ("assigned", "species_correct", "censored", 10 + 2 * len(reads.RANKS) + 1))
         with tempfile.TemporaryDirectory() as tmp:

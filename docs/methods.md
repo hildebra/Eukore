@@ -568,7 +568,7 @@ Which other outside sequences go into the package, and what checks them (2026-11
 | the genomes, transcriptomes and `data/no_assembly.fna.gz`'s records | everything a genome gives | `own_species`, the part screen, FCS-GX, tiara, genetic code check |
 | RefSeq's organelle genomes | organelle models; the reference screen's trusted records | none: curated whole genomes |
 | PR2, KSGP, SILVA, UNITE, EUKARYOME's labels | names of species alone | nothing to screen: Eukore reads their names, not their sequences |
-| BUSCO's `refseq_db.faa`, `--read_compare`'s FASTAs | miniprot's queries; the benchmarks' other databases | not screened: a seed protein names nothing, and a benchmark compares a database as it is |
+| BUSCO's `refseq_db.faa`, benchmarks/'s other references | miniprot's queries; the benchmarks' other databases | not screened: a seed protein names nothing, and a benchmark compares a database as it is |
 
 - **Published reads' own species** (`rrna.own_species`). A published read's label was taken as its source gave it,
   `own_species` `-` and the read `unverified` at best; a misnamed read or a contaminant's operon in ROD's assembly was

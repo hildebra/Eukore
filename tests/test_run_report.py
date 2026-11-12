@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of tools/run_report.py (since 2026-11-11): a work folder's genomes told done, failed, killed, running and
+"""Tests of eukore/run_report.py (since 2026-11-11; tools/run_report.py until 2026-11-12): a work folder's genomes told done, failed, killed, running and
 never tried, the failures' reasons counted with their paths left out, the done genomes' checks and completeness; a
 package's benchmarks turned into findings; nothing in either changed.
 
@@ -15,8 +15,8 @@ import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
-import run_report  # noqa: E402
+sys.path.insert(0, os.path.dirname(HERE))
+from eukore import run_report  # noqa: E402
 
 PLAN = {"GCA_000001.1": "11", "GCA_000002.1": "12", "GCA_000003.1": "13", "GCA_000004.1": "14",
         "GAJY01000000": "15", "EUK_99": "16", "GCA_000007.1": "17"}

@@ -27,13 +27,15 @@ local/
 /WORK/
 /OUT/
 Eukore_*/
+# the benchmarks' Python (a checkout ignoring case, Windows', matched it to the line above)
+!benchmarks/eukore_bench/
 
 # logs and scratch
 *.log
 *.tmp
 *.swp
 *~
-docs/paper
+benchmarks/paper/
 
 # editors and OS
 .vscode/

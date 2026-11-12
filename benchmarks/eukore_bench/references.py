@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Other references for the read benchmark (eukore_build.py --read_compare NAME=FASTA,TABLE; eukore/reads.py), each as
-a FASTA and its record<TAB>NCBI taxid table (since 2026-11-06):
+"""Other references for the comparisons and the read benchmark (compare.py, reads.py; until 2026-11-12
+tools/compare_references.py, for the build's --read_compare), each as a FASTA and its record<TAB>NCBI taxid table
+(since 2026-11-06). prep.py runs it on its downloads; EukDetect2's database needs none (its eukdb.fasta and
+busco_taxid_genome_link.txt are such a pair):
 
 - metaphlan: MetaPhlAn 4's eukaryote markers (Blanco-Miguez et al. 2023), from its database's archive
   (mpa_<version>.tar, or its marker FASTA, .fna.bz2) and its marker_info.txt.bz2: the markers whose clade is t__EUK<taxid>
@@ -9,13 +11,12 @@ a FASTA and its record<TAB>NCBI taxid table (since 2026-11-06):
   species where NCBI names it (its name or a synonym, as species.tsv's labels find them), else its genus; organelle
   records (plastid, mitochondrion, nucleomorph) and those naming neither are left out.
 
-    python3 tools/compare_references.py metaphlan --archive mpa_vJan26_CHOCOPhlAnSGB_202605.tar \\
+    python3 -m eukore_bench.references metaphlan --archive mpa_vJan26_CHOCOPhlAnSGB_202605.tar \\
         --marker_info mpa_vJan26_CHOCOPhlAnSGB_202605_marker_info.txt.bz2 --out DIR
-    python3 tools/compare_references.py pr2 --fasta pr2_version_5.1.1_SSU_taxo_long.fasta.gz \\
-        --taxdump WORK/sources/taxdump.tar.gz --out DIR
+    python3 -m eukore_bench.references pr2 --fasta pr2_version_5.1.1_SSU_taxo_long.fasta.gz \\
+        --taxdump Eukore_2026.11/taxonomy --out DIR
 
-DIR gets <name>.fna.gz and <name>_taxids.tsv; the build then takes --read_compare NAME=DIR/<name>.fna.gz,
-DIR/<name>_taxids.tsv.
+DIR gets <name>.fna.gz and <name>_taxids.tsv (compare.py's references.tsv lists them).
 """
 
 import argparse
@@ -27,7 +28,7 @@ import re
 import sys
 import tarfile
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from . import ROOT  # noqa: F401  (the checkout on the path: the database's eukore package)
 from eukore import labels, ncbi as ncbi_mod, rrna, util  # noqa: E402
 
 EUK_CLADE = re.compile(r"'clade': 't__EUK(\d+)'")
