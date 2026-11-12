@@ -27,9 +27,10 @@ log-likelihood ratio.
 
 import collections
 import math
+import os
 
 from . import align as align_mod
-from . import gencode
+from . import gencode, util
 
 INFORMATIVE = 0.5
 MIN_OCCURRENCES = 10
@@ -52,29 +53,43 @@ ABSENT_SHARE = 0.01  # a stop the table reads as an amino acid, at this share of
 ABSENT_MIN = 200  # ... of this many: unused (since 2026-11-11, see above)
 
 
-def tally(pairs, emissions):
-    """Codons at informative positions ([(cds, states, locus)]; emissions {locus: [{aa: p} per state]}) -> {codon:
-    (n, {aa: summed log p})}."""
+def informative(em):
+    """A locus' match emissions (align.read_emissions') -> per state None where it is not informative (its likeliest
+    amino acid under INFORMATIVE), else [(amino acid, log p)] in the emissions' order: what tally adds, worked out once
+    a locus (since 2026-11-12: once a position of every copy)."""
+    return [None if not probs or max(probs.values()) < INFORMATIVE
+            else [(aa, math.log(max(p, 1e-6))) for aa, p in probs.items()] for probs in em]
+
+
+def tally(pairs, emissions, prepared=None):
+    """Codons at informative positions ([(cds, states, locus)]; emissions {locus: [{aa: p} per state]}, or prepared
+    {locus: informative's, None for none}) -> {codon: (n, {aa: summed log p})}."""
+    if prepared is None:
+        prepared = {locus: informative(em) if em else None for locus, em in emissions.items()}
     sums = collections.defaultdict(lambda: collections.defaultdict(float))
     n = collections.Counter()
     for cds, states, locus in pairs:
-        em = emissions.get(locus)
+        em = prepared.get(locus)
         if not em or not states:
             continue
         cds = cds.upper()
         for i, state in enumerate(states):
             if state is None or state >= len(em) or 3 * i + 3 > len(cds):
                 continue
-            probs = em[state]
-            if max(probs.values()) < INFORMATIVE:
+            logs = em[state]
+            if logs is None:
                 continue
             codon = cds[3 * i:3 * i + 3]
-            if len(codon) != 3 or set(codon) - set("ACGT"):
+            if len(codon) != 3 or set(codon) - ACGT:
                 continue
             n[codon] += 1
-            for aa, p in probs.items():
-                sums[codon][aa] += math.log(max(p, 1e-6))
+            add = sums[codon]
+            for aa, lp in logs:
+                add[aa] += lp
     return {c: (n[c], dict(sums[c])) for c in n}
+
+
+ACGT = frozenset("ACGT")
 
 
 def inside(cdss):
@@ -134,10 +149,33 @@ def check(tallies, table, within=None):
     return rows, ("differs:" + ",".join(differs)) if differs else "agrees", best_table
 
 
-def run(collected, states, hmm_of):
+_PREPARED = {}  # a process' informative() of each HMM file it read: {(path, mtime, size): ...}
+
+
+def prepared_of(path):
+    """An HMM file's informative(), read once a process (a pool's worker keeps it for the genomes it checks)."""
+    st = os.stat(path)
+    key = (path, st.st_mtime_ns, st.st_size)
+    if key not in _PREPARED:
+        _PREPARED[key] = informative(align_mod.read_emissions(path))
+    return _PREPARED[key]
+
+
+def genome_check(item):
+    """One genome's check ((accession, NCBI's table, its [(cds, states, locus)], its cds, {locus: HMM path or None}))
+    -> (accession, codon rows, dict(gencode_check, best_table, gencode_codons)): a pool's task (run)."""
+    acc, table, pairs, cdss, hmm_of = item
+    tallies = tally(pairs, None, {locus: prepared_of(path) if path else None for locus, path in hmm_of.items()})
+    got, verdict, best = check(tallies, table, inside(cdss))
+    return acc, [dict(r, accession=acc) for r in got], dict(gencode_check=verdict, best_table=best,
+                                                             gencode_codons=judged(tallies))
+
+
+def run(collected, states, hmm_of, threads=1):
     """Every genome's code checked (collected's cds and genomes; states {(accession, locus): match states}; hmm_of
-    {locus: HMM path}) -> (codon rows (CODON_COLUMNS), {accession: dict(gencode_check, best_table, gencode_codons)})."""
-    emissions = {locus: align_mod.read_emissions(path) for locus, path in hmm_of.items() if path}
+    {locus: HMM path}) -> (codon rows (CODON_COLUMNS), {accession: dict(gencode_check, best_table, gencode_codons)}).
+    The genomes checked `threads` at once by a pool of processes, each its genomes' data handed to it (since
+    2026-11-12: one after another, ~25 minutes on one core of 92 for all eukaryotes), the results the same."""
     # not a copy a check calls another organism's (since 2026-11-09: a contaminant's codons are its own code's)
     low = {(r["accession"], r["locus"]) for r in collected.get("copy_rows", ()) if r.get("confidence") == "low"}
     pairs, cdss = collections.defaultdict(list), collections.defaultdict(list)
@@ -146,12 +184,11 @@ def run(collected, states, hmm_of):
             cdss[acc].append(cds)
             if (acc, locus) in states:
                 pairs[acc].append((cds, states[(acc, locus)], locus))
+    items = ((acc, int(g.get("gencode") or 1), pairs[acc], cdss[acc],
+              {locus: hmm_of.get(locus) for _c, _s, locus in pairs[acc]})
+             for acc, g in sorted(collected["genomes"].items()) if acc in pairs)
     rows, per_genome = [], {}
-    for acc, g in sorted(collected["genomes"].items()):
-        if acc not in pairs:
-            continue
-        tallies = tally(pairs[acc], emissions)
-        got, verdict, best = check(tallies, int(g.get("gencode") or 1), inside(cdss[acc]))
-        rows += [dict(r, accession=acc) for r in got]
-        per_genome[acc] = dict(gencode_check=verdict, best_table=best, gencode_codons=judged(tallies))
+    for acc, got, verdict in util.ordered(genome_check, items, workers=max(1, min(threads, len(pairs)))):
+        rows += got
+        per_genome[acc] = verdict
     return rows, per_genome

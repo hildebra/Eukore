@@ -157,6 +157,39 @@ class CodeTest(unittest.TestCase):
         cds, states, emissions = self.genome(1, times=2)
         self.assertEqual(codecheck.check(codecheck.tally([(cds, states, "L1")], emissions), 1)[1:], ("undecided", "-"))
 
+    def test_the_genomes_checked_by_a_pool_alike(self):
+        # since 2026-11-12 the genomes are checked `threads` at once, each its data handed to a worker that reads the
+        # HMMs itself: the rows and verdicts those of one genome after another, a low copy still left out
+        with tempfile.TemporaryDirectory() as tmp:
+            hmm_of, seqs = {}, {}
+            for locus, table in (("L1", 12), ("L2", 6)):
+                cds, states, emissions = self.genome(table)
+                hmm_of[locus] = os.path.join(tmp, f"{locus}.hmm")
+                with open(hmm_of[locus], "w") as fh:
+                    fh.write(fx.hmm_text(locus, emissions["L1"][1:]))
+                seqs[locus] = (cds, states)
+            hmm_of["L3"] = None  # a locus without its HMM: its copies not counted
+            tables = dict(A=1, B=12, C=6, D=12, E=1)
+            held = dict(A=("L1", "L2", "L3"), B=("L1", "L3"), C=("L2",), D=("L1",))
+            cds = {(a, lo): seqs.get(lo, seqs["L1"])[0] for a, loci in held.items() for lo in loci}
+            states = {(a, lo): seqs.get(lo, seqs["L1"])[1] for a, loci in held.items() for lo in loci}
+            collected = dict(genomes={a: dict(gencode=t) for a, t in tables.items()}, cds=cds,
+                             copy_rows=[dict(accession="D", locus="L1", confidence="low")])
+            one = codecheck.run(collected, states, hmm_of)
+            self.assertEqual(codecheck.run(collected, states, hmm_of, threads=3), one)
+            rows, verdicts = one
+            self.assertEqual(sorted(verdicts), ["A", "B", "C"])  # D's copy low, E without copies
+            self.assertEqual((verdicts["B"]["gencode_check"], verdicts["C"]["gencode_check"]), ("agrees", "agrees"))
+            self.assertTrue(verdicts["A"]["gencode_check"].startswith("differs:"))
+            self.assertEqual(sorted({r["accession"] for r in rows}), ["A", "B", "C"])
+            # the tallies of a genome as from the emissions themselves
+            emissions = {lo: align.read_emissions(p) for lo, p in hmm_of.items() if p}
+            tallies = codecheck.tally([(*seqs["L1"], "L1"), (*seqs["L1"], "L3")], emissions)
+            self.assertEqual(verdicts["B"]["gencode_codons"], codecheck.judged(tallies))
+            self.assertEqual([r for r in rows if r["accession"] == "B"],
+                             [dict(r, accession="B") for r in codecheck.check(tallies, 12, codecheck.inside(
+                                 [seqs["L1"][0], seqs["L1"][0]]))[0]])
+
 
 if __name__ == "__main__":
     unittest.main()
