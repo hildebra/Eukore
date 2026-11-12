@@ -78,6 +78,23 @@ class TypesTest(unittest.TestCase):
         a, b, c = "ACGT" * 30, "ACGT" * 29 + "ACGA", "TTTT" * 30
         self.assertEqual(rrna.types_of([a, a, b, c]), {a: 1, b: 1, c: 2})
 
+    def test_the_first_filter_against_every_type_at_once(self):
+        # since 2026-11-12 (later): the 4-gram lemma against every type at once (short_grams) rules a pair out before
+        # may_reach and identity; an assembly's error-rich copies (each its own type), Ns, lower case and fragments
+        # typed as every pair aligned
+        rng = random.Random(11)
+        base = "".join(rng.choice("ACGT") for _ in range(500))
+        rich = [mutate(base, 0.02, rng) for _ in range(60)]
+        odd = [s.lower() if i % 7 == 0 else s[:200] + "NN" + s[202:] if i % 5 == 0 else s[50:250] if i % 4 == 0
+               else s for i, s in enumerate(self.seqs)] + ["", "ACG"]
+        for seqs in (rich, odd, rich + self.seqs):
+            self.assertEqual(rrna.types_of(seqs), types_before(seqs))
+        self.assertEqual(len(set(rrna.types_of(rich).values())), 60)
+        counts, other = rrna.short_grams("ACGTnACGTA")
+        self.assertEqual((int(counts.sum()), other), (3, 4))  # ACGT, CGTA... the four holding n apart
+        self.assertEqual(int(counts[0b00011011]), 2)  # ACGT twice
+        self.assertEqual((int(rrna.short_grams("ACG")[0].sum()), rrna.short_grams("ACG")[1]), (0, 0))
+
     def test_species_typed_by_a_pool(self):
         parts = {1: self.seqs[:50], 2: self.seqs[50:], 3: [self.seqs[0]], 4: [self.seqs[1]] * 3}
         one = rrna.species_types(parts, 1)
