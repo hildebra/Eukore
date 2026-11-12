@@ -186,6 +186,19 @@ sbatch --dependency=afterany:$jid final.sh
 `--reversion`). Its settings (the folders, the partitions, the build's options) are a small bash file,
 `tools/eukore.conf.example`, copied to `local/eukore.conf` or named by `$EUKORE_CONF`.
 
+**The package stage's vsearch checks on several nodes** (since 2026-11-11). The checks across species search each
+locus' copies (some 30,000 for a BUSCO) against each other: hours of one node's cores. Each locus' search is kept in
+`WORK/qc/busco/` (and `WORK/qc/organelle/`), named by the locus and a digest of its sequences, so a package stage run
+again with the same copies reads them rather than searching again. With `QC_TASKS` set in the settings (and
+`SBATCH_QC` for their jobs), the final job writes the loci's inputs there, then submits `QC_TASKS` helper jobs
+(`bash tools/eukore.sh qc`, an array). Every node, the final job's too, then claims one locus at a time, the largest
+first; a killed node's locus is taken over. The final job waits for the others' last loci, then cancels the helpers
+that are still pending. The helpers' searches are exactly the final job's (the same inputs, the same vsearch
+options), so the package is the same whether helpers ran or not.
+Where a compute node cannot submit jobs, the final job says so and searches alone. You can still help it from the
+login node, `bash tools/eukore.sh qc N`, once its log names the inputs. Outside SLURM, run
+`python3 -m eukore.qc helper WORK/qc -t <threads>` on any node that sees the WORK.
+
 Each run opens with a banner on STDOUT (since 2026-11-08): Eukore's version, the date, host and Python, the command
 (a `--veupathdb_key` on it hidden), then what each of its stages will do and with what: the groups and species, the
 loci, the folders, the threads, the process stage's memory, the package stage's `--keep_gb`, and what is switched off.
@@ -400,6 +413,32 @@ Without it, these sources stay as first fetched. For a newer taxonomy, delete `W
 | `WORK/sources/` (or `--sources`) | the sources, with their versions and checks (`source.json`, `labels.json`, ...) |
 | `WORK/done/<accession>.zip` (`WORK/done/<accession>/` before 2026-11-10 and with `--done_folders`) | each genome's calls (`loci.tsv`, `copies.fna`, `features.tsv`), windows, rRNA (`rrna.tsv`), FCS-GX's ranges; for a species of BUSCO's dataset, its calls made without its own proteins (`held_out.tsv`, the OrthoDB benchmark's) |
 | `WORK/organelle/`, `WORK/published/` | the organelle genes' searches; the published rRNA reads' annotation |
+
+### How a run went
+
+```bash
+python3 tools/run_report.py --work WORK --package OUT/Eukore_2026.11 --genomes OUT/genomes -t 16 --out run_report.md
+```
+
+`tools/run_report.py` (since 2026-11-11) reads a build's work folder, and the package where given, and writes one
+Markdown report. It changes nothing in either. Its findings come first, most severe first, each with what to do. The
+tables follow:
+
+- **The plan's genomes** (`WORK/genome_set.tsv`), each counted as done, failed (a note in `WORK/failed/`), killed (a
+  stale claim or a partial done folder), running (a live claim), not fetched (with `--genomes`: no genome file there)
+  or never tried. Each count is split by the accession's kind (an NCBI assembly, a transcriptome, records alone) and,
+  with `--package`, by supergroup.
+- **The failures' reasons**, counted with their paths left out, by host and by SLURM job. A single node with most of
+  the failures is named.
+- **The done genomes' checks** from their `done.json`: `rrna_failed`, `metadata_failed`, tiara failed, an older genome
+  record. Also their BUSCO completeness, with the poorest listed, and the slowest runs.
+- **The WORK's free space.**
+- **The package's benchmarks** (`benchmarks/summary.json`): those left out, supergroups with poor completeness, the
+  OrthoDB verdicts (the held-out ones too), markers with a poor barcode gap.
+- **The package's tables:** supergroups mostly of rRNA alone (`composition.tsv`), the copies' confidence and its
+  reasons by supergroup (`flags.tsv`), and the poorest and most duplicated genomes (`completeness.tsv`).
+
+Its thresholds are the constants at the top of the script.
 
 ### Checking and reading a package
 

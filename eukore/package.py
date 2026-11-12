@@ -382,7 +382,8 @@ def genome_part(args):
                 copies=copies, alternates=alternates)
 
 
-def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None, paralogs_of=None):
+def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None, paralogs_of=None, progress=None,
+            searches=None):
     """What the package holds of the BUSCO genes -> dict(genomes {accession: row}, copy_rows [COPY_COLUMNS dicts],
     taxids, cds and proteins {(accession, locus): sequence}, intron_rows (introns.of_copy's, accession and locus set),
     work and done (the genomes whose copies and features write reads from WORK/done), copy_count, swaps {accession:
@@ -394,7 +395,8 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     of the marker copies' coding sequences {(accession, locus): cds} and the genomes -> the keys whose best profile is
     a decoy's (markers.recheck; since 2026-11-09: the decoys a marker set gained since a genome's run, EFL's).
     threads: the genomes read `threads` at once by a pool of processes (genome_part; since 2026-11-10), the result
-    the same as one after another; vsearch's threads too."""
+    the same as one after another; vsearch's threads too. progress, searches: qc.check's (its loci's searches
+    reported; kept, and shared with other nodes)."""
     from . import introns as introns_mod  # noqa: PLC0415
     kinds = kinds or {}
     by_accession = {r["accession"]: r for r in assemblies}
@@ -459,7 +461,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                                       representative="f", loci=0)
     lengths = {(r["accession"], r["locus"]): int(r["protein_length"]) for r in copy_rows}
     checks = qc.check(cds, {a: g["species_taxid"] for a, g in genomes.items()}, ncbi, vsearch, threads,
-                      {**lengths, **alt_length}, alt_cds)
+                      {**lengths, **alt_length}, alt_cds, progress=progress, searches=searches)
     # the choice by lineage (since 2026-11-09; until then the best HMM score's copy, a contaminant's where it scored
     # best): a Duplicated locus whose copy's own-species verdict ranks below one of its other copies' (lineage_rank:
     # another clade's, or undecided where the other agrees with the lineage) takes that one, its row, coding sequence

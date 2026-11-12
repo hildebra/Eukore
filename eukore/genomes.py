@@ -819,7 +819,11 @@ def claim(work, accession):
     dead process (claim_live) is taken over, under a lock of its own (<claim>.take, made with O_EXCL; since
     2026-11-10: two builds that both found a claim dead each removed what was there and made their own, the second
     removing the first's new claim, and both ran the genome)."""
-    path = claim_path(work, accession)
+    return claim_file(claim_path(work, accession))
+
+
+def claim_file(path):
+    """claim's, of any claim file (since 2026-11-11: qc.py's loci searched by several nodes) -> path, or None."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if _claim_new(path):
         return path
@@ -850,7 +854,18 @@ def claimed(work, accession):
     touched every CLAIM_BEAT seconds and removed after: while it is this process' still (since 2026-11-10; a run
     stalled longer than CLAIM_STALE, its claim taken over by another build, kept that build's claim alive and
     removed it at its end)."""
-    path = claim(work, accession)
+    with _held(claim(work, accession)) as held:
+        yield held
+
+
+def claimed_file(path):
+    """claimed's, of any claim file (claim_file; since 2026-11-11: qc.py's loci searched by several nodes)."""
+    return _held(claim_file(path))
+
+
+@contextlib.contextmanager
+def _held(path):
+    """A claim made (its path, or None where another holds it) kept alive while the block runs, removed after."""
     if path is None:
         yield None
         return

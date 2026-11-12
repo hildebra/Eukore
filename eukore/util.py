@@ -729,14 +729,25 @@ def vsearch_global(vsearch, queries, db, ident, threads=1, accepts=32, rejects=2
         for path, seqs in ((q, queries),) + (() if db is queries else ((d, db),)):
             with open(path, "w") as fh:
                 fh.writelines(f">{n}\n{s}\n" for n, s in seqs.items() if s)
-        run = subprocess.run([vsearch, "--usearch_global", q, "--db", q if db is queries else d, "--id", str(ident),
-                              "--iddef", "2", "--maxaccepts", str(accepts), "--maxrejects", str(rejects), *options,
-                              "--userout", out, "--userfields", "query+target+id", "--threads", str(max(1, threads)),
-                              "--quiet"], capture_output=True, text=True, check=False)
-        if run.returncode != 0 or not os.path.isfile(out):
-            raise OSError(f"vsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+        vsearch_files(vsearch, q, q if db is queries else d, out, ident, threads, accepts, rejects, options)
         with open(out) as fh:
-            return [(f[0], f[1], float(f[2])) for f in (line.rstrip("\n").split("\t") for line in fh) if len(f) >= 3]
+            return vsearch_hits(fh)
+
+
+def vsearch_files(vsearch, queries, db, out, ident, threads=1, accepts=32, rejects=256, options=()):
+    """vsearch_global's search of FASTA files, its hits (query, target, identity) into the file out; raises OSError
+    where vsearch failed (since 2026-11-11 its own: qc.py's searches of files other nodes run)."""
+    run = subprocess.run([vsearch, "--usearch_global", queries, "--db", db, "--id", str(ident),
+                          "--iddef", "2", "--maxaccepts", str(accepts), "--maxrejects", str(rejects), *options,
+                          "--userout", out, "--userfields", "query+target+id", "--threads", str(max(1, threads)),
+                          "--quiet"], capture_output=True, text=True, check=False)
+    if run.returncode != 0 or not os.path.isfile(out):
+        raise OSError(f"vsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+
+
+def vsearch_hits(lines):
+    """vsearch_files' hits as [(query, target, identity %)]."""
+    return [(f[0], f[1], float(f[2])) for f in (line.rstrip("\n").split("\t") for line in lines) if len(f) >= 3]
 
 
 @contextlib.contextmanager
