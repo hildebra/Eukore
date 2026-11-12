@@ -774,21 +774,72 @@ def may_reach(a, a_grams, b, b_grams, threshold, q=TYPE_Q):
     return sum(map(a_grams.__getitem__, a_grams.keys() & b_grams.keys())) >= need
 
 
+PRE_Q = 4  # the q-grams of types_of's first filter, against every type at once
+_BASE = np.full(256, 4, dtype=np.int64)
+_BASE[np.frombuffer(b"ACGT", dtype=np.uint8)] = np.arange(4)
+
+
+def short_grams(seq, q=PRE_Q):
+    """A sequence's q-grams of A, C, G and T (upper case) as counts (4**q of them), and how many of its q-grams hold
+    another character (types_of's first filter counts each of those as shared)."""
+    a = _BASE[np.frombuffer(seq.upper().encode("ascii", "replace"), dtype=np.uint8)]
+    n = len(a) - q + 1
+    if n <= 0:
+        return np.zeros(4 ** q, dtype=np.int32), 0
+    other = np.convolve(a == 4, np.ones(q, dtype=np.int64), "valid") > 0
+    code = np.zeros(n, dtype=np.int64)
+    for i in range(q):
+        code = code * 4 + (a[i:i + n] & 3)
+    return np.bincount(code[~other], minlength=4 ** q).astype(np.int32), int(other.sum())
+
+
 def types_of(exons):
     """Sequences -> {sequence: type number}, each the first type whose first sequence it is SAME_TYPE identical to,
     the commonest first. A pair the q-gram lemma rules out is not aligned (may_reach; since 2026-11-12: every pair was,
     in pure Python, and a species of thousands of distinct reads held the package stage for hours): the types the
-    same."""
+    same.
+
+    Since 2026-11-12 (later that day) the lemma is first tested on PRE_Q-grams against every type at once (numpy):
+    the shorter of a pair, within the edits SAME_TYPE allows of a stretch of the longer, shares at least m - q + 1 - q*e
+    q-grams with it, counted as the smaller of the two counts of each, a q-gram holding another base than ACGT
+    (either's, the more) counted shared; a pair it rules out could not reach SAME_TYPE, the others go on to may_reach
+    and identity as before, the types the same. Until then each sequence was tested against each type in turn: an
+    assembly's 10,000 rDNA copies with 1-2% errors (each its own type) took ~3.5 hours on one core, typed once for
+    its species and again for its genome by the own-species check and the screen."""
+    order = sorted(collections.Counter(exons).items(), key=lambda kv: (-kv[1], -len(kv[0]), kv[0]))
     reps, out = [], {}
-    for seq, _n in sorted(collections.Counter(exons).items(), key=lambda kv: (-kv[1], -len(kv[0]), kv[0])):
-        g = grams(seq)
-        for i, (rep, rep_grams) in enumerate(reps):
-            if may_reach(seq, g, rep, rep_grams, SAME_TYPE) and identity(seq, rep) >= SAME_TYPE:
-                out[seq] = i + 1
-                break
+    if not order:
+        return out
+    most = max(len(s) for s, _n in order)
+    edits = np.array([0] + [max_edits(m, SAME_TYPE) for m in range(1, most + 1)], dtype=np.int64)
+    counts = np.zeros((min(len(order), 64), 4 ** PRE_Q), dtype=np.int32)
+    lengths, others = np.zeros(len(order), dtype=np.int64), np.zeros(len(order), dtype=np.int64)
+    for seq, _n in order:
+        g = None
+        if reps:
+            t = len(reps)
+            v, w = short_grams(seq)
+            m = np.minimum(len(seq), lengths[:t])
+            e = edits[m]
+            need = m - PRE_Q + 1 - PRE_Q * e
+            shared = np.minimum(counts[:t], v).sum(axis=1, dtype=np.int64) + np.maximum(others[:t], w)
+            maybe = np.flatnonzero((m == 0) | ((e >= 0) & ((need <= 0) | (shared >= need))))
+            if len(maybe):
+                g = grams(seq)
+            for i in maybe.tolist():
+                rep, rep_grams = reps[i]
+                if may_reach(seq, g, rep, rep_grams, SAME_TYPE) and identity(seq, rep) >= SAME_TYPE:
+                    out[seq] = i + 1
+                    break
+            if seq in out:
+                continue
         else:
-            reps.append((seq, g))
-            out[seq] = len(reps)
+            v, w = short_grams(seq)
+        if len(reps) == len(counts):
+            counts = np.concatenate([counts, np.zeros_like(counts)])
+        counts[len(reps)], lengths[len(reps)], others[len(reps)] = v, len(seq), w
+        reps.append((seq, g if g is not None else grams(seq)))
+        out[seq] = len(reps)
     return out
 
 
