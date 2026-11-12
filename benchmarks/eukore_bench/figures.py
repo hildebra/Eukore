@@ -1412,6 +1412,594 @@ def runtime(bench, package, out, fmt):
     return save(fig, out, "runtime", fmt)
 
 
+# --- the package as a resource (resource.py; since 2026-11-12) -------------------------------------------------------
+
+TAXON_RANKS = ("species", "genus", "family", "order", "class", "phylum")
+
+
+def compact(v, _pos=None):
+    """A count as an axis writes it: 38,937 as 38.9k, 1,000,000 as 1M; under 10,000 in full."""
+    return f"{v / 1e6:.3g}M" if v >= 1e6 else f"{v / 1e3:.3g}k" if v >= 1e4 else f"{v:,.0f}"
+
+
+def is_trial(package):
+    """Whether the package is a trial's (a few clades only: its manifest's inputs.partial)."""
+    try:
+        with open(os.path.join(package or "", "manifest.json")) as fh:
+            return bool((json.load(fh).get("inputs") or {}).get("partial"))
+    except (OSError, ValueError):
+        return False
+
+
+def heatmap(ax, matrix, rows, columns, fontsize=7.5):
+    """A matrix of shares (None: nothing to take a share of, left blank) as cells with their percentages; its cells
+    no taller than wide where the rows are few."""
+    ax.set_box_aspect(min(1.0, 0.6 * max(1, len(rows)) / max(1, len(columns))))
+    ax.set_anchor("N")
+    shown = [[v if v is not None else float("nan") for v in line] for line in matrix]
+    ax.imshow(shown, aspect="auto", cmap=SEQUENTIAL, vmin=0, vmax=1)
+    for i, line in enumerate(matrix):
+        for j, v in enumerate(line):
+            if v is not None:
+                ax.text(j, i, f"{v:.0%}", ha="center", va="center", fontsize=fontsize,
+                        color=SURFACE if v > 0.55 else INK)
+    ax.set_xticks(range(len(columns)), columns)
+    ax.set_yticks(range(len(rows)), rows)
+    ax.tick_params(length=0)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_visible(False)
+
+
+def breadth_ranks(bench, package, out, fmt):
+    rows = read(os.path.join(bench, "breadth_ranks.tsv"))
+    if not rows:
+        return None
+    at = {(r["supergroup"], r["rank"]): r for r in rows}
+    groups = group_order(g for g, _r in at if g != "all")
+    if is_trial(package):  # a trial's few clades: the groups it holds none of say nothing
+        groups = [g for g in groups if any(num(at[(g, rank)]["eukore"], 0) for rank in TAXON_RANKS if (g, rank) in at)]
+    base = "ncbi_genome" if any(num(r["ncbi_genome"]) for r in rows) else "ncbi_named"
+    fig, (a, b) = plt.subplots(1, 2, figsize=(11.5, max(3.6, min(6.5, 0.3 * len(groups) + 1.9))),
+                               gridspec_kw=dict(width_ratios=(1, 1.25), wspace=0.5))
+    top = 1
+    for y, rank in enumerate(TAXON_RANKS):
+        r = at.get(("all", rank), {})
+        named, genome = num(r.get("ncbi_named"), 0), num(r.get("ncbi_genome"), 0)
+        mine, every = num(r.get("eukore_genome"), 0), num(r.get("eukore"), 0)
+        if named:
+            a.plot([0, named], [y, y], color=NONE, linewidth=5, solid_capstyle="round", zorder=1)
+        if genome:
+            a.scatter(genome, y, s=70, marker="|", color=INK2, linewidths=1.6, zorder=3)
+        if every > mine:
+            a.scatter(every, y, s=34, facecolors=SURFACE, edgecolors=SERIES[0], linewidths=1.2, zorder=4)
+        a.scatter(mine, y, s=34, color=SERIES[0], edgecolors=SURFACE, linewidths=0.7, zorder=5)
+        share = f" ({mine / genome:.0%})" if genome else ""
+        a.text(1.02, y, f"{mine:,.0f}{share}", transform=a.get_yaxis_transform(), fontsize=8, color=INK2,
+               va="center")
+        top = max(top, named, genome, mine, every)
+    a.set_yticks(range(len(TAXON_RANKS)), TAXON_RANKS)
+    a.invert_yaxis()
+    a.tick_params(axis="y", length=0)
+    a.set_xscale("symlog", linthresh=1, linscale=0.35)
+    a.set_xlim(-0.15, top * 1.8)
+    a.xaxis.set_major_locator(matplotlib.ticker.SymmetricalLogLocator(base=10, linthresh=1))
+    a.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(compact))
+    a.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+    a.grid(axis="x")
+    a.set_xlabel("taxa (log scale)")
+    a.set_title("Eukaryote taxa at each rank")
+    legend_below(a, [Line2D([], [], color=NONE, linewidth=5, solid_capstyle="round"),
+                     Line2D([], [], linestyle="", marker="|", color=INK2, markersize=9, markeredgewidth=1.6),
+                     Line2D([], [], linestyle="", marker="o", color=SERIES[0], markersize=5.5),
+                     Line2D([], [], linestyle="", marker="o", markerfacecolor=SURFACE, markeredgecolor=SERIES[0],
+                            markersize=5.5)],
+                 ["NCBI: named", "NCBI: with a genome", "Eukore: with a genome (share of NCBI's)",
+                  "Eukore: any record"], ncol=2)
+    matrix = []
+    for g in groups:
+        line = []
+        for rank in TAXON_RANKS:
+            r = at.get((g, rank), {})
+            of = num(r.get(base), 0)
+            line.append(min(1.0, num(r.get("eukore_genome"), 0) / of) if of else None)
+        matrix.append(line)
+    heatmap(b, matrix, groups, TAXON_RANKS)
+    b.set_title("Eukore's taxa with a genome, of NCBI's " + ("with a genome" if base == "ncbi_genome" else "named"))
+    return save(fig, out, "breadth_ranks", fmt)
+
+
+def content(bench, package, out, fmt):
+    rows = read(os.path.join(bench, "content.tsv"))
+    if not rows:
+        return None
+    at = {(r["supergroup"], r["marker"]): r for r in rows}
+    markers = list(dict.fromkeys(r["marker"] for r in rows))
+    groups = group_order(g for g, _m in at if g != "all")
+    fig, (a, b) = plt.subplots(1, 2, figsize=(13, max(3.8, min(6.5, 0.3 * len(groups) + 2.0))),
+                               gridspec_kw=dict(width_ratios=(1, 1.6), wspace=0.6))
+    every = [int(at[("all", m)]["species"]) if ("all", m) in at else 0 for m in markers]
+    same = [int(at[("all", m)]["same_assembly"]) if ("all", m) in at else 0 for m in markers]
+    ys = range(len(markers))
+    a.barh(ys, every, height=0.62, color=BLUE[250], label="from any source")
+    a.barh(ys, same, height=0.3, color=BLUE[700], label="from the species' own assembly")
+    for y, (e, s) in enumerate(zip(every, same)):
+        a.text(e, y, f"  {s:,} of {e:,}", va="center", fontsize=8, color=INK2)
+    a.set_yticks(ys, markers)
+    a.invert_yaxis()
+    a.tick_params(axis="y", length=0)
+    a.set_xlim(0, max(every + [1]) * 1.35)
+    a.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(4, integer=True))
+    a.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _p: f"{v:,.0f}"))
+    a.grid(axis="x")
+    a.set_xlabel("species (label: from their own assembly, of those holding it)")
+    a.set_title("Species holding each marker kind")
+    a.legend(loc="upper left", bbox_to_anchor=(0, -0.2), ncol=2, handlelength=1.2, columnspacing=1.2)
+    matrix = [[int(at[(g, m)]["same_assembly"]) / int(at[(g, m)]["of"]) if (g, m) in at and int(at[(g, m)]["of"])
+               else None for m in markers] for g in groups]
+    heatmap(b, matrix, [f"{g} ({int(at[(g, markers[0])]['of']):,})" for g in groups],
+            [m.replace(" + ", "\n+ ").replace("mitochondrion", "mito-\nchondrion") for m in markers], 7)
+    b.tick_params(axis="x", labelsize=7)
+    b.set_title("Species holding it from their own assembly, of the group's species")
+    return save(fig, out, "content", fmt)
+
+
+PANEL_STATUS = (("genome", "with a genome", BLUE[700]), ("records", "rRNA records alone", BLUE[250]),
+                ("absent", "not in Eukore", NONE), ("not found", "name not in NCBI's taxonomy", "#b9b8b2"))
+
+
+def panels(bench, package, out, fmt):
+    rows = read(os.path.join(bench, "panels.tsv"))
+    if not rows:
+        return None
+    by = collections.defaultdict(collections.Counter)
+    missing = collections.defaultdict(list)
+    for r in rows:
+        by[r["panel"]][r["status"]] += 1
+        if r["status"] != "genome":
+            missing[r["panel"]].append(r["entry"])
+    names = list(by)
+    fig, ax = plt.subplots(figsize=(10.5, 0.75 * len(names) + 1.9))
+    handles, labels_ = stacked(ax, [(f"{n} ({sum(by[n].values())})", by[n]) for n in names],
+                               [s for s, _l, _c in PANEL_STATUS], [c for _s, _l, c in PANEL_STATUS],
+                               [l for _s, l, _c in PANEL_STATUS])
+    for y, n in enumerate(names):
+        got = by[n]["genome"] / max(1, sum(by[n].values()))
+        if got >= 0.04:
+            ax.text(got, y, f"{by[n]['genome']} ", ha="right", va="center", fontsize=8.5, color=SURFACE)
+        if missing[n]:
+            shown = []
+            while len(shown) < len(missing[n]) and len(", ".join(shown + [missing[n][len(shown)]])) <= 95:
+                shown.append(missing[n][len(shown)])
+            rest = len(missing[n]) - len(shown)
+            text = ", ".join(shown) + (f"{' and ' if shown else ''}{rest} more" if rest else "")
+            ax.text(0, y + 0.47, f"without a genome: {text}", fontsize=7, color=INK2, va="center")
+    ax.tick_params(axis="y", length=0)
+    ax.set_ylim(len(names) - 0.35, -0.6)
+    legend_below(ax, handles, labels_)
+    ax.set_title("Named lists' organisms in Eukore")
+    return save(fig, out, "panels", fmt)
+
+
+# --- beside the other databases (databases.py; since 2026-11-12) -----------------------------------------------------
+
+UPSET_BARS = 24  # the combinations drawn: the largest
+
+
+def upset(bench, package, out, fmt):
+    rows = [r for r in read(os.path.join(bench, "upset.tsv")) if r["supergroup"] == "all"]
+    if not rows:
+        return None
+    # ROD's operons are Eukore's records and BUSCO's dataset its queries: no databases beside it
+    combos, sizes = collections.Counter(), collections.Counter()
+    for r in rows:
+        names = tuple(n for n in r["databases"].split(" + ") if n not in NOT_IN_BREADTH)
+        if names:
+            combos[names] += int(r["species"])
+            for n in names:
+                sizes[n] += int(r["species"])
+    if len(sizes) < 2:
+        return None
+    names = ["Eukore"] + sorted((n for n in sizes if n != "Eukore"), key=lambda n: -sizes[n])
+    shown = sorted(combos, key=lambda c: -combos[c])[:UPSET_BARS]
+    if ("Eukore",) in combos and ("Eukore",) not in shown:  # what Eukore holds alone: always drawn
+        shown[-1] = ("Eukore",)
+    shown.sort(key=lambda c: -combos[c])
+    fig = plt.figure(figsize=(max(8.0, 0.36 * len(shown) + 4.6), 0.34 * len(names) + 4.4))
+    # the databases' species, a column for their names, the combinations
+    grid = fig.add_gridspec(2, 3, width_ratios=(1.2, 1.0, max(2.5, 0.25 * len(shown))),
+                            height_ratios=(3.0, 0.34 * len(names) + 0.4), hspace=0.06, wspace=0.03)
+    bars, dots, side = fig.add_subplot(grid[0, 2]), fig.add_subplot(grid[1, 2]), fig.add_subplot(grid[1, 0])
+    xs = range(len(shown))
+    colors = [SERIES[0] if "Eukore" in c else "#b9b8b2" for c in shown]
+    bars.bar(xs, [combos[c] for c in shown], width=0.62, color=colors)
+    for x, c in zip(xs, shown):
+        bars.text(x, combos[c], compact(combos[c]), ha="center", va="bottom", fontsize=7, color=INK2)
+    bars.set_xlim(-0.6, len(shown) - 0.4)
+    bars.set_xticks([])
+    bars.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(compact))
+    bars.grid(axis="y")
+    bars.set_ylabel("species held by exactly these")
+    bars.spines["bottom"].set_visible(False)
+    bars.legend([matplotlib.patches.Patch(color=SERIES[0]), matplotlib.patches.Patch(color="#b9b8b2")],
+                ["with Eukore", "without Eukore"], loc="upper right")
+    for x, c in zip(xs, shown):
+        ys = [names.index(n) for n in c]
+        dots.scatter([x] * len(names), range(len(names)), s=42, color=GRID, zorder=1)
+        dots.plot([x, x], [min(ys), max(ys)], color=INK2, linewidth=1.6, zorder=2)
+        dots.scatter([x] * len(ys), ys, s=42, color=INK2, zorder=3)
+    dots.set_xlim(-0.6, len(shown) - 0.4)
+    dots.set_ylim(len(names) - 0.5, -0.5)
+    dots.set_xticks([])
+    dots.set_yticks(range(len(names)), names)
+    dots.tick_params(axis="y", length=0, pad=8)
+    for s in dots.spines.values():
+        s.set_visible(False)
+    side.barh(range(len(names)), [sizes[n] for n in names], height=0.6,
+              color=[SERIES[0] if n == "Eukore" else "#b9b8b2" for n in names])
+    for y, n in enumerate(names):
+        side.text(sizes[n], y, f"{compact(sizes[n])} ", ha="right", va="center", fontsize=7, color=INK2)
+    side.set_ylim(len(names) - 0.5, -0.5)
+    side.set_yticks([])
+    side.set_xlim(0, max(sizes.values()) * 1.25)
+    side.invert_xaxis()
+    side.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(3))
+    side.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(compact))
+    side.spines["left"].set_visible(False)
+    side.spines["right"].set_visible(True)
+    side.set_xlabel("species")
+    fig.suptitle("Species by the databases that hold them", x=0.01, ha="left", fontweight="bold", fontsize=11)
+    return save(fig, out, "upset", fmt)
+
+
+def novel(bench, package, out, fmt):
+    rows = [r for r in read(os.path.join(bench, "novel.tsv")) if r["new"] != "-"]
+    if not rows:
+        return None
+    at = {(r["supergroup"], r["marker"]): r for r in rows}
+    markers = list(dict.fromkeys(r["marker"] for r in rows))
+    groups = group_order(g for g, _m in at if g != "all")
+    if is_trial(package):
+        groups = [g for g in groups if any(int(at[(g, m)]["genome"]) for m in markers if (g, m) in at)]
+    fig, (a, b) = plt.subplots(1, 2, figsize=(11.5, max(3.4, min(6.5, 0.3 * len(groups) + 1.9))),
+                               gridspec_kw=dict(width_ratios=(1, 1), wspace=0.6))
+    ys = range(len(markers))
+    genome = [int(at[("all", m)]["genome"]) if ("all", m) in at else 0 for m in markers]
+    new = [int(at[("all", m)]["new"]) if ("all", m) in at else 0 for m in markers]
+    a.barh(ys, genome, height=0.62, color=BLUE[250], label="species with it from their genome")
+    a.barh(ys, new, height=0.3, color=BLUE[700], label="of them, named in none of its references")
+    for y, (g, n) in enumerate(zip(genome, new)):
+        a.text(g, y, f"  {n:,} of {g:,}", va="center", fontsize=8, color=INK2)
+    a.set_yticks(ys, [f"{m}\n({at[('all', m)]['references']})" if ("all", m) in at else m for m in markers],
+                 fontsize=8)
+    a.invert_yaxis()
+    a.tick_params(axis="y", length=0)
+    a.set_xlim(0, max(genome + [1]) * 1.3)
+    a.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(4, integer=True))
+    a.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(compact))
+    a.grid(axis="x")
+    a.set_xlabel("species")
+    a.set_title("Species a genome is the first sequence of a marker for")
+    a.legend(loc="upper left", bbox_to_anchor=(0, -0.2), ncol=1, handlelength=1.2)
+    matrix = [[int(at[(g, m)]["new"]) / int(at[(g, m)]["genome"]) if (g, m) in at and int(at[(g, m)]["genome"])
+               else None for m in markers] for g in groups]
+    heatmap(b, matrix, groups, [m.replace(" ", "\n") for m in markers])
+    b.set_title("Named in no reference, of those with it from their genome")
+    return save(fig, out, "novel", fmt)
+
+
+AGREEMENT_PARTS = (("agree", "agree", BLUE[550]), ("undecided", "undecided", NONE),
+                   ("unlike", "unlike the species' own", BLUE[250]),
+                   ("disagree", "another species' (one of the two misnamed)", SERIES[1]))
+
+
+def agreement(bench, package, out, fmt):
+    rows = read(os.path.join(bench, "agreement.tsv"))
+    if not rows:
+        return None
+    fig, ax = plt.subplots(figsize=(9.5, 0.6 * len(rows) + 2.0))
+    handles, names = stacked(ax, [(f"{r['database']}\n{r['marker']}",
+                                   {p: int(num(r.get(p), 0)) for p, _l, _c in AGREEMENT_PARTS}) for r in rows],
+                             [p for p, _l, _c in AGREEMENT_PARTS], [c for _p, _l, c in AGREEMENT_PARTS],
+                             [l for _p, l, _c in AGREEMENT_PARTS])
+    for y, r in enumerate(rows):
+        differ = int(num(r.get("disagree"), 0)) + int(num(r.get("unlike"), 0))
+        ax.text(1.01, y, f"{differ:,} of {int(r['records']):,} records differ", va="center", fontsize=8, color=INK2)
+    ax.tick_params(axis="y", length=0)
+    legend_below(ax, handles, names, ncol=2)
+    ax.set_title("The same species' marker in Eukore and another database")
+    return save(fig, out, "agreement", fmt)
+
+
+# --- how good the records are (checks.py, tree.py; since 2026-11-12) -------------------------------------------------
+
+QUALITY_CHECKS = 8  # the checks drawn per level: those that flag the most
+
+
+def quality(bench, package, out, fmt):
+    rows = read(os.path.join(bench, "quality.tsv"))
+    if not rows:
+        return None
+    at = {(r["supergroup"], r["level"], r["check"]): r for r in rows}
+    levels = [l for l in ("genome", "BUSCO copy", "rRNA record", "organelle gene")
+              if any(r["level"] == l and r["supergroup"] == "all" for r in rows)]
+    groups = group_order(r["supergroup"] for r in rows if r["supergroup"] != "all")
+    nrow = -(-len(levels) // 2)  # two levels a row
+    fig, axes = plt.subplots(nrow, 2, figsize=(13, nrow * max(3.4, min(7.0, 0.3 * len(groups) + 3.0))),
+                             squeeze=False, gridspec_kw=dict(wspace=0.55, hspace=0.75))
+    for ax in axes.flat[len(levels):]:
+        ax.set_visible(False)
+    for ax, level in zip(axes.flat, levels):
+        overall = [r for r in rows if r["supergroup"] == "all" and r["level"] == level and int(r["flagged"])]
+        # the checks that flag the most, then the tiers that are no clean bill: low, medium, unverified
+        flagged = [r["check"] for r in overall if not r["check"].startswith("confidence")][:QUALITY_CHECKS]
+        tiers = [c for c in ("confidence: low", "confidence: medium", "confidence: unverified")
+                 if ("all", level, c) in at]
+        checks = flagged + tiers
+        names = ["all"] + [g for g in groups if any((g, level, c) in at for c in checks)
+                           or any(k[0] == g and k[1] == level for k in at)]
+        totals = {g: next((int(r["of"]) for r in rows if r["supergroup"] == g and r["level"] == level), 0)
+                  for g in names}
+        names = [g for g in names if totals[g]]
+        matrix = [[int(at[(g, level, c)]["flagged"]) / totals[g] if (g, level, c) in at else 0.0 for c in checks]
+                  for g in names]
+        heatmap(ax, matrix, [f"{g} ({compact(totals[g])})" for g in names],
+                [c.replace("confidence: ", "tier: ") for c in checks], 7)
+        ax.set_xticks(range(len(checks)), [c.replace("confidence: ", "tier: ") for c in checks], rotation=35,
+                      ha="right", rotation_mode="anchor", fontsize=7)
+        ax.set_title({"genome": "Genomes", "BUSCO copy": "BUSCO copies", "rRNA record": "rRNA records",
+                      "organelle gene": "Organelle genes"}.get(level, level) + " flagged, by check")
+    return save(fig, out, "quality", fmt)
+
+
+def gencode(bench, package, out, fmt):
+    rows = read(os.path.join(bench, "gencode.tsv"))
+    if not rows:
+        return None
+    parts = ("agrees", "undecided", "unchecked", "differs")
+    shown = [r for r in rows if r["supergroup"] != "all"]
+    order = {g: i for i, g in enumerate(group_order(r["supergroup"] for r in shown))}
+    shown = [r for r in rows if r["supergroup"] == "all"] + sorted(shown, key=lambda r: order[r["supergroup"]])
+    fig, ax = plt.subplots(figsize=(9.5, 0.4 * len(shown) + 1.9))
+    handles, names = stacked(ax, [(f"{r['supergroup']} ({int(r['genomes']):,})", {p: int(r[p]) for p in parts})
+                                  for r in shown], parts, [BLUE[550], BLUE[250], NONE, SERIES[1]],
+                             ("agrees with NCBI's", "undecided (too few codons)", "not checked", "differs"))
+    for y, r in enumerate(shown):
+        if int(r["differs"]):
+            ax.text(1.01, y, f"{int(r['differs']):,} differ (tables {r['best_tables']})", va="center", fontsize=7.5,
+                    color=INK2)
+    ax.tick_params(axis="y", length=0)
+    legend_below(ax, handles, names)
+    ax.set_title("Genetic codes checked against the genomes' BUSCO genes")
+    return save(fig, out, "gencode", fmt)
+
+
+def tree(bench, package, out, fmt):
+    from . import tree as tree_mod  # noqa: PLC0415
+    path = os.path.join(bench, "tree.nwk")
+    taxa = read(os.path.join(bench, "tree_taxa.tsv"))
+    if not os.path.isfile(path) or not taxa:
+        return None
+    with open(path) as fh:
+        t = tree_mod.Tree(fh.read())
+    group = {r["accession"]: r["supergroup"] for r in read(os.path.join(bench, "tree_tips.tsv"))}
+    strays = {r["accession"] for r in read(os.path.join(bench, "tree_strays.tsv"))}
+    summary = tree_mod.rank_summary(taxa)
+    n = len(t.tips)
+    fig, (a, b) = plt.subplots(1, 2, figsize=(12, max(4.2, min(11.0, 0.012 * n + 3.5))),
+                               gridspec_kw=dict(width_ratios=(1, 2.2), wspace=0.35))
+    ranks = [r for r in tree_mod.RANKS if r in summary]
+    a.barh(range(len(ranks)), [summary[r]["share"] for r in ranks], height=0.6, color=BLUE[550])
+    for y, r in enumerate(ranks):
+        a.text(summary[r]["share"], y, f"  {summary[r]['monophyletic']:,} of {summary[r]['taxa']:,}", va="center",
+               fontsize=8, color=INK2)
+    a.set_yticks(range(len(ranks)), ranks)
+    a.invert_yaxis()
+    a.tick_params(axis="y", length=0)
+    a.set_xlim(0, 1.3)
+    a.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
+    pct_axis(a)
+    a.grid(axis="x")
+    a.set_title("NCBI's taxa that are one branch of the tree")
+    a.set_xlabel("taxa with two genomes or more in the tree")
+    # the tree as it is written: each tip a row, each node at its distance from the root
+    x, y = [0.0] * len(t.parent), [0.0] * len(t.parent)
+    order = t.postorder()
+    for node in reversed(order):  # the parents first
+        if t.parent[node] != -1:
+            x[node] = x[t.parent[node]] + t.length[node]
+    if not any(x):  # no branch lengths: by depth
+        for node in reversed(order):
+            if t.parent[node] != -1:
+                x[node] = x[t.parent[node]] + 1
+    row, stack, tip_order = 0, [0], []
+    while stack:  # the tips in the file's order
+        node = stack.pop()
+        if not t.children[node]:
+            y[node], row = row, row + 1
+            tip_order.append(node)
+        stack.extend(reversed(t.children[node]))
+    for node in order:
+        if t.children[node]:
+            y[node] = sum(y[c] for c in t.children[node]) / len(t.children[node])
+    segments = []
+    for node in range(len(t.parent)):
+        if t.parent[node] != -1:
+            segments.append([(x[t.parent[node]], y[node]), (x[node], y[node])])
+        if t.children[node]:
+            segments.append([(x[node], min(y[c] for c in t.children[node])),
+                             (x[node], max(y[c] for c in t.children[node]))])
+    b.add_collection(matplotlib.collections.LineCollection(segments, colors=INK2, linewidths=0.5 if n > 150 else 0.9))
+    far = max(x) or 1.0
+    runs, start = [], 0  # the groups as runs of tips: a band and a name each, no color per group
+    names = [group.get(t.name[node], "-") for node in tip_order]
+    for i in range(1, n + 1):
+        if i == n or names[i] != names[start]:
+            runs.append((start, i - 1, names[start]))
+            start = i
+    for k, (lo, hi, name) in enumerate(runs):
+        if k % 2 == 0:
+            b.axhspan(lo - 0.5, hi + 0.5, color=GRID, alpha=0.45, linewidth=0)
+        if hi - lo + 1 >= max(1, 0.015 * n):
+            b.text(far * 1.03, (lo + hi) / 2, name, va="center", fontsize=7, color=INK2)
+    marked = [node for node in tip_order if t.name[node] in strays]
+    if marked:
+        b.scatter([x[node] for node in marked], [y[node] for node in marked], s=16, color=SERIES[1], zorder=3,
+                  label="a genome apart from its taxon (tree_strays.tsv)")
+        b.legend(loc="upper left", bbox_to_anchor=(0, -0.02))
+    b.set_xlim(0, far * 1.3)
+    b.set_ylim(n - 0.5, -0.5)
+    b.set_yticks([])
+    b.set_xticks([])
+    for s in b.spines.values():
+        s.set_visible(False)
+    b.set_title(f"The tree of {n:,} genomes' BUSCO proteins, the groups along it")
+    return save(fig, out, "tree", fmt)
+
+
+# --- guidance (guidance.py; since 2026-11-12) --------------------------------------------------------------------------
+
+def thresholds(bench, package, out, fmt):
+    rows = read(os.path.join(bench, "thresholds.tsv"))
+    if not rows:
+        return None
+    ranks = [r for r in ("species", "genus", "family", "order") if any(x["rank"] == r for x in rows)]
+    at = {(r["marker"], r["rank"]): r for r in rows}
+    own = [m for m in (BUSCOS, "18S") if any(k[0] == m for k in at)]
+    published = list(dict.fromkeys(r["marker"] for r in rows if r["source"].startswith("published")))
+    each = [r for r in rows if r["marker"].endswith("at2759")]
+    series = own + published  # at most four: the package's two, the published two
+    styles = {m: (CATEGORICAL[i % len(CATEGORICAL)], ("o", "s", "D", "^")[i % 4]) for i, m in enumerate(series)}
+    fig, ax = plt.subplots(figsize=(9.5, 0.95 * len(ranks) + 2.2))
+    rng = random.Random(1)
+    for y, rank in enumerate(ranks):
+        values = [num(r["threshold"]) for r in each if r["rank"] == rank]
+        if values:  # each BUSCO's own threshold: the spread behind the pooled one
+            ax.scatter(values, [y + 0.28 + rng.uniform(-0.07, 0.07) for _ in values], s=9, color=BLUE[250],
+                       linewidths=0, zorder=2)
+        for k, m in enumerate(series):
+            r = at.get((m, rank))
+            if not r:
+                continue
+            color, marker = styles[m]
+            x = num(r["threshold"])
+            hollow = m in published
+            ax.scatter(x, y - 0.24 + 0.16 * k, s=62, marker=marker, zorder=3, linewidths=1.3,
+                       facecolors=SURFACE if hollow else color, edgecolors=color)
+            ax.text(x, y - 0.24 + 0.16 * k, f"  {x:g}", va="center", fontsize=7.5, color=INK2)
+    ax.set_yticks(range(len(ranks)), ranks)
+    ax.set_ylim(len(ranks) - 0.4, -0.6)
+    ax.tick_params(axis="y", length=0)
+    low = min([num(r["threshold"]) for r in rows] + [95.0])
+    ax.set_xlim(low - 2, 101.5)
+    ax.grid(axis="x")
+    ax.set_xlabel("identity (%) at or above which two sequences are of one taxon of the rank")
+    handles = [Line2D([], [], linestyle="", marker=styles[m][1], markersize=7, markeredgewidth=1.3,
+                      markerfacecolor=SURFACE if m in published else styles[m][0], markeredgecolor=styles[m][0])
+               for m in series]
+    names = [("all BUSCOs" if m == BUSCOS else m) for m in series]
+    if each:
+        handles.append(Line2D([], [], linestyle="", marker="o", markersize=3.5, color=BLUE[250]))
+        names.append("each BUSCO")
+    legend_below(ax, handles, names, ncol=3)
+    ax.set_title("The identity that parts taxa, per marker and rank")
+    return save(fig, out, "thresholds", fmt)
+
+
+# --- the release among releases (history.py; since 2026-11-12) ---------------------------------------------------------
+
+def megabytes(v, _pos=None):
+    return f"{v / 1e9:.3g} GB" if v >= 1e9 else f"{v / 1e6:.3g} MB" if v >= 1e6 else f"{v / 1e3:.3g} kB"
+
+
+def growth(bench, package, out, fmt):
+    from . import history  # noqa: PLC0415
+    rows = [r for r in read(os.path.join(bench, "growth.tsv")) if r["supergroup"] == "all"]
+    if not rows:
+        return None
+    years = {int(r["year"]): int(r["genomes"]) for r in rows}
+    span = list(range(min(years), max(years) + 1))
+    total, cumulative = 0, []
+    for y in span:
+        total += years.get(y, 0)
+        cumulative.append(total)
+    fig, ax = plt.subplots(figsize=(9, 4.4))
+    ax.bar(span, [years.get(y, 0) for y in span], width=0.7, color=BLUE[250], label="released that year")
+    ax.plot(span, cumulative, color=BLUE[700], linewidth=2, label="released by then")
+    ax.text(span[-1], cumulative[-1], f"  {cumulative[-1]:,}", va="center", fontsize=8, color=INK2)
+    dates = sorted((y + (m - 0.5) / 12 - 0.5, name) for name, (y, m) in history.release_dates().items()
+                   if span[0] <= y <= span[-1] + 1)
+    for k, (x, name) in enumerate(dates):  # the other databases' releases: a tick on the axis and its name
+        ax.axvline(x, color=INK2, linewidth=0.8, linestyle=(0, (2, 2)), zorder=1)
+        ax.text(x, cumulative[-1] * (1.0 - 0.07 * (k % 4)), f"{name} ", ha="right", va="top", fontsize=7.5,
+                color=INK2)
+    ax.set_xlim(span[0] - 0.7, span[-1] + 1.6)
+    ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(10, integer=True))
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(compact))
+    ax.grid(axis="y")
+    ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(6, integer=True))
+    ax.set_ylabel("the release's genomes")
+    ax.set_xlabel("year NCBI released the assembly (dashed: another database's release)")
+    legend_below(ax, ncol=2)
+    ax.set_title("The release's genomes by the year they were released")
+    return save(fig, out, "growth", fmt)
+
+
+def sizes(bench, package, out, fmt):
+    rows = [r for r in read(os.path.join(bench, "sizes.tsv")) if r["part"] != "all"]
+    if not rows:
+        return None
+    rows = rows[:14]
+    fig, ax = plt.subplots(figsize=(8.5, 0.34 * len(rows) + 1.6))
+    values = [int(r["bytes"]) for r in rows]
+    ax.barh(range(len(rows)), values, height=0.62, color=BLUE[550])
+    for y, (r, v) in enumerate(zip(rows, values)):
+        ax.text(v, y, f"  {megabytes(v)} ({int(r['files']):,} file{'s' if int(r['files']) != 1 else ''})",
+                va="center", fontsize=8, color=INK2)
+    ax.set_yticks(range(len(rows)), [r["part"] for r in rows])
+    ax.invert_yaxis()
+    ax.tick_params(axis="y", length=0)
+    ax.set_xlim(0, max(values) * 1.45)
+    ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(4))
+    ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(megabytes))
+    ax.grid(axis="x")
+    ax.set_title(f"The package's parts ({megabytes(sum(int(r['bytes']) for r in read(os.path.join(bench, 'sizes.tsv')) if r['part'] == 'all'))} in all)")
+    return save(fig, out, "sizes", fmt)
+
+
+CHANGE_PARTS = (("added", "species added", BLUE[550]), ("gained_genome", "gained a genome", BLUE[250]),
+                ("replaced", "genome replaced by another assembly", CATEGORICAL[3]),
+                ("updated", "genome's newer version", NONE), ("removed", "species removed", SERIES[1]))
+
+
+def changes(bench, package, out, fmt):
+    rows = read(os.path.join(bench, "changes.tsv"))
+    if not rows:
+        return None
+    order = {g: i for i, g in enumerate(group_order(r["supergroup"] for r in rows if r["supergroup"] != "all"))}
+    rows = sorted(rows, key=lambda r: (r["supergroup"] != "all", order.get(r["supergroup"], 0)))
+    rows = [r for r in rows if any(int(r[p]) for p, _l, _c in CHANGE_PARTS) or r["supergroup"] == "all"]
+    fig, ax = plt.subplots(figsize=(9.5, 0.4 * len(rows) + 2.0))
+    left = [0] * len(rows)
+    for part, label, color in CHANGE_PARTS:
+        values = [int(r[part]) for r in rows]
+        ax.barh(range(len(rows)), values, left=left, height=0.62, color=color, edgecolor=SURFACE, linewidth=1.2,
+                label=label)
+        left = [a + b for a, b in zip(left, values)]
+    for y, (r, total) in enumerate(zip(rows, left)):
+        ax.text(total, y, f"  {int(r['previous']):,} to {int(r['species']):,} species", va="center", fontsize=8,
+                color=INK2)
+    ax.set_yticks(range(len(rows)), [r["supergroup"] for r in rows])
+    ax.invert_yaxis()
+    ax.tick_params(axis="y", length=0)
+    ax.set_xlim(0, max(left + [1]) * 1.4)
+    ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(5, integer=True))
+    ax.grid(axis="x")
+    ax.set_xlabel("species changed")
+    legend_below(ax, ncol=3)
+    ax.set_title("What changed since the earlier release")
+    return save(fig, out, "changes", fmt)
+
+
 # --- all of them -----------------------------------------------------------------------------------------------------
 
 # (name, function, caption, its tables) in their order: Figure 1, then the supplementary figures S1 ..
@@ -1435,6 +2023,48 @@ FIGURES = (
     ("overlap", overlap, "Species in Eukore (any record) and in each other database the build read (PR2, EUKARYOME's "
                          "long reads, KSGP, ROD, BUSCO's OrthoDB dataset, the compared references), per supergroup.",
      "overlap"),
+    ("breadth_ranks", breadth_ranks,
+     "The breadth above the species. Left: eukaryote taxa at each rank, NCBI's named ones (a species: a binomial, "
+     "no placeholder or hybrid; a higher taxon: one holding such a species), those NCBI holds a genome of, and "
+     "Eukore's (with a genome; with any record). Right: per group, Eukore's taxa with a genome of NCBI's with one "
+     "(a higher taxon counts in every group one of its species is of).", "breadth_ranks"),
+    ("content", content,
+     "The markers one species links. Left: the species holding each marker kind from any source (their genome, a "
+     "RefSeq organelle genome, a published read) and from their genome's own assembly; ITS: ITS1, 5.8S and ITS2 on "
+     "one record; operon: 18S to 28S on one record. Right: per group, the species holding it from their own "
+     "assembly, of all the group's species.", "content"),
+    ("panels", panels,
+     "Named lists' organisms (benchmarks/panels.tsv: WHO's fungal priority pathogens, human parasites, model "
+     "organisms, the mock communities' eukaryotes) by what Eukore holds of them; an entry above the species is held "
+     "where a species of it is.", "panels"),
+    ("upset", upset,
+     "The species by the databases that hold them: each bar the species exactly those databases hold (the dots "
+     "below; the largest combinations, and what Eukore holds alone), blue where Eukore is one of them; left, each "
+     "database's species. A database's species are those NCBI names (its names matched to NCBI's); ROD and BUSCO's "
+     "dataset, Eukore's own sources, are left out.", "upset, databases"),
+    ("novel", novel,
+     "The species a genome is the first sequence of a marker for. Left: per marker, the species Eukore holds it of "
+     "from their genome's own assembly, and those of them that none of the marker's references the build read names "
+     "(by name, synonym or taxid: an upper bound, a reference may name a species otherwise). Right: their share per "
+     "group.", "novel"),
+    ("agreement", agreement,
+     "Where Eukore and another database hold the same species' marker: the records that agree with Eukore's genomes' "
+     "sequence, those that are another species' gene (one of the two is misnamed) and those unlike the species' "
+     "own genome's (agreement_records.tsv lists both). EUKARYOME's and ROD's reads by the build's own-species check, MIDORI2's by its reference screen, another "
+     "18S reference's by alignment to the genomes' 18S.", "agreement, agreement_records"),
+    ("quality", quality,
+     "The records each check flags, per group: the genomes (NCBI's and its FCS-GX and ANI reports' flags, copies "
+     "another clade's, a duplicated genome, a genetic code that differs), the BUSCO copies, the rRNA records and the "
+     "organelle genes (the checks that flag the most, then the confidence tiers low, medium and unverified); each "
+     "cell the share of the group's.", "quality"),
+    ("gencode", gencode,
+     "The genomes' genetic codes checked against their BUSCO genes: those that agree with NCBI's table, differ (the "
+     "tables that fit them at the right), are undecided or were not checked, per group.", "gencode"),
+    ("tree", tree,
+     "The tree of the BUSCO proteins against NCBI's taxonomy (tree.py: up to two species' genomes per genus, the "
+     "loci Single in the most of them placed on BUSCO's profiles, FastTree). Left: NCBI's taxa with two genomes or "
+     "more that are one branch of the unrooted tree. Right: the tree, the groups of its tips along it (bands), the "
+     "genomes placed apart from their taxon marked.", "tree.nwk, tree_tips, tree_taxa, tree_strays"),
     ("completeness", completeness, "BUSCO completeness per supergroup and per genome.", "completeness"),
     ("completeness_vs_assembly", completeness_vs_assembly, "Completeness against the assembly's contiguity.",
      "completeness"),
@@ -1450,6 +2080,13 @@ FIGURES = (
     ("introns", introns, "Intron share of the BUSCO genes' bases: what an exon-only reference leaves out.", "genes"),
     ("resolution", resolution, "Identity of each copy's nearest other species by the rank they share; BUSCOs and 18S.",
      "resolution"),
+    ("thresholds", thresholds,
+     "The identity that parts taxa, per marker and rank: the cutoff with the best balanced accuracy between the "
+     "sequences that should stay together (a species: the intraspecific panel's least alike pair of its own "
+     "assemblies; a higher rank: the copies whose nearest other species shares it) and those that should be apart "
+     "(the copies whose nearest other species does not). All BUSCOs together, the 18S, each BUSCO (small dots); "
+     "published thresholds of fungal ITS and 28S (hollow: other markers and taxa, for context).",
+     "thresholds, resolution_hist, intraspecific/barcode_gap"),
     ("barcode_gap", barcode_gap, "The intraspecific panel's barcode gap per marker: each species' least alike pair of "
                                  "its own assemblies against its nearest other species.", "intraspecific/barcode_gap"),
     ("markers", markers, "Eukore's own marker loci (RPB1 .. H3) against UniProt's protein of the same species.",
@@ -1477,6 +2114,14 @@ FIGURES = (
     ("detection_genomes", detection_genomes, "Each test genome's reads placed to its right taxon per reference in the "
                                              "deepest samples: detected, held but missed, or not held.", "detection"),
     ("runtime", runtime, "Run time per genome and of the package stage.", "runtime, stages"),
+    ("sizes", sizes, "The package's parts (its folders; busco/ and markers/ by kind of file) by their size, as the "
+                     "manifest lists the files.", "sizes"),
+    ("growth", growth, "The release's genomes by the year NCBI released their assemblies (bars), and those released "
+                       "by then (line); dashed, the other databases' release dates where benchmarks/databases.tsv "
+                       "gives them: what a database frozen then could not hold.", "growth"),
+    ("changes", changes, "What changed since the earlier release (--previous): per group the species added and "
+                         "removed, those that gained a genome, and the genomes replaced by another assembly or by a "
+                         "newer version of the same.", "changes, changes_species"),
 )
 NOT_COLLECTED = (
     "read assignment by a read profiler (protal) on held-out genomes: the end-to-end measure, outside the build",
@@ -1486,9 +2131,33 @@ NOT_COLLECTED = (
 )
 
 
-def index_md(package, made, out):
+def databases_md(bench):
+    """databases.tsv (databases.py's comparison table) as Markdown lines: what each database is, then what the
+    benchmarks counted of it; none without the table."""
+    rows = read(os.path.join(bench or "", "databases.tsv"))
+    if not rows:
+        return []
+
+    def count(v):
+        return f"{int(v):,}" if str(v).isdigit() else v
+
+    lines = ["## The databases compared", "",
+             "What each database is (benchmarks/databases.tsv, written by hand: check each cell against the "
+             "database's own paper), and what the benchmarks counted of it (databases.tsv).", "",
+             "| database | markers | taxa | sequences | curation | updates | reference |", "|---|---|---|---|---|---|---|"]
+    lines += ["| " + " | ".join(r[k] for k in ("database", "markers", "taxa", "sequences", "curation", "updates",
+                                               "reference")) + " |" for r in rows]
+    lines += ["", "| database | version | NCBI species | in Eukore too | Eukore's alone | its alone | records | bases |",
+              "|---|---|---:|---:|---:|---:|---:|---:|"]
+    lines += ["| " + " | ".join([r["database"], r["version"]] + [count(r[k]) for k in (
+        "species", "both", "eukore_only", "database_only", "records", "bases")]) + " |" for r in rows]
+    return lines + [""]
+
+
+def index_md(package, made, out, bench=None):
     lines = [f"# Figures: {os.path.basename(os.path.normpath(package))}", "",
-             "Drawn by `eukore/figures.py` from the package's `benchmarks/` (docs/benchmarks.md).", ""]
+             "Drawn by `benchmarks/eukore_bench/figures.py` from the benchmarks' tables (benchmarks/README.md).", ""]
+    lines += databases_md(bench)
     number = 0
     for name, _fn, caption, tables in FIGURES:
         title = "Figure 1" if name == "Fig1" else f"S{number}: {name}"
@@ -1517,7 +2186,7 @@ def draw(package, bench=None, out=None, fmt="png", log=print):
             plt.close("all")
             log(f"WARNING: figure {name} failed ({type(e).__name__}: {e}): left out")
             made[name] = None
-    made["index"] = index_md(package, made, out)
+    made["index"] = index_md(package, made, out, bench)
     summary = load_summary(bench)
     if summary:
         manifest = {}

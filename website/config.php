@@ -20,6 +20,7 @@ const BBSRC_GRANTS = [];
 // The site's pages: main.php?site=<key> (index.php is Home).
 const PAGES = [
     'stats' => 'Statistics',
+    'benchmarks' => 'Benchmarks',
     'downloads' => 'Downloads',
     'tutorial' => 'Tutorial',
     'acknowledgements' => 'Acknowledgements',

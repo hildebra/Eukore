@@ -30,7 +30,7 @@ import urllib.request
 
 from . import ROOT
 from . import reads, references
-from eukore import genomes as genomes_mod, ncbi as ncbi_mod, package as package_mod, util
+from eukore import genomes as genomes_mod, ncbi as ncbi_mod, odb as odb_mod, package as package_mod, sources, util
 
 PR2_VERSION = "5.1.1"
 PR2_URL = "https://github.com/pr2database/pr2database/releases/download/v{v}/pr2_version_{v}_SSU_taxo_long.fasta.gz"
@@ -41,7 +41,7 @@ EUKDETECT_FILES = ("eukdb.fasta", "busco_taxid_genome_link.txt")
 READ_BACKGROUND = os.path.join(ROOT, "benchmarks", "read_background.tsv")  # data/ until 2026-11-12
 REFERENCES = "references.tsv"
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
-STEPS = ("taxdump", "pr2", "metaphlan", "eukdetect2", "background", "tests", "convert")
+STEPS = ("taxdump", "pr2", "metaphlan", "eukdetect2", "odb", "background", "tests", "convert")
 
 
 def taxdump_of(bench, given=None):
@@ -168,6 +168,42 @@ def convert(bench, taxdump, log=print):
     return listed
 
 
+def odb_of(bench):
+    """BUSCO's dataset in BENCH (the odb step's: downloaded, or the build's linked), or None."""
+    folder = odb_mod.folder_of(os.path.join(bench, "downloads")) if bench else None
+    return folder if folder and os.path.isdir(os.path.join(folder, "hmms")) else None
+
+
+def odb(bench, given=None, log=print):
+    """BUSCO's dataset for the tree's profiles (tree.py): the build's (given: SOURCES/eukaryota_odb12, the package's
+    own version) linked into BENCH/downloads, else BUSCO's newest downloaded there."""
+    down = os.path.join(bench, "downloads")
+    os.makedirs(down, exist_ok=True)
+    if odb_of(bench):
+        return odb_of(bench)
+    if given:
+        if not os.path.isdir(os.path.join(given, "hmms")):
+            raise OSError(f"{given}: no hmms/ in it (BUSCO's dataset folder, eukaryota_odb12/)")
+        os.symlink(os.path.abspath(given), odb_mod.folder_of(down))
+        return odb_mod.folder_of(down)
+    return odb_mod.fetch(down, sources.download, log)
+
+
+def versions(bench):
+    """{name: the version downloaded} of the other references in BENCH (databases.tsv's `version`)."""
+    out = {}
+    down = os.path.join(bench, "downloads")
+    if os.path.isfile(os.path.join(down, "pr2", os.path.basename(PR2_URL.format(v=PR2_VERSION)))):
+        out["PR2"] = PR2_VERSION
+    mpa = os.path.join(down, "metaphlan")
+    tars = sorted(n for n in os.listdir(mpa) if n.endswith(".tar")) if os.path.isdir(mpa) else []
+    if tars:
+        out["MetaPhlAn4"] = tars[-1][:-len(".tar")]
+    if os.path.isfile(os.path.join(down, "eukdetect2", EUKDETECT_FILES[0])):
+        out["EukDetect2"] = f"Zenodo record {EUKDETECT_RECORD}"
+    return out
+
+
 def read_references(bench):
     """BENCH/compare/references.tsv -> [(name, FASTA, table)] (reads.compared's form)."""
     path = os.path.join(bench, "compare", REFERENCES)
@@ -187,6 +223,8 @@ def main(argv=None):
                                      "linked, not downloaded")
     p.add_argument("--taxdump", help="NCBI's whole taxdump, e.g. the build's SOURCES/taxdump.tar.gz (default: "
                                      "downloaded into BENCH/downloads)")
+    p.add_argument("--odb", help="BUSCO's dataset of the build (SOURCES/eukaryota_odb12: the package's own version), "
+                                 "linked for the tree's profiles (default: BUSCO's newest, downloaded)")
     p.add_argument("--only", help=f"some of {','.join(STEPS)} (default: all)")
     p.add_argument("--read_genomes", type=int, default=reads.PER_GROUP, help="test genomes per supergroup")
     p.add_argument("--mpa_version", help="MetaPhlAn's database (default: the server's mpa_latest)")
@@ -204,6 +242,7 @@ def main(argv=None):
                       ("pr2", lambda: pr2(a.bench, log)),
                       ("metaphlan", lambda: metaphlan(a.bench, a.mpa_version, log)),
                       ("eukdetect2", lambda: eukdetect2(a.bench, log=log)),
+                      ("odb", lambda: odb(a.bench, a.odb, log)),
                       ("background", lambda: background(a.bench, log)),
                       ("tests", lambda: test_genomes(a.bench, a.package, a.genomes, a.read_genomes, log)
                        if a.package else log("  tests: no --package, no test genomes")),

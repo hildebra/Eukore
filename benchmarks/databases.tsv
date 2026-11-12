@@ -1,0 +1,21 @@
+# What each database Eukore is set beside is (benchmarks/eukore_bench/databases.py; since 2026-11-12): the words of
+# the comparison table (databases.tsv of the results), to which the benchmarks add what they count themselves: the
+# version read, its NCBI species, those in Eukore too, its records and bases.
+# Written by hand on 2026-11-12 from each database's own description; EukDetect2's row from its preprint as read that
+# day. Check every cell against the database's own paper before printing the table. A database not listed here still
+# gets its counted columns; a row whose database the benchmarks did not read keeps its words alone.
+# Columns: database (as overlap.tsv names it), markers, taxa, sequences (what a record is), curation (what is checked),
+# updates, reference, released (YYYY-MM where known: EukDetect2 v1.1, UNITE 10.0, SILVA 138.2; the growth figure marks
+# them beside the genomes' release years; fill the others from their release notes).
+database	markers	taxa	sequences	curation	updates	reference	released
+Eukore	129 BUSCO genes (eukaryota_odb12), Eukore's own loci, rRNA operons (18S, ITS1, 5.8S, ITS2, 28S), mitochondrial and plastid genes	all eukaryotes: every species with a genome, and species known by published rRNA reads	whole loci from the genome (exons and introns), with their coding sequences and proteins; rRNA operons; organelle genes	each record: contamination (FCS-GX, tiara, its relatives' sequences), fragments, gaps, stops; a confidence tier	rebuilt from NCBI by the build	this work	
+EukDetect2	BUSCO genes (eukaryota_odb12)	fungi and protists	the genes' regions of the genome, repeats masked, clustered at 99%	BUSCOs with bacterial hits left out; genomes clustered at 97% ANI	with its releases (v1.1, 2026-10)	Shih et al. 2026 (bioRxiv 10.64898/2026.06.24.734308); Lind & Pollard 2021	2026-10
+MetaPhlAn4	clade-specific marker genes	bacteria and archaea; fungi and protists	coding sequences unique to a clade	markers chosen as unique to their clade	with MetaPhlAn's database releases	Blanco-Miguez et al. 2023	
+PR2	18S rRNA (plastid and mitochondrial SSU beside)	all eukaryotes, protists foremost	18S sequences of GenBank	a taxonomy of nine ranks curated by experts	versioned releases	Guillou et al. 2013	
+SILVA	SSU and LSU rRNA	bacteria, archaea and eukaryotes	aligned rRNA sequences, checked for quality	alignment quality, chimera checks	versioned releases	Quast et al. 2013	2024-07
+UNITE	ITS	fungi and all eukaryotes	ITS sequences clustered into species hypotheses, each with a DOI	curated species hypotheses and reference sequences	versioned releases	Abarenkov et al. 2024	2025-02
+EUKARYOME	SSU, ITS and LSU rRNA; long reads of the operon	all eukaryotes	rRNA sequences of INSDC and long reads	chimeras and low quality flagged; a curated classification	versioned releases	Tedersoo et al. 2024	
+KSGP	SSU rRNA	bacteria, archaea and eukaryotes	SSU sequences of several references under one taxonomy				
+MIDORI2	mitochondrial protein-coding and rRNA genes	eukaryotes	the genes' sequences of GenBank	built from GenBank's annotations	rebuilt with GenBank's releases	Leray et al. 2022	
+ROD	rRNA operons	eukaryotes	operons of genome assemblies				
+BUSCO (OrthoDB)	129 near-universal single-copy genes (eukaryota_odb12)	eukaryotes	proteins and profile HMMs of OrthoDB's species	orthology by OrthoDB	with OrthoDB's releases	Tegenfeldt et al. 2025; Manni et al. 2021	

@@ -266,8 +266,10 @@ Before the benchmarks, the first trial (the same seven clades, 30 BUSCOs) was co
 
 The build also collects what the paper's figures need of the package alone (benchmarks/'s `eukore-figures.sh`
 draws them, with `index.md` captioning each and naming its tables):
-- **The genome set** (`selection.tsv`, `breadth.tsv`): what became of every NCBI taxon with an assembly, and the species
-  per supergroup in NCBI and Eukore (another reference's columns: benchmarks/'s comparisons).
+- **The genome set** (`selection.tsv`, `selection_taxa.tsv`, `breadth.tsv`): what became of every NCBI taxon with an
+  assembly (counted per supergroup, and since 2026-11-12 taxon by taxon), and the species per supergroup in NCBI and
+  Eukore (another reference's columns: benchmarks/'s comparisons; the breadth above the species: benchmarks/'s
+  `breadth_ranks.tsv`).
 - **Gene models against the genome's own annotation** (`annotation.tsv`, `genes.tsv`): a truth set independent of
   BUSCO's dataset. The fetch stage takes each genome's annotation (NCBI's GFF, RefSeq's or a submitter's, not asked
   for where the assembly summary gives no protein-coding genes; else Ensembl's, else TOGA2's: `source`) and NCBI's

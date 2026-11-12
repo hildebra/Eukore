@@ -269,6 +269,13 @@ class FatesTest(unittest.TestCase):
                          ("chosen", "placeholder", "hybrid", "not a species", "every assembly excluded"))
         self.assertIn(fates[27291], ("chosen", "chosen, flagged"))
         self.assertTrue(set(fates.values()) <= set(genomes.FATES))
+        # since 2026-11-12: why a taxon's assemblies were left out, each taxon with NCBI's assemblies of it
+        self.assertEqual(fates.reasons[6253], (1, {"contaminated": 1}))
+        self.assertEqual(fates.reasons[4932][1], {})
+        rows = {r["taxid"]: r for r in benchmarks.taxa_rows(fates, ncbi)}
+        self.assertEqual((rows[6253]["fate"], rows[6253]["assemblies"], rows[6253]["reasons"]),
+                         ("every assembly excluded", 1, "contaminated"))
+        self.assertEqual(rows[4932]["reasons"], "-")
 
     def test_toga2_genomes_of_species_ncbi_has_none_of(self):
         with tempfile.TemporaryDirectory() as tmp:
