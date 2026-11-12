@@ -580,7 +580,8 @@ def genome_files(args):
 
 def genetics(collected, ncbi, hmm_of, hmmalign="hmmalign", work=None, log=print, threads=1):
     """The copies' proteins placed on their HMMs (align.py, `threads` loci at once), their introns (introns.py) and
-    each genome's genetic code checked (codecheck.py; since 2026-11-07) -> collected, with `introns`, `intron_sites`,
+    each genome's genetic code checked (codecheck.py; since 2026-11-07; `threads` genomes at once since 2026-11-12)
+    -> collected, with `introns`, `intron_sites`,
     `intron_site_columns` and `codons` and the genomes' rows completed; without hmmalign, introns without their places
     and no code check."""
     from . import align as align_mod, codecheck, groups, introns as introns_mod  # noqa: PLC0415
@@ -588,7 +589,7 @@ def genetics(collected, ncbi, hmm_of, hmmalign="hmmalign", work=None, log=print,
     group_of = {a: groups.group_of(ncbi, int(g["species_taxid"])) for a, g in collected["genomes"].items()
                 if g["representative"] == "t"}
     rows, site_rows, site_columns, per_genome = introns_mod.annotate(collected, states, group_of)
-    codons, checked = codecheck.run(collected, states, hmm_of) if states else ([], {})
+    codons, checked = codecheck.run(collected, states, hmm_of, threads) if states else ([], {})
     for acc, g in collected["genomes"].items():
         g.update(per_genome.get(acc, {}))
         g.update(checked.get(acc, {}))
