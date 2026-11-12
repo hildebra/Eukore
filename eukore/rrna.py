@@ -737,18 +737,76 @@ def identity(a, b):
     return 1 - best / m
 
 
+TYPE_Q = 8  # the q-grams of types_of's filter
+
+
+def grams(seq, q=TYPE_Q):
+    """A sequence's q-grams and how often each is in it."""
+    return collections.Counter(seq[i:i + q] for i in range(len(seq) - q + 1))
+
+
+def max_edits(m, threshold):
+    """The most edits a shorter sequence of m bases may have for identity's 1 - edits / m to reach threshold (as
+    identity's floats compare)."""
+    e = int((1 - threshold) * m)
+    while 1 - (e + 1) / m >= threshold:
+        e += 1
+    while e >= 0 and 1 - e / m < threshold:
+        e -= 1
+    return e
+
+
+def may_reach(a, a_grams, b, b_grams, threshold, q=TYPE_Q):
+    """False where identity(a, b) is below threshold for certain, by the q-gram lemma (since 2026-11-12): the shorter
+    (identity's: a where as long), aligned with e edits to a stretch of the longer, has at least m - q + 1 - q*e of its
+    m - q + 1 q-grams in it. True where it may reach it (identity then says)."""
+    if len(a) > len(b):
+        a, a_grams, b, b_grams = b, b_grams, a, a_grams
+    m = len(a)
+    if not m:
+        return True
+    e = max_edits(m, threshold)
+    if e < 0:
+        return False
+    need = m - q + 1 - q * e
+    if need <= 0:
+        return True
+    return sum(map(a_grams.__getitem__, a_grams.keys() & b_grams.keys())) >= need
+
+
 def types_of(exons):
     """Sequences -> {sequence: type number}, each the first type whose first sequence it is SAME_TYPE identical to,
-    the commonest first."""
+    the commonest first. A pair the q-gram lemma rules out is not aligned (may_reach; since 2026-11-12: every pair was,
+    in pure Python, and a species of thousands of distinct reads held the package stage for hours): the types the
+    same."""
     reps, out = [], {}
     for seq, _n in sorted(collections.Counter(exons).items(), key=lambda kv: (-kv[1], -len(kv[0]), kv[0])):
-        for i, rep in enumerate(reps):
-            if identity(seq, rep) >= SAME_TYPE:
+        g = grams(seq)
+        for i, (rep, rep_grams) in enumerate(reps):
+            if may_reach(seq, g, rep, rep_grams, SAME_TYPE) and identity(seq, rep) >= SAME_TYPE:
                 out[seq] = i + 1
                 break
         else:
-            reps.append(seq)
+            reps.append((seq, g))
             out[seq] = len(reps)
+    return out
+
+
+def species_types(parts, threads=1):
+    """{species: [its records' 18S]} -> {species: types_of's}, the species with more than one distinct 18S typed by a
+    pool of `threads` processes, the largest first (since 2026-11-12: one after another, on one core)."""
+    out, many = {}, []
+    for sp, seqs in parts.items():
+        if len(set(seqs)) > 1:
+            many.append(sp)
+        else:
+            out[sp] = {seqs[0]: 1} if seqs else {}
+    many.sort(key=lambda sp: -len(parts[sp]))
+    if threads > 1 and len(many) > 1:
+        with util.process_pool(min(threads, len(many))) as pool:
+            out.update(zip(many, pool.map(types_of, [parts[sp] for sp in many])))
+    else:
+        out.update((sp, types_of(parts[sp])) for sp in many)
     return out
 
 
@@ -1015,10 +1073,10 @@ def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None):
         if ncbi is None or ncbi.rank.get(int(row["species_taxid"])) == "species":
             by_species[row["species_taxid"]].append((name, ssu_part(seq, row)))
     type_of = {}
+    typed = species_types({sp: [p for _n, p in items] for sp, items in by_species.items()}, threads)
     for sp, items in by_species.items():
-        types = types_of([p for _n, p in items])
         for name, part in items:
-            type_of[name] = types[part]
+            type_of[name] = typed[sp][part]
     own = own_species(records, ncbi, vsearch, threads)
     from . import screen as screen_mod  # noqa: PLC0415
     screened, counts_ = screen_mod.screen(records, ncbi, vsearch, threads)

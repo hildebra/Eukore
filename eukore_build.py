@@ -674,9 +674,10 @@ def schedule(opts, todo, sizes, progress, note, poll=60, task=None):
 def progress_of(opts, what, weights, unit="Gb", scale=1e9):
     """A pass's progress (util.Progress): said every minute of its first 10, then every --report_minutes, each
     report with the cores, memory and disk the build uses (opts.usage; since 2026-11-08)."""
-    every = opts.report_minutes * 60
+    every = getattr(opts, "report_minutes", util.REPORT_EVERY / 60) * 60
+    usage = getattr(opts, "usage", None)
     return util.Progress(what, weights, say, every, unit, scale, early=util.early_reports(every),
-                         usage=opts.usage.line)
+                         usage=usage.line if usage else None)
 
 
 def qc_searches(opts, kind):
@@ -746,8 +747,34 @@ def backfill_one(item):
 
 def published(opts, src_dir, ncbi):
     """The published reads (EUKARYOME, ROD) with their regions and NCBI labels -> records [(name, sequence, row)],
-    their regions kept in WORK/published/PUBLISHED_REGIONS (a rerun reads them)."""
+    their regions kept in WORK/published/PUBLISHED_REGIONS (a rerun reads them). The reads not annotated yet are
+    annotated here, shared with the other runs on the WORK (annotate_published), whose last batches this run awaits."""
+    reads = published_reads(opts, src_dir, ncbi)
+    known, unread = annotate_published(opts, reads, ncbi, wait=True)
     out = []
+    for name, seq, taxid, source, how, accession in reads:
+        if name in unread:
+            continue
+        regions, complete, strand, _digest = known.get(name, ("-", "f", "+", None))
+        regions_list = rrna.parse_regions(regions)
+        seq = rrna.revcomp(seq) if strand == "-" else seq  # the record on its unit's strand, as its regions
+        out.append((name, seq, dict(kind="rDNA" if regions_list else "18S", accession=accession, source=source,
+                                    taxid=taxid, species_taxid=ncbi.species_of(taxid), regions_list=regions_list,
+                                    lsu_complete=complete == "t", label_from=how)))
+    return out
+
+
+def published_pass(opts, src_dir, ncbi):
+    """The published reads' annotation by a run of the process stage with --genomes_only (an array's task; since
+    2026-11-12), once its genomes and passes are through: the batches no other run holds, none awaited. The reads
+    need no genome: until then the final job annotated all 229,618 alone, one node for 8 hours and more."""
+    if shutil.which("barrnap"):
+        annotate_published(opts, published_reads(opts, src_dir, ncbi), ncbi, wait=False)
+
+
+def published_reads(opts, src_dir, ncbi):
+    """The published reads [(name, sequence, taxid, source, how labelled, accession)] of the sources, inside the
+    build's clades."""
     index = rrna.name_index(ncbi)
     reads = []
     rod = sources.ready(src_dir, "ROD")
@@ -766,56 +793,168 @@ def published(opts, src_dir, ncbi):
             t, how = rrna.eukaryome_taxid(label, index, ncbi)
             if t and opts.inside(t):
                 reads.append((f"EUK_{acc}", seq, t, "EUKARYOME", how, "-"))
-    cache_dir = os.path.join(opts.work, "published")
-    os.makedirs(cache_dir, exist_ok=True)
-    # the regions cache: one file per process that annotated (since 2026-11-08: one file all runs appended to, the
-    # lines of two package stages on one WORK interleaved), all read
+    return reads
+
+
+def published_known(cache_dir, reads):
+    """The regions cache's reads of every process that annotated (one file each; since 2026-11-08: one file all runs
+    appended to, the lines of two package stages on one WORK interleaved): {name: (regions, lsu_complete, strand,
+    digest)} of the reads its line names with (a line since 2026-11-08) their sequence's digest: a source's new release
+    with a read changed under its name has it annotated again."""
     stem = os.path.join(cache_dir, PUBLISHED_REGIONS[:-len(".tsv")])
     known = {}
     for path in [stem + ".tsv"] + sorted(glob.glob(glob.escape(stem) + ".*.tsv")):
         known.update(read_regions(path))
-    cache = f"{stem}.{socket.gethostname()}-{os.getpid()}.tsv"
-    # a read is known where its line names it and (a line since 2026-11-08) its sequence's digest: a source's new
-    # release with a read changed under its name has it annotated again
-    known = {n: known[n] for n, s, *_ in reads if n in known and known[n][3] in (None, read_digest(s))}
-    unread = set()  # the reads of a batch that failed (C13)
-    # by ITSx's profile sets, so that a batch's reads share theirs (an ITSx run per distinct set)
-    todo = sorted(((n, s, rrna.itsx_groups(ncbi, t)) for n, s, t, *_ in reads if n not in known),
-                  key=lambda r: (r[2], r[0]))
-    if todo and shutil.which("barrnap"):
-        say(f"published reads: {len(todo)} to annotate (barrnap, ITSx)")
-        # small batches over every thread: barrnap (nhmmer) runs one thread a batch and dominates (~0.5 s a read)
-        batches = [todo[i:i + PUBLISHED_BATCH] for i in range(0, len(todo), PUBLISHED_BATCH)]
-        work = functools.partial(_annotate_batch, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"))
-        failed = []
-        unread = {n for n, _s, _t in todo}
-        with util.process_pool(opts.threads) as pool, open(cache, "a", newline="\n") as fh:
-            if fh.tell() and not util.ends_in_newline(cache):  # a killed run's last line cut: the next starts anew
-                fh.write("\n")
-            digest = {n: read_digest(s) for n, s, _t in todo}
-            for got, why in util.unordered(pool, work, batches):
-                if why:
-                    failed.append(why)
-                fh.writelines(f"{name}\t{regions}\t{complete}\t{strand}\t{digest[name]}\n"
-                              for name, (regions, complete, strand) in got.items())
-                fh.flush()
-                known.update({n: v + (digest[n],) for n, v in got.items()})
-        unread -= set(known)
-        if failed:
-            # left out (since 2026-11-10: each went into the package as an 18S record of its whole length, a 4-6 kb
-            # operon read among the 18S, on the strand it came in, until a rerun annotated it)
-            say(f"WARNING: published reads: {len(failed)} batches of {PUBLISHED_BATCH} failed (e.g. {failed[0]}): "
-                f"their {len(unread):,} reads left out of this package, annotated again by a rerun")
-    for name, seq, taxid, source, how, accession in reads:
-        if name in unread:
-            continue
-        regions, complete, strand, _digest = known.get(name, ("-", "f", "+", None))
-        regions_list = rrna.parse_regions(regions)
-        seq = rrna.revcomp(seq) if strand == "-" else seq  # the record on its unit's strand, as its regions
-        out.append((name, seq, dict(kind="rDNA" if regions_list else "18S", accession=accession, source=source,
-                                    taxid=taxid, species_taxid=ncbi.species_of(taxid), regions_list=regions_list,
-                                    lsu_complete=complete == "t", label_from=how)))
+    return {n: known[n] for n, s, *_ in reads if n in known and known[n][3] in (None, read_digest(s))}
+
+
+def published_batches(reads, ncbi):
+    """Every published read in batches of PUBLISHED_BATCH, by ITSx's profile sets (an ITSx run per distinct set) and
+    name, each named by its reads' names, digests and sets -> [(batch name, [(name, sequence, sets)])]: the same for
+    every run on the WORK (since 2026-11-12: the reads not annotated yet alone, each run's batches its own)."""
+    every = sorted(((n, s, rrna.itsx_groups(ncbi, t)) for n, s, t, *_ in reads), key=lambda r: (r[2], r[0]))
+    out = []
+    for i in range(0, len(every), PUBLISHED_BATCH):
+        batch = every[i:i + PUBLISHED_BATCH]
+        key = hashlib.md5("".join(f"{n}\t{read_digest(s)}\t{t}\n" for n, s, t in batch).encode()).hexdigest()[:16]
+        out.append((key, batch))
     return out
+
+
+PUBLISHED_POLL = 30  # seconds between looks at the batches other runs annotate
+
+
+def published_done(cache_dir):
+    """The batches every run marked done: the lines of WORK/published/done.*.txt (one file a process, a batch a line;
+    few files on a shared file system: a file a batch would be ~1,000)."""
+    done = set()
+    for path in glob.glob(os.path.join(cache_dir, "done.*.txt")):
+        with contextlib.suppress(OSError), open(path) as fh:
+            done.update(line.strip() for line in fh if line.endswith("\n"))
+    return done
+
+
+def annotate_published(opts, reads, ncbi, wait=True):
+    """The published reads not annotated yet, in batches (published_batches) shared with every other run on the WORK
+    (since 2026-11-12): a batch is claimed (WORK/published/.<batch>.claim, removed once done; a dead run's taken
+    over), annotated by a pool of processes, its lines added to this process' regions cache, then marked done (a line
+    in this process' done.<host>-<pid>.txt). wait: a run that needs them all (the package stage) waits for the
+    batches other runs hold, else (an array's task) it leaves them -> (known: published_known's of all runs, unread:
+    the reads of batches that failed here)."""
+    cache_dir = os.path.join(opts.work, "published")
+    os.makedirs(cache_dir, exist_ok=True)
+    known = published_known(cache_dir, reads)
+    batches = published_batches(reads, ncbi)
+    marked = [published_done(cache_dir), time.time()]  # the done batches, read again at most every few seconds
+
+    def done(key, fresh=False):
+        if key not in marked[0] and (fresh or time.time() - marked[1] > 5):
+            marked[:] = [published_done(cache_dir), time.time()]
+        return key in marked[0]
+    left = [(k, b) for k, b in batches if not done(k) and not all(n in known for n, _s, _t in b)]
+    barrnap, failed, unread = shutil.which("barrnap"), {}, set()
+    if left and barrnap:
+        say(f"published reads: {sum(len(b) for _k, b in left):,} to annotate (barrnap, ITSx), {len(left):,} batches "
+            "shared with the other runs on the WORK" + ("" if wait else ", those they hold left to them"))
+        # each array task starts at its own place among them: fewer claims met
+        task, tasks = os.environ.get("SLURM_ARRAY_TASK_ID", ""), os.environ.get("SLURM_ARRAY_TASK_COUNT", "")
+        at = (int(task) - 1) * len(left) // int(tasks) % len(left) if task.isdigit() and tasks.isdigit() \
+            and int(tasks) else 0
+        order = left[at:] + left[:at]
+        size = dict((k, len(b)) for k, b in order)
+        progress = progress_of(opts, "published reads annotated", [size[k] for k, _b in order], "", 1)
+        tried, counted, held = set(), set(), {}
+        stop = threading.Event()
+
+        def beat():  # the held claims touched (genomes.claimed_file's, for many at once)
+            while not stop.wait(genomes.CLAIM_BEAT):
+                for path in list(held.values()):
+                    if genomes.claim_own(path):
+                        with contextlib.suppress(OSError):
+                            os.utime(path)
+
+        def release(path):
+            if genomes.claim_own(path):
+                with contextlib.suppress(OSError):
+                    os.remove(path)
+
+        def claimable():
+            for key, batch in order:
+                if key in tried or done(key):
+                    continue
+                path = genomes.claim_file(os.path.join(cache_dir, f".{key}.claim"))
+                if path is None:  # another run's
+                    continue
+                if done(key, fresh=True):  # done by another between the look and the claim
+                    release(path)
+                    continue
+                tried.add(key)
+                held[key] = path
+                yield key, batch
+
+        def others():  # the batches other runs finished, counted once
+            for key, _b in order:
+                if key not in counted and key not in tried and done(key):
+                    counted.add(key)
+                    progress.step(size[key], skipped=True)
+            return [k for k, _b in order if k not in tried and not done(k)]
+        heart = threading.Thread(target=beat, daemon=True)
+        heart.start()
+        me = f"{socket.gethostname()}-{os.getpid()}"
+        cache = os.path.join(cache_dir, f"{PUBLISHED_REGIONS[:-len('.tsv')]}.{me}.tsv")
+        digest = {n: read_digest(s) for _k, b in left for n, s, _t in b}
+        work = functools.partial(_annotate_claimed, barrnap=barrnap, itsx=shutil.which("ITSx"))
+        try:
+            with util.process_pool(opts.threads) as pool, open(cache, "a", newline="\n") as fh, \
+                    open(os.path.join(cache_dir, f"done.{me}.txt"), "a", newline="\n") as marks:
+                if fh.tell() and not util.ends_in_newline(cache):  # a killed run's last line cut: the next starts anew
+                    fh.write("\n")
+                while True:
+                    ran = False
+                    for key, got, why in util.unordered(pool, work, claimable(), progress,
+                                                        lambda: f", {len(held):,} batches under way"):
+                        ran = True
+                        fh.writelines(f"{name}\t{regions}\t{complete}\t{strand}\t{digest[name]}\n"
+                                      for name, (regions, complete, strand) in got.items())
+                        fh.flush()
+                        if why:
+                            failed[key] = why
+                        else:  # marked done once its lines are written
+                            marks.write(key + "\n")
+                            marks.flush()
+                            marked[0].add(key)
+                        release(held.pop(key))
+                        counted.add(key)
+                        progress.step(size[key], failed=bool(why))
+                    pending = others()
+                    if not wait or not pending:
+                        break
+                    if not ran:  # each held by another run: their marks awaited (a dead run's claim taken over)
+                        progress.tick(f", {len(pending):,} batches annotated by other runs")
+                        time.sleep(PUBLISHED_POLL)
+        finally:
+            stop.set()
+            heart.join()
+            for path in held.values():
+                release(path)
+        if not wait and others():
+            say(f"  published reads: {len(others()):,} batches left to the other runs")
+    known = published_known(cache_dir, reads)
+    if failed:
+        unread = {n for k, b in left if k in failed for n, _s, _t in b if n not in known}
+        # left out (since 2026-11-10: each went into the package as an 18S record of its whole length, a 4-6 kb
+        # operon read among the 18S, on the strand it came in, until a rerun annotated it)
+        say(f"WARNING: published reads: {len(failed)} batches of {PUBLISHED_BATCH} failed (e.g. "
+            f"{next(iter(failed.values()))}): their {len(unread):,} reads left out of this package, annotated again "
+            "by a rerun")
+    return known, unread
+
+
+def _annotate_claimed(item, barrnap=None, itsx=None):
+    """(batch name, batch) -> (batch name, _annotate_batch's result, its failure or None)."""
+    key, batch = item
+    got, why = _annotate_batch(batch, barrnap, itsx)
+    return key, got, why
 
 
 def _annotate_batch(batch, barrnap=None, itsx=None):
@@ -1788,6 +1927,8 @@ def _main(argv, held):
             # beside its genome waits for a run that fetches)
             organelle_genes(opts, src_dir, job_map, ncbi)
             annotate_pass(opts, job_map, may_fetch=False)
+            # the published reads' annotation (since 2026-11-12: the final job's alone), which needs no genome
+            published_pass(opts, src_dir, ncbi)
         else:
             intraspecific_pass(opts, src_dir, ncbi, extras)
             describe_pass(opts, job_map)

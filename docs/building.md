@@ -199,6 +199,23 @@ Where a compute node cannot submit jobs, the final job says so and searches alon
 login node, `bash tools/eukore.sh qc N`, once its log names the inputs. Outside SLURM, run
 `python3 -m eukore.qc helper WORK/qc -t <threads>` on any node that sees the WORK.
 
+**The published reads' annotation on several nodes** (since 2026-11-12). EUKARYOME's and ROD's reads (some
+230,000) are annotated by barrnap and ITSx, which needs no genome. Every run on the WORK splits them into the same
+batches of 250. The array's tasks, once their genomes and passes are done, annotate the batches no other task holds
+(a claim each; a dead task's batch is taken over). The final job annotates what is left and waits for batches still
+held elsewhere. Until then the final job annotated them all alone. `bash tools/eukore.sh build N` on a WORK whose
+genomes are all done therefore spreads this step over N nodes; `bash tools/eukore.sh final` alone runs it on one.
+
+The 18S records' 99% types are made per species by a pool of processes, and pairs that cannot reach 99% are ruled
+out by their shared 8-mers before they are aligned (the q-gram lemma: the types are the same). Until then this ran
+in one Python process for hours.
+
+**Few files on the WORK.** These steps add no file per item: a vsearch locus keeps one hits file
+(`WORK/qc/<kind>/<locus>.<digest>.hits.gz`; its input and claim files exist only while it is searched), and the
+published reads keep one regions file and one list of done batches per process that annotated
+(`WORK/published/regions.3.<host>-<pid>.tsv`, `done.<host>-<pid>.txt`; a batch's claim file exists only while it
+is annotated).
+
 Each run opens with a banner on STDOUT (since 2026-11-08): Eukore's version, the date, host and Python, the command
 (a `--veupathdb_key` on it hidden), then what each of its stages will do and with what: the groups and species, the
 loci, the folders, the threads, the process stage's memory, the package stage's `--keep_gb`, and what is switched off.
