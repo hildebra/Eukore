@@ -5,7 +5,8 @@
 #   bash tools/eukore.sh build [N]    # N process jobs (an array; default TASKS), then the final job after them
 #   AFTER=<job id> bash tools/eukore.sh build   # the chain begun only once that job (the fetch) has ended well
 #   REVERSION=1 bash tools/eukore.sh build      # once, on a build whose genomes an older Eukore ran: --reversion
-#   bash tools/eukore.sh qc [N]       # N helpers of the package stage's vsearch checks (the final job submits them)
+#   bash tools/eukore.sh final        # the final job alone, no array: the genomes done, the package made again
+#   bash tools/eukore.sh qc [N]      # N helpers of the package stage's vsearch checks (the final job submits them)
 #   bash tools/eukore.sh compare      # the read benchmark's other references into COMPARE, on the node with internet
 #
 # The final job hands the build every other reference whose files are there (since 2026-11-10): EukDetect2's
@@ -139,6 +140,13 @@ build)
     fi
     echo "process: array job $process, $tasks tasks; final (the genomes left, the passes, the package): job $final"
     echo "to stop the chain: scancel $final $process (the final job first: it starts when the array ends)"
+    ;;
+final)  # the final job alone (since 2026-11-12): its genomes all done, a package stage to run again (no array)
+    [[ -z $LOGS ]] || mkdir -p "$LOGS"
+    after=${AFTER:+afterany:$AFTER}
+    final=$(submit Eukore-final ${SBATCH_FINAL[@]+"${SBATCH_FINAL[@]}"} \
+        ${after:+--dependency=$after --kill-on-invalid-dep=yes} -- _final)
+    echo "final (the genomes left, the passes, the package): job $final"
     ;;
 _fetch)  # unfinished downloads on the node's local disk where it has one, else beside the genomes
     run_stage fetch ${SCR:+--local_tmp "$SCR"} ${FETCH_OPTS[@]+"${FETCH_OPTS[@]}"}
