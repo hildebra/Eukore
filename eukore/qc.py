@@ -381,13 +381,15 @@ def write_inputs(folder, base, queries, db=None):
     _write_fasta(q, queries)
 
 
-def search_one(folder, base, vsearch, threads, inputs=None, params=DEFAULT, shared=None, inputs_dir=None):
+def search_one(folder, base, vsearch, threads, inputs=None, params=DEFAULT, shared=None, inputs_dir=None,
+               timing=None):
     """A locus' search, where no other node holds it (its claim; a dead node's taken over): its input files (written
     from inputs (queries, db) where not there; a helper, given none, leaves a locus without them), vsearch with
     params (Params), the hits written whole and the inputs removed (a shared database, its file name `shared`, kept
     for the folder's other searches) -> whether its hits are there now (False: another node searches it, or no
     inputs). inputs_dir: a folder for the inputs and vsearch's output other than the kept folder (a node-local one,
-    where no helper reads them)."""
+    where no helper reads them). timing: a dict given vsearch's times, "setup" (the database read and indexed, on
+    one thread; None where vsearch did not say) and "all" (util.vsearch_files' timed; since 2026-11-13)."""
     from . import genomes  # noqa: PLC0415
     q, d, hits, claim = search_files(folder, base)
     if os.path.isfile(hits):
@@ -406,7 +408,10 @@ def search_one(folder, base, vsearch, threads, inputs=None, params=DEFAULT, shar
         out = util.part_of(os.path.join(where, os.path.basename(hits)[:-len(".gz")]))
         ident, accepts, rejects, options = params
         try:
-            util.vsearch_files(vsearch, q, db, out, ident, threads, accepts, rejects, options)
+            took = util.vsearch_files(vsearch, q, db, out, ident, threads, accepts, rejects, options,
+                                      timed=timing is not None)
+            if timing is not None:
+                timing["setup"], timing["all"] = took
             with open(out, "rb") as src, gzip.open(util.part_of(hits), "wb", compresslevel=3) as dst:
                 shutil.copyfileobj(src, dst)
             os.replace(util.part_of(hits), hits)
@@ -443,13 +448,14 @@ def todo_entry(line):
 
 
 def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, poll=SEARCH_POLL, params=DEFAULT,
-                  what=None, scratch=None):
+                  what=None, scratch=None, log=None):
     """The loci's searches todo [(locus, queries, db or None or a Shared one)], kept in folder: those kept read, the
     others searched here and, with helpers (a function of the number of loci to search -> a function that stops the
     helpers, or None), by other nodes too -> {locus: [(query, target, identity %)]}. params: the searches' settings
     (Params; since 2026-11-13, the loci's DEFAULT), written into todo.tsv for the helpers; what: the progress' name
     (default SEARCHED); scratch: a node-local folder for the inputs where no helper searches with this node (since
-    2026-11-13). The folder's files of other searches (an older set of copies) are removed at the end."""
+    2026-11-13); log: each locus searched here said with its times (searched_line; since 2026-11-13). The folder's
+    files of other searches (an older set of copies) are removed at the end."""
     os.makedirs(folder, exist_ok=True)
     base = {locus: search_base(locus, q, d, params) for locus, q, d in todo}
     inputs = {locus: (q, d) for locus, q, d in todo}
@@ -478,8 +484,12 @@ def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, p
     try:
         while left:
             for locus in list(left):
-                if search_one(folder, base[locus], vsearch, threads, inputs[locus], params, shared[locus], local):
+                timing = {} if log else None
+                if search_one(folder, base[locus], vsearch, threads, inputs[locus], params, shared[locus], local,
+                              timing):
                     left.remove(locus)
+                    if timing:
+                        log(f"  {searched_line(base[locus], timing)}")
                     if shown:
                         shown.step(weight(inputs[locus][0]))
             if left:  # the others' loci: their hits awaited (a dead node's claim taken over by search_one)
@@ -502,6 +512,14 @@ def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, p
     return found
 
 
+def searched_line(base, timing):
+    """'screen_18S-3.<key>: searched in 2m 10s (database read and indexed in 25s)': a part's times (search_one's
+    timing)."""
+    setup = timing.get("setup")
+    return (f"{base}: searched in {util.duration(timing['all'])}"
+            + ("" if setup is None else f" (database read and indexed in {util.duration(setup)})"))
+
+
 def help_search(root, vsearch, threads, log=print):
     """A helper node's part (tools/eukore.sh qc): the loci of every folder under root (its todo.tsv) whose inputs are
     there and hits not yet, each claimed and searched, until none is left that no other node holds -> loci searched."""
@@ -519,11 +537,12 @@ def help_search(root, vsearch, threads, log=print):
                 q, _d, hits, _claim = search_files(folder, base)
                 if os.path.isfile(hits) or not os.path.isfile(q):
                     continue
-                began = time.time()
-                if search_one(folder, base, vsearch, threads, params=params, shared=shared):
+                timing = {}
+                if search_one(folder, base, vsearch, threads, params=params, shared=shared, timing=timing):
                     done += 1
                     idle = False
-                    log(f"{base}: searched in {util.duration(time.time() - began)}")
+                    if timing:
+                        log(searched_line(base, timing))
     log(f"{done:,} loci searched here; none left")
     return done
 

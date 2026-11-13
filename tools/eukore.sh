@@ -143,7 +143,7 @@ _final)
     # the vsearch checks across species shared with QC_TASKS helper jobs, which the package stage submits itself once
     # their inputs are written (since 2026-11-11)
     helpers=()
-    if (( ${QC_TASKS:-0} > 0 )); then helpers=(--qc_helpers "bash $(printf %q "$SELF") qc"); fi
+    if (( ${QC_TASKS:-0} > 0 )); then helpers=(--qc_helpers "bash $(printf %q "$SELF") qc" --qc_tasks "$QC_TASKS"); fi
     # this job's own logs, in the evaluation bundle the package stage writes (OUT/Eukore_<version>_evaluation.tar.gz)
     [[ -z $LOGS ]] || export EUKORE_LOGS="$LOGS/eukore.$SLURM_JOB_ID.otxt:$LOGS/eukore.$SLURM_JOB_ID.etxt"
     run_stage process,package --local_tmp "$SCR" ${helpers[@]+"${helpers[@]}"} \

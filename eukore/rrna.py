@@ -1175,7 +1175,8 @@ def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None, se
     from . import screen as screen_mod  # noqa: PLC0415
     with tempfile.TemporaryDirectory(dir=tmp) as tmp:
         searcher = screen_mod.Searcher(vsearch, threads, tmp, folder=(searches or {}).get("folder"),
-                                       helpers=(searches or {}).get("helpers"), progress=progress, log=log)
+                                       helpers=(searches or {}).get("helpers"), progress=progress, log=log,
+                                       nodes=(searches or {}).get("nodes", 1))
         began = time.time()
         own = own_species(records, ncbi, vsearch, threads, searcher, log)
         said("own-species check")

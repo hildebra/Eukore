@@ -217,14 +217,20 @@ process, over an hour for the 4.6 million records of all eukaryotes, again for e
 **The rRNA checks' searches kept and shared** (since 2026-11-13). The own-species check searches the genomes' 18S
 against every 18S, then the published reads' against the genomes'; the part screen searches each of four parts
 against itself. Each such search is kept in `WORK/qc/rrna_<phase>/` (`own_genomes`, `own_published`,
-`screen_18S`, ...), its queries in parts of 10,000 (at most 32 parts: each indexes the database again) against one
-database, so a package stage run again on the same
-records reads them. A search of 4 parts or more goes to the `QC_TASKS` helpers as the loci's do, each part with
-its own vsearch settings (`todo.tsv` names them); a query's hits do not depend on the other queries, so the result
-is the same however it is split. The smaller searches that follow up on suspects (a clade's records each) run
-several at once on the final job's node, each with a share of its threads (until then one after another). The step
-logs each part's time (`rRNA own-species check: ...`, `rRNA screen 18S: ...`, a species whose 99% typing took a
-minute or more).
+`screen_18S`, ...), its queries in parts against one database, so a package stage run again on the same records
+reads them. A search is split into 3 parts for each node searching it, the final job's and its `QC_TASKS` helpers'
+(`--qc_tasks`, which `tools/eukore.sh final` passes; 8 helpers assumed where only `--qc_helpers` is given), each
+part at least 5,000 queries, since each part reads and indexes the whole database again on one thread. The parts are
+interleaved: part *i* holds every *n*-th query from the *i*-th, so each holds some of every clade. Until then they were
+runs of 10,000 consecutive names, and a part of one dense clade's sequences (many hits each) took up to 5 times as
+long as the others while the search waited for it. A rerun with another `QC_TASKS` splits the search differently and
+searches it again. A search of 4 parts or more goes to the helpers as the loci's do, each part with its own vsearch
+settings (`todo.tsv` names them); a query's hits do not depend on the other queries, so the result is the same
+however it is split. The smaller searches that follow up on suspects (a clade's records each) run several at once
+on the final job's node, each with a share of its threads (until then one after another). The step logs each
+search's time (`rRNA own-species check: ...`, `rRNA screen 18S: ...`, a species whose 99% typing took a minute or
+more), and each part's, wherever it was searched, with the share vsearch spent reading and indexing the database
+(`screen_18S-3.<key>: searched in 2m 10s (database read and indexed in 25s)`).
 
 **The node's disk and the WORK.** The final job's scratch files go to `--local_tmp`: Python's and the tools'
 temporary files (TMPDIR), hmmalign's, cmalign's and the SSU models' cmsearch files (since 2026-11-13; until then in

@@ -71,6 +71,7 @@ PUBLISHED_BATCH = 250  # published reads a barrnap + ITSx run
 PUBLISHED_REGIONS = "regions.3.tsv"
 FCS_THREADS = 4  # cores of each FCS-GX run (GX_NUM_CORES); -t / FCS_THREADS runs at once
 PACK_THREADS = 8  # done folders packed at once (pack_pass: small files read, one written)
+QC_TASKS_GUESS = 8  # the helpers --qc_helpers starts where --qc_tasks does not say (tools/eukore.conf.example's)
 LEFTOVER_AGE = 86400  # a download's .part (or a TOGA2 .2bit) untouched this long (seconds) is a killed run's
 
 
@@ -702,9 +703,11 @@ def qc_searches(opts, kind):
                 subprocess.run(["scancel", job], capture_output=True, check=False)
         return stop
     folder = os.path.join(opts.work, "qc", kind)
-    # the inputs of searches no helper shares on the node's disk (--local_tmp; since 2026-11-13), the hits in WORK
-    return {"folder": folder, "helpers": helpers if getattr(opts, "qc_helpers", None) else None,
-            "scratch": getattr(opts, "scratch", None)}
+    shared = bool(getattr(opts, "qc_helpers", None))
+    # the inputs of searches no helper shares on the node's disk (--local_tmp; since 2026-11-13), the hits in WORK;
+    # nodes: this one and its helpers (--qc_tasks), the rRNA searches' parts sized by them (screen.search_parts)
+    return {"folder": folder, "helpers": helpers if shared else None, "scratch": getattr(opts, "scratch", None),
+            "nodes": 1 + ((getattr(opts, "qc_tasks", 0) or QC_TASKS_GUESS) if shared else 0)}
 
 
 def running(opts, progress, workers=None):
@@ -1672,6 +1675,11 @@ def _main(argv, held):
                         "tools/eukore.sh qc': a SLURM array of helpers, each running python3 -m eukore.qc helper "
                         "WORK/qc); its last line of output, a job ID, is cancelled once all loci are searched. "
                         "Without it, this node searches them all (each search kept in WORK/qc/ all the same)")
+    p.add_argument("--qc_tasks", type=int, default=0, metavar="N",
+                   help="the helpers --qc_helpers starts (tools/eukore.sh: QC_TASKS; since 2026-11-13): the rRNA "
+                        f"checks' large searches split into 3 parts for each node searching, this one and the "
+                        f"helpers (default: {QC_TASKS_GUESS} helpers where --qc_helpers is given). A rerun with "
+                        "another number searches them again")
     p.add_argument("--report_minutes", type=float, default=util.REPORT_EVERY / 60,
                    help="minutes between progress reports of the genomes' downloads and the process stage's passes: "
                         "items left, time left and, in the process stage, the cores, memory and disk used (default "
