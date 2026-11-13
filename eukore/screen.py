@@ -25,6 +25,7 @@ from . import util
 
 FLANK = 50
 MIN_PART = 300
+MAX_PART = 10000  # a part of more bases is not screened (since 2026-11-13: an 847 kb "18S" held a part's search an hour)
 SCREEN_ID, SCREEN_ACCEPTS, SCREEN_REJECTS = 0.75, 32, 64
 NEAR = 1.0
 RANKS = ("kingdom", "phylum", "class", "order", "family")
@@ -34,9 +35,9 @@ PARTS = ("18S", "junction", "28S 5'", "28S 3'")
 
 
 def parts_of(seq, regions):
-    """A record's parts {name: sequence} (those of MIN_PART bases or more); regions [(name, start, end)] or None."""
+    """A record's parts {name: sequence} (those of MIN_PART to MAX_PART bases); regions [(name, start, end)] or None."""
     if not regions:
-        return {"18S": seq} if len(seq) >= MIN_PART else {}
+        return {"18S": seq} if MIN_PART <= len(seq) <= MAX_PART else {}
     ssu = next((r for r in regions if r[0] == "18S"), None)
     lsu = next((r for r in regions if r[0] == "28S"), None)
     out = {}
@@ -47,7 +48,7 @@ def parts_of(seq, regions):
     if lsu:
         mid = (lsu[1] + lsu[2]) // 2
         out["28S 5'"], out["28S 3'"] = seq[lsu[1]:mid], seq[mid:lsu[2]]
-    return {k: v for k, v in out.items() if len(v) >= MIN_PART}
+    return {k: v for k, v in out.items() if MIN_PART <= len(v) <= MAX_PART}
 
 
 def lineage_of(ncbi, taxid):

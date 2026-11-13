@@ -478,7 +478,11 @@ of frame shipped as `high`, the true owner of a contaminant's sequence called an
   screen the BUSCO windows alone: a contaminant contig's 16S, a NUMT or an endosymbiont's insertion gave a species an
   "18S" (`medium`, nothing being near it). cmsearch scores each distinct 18S by the profile HMMs of Rfam's eukaryote
   (RF01960, and RF02542 for microsporidia) and prokaryote (RF00177, RF01959) SSU models: a prokaryote model's best by 20
-  bits over the eukaryote's is `ssu_prokaryote`, `low`. ROD's operons are NCBI assemblies' own: a record's own
+  bits over the eukaryote's is `ssu_prokaryote`, `low`. An 18S over 10,000 bases (since 2026-11-13) is no one 18S:
+  18S-like pieces each within 1,500 bases of the next chained into one span (up to 847 kb), or a published read whose
+  regions were not found, taken whole (EUKARYOME's of 32,759 bases); it is `too_long`, `low`, and none of the checks
+  run on it (the screen's vsearch, whose alignments cost the product of the lengths, waited an hour on one); a screen
+  part over 10,000 bases is not screened. ROD's operons are NCBI assemblies' own: a record's own
   assembly in ROD (another version, RefSeq's copy) is now its own genome, no confirmation of it (`screen.genome_of`).
 - **The tiers** ([FORMAT.md](FORMAT.md#confidence-tiers-format-6)). `high` needed a relative of the copy's family
   near it, so a lineage the package holds few species of could not be `high`, and its copies were `medium` beside
