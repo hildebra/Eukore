@@ -368,7 +368,10 @@ manifest's `counts.marker_loci` the markers.
 
 A record is `low` where a check calls it another organism's or of bad sequence: `own_species` (f), `screen`,
 `ambiguous` (over 0.5%), `homopolymer` (36 or longer), `ssu_prokaryote` (format 6: its 18S scored best by Rfam's
-bacterial or archaeal SSU model, a bacterium's or an organelle's SSU). It is `medium` where something may be wrong:
+bacterial or archaeal SSU model, a bacterium's or an organelle's SSU), `too_long` (since 2026-11-13: its 18S over
+10,000 bases, no one 18S: a run of 18S-like pieces chained into one, or a read whose regions were not found, taken
+whole; none of its checks run, its `type`, `own_species`, `screen` and `ssu_model` `-`). It is `medium` where
+something may be wrong:
 `gap`, `contig_edge` (under 1,000 bases), `lsu_partial` (an operon without a whole 28S), `genus_label` (a published read
 labelled by its genus alone), `cross_shared` (format 6). It is `unverified` where none of these holds but its
 own-species check is undecided (`own_species_undecided`; `medium` until format 6; until 2026-11-10 every published

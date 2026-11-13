@@ -232,6 +232,13 @@ search's time (`rRNA own-species check: ...`, `rRNA screen 18S: ...`, a species 
 more), and each part's, wherever it was searched, with the share vsearch spent reading and indexing the database
 (`screen_18S-3.<key>: searched in 2m 10s (database read and indexed in 25s)`).
 
+**No checks of an 18S over 10,000 bases** (since 2026-11-13). The screen's last vsearch parts ran an hour on 2 of
+64 threads: a few "18S" of 199-847 kb (18S-like pieces chained into one span) and published reads of 32,759 bases
+were queries and targets, and an alignment costs the product of the two lengths. Such records (1,366 over 10 kb of
+the screen's 401,955 18S types in job 24963327) are now kept but neither typed, searched nor screened, `low` with
+the flag `too_long`; a screen part over 10,000 bases is left out of the screen. This changes the searches' inputs:
+the next run searches the rRNA checks once again.
+
 **The SSU models' search in kept parts** (since 2026-11-13). Each 18S not yet in the SSU models' cache
 (`WORK/cmalign/models.*`) is scored by Rfam's SSU models with cmsearch. Until then this was one cmsearch of every new
 18S, over an hour on 60 cores for a release's, and nothing was kept until it ended. Now the new 18S are split into 3

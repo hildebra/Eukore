@@ -245,6 +245,40 @@ class ChecksTest(unittest.TestCase):
             self.assertEqual(rrna.finish(rows, ncbi, vsearch, 2, searches=searches), one)
             self.assertTrue(any(s.startswith("  rRNA own-species check: took") for s in said))
 
+    def test_an_18s_too_long_is_not_checked(self):
+        # since 2026-11-13: an 847 kb "18S" (18S-like pieces chained) held a screen part's search an hour
+        rng = random.Random(7)
+        yeast = "".join(rng.choice("ACGT") for _ in range(1200))
+        records = [tf.genome(i, tf.YEAST, tf.mutate(yeast, 0.002, rng)) for i in (1, 2)]
+        records += [tf.read(f"EUK_a{i}", tf.PARADOXUS, tf.mutate(yeast, 0.01, rng)) for i in range(3)]
+        rows = [(n, s, dict(r, lsu_complete=False)) for n, s, r in records]
+        giant = ("EUK_giant", "".join(rng.choice("ACGT") for _ in range(2000)),
+                 dict(rows[-1][2], accession="EUK_giant"))
+        asked = []
+
+        def models(seqs):
+            asked.extend(seqs)
+            return {n: "eukarya" for n in seqs}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(rrna, "MAX_SSU_LEN", 1500):
+            ncbi, vsearch = tf.taxonomy(tmp), fx.vsearch(tmp)
+            said = []
+            got = rrna.finish(rows + [giant], ncbi, vsearch, 1, log=said.append, ssu_models=models)
+            without = rrna.finish(rows, ncbi, vsearch, 1, ssu_models=models)
+        row = next(r for n, _s, r in got if n == "EUK_giant")
+        self.assertEqual((row["type"], row["own_species"], row["screen"], row["ssu_model"]), ("-", "-", "-", "-"))
+        self.assertEqual(row["confidence"], "low")
+        self.assertIn("too_long", row["flags"])
+        self.assertNotIn("EUK_giant", asked)
+        self.assertEqual([r for r in got if r[0] != "EUK_giant"], without)  # the others' checks as without it
+        self.assertTrue(any("1 records' 18S over 1,500 bases" in s for s in said), said)
+
+    def test_a_part_too_long_is_not_screened(self):
+        self.assertEqual(list(screen.parts_of("A" * 9000, None)), ["18S"])
+        self.assertEqual(screen.parts_of("A" * (screen.MAX_PART + 1), None), {})
+        seq = "A" * 2000 + "C" * 24000
+        parts = screen.parts_of(seq, [("18S", 0, 1800), ("28S", 2000, 26000)])
+        self.assertEqual(sorted(parts), ["18S", "junction"])  # the 28S halves of 12 kb each: not screened
+
 
 if __name__ == "__main__":
     unittest.main()

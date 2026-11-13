@@ -39,6 +39,12 @@ UP = 3000           # a window's bases before a seed on its 18S's strand
 DOWN = 15000        # and after it: the whole 28S (human's ends ~9.5 kb past the 18S's start) and an inline 5S
 MAX_INTRON = 1500   # an 18S cut by introns: pieces this close are one span
 MIN_LEN = 1200      # an 18S span this long at least
+# an 18S of more bases is no one 18S (since 2026-11-13): a run of 18S-like pieces each within MAX_INTRON of the next,
+# chained by joined into one "18S" of up to 847 kb, or a published read whose regions were not found (EUKARYOME's
+# 32,759-base ones), taken whole. Not typed, searched or screened (one such query held a vsearch part an hour, its
+# alignments' cost the product of the lengths), and low: flag too_long. A real 18S, its group I introns too, is
+# 1.6-5 kb; a long read's "18S" with no 5.8S found 6-9 kb (MAX_ITS1's note)
+MAX_SSU_LEN = 10000
 MAX_ITS = 3000      # the 5.8S's end to the 28S: at most (EUKARYOME 2.1's longest by barrnap: 2,551, Phaeocystis)
 # the 18S's end to the 5.8S: at most (since 2026-11-10; until then MAX_ITS: of EUKARYOME 2.1's long reads 24 have an
 # ITS1 of 3,030-4,272 by barrnap, opossum 3.1 kb, fungus gnats 3.1 kb, Trinematidae 3.4-3.8 kb, Ceramium 3.0 kb,
@@ -1162,6 +1168,12 @@ def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None, se
     def said(what):
         if log:
             log(f"  rRNA {what}: took {util.duration(time.time() - began)}")
+    # an 18S over MAX_SSU_LEN: none of the checks (since 2026-11-13), the record kept, low (too_long)
+    too_long = {name for name, seq, row in records if len(ssu_part(seq, row)) > MAX_SSU_LEN}
+    if too_long and log:
+        log(f"  rRNA: {len(too_long):,} records' 18S over {MAX_SSU_LEN:,} bases (e.g. "
+            f"{sorted(too_long)[0]}): not typed, searched or screened, low (too_long)")
+    every, records = records, [r for r in records if r[0] not in too_long]
     by_species = collections.defaultdict(list)
     for name, seq, row in records:
         if ncbi is None or ncbi.rank.get(int(row["species_taxid"])) == "species":
@@ -1194,7 +1206,7 @@ def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None, se
             log("rRNA SSU models: " + ", ".join(f"{k} {v}" for k, v in sorted(collections.Counter(
                 models.values()).items())))
     out = []
-    for name, seq, row in records:
+    for name, seq, row in every:
         verdict, cross = own.get(name, ("-", None))
         row = dict(row, record=name, length=len(seq), regions=regions_text(row.get("regions_list")),
                    lsu_complete="t" if row.get("lsu_complete") else "f", ambiguous=f"{ambiguous(seq):.4f}",
@@ -1203,7 +1215,7 @@ def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None, se
                    screen=screened.get(name, "-"), introns=regions_text(row.get("introns_list")), gaps=gaps(seq))
         edge = contig_edge(row)
         row["contig_edge"] = "-" if edge is None else edge
-        row["confidence"], row["flags"] = confidence(row)
+        row["confidence"], row["flags"] = confidence(dict(row, too_long=name in too_long))
         out.append((name, seq, row))
     return sorted(out, key=lambda r: (int(r[2]["species_taxid"]), r[0]))
 
@@ -1318,6 +1330,8 @@ def confidence(row):
     2026-11-09 medium; until 2026-11-10 every published read's, not checked); else high."""
     from .package import tier  # noqa: PLC0415
     low, medium, unverified = [], [], []
+    if row.get("too_long"):  # its 18S over MAX_SSU_LEN: none of the checks run (since 2026-11-13)
+        low.append("too_long")
     if row.get("own_species") == "f":
         low.append("own_species")
     if row.get("screen", "-") not in ("-", ""):
