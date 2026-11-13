@@ -26,6 +26,7 @@ import random
 import re
 import subprocess
 import tempfile
+import time
 
 import numpy as np
 
@@ -54,6 +55,7 @@ OWN_RANKS = ("family", "order", "class")  # a record's own clade: the deepest of
 MARGIN = 2.0        # another clade's only where its own clade's best is this far under the top
 SHARED_ID = 99.5    # one sequence in two clades: a lone lineage's another phylum's at this or more
 WITH_INTRONS = "%s|with_introns"  # own_species' name of a record's 18S span beside its exons
+OWN_SEARCH = (0.8, 32, 256)  # own_species' vsearch: identity, --maxaccepts, --maxrejects
 PREFIX = 1000       # a published read's first bases: its 18S, for the own-species pool
 ITSX_FIELD = re.compile(r"(SSU|ITS1|5\.8S|ITS2|LSU): (\d+)-(\d+)")
 # ITSx 1.1.3 without both of the 5.8S's ends still writes ITS1 and ITS2, their inner borders guessed (an ITS2 45
@@ -843,9 +845,19 @@ def types_of(exons):
     return out
 
 
-def species_types(parts, threads=1):
+SLOW_TYPES = 60  # seconds a species' typing takes for species_types to name it
+
+
+def timed_types(seqs):
+    """types_of's, and the seconds it took (a pool's task)."""
+    began = time.time()
+    return types_of(seqs), time.time() - began
+
+
+def species_types(parts, threads=1, log=None):
     """{species: [its records' 18S]} -> {species: types_of's}, the species with more than one distinct 18S typed by a
-    pool of `threads` processes, the largest first (since 2026-11-12: one after another, on one core)."""
+    pool of `threads` processes, the largest first (since 2026-11-12: one after another, on one core). log: the
+    species whose typing took SLOW_TYPES seconds or more (since 2026-11-13: one took hours, unnamed)."""
     out, many = {}, []
     for sp, seqs in parts.items():
         if len(set(seqs)) > 1:
@@ -855,9 +867,14 @@ def species_types(parts, threads=1):
     many.sort(key=lambda sp: -len(parts[sp]))
     if threads > 1 and len(many) > 1:
         with util.process_pool(min(threads, len(many))) as pool:
-            out.update(zip(many, pool.map(types_of, [parts[sp] for sp in many])))
+            got = list(pool.map(timed_types, [parts[sp] for sp in many]))
     else:
-        out.update((sp, types_of(parts[sp])) for sp in many)
+        got = [timed_types(parts[sp]) for sp in many]
+    for sp, (types, took) in zip(many, got):
+        out[sp] = types
+        if log and took >= SLOW_TYPES:
+            log(f"  rRNA 99% types of species {sp}: {len(parts[sp]):,} 18S, {len(types):,} distinct, "
+                f"{len(set(types.values())):,} types: took {util.duration(took)}")
     return out
 
 
@@ -1016,7 +1033,7 @@ def verdict(sp, found, own, clades, ncbi, cache):
     return "-", shared
 
 
-def own_species(records, ncbi, vsearch, threads=1):
+def own_species(records, ncbi, vsearch, threads=1, searcher=None, log=None):
     """The own-species check (module docstring) -> {record: (t, f or -, the other clade's species its 18S is shared
     with or None)}: each genome's 18S types against the 18S of every other genome and source (vsearch
     --usearch_global at 80%, the first 32 hits, of each species the best: until 2026-11-10 every hit, a species of
@@ -1030,10 +1047,16 @@ def own_species(records, ncbi, vsearch, threads=1):
     introns is searched, and searched against, as its exons and as its span, the better of the two a species
     (since 2026-11-10; until then the span alone: of EUKARYOME's 445 species-labelled 18S with introns 72% were
     their family's by the span, 87% by the exons, 88% by the two; the span too, as the bases between barrnap's
-    pieces are 18S where an assembly gap parted them)."""
+    pieces are 18S where an assembly gap parted them). searcher: a screen.Searcher (finish's: the searches kept and
+    shared with other nodes; since 2026-11-13), else one of this function's own; log: each step's time."""
     from . import screen  # noqa: PLC0415
     if not vsearch or not records:
         return {}
+    began = time.time()
+
+    def said(what):
+        if log:
+            log(f"  rRNA own-species check: {what}; {util.duration(time.time() - began)} so far")
     ssu = {name: ssu_exons(seq, row)[:2500] or ssu_part(seq, row)[:2500] for name, seq, row in records}
     spans = {name: ssu_part(seq, row)[:2500] for name, seq, row in records}
     spans = {WITH_INTRONS % name: s for name, s in spans.items() if s != ssu[name]}  # of the 18S with introns
@@ -1045,6 +1068,7 @@ def own_species(records, ncbi, vsearch, threads=1):
     reps = screen.representatives({n: s for n, s in ssu.items() if s}, group)
     genome_reps = {k for k in reps if group[k][0] == "genome"}
     published_reps = {k for k in reps if group[k][0] != "genome"}
+    said(f"{len(ssu):,} 18S, {len(genome_reps):,} genomes' and {len(published_reps):,} published 99% types")
     if not genome_reps:
         return {}
     taxid_of = {name: int(row["species_taxid"]) for name, _s, row in records}
@@ -1054,12 +1078,8 @@ def own_species(records, ncbi, vsearch, threads=1):
         return {key: s for k in names for key, s in ((k, ssu[k]), (WITH_INTRONS % k, spans.get(WITH_INTRONS % k)))
                 if s}
 
-    def check(names, among, tmp):
+    def check(phase, names, among, searcher):
         """The verdicts of the records `names` against the records `among` -> {name: (own_species, cross)}."""
-        def search(queries, targets):
-            return screen.search(forms(sorted(queries)), forms(targets), vsearch, threads, tmp, ident=0.8,
-                                 accepts=32, rejects=256)
-
         def add(best, hits):  # a hit a species: its best, the record's own genome's left out
             for query, got in hits.items():
                 rep = record_of.get(query, query)
@@ -1074,7 +1094,8 @@ def own_species(records, ncbi, vsearch, threads=1):
             records_of[taxid_of[k]].append(k)
         clades = clades_of(ncbi, holders, cache)
         best = {rep: {} for rep in names}
-        add(best, search(names, sorted(among)))
+        add(best, searcher.one(f"own_{phase}", forms(sorted(names)), forms(sorted(among)), *OWN_SEARCH))
+        said(f"{phase}' 18S searched")
         own, again = {}, collections.defaultdict(set)
         for rep in sorted(names):
             sp = taxid_of[rep]
@@ -1084,14 +1105,22 @@ def own_species(records, ncbi, vsearch, threads=1):
             # its own clade whole (its own genome's records are no hits): one search for all the clade's suspects
             for species in ([own[rep] | ({sp} & holders.keys())] if mine else []) + theirs:
                 again[frozenset(species)].add(rep)
-        for species, queries in sorted(again.items(), key=lambda kv: sorted(kv[0])):
-            add(best, search(queries, [k for s in sorted(species) for k in records_of[s]]))
-        return {rep: verdict(taxid_of[rep], best[rep], own[rep], clades, ncbi, cache) for rep in names}
+        said(f"{phase}' suspects: {len(again):,} clades to search again")
+        asked = sorted(again.items(), key=lambda kv: sorted(kv[0]))
+        for got in searcher.many(f"own-species check: {phase}' suspects among their clades", [
+                (forms(sorted(queries)), forms([k for s in sorted(species) for k in records_of[s]]))
+                for species, queries in asked], *OWN_SEARCH):
+            add(best, got)
+        verdicts = {rep: verdict(taxid_of[rep], best[rep], own[rep], clades, ncbi, cache) for rep in names}
+        said(f"{phase}' verdicts")
+        return verdicts
 
     with tempfile.TemporaryDirectory() as tmp:
+        searcher = searcher or screen.Searcher(vsearch, threads, tmp, log=log)
         # a published read's against the genomes' alone: a clade only other reads hold does not tell that the
         # read's own clade holds the 18S far from it
-        got = {**check(genome_reps, reps, tmp), **check(published_reps, genome_reps, tmp)}
+        got = {**check("genomes", genome_reps, reps, searcher), **check("published", published_reps, genome_reps,
+                                                                         searcher)}
     for rep, result in got.items():
         for member in reps[rep]:
             out[member] = result
@@ -1112,30 +1141,49 @@ def write_records(folder, records):
     os.replace(util.part_of(table), table)
 
 
-def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None):
+def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None, searches=None, progress=None, tmp=None):
     """The checks over all records [(name, sequence, row)] (row: kind, accession, source, species_taxid, taxid,
     regions_list, lsu_complete, label_from) -> the same with their RECORD_COLUMNS filled, sorted by species and name.
     The 99% types are within a species: records labelled by a genus alone (EUKARYOME's) get none (until 2026-11-06 a
-    genus of thousands of environmental reads was typed in pure Python for an hour). log: the screen's counts.
+    genus of thousands of environmental reads was typed in pure Python for an hour). log: the screen's counts, and
+    (since 2026-11-13) each step's time (until then the step said nothing for hours). searches: dict(folder,
+    helpers) (eukore_build.qc_searches): the own-species check's and the screen's large vsearch searches kept in
+    WORK/qc/rrna_<phase>/ and shared with the helper nodes (screen.Searcher); progress: their progress' maker; tmp:
+    the searches' files (the node's disk; default TMPDIR).
     ssu_models: a function of {record: its 18S} -> {record: the SSU model it scores best by} (regions.ssu_models;
     since 2026-11-09: a bacterium's or an organelle's SSU, barrnap's 18S by its eukaryote models alone, is told)."""
+    began = time.time()
+
+    def said(what):
+        if log:
+            log(f"  rRNA {what}: took {util.duration(time.time() - began)}")
     by_species = collections.defaultdict(list)
     for name, seq, row in records:
         if ncbi is None or ncbi.rank.get(int(row["species_taxid"])) == "species":
             by_species[row["species_taxid"]].append((name, ssu_part(seq, row)))
     type_of = {}
-    typed = species_types({sp: [p for _n, p in items] for sp, items in by_species.items()}, threads)
+    typed = species_types({sp: [p for _n, p in items] for sp, items in by_species.items()}, threads, log)
     for sp, items in by_species.items():
         for name, part in items:
             type_of[name] = typed[sp][part]
-    own = own_species(records, ncbi, vsearch, threads)
+    said(f"99% types of {len(by_species):,} species' {len(records):,} records")
     from . import screen as screen_mod  # noqa: PLC0415
-    screened, counts_ = screen_mod.screen(records, ncbi, vsearch, threads)
+    with tempfile.TemporaryDirectory(dir=tmp) as tmp:
+        searcher = screen_mod.Searcher(vsearch, threads, tmp, folder=(searches or {}).get("folder"),
+                                       helpers=(searches or {}).get("helpers"), progress=progress, log=log)
+        began = time.time()
+        own = own_species(records, ncbi, vsearch, threads, searcher, log)
+        said("own-species check")
+        began = time.time()
+        screened, counts_ = screen_mod.screen(records, ncbi, vsearch, threads, searcher, log)
+        said("part screen")
     if log and counts_:
         log("rRNA part screen: " + ", ".join(f"{k} {v}" for k, v in sorted(counts_.items())))
     models = {}
     if ssu_models:
+        began = time.time()
         models = ssu_models({name: ssu_part(seq, row) for name, seq, row in records})
+        said("SSU models (cmsearch)")
         if log:
             log("rRNA SSU models: " + ", ".join(f"{k} {v}" for k, v in sorted(collections.Counter(
                 models.values()).items())))

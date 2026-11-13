@@ -261,11 +261,13 @@ def ssu_of(seq, row):
     return None
 
 
-def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
+def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print, tmp=None):
     """Every record's 18S variable regions (records [(name, sequence, row)]) -> rows (REGION_COLUMNS). Each distinct 18S
-    is aligned once (cached under WORK/cmalign/; one cmalign fails on is not aligned again by that cmalign)."""
+    is aligned once (cached under WORK/cmalign/; one cmalign fails on is not aligned again by that cmalign). tmp:
+    cmalign's files (since 2026-11-13; until then in work, the WORK on a shared file system)."""
+    tmp = tmp or work
     regions = read_regions()
-    ref = cmalign(cm, {"reference": reference()}, cmalign_bin, threads, work).get("reference")
+    ref = cmalign(cm, {"reference": reference()}, cmalign_bin, threads, tmp).get("reference")
     if ref is None:  # a damaged model, a cmalign that fails: no regions, the package goes on (until 2026-11-08 stopped)
         log(f"WARNING: cmalign could not align the yeast 18S reference to {cm}: no 18S variable regions")
         return []
@@ -313,11 +315,11 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print):
                 out.flush()
         try:
             keep({key: [] for key, s in todo.items() if len(s) > MAX_SSU})  # never aligned: none, for good
-            cmalign(cm, todo, cmalign_bin, threads, work, log, each=keep, fail=failures.update)
+            cmalign(cm, todo, cmalign_bin, threads, tmp, log, each=keep, fail=failures.update)
         finally:
             if out:
                 out.close()
-        if failures and failed_stem and cmalign(cm, {"reference": reference()}, cmalign_bin, threads, work):
+        if failures and failed_stem and cmalign(cm, {"reference": reference()}, cmalign_bin, threads, tmp):
             with util.cache_open(failed_stem) as fh:
                 fh.writelines(f"{k}\t{' '.join(why.split()) or '-'}\n" for k, why in sorted(failures.items()))
     out = []

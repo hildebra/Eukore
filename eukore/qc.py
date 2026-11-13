@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 
 from . import util
@@ -215,7 +216,8 @@ def check(copies, species_of, ncbi, vsearch=None, threads=1, protein_length=None
         todo = [(locus, {**seqs, **extra_of.get(locus, {})}, seqs if extra_of.get(locus) else None)
                 for locus, seqs in by_locus.items() if len({species_of[a] for a in seqs}) >= 2]
         if searches:  # each locus' search kept, and shared with other nodes (since 2026-11-11)
-            found = searched_loci(todo, vsearch, threads, searches["folder"], searches.get("helpers"), progress)
+            found = searched_loci(todo, vsearch, threads, searches["folder"], searches.get("helpers"), progress,
+                                  scratch=searches.get("scratch"))
         else:
             found = {}
             shown = progress(SEARCHED, [weight(q) for _l, q, _d in todo]) if progress and todo else None
@@ -283,7 +285,51 @@ def cross_summary(rows, ncbi):
 #   <locus>.<digest>.q.fna, .db.fna   a locus' queries and (where not the queries) its database, gone once searched
 #   <locus>.<digest>.hits.gz          its hits: query, target, identity %
 #   .<locus>.<digest>.claim           the node searching it
-#   todo.tsv                          the loci to search, the largest first (what the helpers read)
+#   db.<digest>.fna                   a database several searches share (Shared; since 2026-11-13), gone at the end
+#   todo.tsv                          the loci to search, the largest first (what the helpers read): a line a search,
+#                                     its name and weight, and (since 2026-11-13) its identity, --maxaccepts,
+#                                     --maxrejects, further options (- for none) and shared database file (- for none)
+# Since 2026-11-13 the rRNA checks' searches go the same way (screen.Searcher): each its own settings (Params), a large
+# one split by its queries into searches against one shared database (a query's hits are the same whoever else is
+# searched with it).
+
+
+class Params(tuple):
+    """A search's settings: (identity, --maxaccepts, --maxrejects, further options); DEFAULT the loci's."""
+    __slots__ = ()
+
+    def __new__(cls, ident=MIN_ID, accepts=SEARCH_LIMITS[0], rejects=SEARCH_LIMITS[1], options=SEARCH_OPTIONS):
+        return super().__new__(cls, (ident, accepts, rejects, tuple(options)))
+
+    def text(self):
+        """What search_key hashes: for DEFAULT the text of before 2026-11-13 (the loci's kept searches stay)."""
+        ident, accepts, rejects, options = self
+        return f"{SEARCH_RECORD}\t{ident}\t{(accepts, rejects)}\t{options}\n"
+
+    def columns(self):
+        ident, accepts, rejects, options = self
+        return [str(ident), str(accepts), str(rejects), " ".join(options) or "-"]
+
+    @classmethod
+    def of_columns(cls, fields):
+        """todo.tsv's columns after a search's weight (none: DEFAULT)."""
+        if len(fields) < 4:
+            return DEFAULT
+        return cls(float(fields[0]), int(fields[1]), int(fields[2]), () if fields[3] == "-" else fields[3].split())
+
+
+DEFAULT = Params()
+
+
+class Shared:
+    """A database several searches of a folder share ({name: sequence}), written once as db.<digest>.fna."""
+    def __init__(self, seqs):
+        self.seqs = seqs
+        h = hashlib.sha1()
+        for name in sorted(seqs):
+            h.update(f"{name}\t{seqs[name]}\n".encode())
+        self.digest = h.hexdigest()[:20]
+        self.file = f"db.{self.digest}.fna"
 
 
 def weight(queries):
@@ -291,19 +337,23 @@ def weight(queries):
     return len(queries) ** 2
 
 
-def search_key(queries, db=None):
-    """The digest of a locus' search: SEARCH_RECORD, the options, its queries and database (None: the queries)."""
-    h = hashlib.sha1(f"{SEARCH_RECORD}\t{MIN_ID}\t{SEARCH_LIMITS}\t{SEARCH_OPTIONS}\n".encode())
+def search_key(queries, db=None, params=DEFAULT):
+    """The digest of a locus' search: SEARCH_RECORD, the options, its queries and database (None: the queries; a
+    Shared one by its digest)."""
+    h = hashlib.sha1(params.text().encode())
     for part in (queries,) + (() if db is None else (db,)):
         h.update(b">\n")
+        if isinstance(part, Shared):
+            h.update(f"shared {part.digest}\n".encode())
+            continue
         for name in sorted(part):
             h.update(f"{name}\t{part[name]}\n".encode())
     return h.hexdigest()[:20]
 
 
-def search_base(locus, queries, db=None):
+def search_base(locus, queries, db=None, params=DEFAULT):
     """A locus' search's name in its folder: the locus (its characters a file name takes) and search_key."""
-    return re.sub(r"[^A-Za-z0-9_-]", "_", str(locus)) + "." + search_key(queries, db)
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(locus)) + "." + search_key(queries, db, params)
 
 
 def search_files(folder, base):
@@ -322,18 +372,22 @@ def _write_fasta(path, seqs):
 
 def write_inputs(folder, base, queries, db=None):
     """A locus' input files, each written whole then renamed (a helper reads none half written), the database
-    first: a helper takes a locus by its queries' file."""
+    first (a Shared one once for all its searches): a helper takes a locus by its queries' file."""
     q, d, _hits, _claim = search_files(folder, base)
-    if db is not None:
+    if isinstance(db, Shared):
+        _write_fasta(os.path.join(folder, db.file), db.seqs)
+    elif db is not None:
         _write_fasta(d, db)
     _write_fasta(q, queries)
 
 
-def search_one(folder, base, vsearch, threads, inputs=None):
+def search_one(folder, base, vsearch, threads, inputs=None, params=DEFAULT, shared=None, inputs_dir=None):
     """A locus' search, where no other node holds it (its claim; a dead node's taken over): its input files (written
-    from inputs (queries, db) where not there; a helper, given none, leaves a locus without them), vsearch, the hits
-    written whole and the inputs removed -> whether its hits are there now (False: another node searches it, or no
-    inputs)."""
+    from inputs (queries, db) where not there; a helper, given none, leaves a locus without them), vsearch with
+    params (Params), the hits written whole and the inputs removed (a shared database, its file name `shared`, kept
+    for the folder's other searches) -> whether its hits are there now (False: another node searches it, or no
+    inputs). inputs_dir: a folder for the inputs and vsearch's output other than the kept folder (a node-local one,
+    where no helper reads them)."""
     from . import genomes  # noqa: PLC0415
     q, d, hits, claim = search_files(folder, base)
     if os.path.isfile(hits):
@@ -341,14 +395,18 @@ def search_one(folder, base, vsearch, threads, inputs=None):
     with genomes.claimed_file(claim) as held:
         if held is None or os.path.isfile(hits):  # another node's, or searched by one before this claim
             return os.path.isfile(hits)
+        where = inputs_dir or folder
+        if inputs_dir:  # the inputs and vsearch's own output on the node's disk (since 2026-11-13), the hits kept
+            q, d = search_files(inputs_dir, base)[:2]
         if inputs is not None:
-            write_inputs(folder, base, *inputs)
-        if not os.path.isfile(q):
+            write_inputs(where, base, *inputs)
+        db = os.path.join(where, shared) if shared else d if os.path.isfile(d) else q
+        if not os.path.isfile(q) or not os.path.isfile(db):
             return False
-        out = util.part_of(hits[:-len(".gz")])
+        out = util.part_of(os.path.join(where, os.path.basename(hits)[:-len(".gz")]))
+        ident, accepts, rejects, options = params
         try:
-            util.vsearch_files(vsearch, q, d if os.path.isfile(d) else q, out, MIN_ID, threads, *SEARCH_LIMITS,
-                               SEARCH_OPTIONS)
+            util.vsearch_files(vsearch, q, db, out, ident, threads, accepts, rejects, options)
             with open(out, "rb") as src, gzip.open(util.part_of(hits), "wb", compresslevel=3) as dst:
                 shutil.copyfileobj(src, dst)
             os.replace(util.part_of(hits), hits)
@@ -367,16 +425,37 @@ def read_hits(folder, base):
         return util.vsearch_hits(fh)
 
 
-def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, poll=SEARCH_POLL):
-    """The loci's searches todo [(locus, queries, db or None)], kept in folder: those kept read, the others searched
-    here and, with helpers (a function of the number of loci to search -> a function that stops the helpers, or
-    None), by other nodes too -> {locus: [(query, target, identity %)]}. The folder's files of other searches (an
-    older set of copies) are removed at the end."""
+def todo_line(base, size, params=DEFAULT, shared=None):
+    """A search's line of todo.tsv: its name and weight, and where not the loci's DEFAULT without a shared database
+    (since 2026-11-13) its settings and shared database file (-: none)."""
+    fields = [base, str(size)]
+    if params != DEFAULT or shared:
+        fields += params.columns() + [shared or "-"]
+    return "\t".join(fields) + "\n"
+
+
+def todo_entry(line):
+    """A line of todo.tsv -> (name, params, shared database file or None); a line of before 2026-11-13: DEFAULT."""
+    f = line.rstrip("\n").split("\t")
+    if len(f) >= 7:
+        return f[0], Params.of_columns(f[2:6]), None if f[6] == "-" else f[6]
+    return f[0], DEFAULT, None
+
+
+def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, poll=SEARCH_POLL, params=DEFAULT,
+                  what=None, scratch=None):
+    """The loci's searches todo [(locus, queries, db or None or a Shared one)], kept in folder: those kept read, the
+    others searched here and, with helpers (a function of the number of loci to search -> a function that stops the
+    helpers, or None), by other nodes too -> {locus: [(query, target, identity %)]}. params: the searches' settings
+    (Params; since 2026-11-13, the loci's DEFAULT), written into todo.tsv for the helpers; what: the progress' name
+    (default SEARCHED); scratch: a node-local folder for the inputs where no helper searches with this node (since
+    2026-11-13). The folder's files of other searches (an older set of copies) are removed at the end."""
     os.makedirs(folder, exist_ok=True)
-    base = {locus: search_base(locus, q, d) for locus, q, d in todo}
+    base = {locus: search_base(locus, q, d, params) for locus, q, d in todo}
     inputs = {locus: (q, d) for locus, q, d in todo}
+    shared = {locus: d.file if isinstance(d, Shared) else None for locus, _q, d in todo}
     order = sorted(todo, key=lambda t: -weight(t[1]))
-    shown = progress(SEARCHED, [weight(q) for _l, q, _d in order]) if progress and order else None
+    shown = progress(what or SEARCHED, [weight(q) for _l, q, _d in order]) if progress and order else None
     left = []
     for locus, q, _d in order:
         if os.path.isfile(search_files(folder, base[locus])[2]):
@@ -390,13 +469,16 @@ def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, p
             write_inputs(folder, base[locus], *inputs[locus])
         listing = os.path.join(folder, "todo.tsv")
         with open(util.part_of(listing), "w", newline="\n") as fh:
-            fh.writelines(f"{base[locus]}\t{weight(inputs[locus][0])}\n" for locus in left)
+            fh.writelines(todo_line(base[locus], weight(inputs[locus][0]), params, shared[locus]) for locus in left)
         os.replace(util.part_of(listing), listing)
         stop = helpers(len(left))
+    # searched here alone: the inputs on the node's disk (scratch: --local_tmp; since 2026-11-13), the WORK's file
+    # system given the hits alone
+    local = tempfile.mkdtemp(dir=scratch, prefix="search.") if left and not stop and scratch else None
     try:
         while left:
             for locus in list(left):
-                if search_one(folder, base[locus], vsearch, threads, inputs[locus]):
+                if search_one(folder, base[locus], vsearch, threads, inputs[locus], params, shared[locus], local):
                     left.remove(locus)
                     if shown:
                         shown.step(weight(inputs[locus][0]))
@@ -407,6 +489,8 @@ def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, p
     finally:
         if stop:
             stop()
+        if local:
+            shutil.rmtree(local, ignore_errors=True)
     found = {locus: read_hits(folder, base[locus]) for locus, _q, _d in todo}
     keep = set(base.values())
     for path in glob.glob(os.path.join(folder, "*")) + glob.glob(os.path.join(folder, ".*.claim")):
@@ -428,15 +512,15 @@ def help_search(root, vsearch, threads, log=print):
             folder = os.path.dirname(listing)
             try:
                 with open(listing) as fh:
-                    bases = [line.split("\t")[0] for line in fh if line.strip()]
+                    entries = [todo_entry(line) for line in fh if line.strip()]
             except OSError:
                 continue
-            for base in bases:
+            for base, params, shared in entries:
                 q, _d, hits, _claim = search_files(folder, base)
                 if os.path.isfile(hits) or not os.path.isfile(q):
                     continue
                 began = time.time()
-                if search_one(folder, base, vsearch, threads):
+                if search_one(folder, base, vsearch, threads, params=params, shared=shared):
                     done += 1
                     idle = False
                     log(f"{base}: searched in {util.duration(time.time() - began)}")

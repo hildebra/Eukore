@@ -103,10 +103,11 @@ def align_locus(hmm, proteins, hmmalign="hmmalign", cache=None, tmp=None):
     return {n: states_of_a2m(rows[k]) for n, k in key_of.items() if k in rows}
 
 
-def align(collected, hmm_of, hmmalign="hmmalign", work=None, log=print, threads=1):
+def align(collected, hmm_of, hmmalign="hmmalign", work=None, log=print, threads=1, tmp=None):
     """Every locus' proteins of the package (collected["proteins"] {(accession, locus): protein}) on their HMMs
     (hmm_of {locus: path}), `threads` loci at once (hmmalign is single-threaded: since 2026-11-08; until then one
-    locus at a time, ~7 h for all eukaryotes) -> {(accession, locus): [match state or None per residue]}."""
+    locus at a time, ~7 h for all eukaryotes) -> {(accession, locus): [match state or None per residue]}. tmp:
+    hmmalign's files (since 2026-11-13; until then in work, the WORK on a shared file system), the cache in work."""
     import concurrent.futures  # noqa: PLC0415
     by_locus = {}
     for (acc, locus), p in collected.get("proteins", {}).items():
@@ -114,7 +115,7 @@ def align(collected, hmm_of, hmmalign="hmmalign", work=None, log=print, threads=
     cache = os.path.join(work, "align") if work else None
     out, failed = {}, []
     with concurrent.futures.ThreadPoolExecutor(max(1, threads)) as pool:
-        jobs = {locus: pool.submit(align_locus, hmm_of.get(locus), proteins, hmmalign, cache, work)
+        jobs = {locus: pool.submit(align_locus, hmm_of.get(locus), proteins, hmmalign, cache, tmp or work)
                 for locus, proteins in sorted(by_locus.items())}
         for locus, job in jobs.items():
             got = job.result()

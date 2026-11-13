@@ -578,14 +578,15 @@ def genome_files(args):
             [(locus, "".join(lines)) for locus, lines in feats.items()])
 
 
-def genetics(collected, ncbi, hmm_of, hmmalign="hmmalign", work=None, log=print, threads=1):
+def genetics(collected, ncbi, hmm_of, hmmalign="hmmalign", work=None, log=print, threads=1, tmp=None):
     """The copies' proteins placed on their HMMs (align.py, `threads` loci at once), their introns (introns.py) and
     each genome's genetic code checked (codecheck.py; since 2026-11-07; `threads` genomes at once since 2026-11-12)
     -> collected, with `introns`, `intron_sites`,
     `intron_site_columns` and `codons` and the genomes' rows completed; without hmmalign, introns without their places
     and no code check."""
     from . import align as align_mod, codecheck, groups, introns as introns_mod  # noqa: PLC0415
-    states = align_mod.align(collected, hmm_of, hmmalign, work, log, threads) if hmmalign else {}
+    # hmmalign's files in tmp (the node's disk; since 2026-11-13, until then in work), its cache in work
+    states = align_mod.align(collected, hmm_of, hmmalign, work, log, threads, tmp) if hmmalign else {}
     group_of = {a: groups.group_of(ncbi, int(g["species_taxid"])) for a, g in collected["genomes"].items()
                 if g["representative"] == "t"}
     rows, site_rows, site_columns, per_genome = introns_mod.annotate(collected, states, group_of)
