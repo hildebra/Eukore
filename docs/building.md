@@ -210,11 +210,15 @@ The 18S records' 99% types are made per species by a pool of processes, and pair
 out by their shared 8-mers before they are aligned (the q-gram lemma: the types are the same). Until then this ran
 in one Python process for hours. Since 2026-11-12 (later that day) the lemma is first tested on 4-mers against
 every type at once: an assembly's thousands of rDNA copies with 1-2% errors, each its own type, are typed in seconds.
+Since 2026-11-13 each genome's copies are typed for the own-species check and the screen (one search per 99% type)
+by the same pool, each distinct copy sent once with its count; until then one genome after another in the main
+process, over an hour for the 4.6 million records of all eukaryotes, again for each of the screen's four parts.
 
 **The rRNA checks' searches kept and shared** (since 2026-11-13). The own-species check searches the genomes' 18S
 against every 18S, then the published reads' against the genomes'; the part screen searches each of four parts
 against itself. Each such search is kept in `WORK/qc/rrna_<phase>/` (`own_genomes`, `own_published`,
-`screen_18S`, ...), its queries in parts of 10,000 against one database, so a package stage run again on the same
+`screen_18S`, ...), its queries in parts of 10,000 (at most 32 parts: each indexes the database again) against one
+database, so a package stage run again on the same
 records reads them. A search of 4 parts or more goes to the `QC_TASKS` helpers as the loci's do, each part with
 its own vsearch settings (`todo.tsv` names them); a query's hits do not depend on the other queries, so the result
 is the same however it is split. The smaller searches that follow up on suspects (a clade's records each) run

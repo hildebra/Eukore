@@ -93,6 +93,7 @@ def search(queries, db_seqs, vsearch, threads, tmp, ident=SCREEN_ID, accepts=SCR
 
 CHUNK = 10000  # queries a kept search's part: the parts searched by several nodes against one database
 HELPED = 4  # parts a search has at least for the helper nodes to be started for it
+MAX_PARTS = 32  # parts a search has at most (larger parts beyond CHUNK * MAX_PARTS queries)
 
 
 class Searcher:
@@ -127,8 +128,11 @@ class Searcher:
         else:
             names = sorted(n for n, s in queries.items() if s)
             shared = qc.Shared({n: s for n, s in db.items() if s})
-            todo = [(f"{phase}-{i // CHUNK + 1}", {n: queries[n] for n in names[i:i + CHUNK]}, shared)
-                    for i in range(0, len(names), CHUNK)]
+            # at most MAX_PARTS parts: each part indexes the whole database again (vsearch), a minute or more for a
+            # million 18S
+            size = max(CHUNK, -(-len(names) // MAX_PARTS))
+            todo = [(f"{phase}-{i // size + 1}", {n: queries[n] for n in names[i:i + size]}, shared)
+                    for i in range(0, len(names), size)]
             found = qc.searched_loci(todo, self.vsearch, self.threads, f"{self.folder}_{phase}",
                                      self.helpers if len(todo) >= HELPED else None, self.progress,
                                      params=qc.Params(ident, accepts, rejects, ()), what=f"{phase} searched (vsearch)",
@@ -190,21 +194,25 @@ def genome_of(name, row):
     return f"GC_{m.group(1)}" if m else acc
 
 
-def representatives(seqs, owner):
+def representatives(seqs, owner, threads=1, log=None):
     """Each owner's sequences ({name: sequence}; owner: {name: its genome}) in 99% types (rrna.types_of) -> {the type's
     representative: [the names of its type]}, the representative the name of its longest sequence, of several the
     first (since 2026-11-10; until then the type's first name whatever its length: a copy cut at a contig's end, of
     one type with the whole copies as rrna.identity measures over the shorter, was searched in their place and its
     verdict theirs). A genome's near-identical copies (an rDNA array: ~400 in a T2T human, its 18S once as an 18S
     record and once in its rDNA record) are searched once: until 2026-11-06 they filled vsearch's first hits, which
-    were then dropped as the genome's own, and the screen and the own-species check found nothing."""
-    from .rrna import types_of  # noqa: PLC0415 (rrna imports this module's users)
+    were then dropped as the genome's own, and the screen and the own-species check found nothing. The owners
+    typed by a pool of `threads` processes (rrna.species_types; since 2026-11-13: one after another in this process,
+    over an hour for the 4.6 million records of all eukaryotes, again for each part of the screen); log: an owner whose
+    typing took a minute or more."""
+    from .rrna import species_types  # noqa: PLC0415 (rrna imports this module's users)
     by_owner = collections.defaultdict(list)
     for name in sorted(seqs):
         by_owner[owner[name]].append(name)
+    typed = species_types({o: [seqs[k] for k in names] for o, names in by_owner.items()}, threads, log, "genome")
     out = {}
-    for names in by_owner.values():
-        types = types_of([seqs[k] for k in names]) if len(names) > 1 else {seqs[names[0]]: 1}
+    for o, names in by_owner.items():
+        types = typed[o]
         rep = {}  # type -> its representative (names are sorted: the first of the longest stays)
         for k in names:
             t = types[seqs[k]]
@@ -232,7 +240,7 @@ def screen(records, ncbi, vsearch, threads=1, searcher=None, log=None):
         for part in PARTS:
             began = time.time()
             every = {k: p[part] for k, p in parts.items() if part in p}
-            reps = representatives(every, genome)
+            reps = representatives(every, genome, searcher.threads, log)
             seqs = {k: every[k] for k in reps}
             if log:
                 log(f"  rRNA screen {part}: {len(every):,} parts, {len(seqs):,} 99% types: took "

@@ -7,6 +7,7 @@ once; the own-species check's and the screen's results the same as with the sear
     python3 -m unittest discover -s tests -t tests
 """
 
+import collections
 import hashlib
 import os
 import random
@@ -130,6 +131,42 @@ class SearcherTest(unittest.TestCase):
         self.assertEqual([normal(g) for g in got],
                          [normal(screen.search(q, d, self.vsearch, 1, self.scratch, 0.75, 32, 64)) for q, d in items])
         self.assertEqual(screen.Searcher(self.vsearch).many("x", [], 0.75, 32, 64), [])
+
+
+class RepresentativesTest(unittest.TestCase):
+    def test_owners_typed_by_a_pool(self):
+        # since 2026-11-13 each genome's copies typed by a pool (rrna.species_types), each distinct copy sent once with
+        # its count: the representatives as one owner after another gave them
+        rng = random.Random(9)
+        base = "".join(rng.choice("ACGT") for _ in range(400))
+        seqs, owner = {}, {}
+        for g in range(6):
+            unit = tf.mutate(base, 0.03, rng)
+            for i in range(rng.randint(1, 25)):
+                name = f"g{g}_{i:02d}"
+                seqs[name] = unit if i % 3 else tf.mutate(unit, rng.choice((0.002, 0.02)), rng)
+                owner[name] = f"G{g}"
+        seqs["lone"], owner["lone"] = base, "L"
+
+        def before():  # representatives as it was: types_of of each owner's copies in turn
+            by_owner = {}
+            for name in sorted(seqs):
+                by_owner.setdefault(owner[name], []).append(name)
+            out = {}
+            for names in by_owner.values():
+                types = rrna.types_of([seqs[k] for k in names]) if len(names) > 1 else {seqs[names[0]]: 1}
+                rep = {}
+                for k in names:
+                    t = types[seqs[k]]
+                    if t not in rep or len(seqs[k]) > len(seqs[rep[t]]):
+                        rep[t] = k
+                for k in names:
+                    out.setdefault(rep[types[seqs[k]]], []).append(k)
+            return out
+        self.assertEqual(screen.representatives(seqs, owner, 3), before())
+        self.assertEqual(screen.representatives(seqs, owner), before())
+        copies = [seqs[k] for k in sorted(seqs)]
+        self.assertEqual(rrna.types_of(collections.Counter(copies)), rrna.types_of(copies))
 
 
 class ChecksTest(unittest.TestCase):
