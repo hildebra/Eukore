@@ -24,18 +24,18 @@ def mutate(seq, rate, rng):
 
 
 CMSEARCH = '''#!/bin/sh
-# cmsearch --tblout's stand-in: s0 scored best by the eukaryote model, s1 by the bacterial one by 40 bits, s2 by the
-# bacterial one by 10 bits (under the margin: still eukaryote), s3 by none
-while [ "$#" -gt 0 ]; do [ "$1" = "--tblout" ] && out=$2; shift; done
-cat > "$out" <<EOT
-#target name accession query name accession mdl mdl from mdl to seq from seq to strand trunc pass gc bias score ...
-s0 - SSU_rRNA_eukarya RF01960 hmm 1 1800 1 1800 + - 6 0.5 0 1500.0 0 ! -
-s0 - SSU_rRNA_bacteria RF00177 hmm 1 1500 1 1500 + - 6 0.5 0 900.0 0 ! -
-s1 - SSU_rRNA_eukarya RF01960 hmm 1 1800 1 1500 + - 6 0.5 0 700.0 0 ! -
-s1 - SSU_rRNA_bacteria RF00177 hmm 1 1500 1 1500 + - 6 0.5 0 740.0 0 ! -
-s2 - SSU_rRNA_eukarya RF01960 hmm 1 1800 1 1500 + - 6 0.5 0 700.0 0 ! -
-s2 - SSU_rRNA_bacteria RF00177 hmm 1 1500 1 1500 + - 6 0.5 0 710.0 0 ! -
-EOT
+# cmsearch --tblout's stand-in: the first sequence (its name the input's) scored best by the eukaryote model, the
+# second by the bacterial one by 40 bits, the third by the bacterial one by 10 bits (under the margin: still
+# eukaryote), the fourth by none
+while [ "$#" -gt 0 ]; do [ "$1" = "--tblout" ] && out=$2; last=$1; shift; done
+awk 'BEGIN{print "#target name accession query name accession mdl mdl from mdl to seq from seq to strand ..."}
+     /^>/{n=substr($1,2); i++
+          if (i==1) {print n " - SSU_rRNA_eukarya RF01960 hmm 1 1800 1 1800 + - 6 0.5 0 1500.0 0 ! -"
+                     print n " - SSU_rRNA_bacteria RF00177 hmm 1 1500 1 1500 + - 6 0.5 0 900.0 0 ! -"}
+          if (i==2) {print n " - SSU_rRNA_eukarya RF01960 hmm 1 1800 1 1500 + - 6 0.5 0 700.0 0 ! -"
+                     print n " - SSU_rRNA_bacteria RF00177 hmm 1 1500 1 1500 + - 6 0.5 0 740.0 0 ! -"}
+          if (i==3) {print n " - SSU_rRNA_eukarya RF01960 hmm 1 1800 1 1500 + - 6 0.5 0 700.0 0 ! -"
+                     print n " - SSU_rRNA_bacteria RF00177 hmm 1 1500 1 1500 + - 6 0.5 0 710.0 0 ! -"}}' "$last" > "$out"
 '''
 
 

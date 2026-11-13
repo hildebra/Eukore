@@ -2040,8 +2040,11 @@ def _main(argv, held):
             records = genome_rrna_records(opts, job_map, ncbi, collected) + published(opts, src_dir, ncbi)
             # each 18S's SSU model (since 2026-11-09): a bacterium's or an organelle's SSU is no 18S
             models, cmsearch = regions_mod.models_path(src_dir), shutil.which("cmsearch")
+            # its new 18S searched in parts kept in WORK/qc/ssu_models/ and shared with the helpers (since 2026-11-13)
             ssu = functools.partial(regions_mod.ssu_models, cm=models, cmsearch=cmsearch, threads=opts.threads,
-                                    tmp=opts.scratch, work=opts.work) if cmsearch and regions_mod.is_cm(models) else None
+                                    tmp=opts.scratch, work=opts.work, searches=qc_searches(opts, "ssu_models"),
+                                    progress=functools.partial(progress_of, opts, unit=""),
+                                    log=say) if cmsearch and regions_mod.is_cm(models) else None
             if ssu is None:
                 say("WARNING: no cmsearch (infernal) or no Rfam SSU models (--stage fetch fetches them): the 18S not "
                     "told from a bacterium's or an organelle's SSU (records.tsv's ssu_model -)")

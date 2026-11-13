@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 
 from . import align as align_mod
 from . import util
@@ -34,6 +35,21 @@ SSU_MODELS = (("RF01960", "eukarya"), ("RF02542", "eukarya"),  # SSU_rRNA_eukary
               ("RF00177", "bacteria"), ("RF01959", "archaea"))  # SSU_rRNA_bacteria (a mitochondrion's, a plastid's)
 SSU_MARGIN = 20.0
 SSU_MODELS_FILE = "ssu_models.cm"
+# the SSU models' search in kept parts (since 2026-11-13; until then one cmsearch of every new 18S, an hour or more on
+# 60 cores for a release's, kept only once it had ended): SSU_PER_NODE parts for each node searching (the final job and
+# its helpers), more where a part would have over SSU_PART_MAX sequences (each part kept as it ends), none under
+# SSU_PART_MIN; the helpers started for SSU_HELPED parts or more
+SSU_PER_NODE = 3
+SSU_PART_MAX = 20000
+SSU_PART_MIN = 500
+SSU_HELPED = 4
+
+
+def ssu_parts(names, nodes=1):
+    """names (sorted) -> the SSU models' search's parts [[name]], interleaved (part i every n-th name from the i-th)."""
+    n = max(SSU_PER_NODE * max(1, nodes), -(-len(names) // SSU_PART_MAX))
+    n = max(1, min(n, len(names) // SSU_PART_MIN))
+    return [names[i::n] for i in range(n)] if names else []
 
 
 def cm_path(src_dir):
@@ -84,7 +100,8 @@ def _digest(seq):
     return hashlib.md5(seq.encode()).hexdigest()
 
 
-def ssu_models(seqs, cm, cmsearch="cmsearch", threads=1, tmp=None, work=None):
+def ssu_models(seqs, cm, cmsearch="cmsearch", threads=1, tmp=None, work=None, searches=None, progress=None,
+               log=None):
     """Each sequence's SSU model of the best score ({name: its 18S} -> {name: eukarya, bacteria, archaea, or - where
     none scores it}; since 2026-11-09): cmsearch of SSU_MODELS (cm: models_path's file) by their profile HMMs alone
     (--hmmonly: an HMM search's speed), each distinct sequence once; a prokaryote model's call needs its score over
@@ -92,7 +109,11 @@ def ssu_models(seqs, cm, cmsearch="cmsearch", threads=1, tmp=None, work=None):
     Since 2026-11-10 a sequence's model is kept under work/cmalign/models.<digest of the models' file, SSU_MODELS and
     SSU_MARGIN> (work: the build's WORK; tmp where none is given, which the build gives its WORK as), a line a
     sequence as run's cache: until then every package stage searched every 18S again. -Z 1 makes a sequence's hits
-    its own whatever is searched with it, so that the kept call is the one a search would give."""
+    its own whatever is searched with it, so that the kept call is the one a search would give.
+    searches (the build's qc_searches: folder, helpers, nodes, scratch; since 2026-11-13): the sequences not in the
+    cache searched in parts (ssu_parts) kept in its folder as each ends (a killed run's read again), shared with the
+    helpers as the vsearch checks' are (qc.searched_loci, qc.CmParams); the folder removed once the cache holds their
+    calls. progress: the parts' (util.Progress); log: each part's time and the search's."""
     kind_of = dict(SSU_MODELS)
     distinct = {}
     for name, seq in seqs.items():
@@ -102,44 +123,57 @@ def ssu_models(seqs, cm, cmsearch="cmsearch", threads=1, tmp=None, work=None):
         return {}
     folder = work or tmp
     stem = None
-    if folder and os.path.isfile(cm):
-        key = hashlib.md5("\n".join([util.md5(cm), repr(SSU_MODELS), str(SSU_MARGIN)]).encode())
+    digest = util.md5(cm) if os.path.isfile(cm) else None
+    if folder and digest:
+        key = hashlib.md5("\n".join([digest, repr(SSU_MODELS), str(SSU_MARGIN)]).encode())
         stem = os.path.join(folder, "cmalign", f"models.{key.hexdigest()[:10]}")
     cache = util.cache_read(stem) if stem else {}
-    order = [seq for seq in distinct if _digest(seq) not in cache]
+    order = {_digest(seq): seq for seq in distinct if _digest(seq) not in cache}
     if order:
-        best = collections.defaultdict(dict)  # sequence index -> {kind: best score}
-        with tempfile.TemporaryDirectory(dir=tmp) as scratch:
-            fasta, table = os.path.join(scratch, "s.fna"), os.path.join(scratch, "hits.tbl")
-            with open(fasta, "w") as fh:
-                fh.writelines(f">s{i}\n{seq}\n" for i, seq in enumerate(order))
-            run = subprocess.run([cmsearch, "--hmmonly", "--noali", "-Z", "1", "--cpu", str(max(1, threads)),
-                                  "--tblout", table, "-o", os.devnull, cm, fasta], capture_output=True, text=True,
-                                 check=False)
-            if run.returncode != 0:  # nothing kept
-                raise RuntimeError(f"cmsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
-            with open(table) as fh:
-                for line in fh:
-                    if line.startswith("#"):
-                        continue
-                    f = line.split()
-                    kind, score = kind_of.get(f[3]), float(f[14])
-                    if kind and score > best[int(f[0][1:])].get(kind, float("-inf")):
-                        best[int(f[0][1:])][kind] = score
+        began = time.time()
+        kept = (searches or {}).get("folder") if digest else None
+        if kept:
+            from . import qc  # noqa: PLC0415
+            todo = [(f"ssu-{i + 1}", {d: order[d] for d in part}, None)
+                    for i, part in enumerate(ssu_parts(sorted(order), (searches or {}).get("nodes", 1)))]
+            found = qc.searched_loci(todo, cmsearch, threads, kept,
+                                     searches.get("helpers") if len(todo) >= SSU_HELPED else None, progress,
+                                     params=qc.CmParams(os.path.abspath(cm), digest),
+                                     what="SSU models searched (cmsearch)", scratch=searches.get("scratch") or tmp,
+                                     log=log)
+            hits = [h for part in found.values() for h in part]
+        else:
+            with tempfile.TemporaryDirectory(dir=tmp) as scratch:
+                fasta, table = os.path.join(scratch, "s.fna"), os.path.join(scratch, "hits.tbl")
+                with open(fasta, "w") as fh:
+                    fh.writelines(f">{d}\n{seq}\n" for d, seq in order.items())
+                util.cmsearch_files(cmsearch, fasta, cm, table, threads)  # failed: nothing kept
+                with open(table) as fh:
+                    hits = util.cmsearch_hits(fh)
+        best = collections.defaultdict(dict)  # sequence's digest -> {kind: best score}
+        for d, accession, score in hits:
+            kind = kind_of.get(accession)
+            if kind and score > best[d].get(kind, float("-inf")):
+                best[d][kind] = score
         new = {}
-        for i, seq in enumerate(order):
-            scores = best.get(i)
+        for d in order:
+            scores = best.get(d)
             if not scores:
                 kind = "-"
             else:
                 kind = max(scores, key=scores.get)
                 if kind != "eukarya" and scores[kind] < scores.get("eukarya", float("-inf")) + SSU_MARGIN:
                     kind = "eukarya"
-            new[_digest(seq)] = kind
+            new[d] = kind
         cache.update(new)
         if stem:
             with util.cache_open(stem) as out:
                 out.writelines(f"{k}\t{v}\n" for k, v in sorted(new.items()))
+            if kept:  # the parts' calls in the cache now
+                shutil.rmtree(kept, ignore_errors=True)
+        if log:
+            log(f"  SSU models: {len(order):,} 18S searched (cmsearch"
+                f"{f', {len(todo)} parts' if kept else ''}): took {util.duration(time.time() - began)}")
     return {name: cache[_digest(seq)] for seq, names in distinct.items() for name in names}
 
 

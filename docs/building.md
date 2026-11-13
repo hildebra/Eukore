@@ -232,6 +232,18 @@ search's time (`rRNA own-species check: ...`, `rRNA screen 18S: ...`, a species 
 more), and each part's, wherever it was searched, with the share vsearch spent reading and indexing the database
 (`screen_18S-3.<key>: searched in 2m 10s (database read and indexed in 25s)`).
 
+**The SSU models' search in kept parts** (since 2026-11-13). Each 18S not yet in the SSU models' cache
+(`WORK/cmalign/models.*`) is scored by Rfam's SSU models with cmsearch. Until then this was one cmsearch of every new
+18S, over an hour on 60 cores for a release's, and nothing was kept until it ended. Now the new 18S are split into 3
+parts for each node searching (as above), more where a part would hold over 20,000 sequences and none under 500,
+kept in `WORK/qc/ssu_models/` as each part ends: a killed run's next run searches only the parts not done. With 4
+parts or more the `QC_TASKS` helpers take parts too (`todo.tsv` names the models' file, which they read from the
+WORK's file system; a helper without cmsearch leaves them to the other nodes). cmsearch's `-Z 1` makes a sequence's
+score its own whatever is searched with it, so the calls are the same however the search is split. Once the cache
+holds the calls, the parts' folder is removed. The log gives each part's time and the search's
+(`SSU models: <n> 18S searched (cmsearch, <parts> parts): took <time>`). The one cmsearch of before held ~20 GB on 60
+threads (job 24928071): `SBATCH_QC`'s memory should allow as much for a helper's part.
+
 **The node's disk and the WORK.** The final job's scratch files go to `--local_tmp`: Python's and the tools'
 temporary files (TMPDIR), hmmalign's, cmalign's and the SSU models' cmsearch files (since 2026-11-13; until then in
 the WORK), and the inputs of a kept search no helper shares. The WORK holds what is kept or shared: the caches, the
