@@ -734,15 +734,29 @@ def vsearch_global(vsearch, queries, db, ident, threads=1, accepts=32, rejects=2
             return vsearch_hits(fh)
 
 
-def vsearch_files(vsearch, queries, db, out, ident, threads=1, accepts=32, rejects=256, options=()):
+def vsearch_files(vsearch, queries, db, out, ident, threads=1, accepts=32, rejects=256, options=(), timed=False):
     """vsearch_global's search of FASTA files, its hits (query, target, identity) into the file out; raises OSError
-    where vsearch failed (since 2026-11-11 its own: qc.py's searches of files other nodes run)."""
-    run = subprocess.run([vsearch, "--usearch_global", queries, "--db", db, "--id", str(ident),
-                          "--iddef", "2", "--maxaccepts", str(accepts), "--maxrejects", str(rejects), *options,
-                          "--userout", out, "--userfields", "query+target+id", "--threads", str(max(1, threads)),
-                          "--quiet"], capture_output=True, text=True, check=False)
+    where vsearch failed (since 2026-11-11 its own: qc.py's searches of files other nodes run). timed (since
+    2026-11-13): -> (seconds before the search began: the database read and indexed on one thread, None where vsearch
+    did not say; seconds in all), from vsearch's progress lines (its first "Searching" one)."""
+    cmd = [vsearch, "--usearch_global", queries, "--db", db, "--id", str(ident), "--iddef", "2", "--maxaccepts",
+           str(accepts), "--maxrejects", str(rejects), *options, "--userout", out, "--userfields", "query+target+id",
+           "--threads", str(max(1, threads))]
+    if not timed:
+        run = subprocess.run([*cmd, "--quiet"], capture_output=True, text=True, check=False)
+        if run.returncode != 0 or not os.path.isfile(out):
+            raise OSError(f"vsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+        return None
+    began, setup = time.time(), None
+    tail = collections.deque(maxlen=20)
+    with subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True) as run:
+        for line in run.stderr:
+            if setup is None and line.startswith("Searching"):
+                setup = time.time() - began
+            tail.append(line)
     if run.returncode != 0 or not os.path.isfile(out):
-        raise OSError(f"vsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+        raise OSError(f"vsearch failed (exit {run.returncode}): {''.join(tail).strip()[-200:]}")
+    return setup, time.time() - began
 
 
 def vsearch_hits(lines):

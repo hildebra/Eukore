@@ -202,6 +202,15 @@ class SearchesTest(unittest.TestCase):
                 self.assertEqual(run.call_args_list[0].args[0], ["echo", "4711"])
         self.assertIsNone(eukore_build.qc_searches(types.SimpleNamespace(work="W", qc_helpers=None), "x")["helpers"])
 
+    def test_the_nodes_searching(self):
+        # this node and its helpers (--qc_tasks; a guess where only --qc_helpers is given): the rRNA searches' parts
+        def nodes(**kw):
+            return eukore_build.qc_searches(types.SimpleNamespace(work="W", **kw), "rrna")["nodes"]
+        self.assertEqual(nodes(qc_helpers=None), 1)
+        self.assertEqual(nodes(qc_helpers=None, qc_tasks=8), 1)  # no helpers started
+        self.assertEqual(nodes(qc_helpers="bash eukore.sh qc", qc_tasks=12), 13)
+        self.assertEqual(nodes(qc_helpers="bash eukore.sh qc", qc_tasks=0), 1 + eukore_build.QC_TASKS_GUESS)
+
 
 if __name__ == "__main__":
     unittest.main()

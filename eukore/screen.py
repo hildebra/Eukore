@@ -91,9 +91,18 @@ def search(queries, db_seqs, vsearch, threads, tmp, ident=SCREEN_ID, accepts=SCR
     return hits
 
 
-CHUNK = 10000  # queries a kept search's part: the parts searched by several nodes against one database
+PER_NODE = 3  # a kept search's parts for each node searching it (the final job's and its helpers'; since 2026-11-13)
+SEARCH_MIN_PART = 5000  # queries a part has at least: each part reads and indexes the whole database again (1 thread)
 HELPED = 4  # parts a search has at least for the helper nodes to be started for it
-MAX_PARTS = 32  # parts a search has at most (larger parts beyond CHUNK * MAX_PARTS queries)
+
+
+def search_parts(names, nodes=1):
+    """names (sorted) -> the parts of a kept search, [[name]]: PER_NODE for each of `nodes` nodes searching, fewer
+    where a part would have less than SEARCH_MIN_PART, interleaved (part i every n-th name from the i-th) so that each
+    holds some of every clade (since 2026-11-13: until then consecutive runs of 10,000, at most 32 parts: a part of one
+    dense clade's sequences, many hits each, took 5 times as long as others, the search waiting for it)."""
+    n = min(max(1, PER_NODE * max(1, nodes)), max(1, len(names) // SEARCH_MIN_PART))
+    return [names[i::n] for i in range(n)] if names else []
 
 
 class Searcher:
@@ -101,15 +110,16 @@ class Searcher:
     after another, and again in full by every package stage: one node for hours).
 
     one(): a large search. With a folder (WORK/qc/rrna) it is kept in <folder>_<phase> (qc.searched_loci), its
-    queries in parts of CHUNK against one shared database, each part's hits those of the whole search (a query's hits
-    do not depend on the other queries), searched by the helper nodes too where it has HELPED parts or more: a rerun on
-    the same records reads them. many(): the small searches that follow up on it (a clade's records each), several at
-    once here, each with a share of the threads (until then one after another, each with them all, the parent writing
-    and reading their files on one core). log: each search's time."""
+    queries in parts (search_parts: PER_NODE for each of `nodes`, this one and its helpers) against one shared database,
+    each part's hits those of the whole search (a query's hits do not depend on the other queries), searched by the
+    helper nodes too where it has HELPED parts or more: a rerun on the same records (and nodes) reads them. many(): the
+    small searches that follow up on it (a clade's records each), several at once here, each with a share of the
+    threads (until then one after another, each with them all, the parent writing and reading their files on one
+    core). log: each search's time, and each part's searched here."""
 
-    def __init__(self, vsearch, threads=1, tmp=None, folder=None, helpers=None, progress=None, log=None):
+    def __init__(self, vsearch, threads=1, tmp=None, folder=None, helpers=None, progress=None, log=None, nodes=1):
         self.vsearch, self.threads, self.tmp, self.folder = vsearch, max(1, threads), tmp, folder
-        self.helpers, self.progress, self.log = helpers, progress, log
+        self.helpers, self.progress, self.log, self.nodes = helpers, progress, log, max(1, nodes)
 
     def _say(self, text):
         if self.log:
@@ -128,15 +138,12 @@ class Searcher:
         else:
             names = sorted(n for n, s in queries.items() if s)
             shared = qc.Shared({n: s for n, s in db.items() if s})
-            # at most MAX_PARTS parts: each part indexes the whole database again (vsearch), a minute or more for a
-            # million 18S
-            size = max(CHUNK, -(-len(names) // MAX_PARTS))
-            todo = [(f"{phase}-{i // size + 1}", {n: queries[n] for n in names[i:i + size]}, shared)
-                    for i in range(0, len(names), size)]
+            todo = [(f"{phase}-{i + 1}", {n: queries[n] for n in part}, shared)
+                    for i, part in enumerate(search_parts(names, self.nodes))]
             found = qc.searched_loci(todo, self.vsearch, self.threads, f"{self.folder}_{phase}",
                                      self.helpers if len(todo) >= HELPED else None, self.progress,
                                      params=qc.Params(ident, accepts, rejects, ()), what=f"{phase} searched (vsearch)",
-                                     scratch=self.tmp)
+                                     scratch=self.tmp, log=self.log)
             got = collections.defaultdict(list)
             for hits in found.values():
                 for a, b, i in hits:

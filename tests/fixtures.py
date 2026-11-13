@@ -374,7 +374,12 @@ def read(path):
 
 
 seqs, targets = read(q), read(db)
+loud = "--quiet" not in args  # vsearch's progress lines on stderr (not a terminal: each percent a line)
+if loud:
+    print(f"Reading file {db} 100%\\nCreating k-mer index 100%", file=sys.stderr, flush=True)
 with open(out, "w") as fh:
+    if loud:
+        print("Searching 0%", file=sys.stderr, flush=True)
     for a, s in seqs.items():
         found = []
         for b, t in targets.items():
