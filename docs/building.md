@@ -239,6 +239,14 @@ the screen's 401,955 18S types in job 24963327) are now kept but neither typed, 
 the flag `too_long`; a screen part over 10,000 bases is left out of the screen. This changes the searches' inputs:
 the next run searches the rRNA checks once again.
 
+**The chained 18S split at their source** (since 2026-11-13). `rrna.joined` made barrnap's pieces within 1,500 bases
+one span whatever their number. A span now takes a piece only while the pieces' shares of the model add up to 1.3
+at most and it stays within 10,000 bases (a 28S's 15,000). The done genomes' saved 18S records of joined pieces
+(those with introns) are extracted again at the package stage from their own sequence, barrnap on it alone with
+`RESPLIT_THREADS` threads, `-t / 2` at once, so the genomes, mostly removed by `--keep_gb`, are not needed and no
+genome record changes; each holder's rows are kept in `WORK/rrna/joined.*`, so a later run reads them. The log says
+how many were extracted again and how many records they became.
+
 **The SSU models' search in kept parts** (since 2026-11-13). Each 18S not yet in the SSU models' cache
 (`WORK/cmalign/models.*`) is scored by Rfam's SSU models with cmsearch. Until then this was one cmsearch of every new
 18S, over an hour on 60 cores for a release's, and nothing was kept until it ended. Now the new 18S are split into 3

@@ -994,9 +994,15 @@ def genome_rrna_records(opts, job_map, ncbi, collected=None):
     """Every done genome's rRNA as records, labelled by its assembly's taxid. collected: package.collect's, whose
     rrna_rows (taken from it) its pool read (since 2026-11-11: each genome read again here, one after another)."""
     saved = collected.pop("rrna_rows", None) if collected is not None else None
+    rows_of = {acc: saved.get(acc) if saved is not None else rrna.load(genomes.done_dir(opts.work, acc))
+               for acc in sorted(job_map)}
+    # the 18S records of joined pieces extracted again with joined's limits (since 2026-11-13: a run of 18S-like hits
+    # was one "18S" of up to 847 kb), from their saved sequence: no genome needed, each kept in WORK/rrna/
+    rows_of = rrna.resplit({a: r for a, r in rows_of.items() if r}, {a: j.get("itsx", "all") for a, j in job_map.items()},
+                           shutil.which("barrnap"), shutil.which("ITSx"), getattr(opts, "threads", 1), opts.work, say)
     out = []
     for acc, job in sorted(job_map.items()):
-        rows = saved.get(acc) if saved is not None else rrna.load(genomes.done_dir(opts.work, acc))
+        rows = rows_of.get(acc)
         if rows:
             out += rrna.genome_records(acc, rows, job.get("taxid") or job["species_taxid"],
                                        ncbi.species_of(int(job["species_taxid"])))

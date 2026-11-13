@@ -45,6 +45,15 @@ MIN_LEN = 1200      # an 18S span this long at least
 # alignments' cost the product of the lengths), and low: flag too_long. A real 18S, its group I introns too, is
 # 1.6-5 kb; a long read's "18S" with no 5.8S found 6-9 kb (MAX_ITS1's note)
 MAX_SSU_LEN = 10000
+# joined's limits (since 2026-11-13; until then pieces each within MAX_INTRON of the next were one span whatever their
+# number, a run of 18S-like hits one "18S" of up to 847 kb): a span takes a piece only while the pieces' shares of the
+# model add up to JOIN_SHARE at most (one molecule's pieces, cut by introns, cover it about once; a little overlap
+# allowed) and the span stays within MAX_SSU_LEN (an 18S) or MAX_LSU_SPAN (a 28S: ~3.4-5.5 kb, its introns too)
+JOIN_SHARE = 1.3
+MAX_LSU_SPAN = 15000
+# the saved extractions' 18S records of joined pieces extracted again from their own sequence with these limits
+# (resplit; raised when joined's rule changes again)
+JOIN_RECORD = 1
 MAX_ITS = 3000      # the 5.8S's end to the 28S: at most (EUKARYOME 2.1's longest by barrnap: 2,551, Phaeocystis)
 # the 18S's end to the 5.8S: at most (since 2026-11-10; until then MAX_ITS: of EUKARYOME 2.1's long reads 24 have an
 # ITS1 of 3,030-4,272 by barrnap, opossum 3.1 kb, fungus gnats 3.1 kb, Trinematidae 3.4-3.8 kb, Ceramium 3.0 kb,
@@ -297,15 +306,17 @@ def parse_gff(gff):
     return out
 
 
-def joined(features, gap=MAX_INTRON):
+def joined(features, gap=MAX_INTRON, max_share=JOIN_SHARE, max_span=None):
     """Features (parse_gff's) on a strand this close one span -> [[start, end, strand, share of the model]]: an rRNA cut
-    by introns (barrnap's pieces each partial; their shares summed)."""
+    by introns (barrnap's pieces each partial; their shares summed), a piece taken only while the shares stay within
+    max_share and the span within max_span bases (since 2026-11-13: a run of pieces one span however long)."""
     out = []
     for strand in "+-":
         for f in sorted(f for f in features if f[2] == strand):
             start, end = f[0], f[1]
             share = f[4] if len(f) > 4 else 0.5 if f[3] else 1.0  # a feature of (start, end, strand, partial)
-            if out and out[-1][2] == strand and start - out[-1][1] <= gap:
+            if out and out[-1][2] == strand and start - out[-1][1] <= gap and out[-1][3] + share <= max_share \
+                    and (max_span is None or max(out[-1][1], end) - out[-1][0] + 1 <= max_span):
                 out[-1][1] = max(out[-1][1], end)
                 out[-1][3] += share
             else:
@@ -323,8 +334,8 @@ def units_of(seq, feats):
     precedes; a unit keeps one of its own, the nearest after its 28S, else the nearest before its 18S."""
     out, cores = [], []
     s18 = feats.get("18S_rRNA", [])
-    lsu_spans = joined(feats.get("28S_rRNA", []))
-    for start, end, strand, _share in joined(s18):
+    lsu_spans = joined(feats.get("28S_rRNA", []), max_span=MAX_LSU_SPAN)
+    for start, end, strand, _share in joined(s18, max_span=MAX_SSU_LEN):
         pieces = [f for f in s18 if f[2] == strand and start <= f[0] and f[1] <= end]
         span = seq[start - 1:end]
         exons = "".join(seq[f[0] - 1:f[1]] for f in sorted(pieces))
@@ -527,13 +538,19 @@ def extract_genome(path, barrnap, itsx=None, threads=1, itsx_sets="all"):
     found, lengths = scan.finish()
     spans = placement.read_spans(path, {n: [(a + 1, b) for a, b in w] for n, w in found.items()}) if found else {}
     seqs, origin = {}, {}
+    order = {n: i for i, n in enumerate(lengths)}
+    for name in sorted(found, key=order.get):
+        for a, b in found[name]:
+            wid = f"w{len(seqs)}"
+            seqs[wid], origin[wid] = spans[name][a:b].upper(), (name, a)
+    return window_rows(seqs, origin, lengths, barrnap, itsx, threads, itsx_sets)
+
+
+def window_rows(seqs, origin, lengths, barrnap, itsx=None, threads=1, itsx_sets="all"):
+    """extract_genome's rows of its windows: seqs {window: sequence}, origin {window: (contig, offset of its first
+    base)}, lengths {contig: its length} (since 2026-11-13 apart: resplit's records are windows of their own)."""
     with tempfile.TemporaryDirectory() as tmp:
         win = os.path.join(tmp, "windows.fna")
-        order = {n: i for i, n in enumerate(lengths)}
-        for name in sorted(found, key=order.get):
-            for a, b in found[name]:
-                wid = f"w{len(seqs)}"
-                seqs[wid], origin[wid] = spans[name][a:b].upper(), (name, a)
         barrnap_fasta(win, seqs.items())  # a telomere's window not first (since 2026-11-12)
         gff = barrnap_gff(barrnap, win, threads) if seqs else ""
     feats = parse_gff(gff)
@@ -561,6 +578,111 @@ def extract_genome(path, barrnap, itsx=None, threads=1, itsx_sets="all"):
                              regions=item["regions"], lsu_complete=item["lsu_complete"],
                              contig_length=item["contig_length"], introns=item["unit_introns"]))
     return rows
+
+
+RESPLIT_THREADS = 2  # barrnap's (and ITSx's) threads of each saved record extracted again (resplit)
+
+
+def _inside(outer, inner):
+    return (outer["contig"] == inner["contig"] and outer["strand"] == inner["strand"]
+            and outer["start"] <= inner["start"] and inner["end"] <= outer["end"])
+
+
+def joined_groups(rows):
+    """A genome's saved rows -> {index of a holder: [indexes of the rows inside it]}: each row of 18S pieces joined (its
+    introns; one saved before format 4 has none known) with the longest row holding it (an 18S span's unit), and every
+    row inside that (the span itself)."""
+    holders = set()
+    for r in rows:
+        if r.get("introns"):
+            holders.add(max((j for j, o in enumerate(rows) if _inside(o, r)),
+                            key=lambda j: (rows[j]["end"] - rows[j]["start"], -j)))
+    holders = {h for h in holders if not any(o != h and _inside(rows[o], rows[h]) for o in holders)}
+    return {h: [j for j, o in enumerate(rows) if _inside(rows[h], o)] for h in sorted(holders)}
+
+
+def _reextract(item):
+    """A pool's task: (sequence, ITSx's sets, barrnap, ITSx) -> its rows extracted from it alone (window_rows), their
+    coordinates on it (1-based, its strand +)."""
+    seq, sets, barrnap, itsx = item
+    got = window_rows({"r": seq}, {"r": ("r", 0)}, {"r": len(seq)}, barrnap, itsx, RESPLIT_THREADS, sets)
+    return [{k: r[k] for k in ("kind", "start", "end", "strand", "regions", "lsu_complete", "introns", "sequence")}
+            for r in got]
+
+
+def placed(new, holder):
+    """A row extracted again from a holder's sequence (_reextract's) on the holder's contig."""
+    if holder["strand"] == "+":
+        start, end, strand = holder["start"] + new["start"] - 1, holder["start"] + new["end"] - 1, new["strand"]
+    else:
+        start, end = holder["end"] - new["end"] + 1, holder["end"] - new["start"] + 1
+        strand = "-" if new["strand"] == "+" else "+"
+    return dict(new, contig=holder["contig"], start=start, end=end, strand=strand,
+                contig_length=holder.get("contig_length"),
+                regions=[tuple(x) for x in new["regions"]] if new["regions"] else None,
+                introns=[tuple(x) for x in new["introns"]] if new["introns"] is not None else None)
+
+
+def resplit(saved, sets_of, barrnap, itsx=None, threads=1, work=None, log=None):
+    """The saved extractions {accession: rows} with joined's limits (since 2026-11-13): each holder of 18S pieces
+    joined (joined_groups) extracted again from its own sequence (barrnap on it alone: the genome is not needed, the
+    record holding every piece), its rows in place of the group's -> {accession: rows}. sets_of: {accession: ITSx's
+    sets}. Each holder's rows are kept under work/rrna/joined.<digest of joined's limits> (a line a holder: its
+    sequence's digest and the rows), so that each is extracted once."""
+    import hashlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+    groups = {acc: joined_groups(rows) for acc, rows in saved.items()}
+    groups = {acc: g for acc, g in groups.items() if g}
+    if not groups or not barrnap:
+        if groups and log:
+            log(f"WARNING: no barrnap: {sum(map(len, groups.values()))} saved 18S records of joined pieces kept as "
+                f"they were (joined's limits since 2026-11-13 not applied)")
+        return saved
+    limits = "\n".join(map(str, (JOIN_RECORD, JOIN_SHARE, MAX_SSU_LEN, MAX_LSU_SPAN, MAX_INTRON, MIN_LEN, MAX_ITS,
+                                 MAX_ITS1)))
+    stem = os.path.join(work, "rrna", f"joined.{hashlib.md5(limits.encode()).hexdigest()[:10]}") if work else None
+    cache = util.cache_read(stem) if stem else {}
+
+    def key(seq, sets):
+        return hashlib.md5(f"{sets}\n{seq}".encode()).hexdigest()
+    todo = {}
+    for acc, g in groups.items():
+        for h in g:
+            seq, sets = saved[acc][h]["sequence"], sets_of.get(acc, "all")
+            if key(seq, sets) not in cache:
+                todo[key(seq, sets)] = (seq, sets, barrnap, itsx)
+    began = time.time()
+    if todo:
+        out = util.cache_open(stem) if stem else None
+        try:
+            items = list(todo.items())
+            for (k, _item), rows in zip(items, util.ordered(_reextract, [i for _k, i in items],
+                                                              workers=max(1, threads // RESPLIT_THREADS))):
+                cache[k] = json.dumps(rows, separators=(",", ":"))
+                if out:
+                    out.write(f"{k}\t{cache[k]}\n")
+                    out.flush()
+        finally:
+            if out:
+                out.close()
+    result, before, after = dict(saved), 0, 0
+    for acc, g in groups.items():
+        rows, inside = saved[acc], {j for js in g.values() for j in js}
+        new = []
+        for i, r in enumerate(rows):
+            if i in g:
+                got = [placed(x, r) for x in json.loads(cache[key(r["sequence"], sets_of.get(acc, "all"))])]
+                before += len(g[i])
+                after += len(got)
+                new += got
+            elif i not in inside:
+                new.append(r)
+        result[acc] = new
+    if log:
+        log(f"  rRNA: {sum(map(len, groups.values())):,} saved records of joined 18S pieces in {len(groups):,} "
+            f"genomes extracted again with joined's limits ({len(todo):,} by barrnap now, the rest kept from before): "
+            f"{before:,} records now {after:,}; took {util.duration(time.time() - began)}")
+    return result
 
 
 def published_regions(reads, barrnap, itsx=None, threads=1, sets=None):

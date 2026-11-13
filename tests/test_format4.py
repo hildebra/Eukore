@@ -116,16 +116,90 @@ class RrnaTest(unittest.TestCase):
     def test_an_18s_cut_by_an_intron(self):
         rng = random.Random(3)
         seq = "".join(rng.choice("ACGT") for _ in range(20000))
-        feats = {"18S_rRNA": [(1001, 1700, "+", False), (1901, 2800, "+", False)],
+        # barrnap's pieces of an 18S cut by an intron: each partial, its share of the model (aligned only N percent)
+        feats = {"18S_rRNA": [(1001, 1700, "+", True, 0.4), (1901, 2800, "+", True, 0.5)],
                  "5_8S_rRNA": [(3201, 3350, "+", False)], "28S_rRNA": [(3601, 9000, "+", False)]}
         item = rrna.units_of(seq, feats)[0]
         self.assertEqual(item["introns"], [("18S", 700, 900)])  # on the span: its bases 701-900
         self.assertEqual(item["unit_introns"], [("18S", 700, 900)])  # the unit starts at the 18S
         self.assertEqual(item["exons"], seq[1000:1700] + seq[1900:2800])
         n = len(seq)
-        flip = {k: [(n - b + 1, n - a + 1, "-", p) for a, b, _s, p in v] for k, v in feats.items()}
+        flip = {k: [(n - f[1] + 1, n - f[0] + 1, "-") + tuple(f[3:]) for f in v] for k, v in feats.items()}
         back = rrna.units_of(rrna.revcomp(seq), flip)[0]
         self.assertEqual((back["introns"], back["unit_introns"]), ([("18S", 700, 900)], [("18S", 700, 900)]))
+        # two whole 18S this close are two (since 2026-11-13: one 18S with an "intron")
+        whole = dict(feats, **{"18S_rRNA": [(1001, 2800, "+", False), (3001, 4800, "+", False)]})
+        self.assertEqual([u["introns"] for u in rrna.units_of(seq, whole)], [[], []])
+
+    def test_a_run_of_pieces_is_not_one_18s(self):
+        # since 2026-11-13: pieces each within MAX_INTRON of the next were one span however many (an 847 kb "18S")
+        pieces = [(1 + i * 1600, 600 + i * 1600, "+", True, 0.3) for i in range(10)]
+        spans = rrna.joined(pieces, max_span=rrna.MAX_SSU_LEN)
+        self.assertEqual([(a, b) for a, b, _s, _sh in spans], [(1, 5400), (6401, 11800), (12801, 15000)])
+        self.assertEqual(len(rrna.joined(pieces, max_share=100)), 1)  # without the share's limit: one, as before
+        small = [(1 + i * 1400, 400 + i * 1400, "+", True, 0.05) for i in range(12)]  # shares under the limit
+        self.assertTrue(all(b - a + 1 <= 10000 for a, b, _s, _sh in rrna.joined(small, max_span=10000)))
+        self.assertEqual(len(rrna.joined(small, max_span=10000)), 2)
+        # an 18S cut by introns: its pieces' shares about one, one span still
+        cut = [(1001, 1700, "+", True, 0.4), (1901, 2800, "+", True, 0.55), (3001, 3300, "+", True, 0.2)]
+        self.assertEqual([(a, b) for a, b, _s, _sh in rrna.joined(cut, max_span=10000)], [(1001, 3300)])
+
+    def test_saved_runs_of_pieces_extracted_again(self):
+        # the saved extractions' 18S records of joined pieces split from their own sequence: no genome needed
+        stand_in = r'''#!/usr/bin/env python3
+import sys
+path = sys.argv[-1]
+with open(sys.argv[0] + ".calls", "a") as fh:
+    fh.write("1\n")
+seqs, name = {}, None
+for line in open(path):
+    if line.startswith(">"):
+        name = line[1:].split()[0]
+        seqs[name] = 0
+    else:
+        seqs[name] += len(line.strip())
+print("##gff-version 3")
+for n, length in seqs.items():
+    for i in range(length // 1600):  # a piece of 30% every 1,600 bases
+        print(f"{n}\tbarrnap:0.9\trRNA\t{1 + i * 1600}\t{600 + i * 1600}\t1e-50\t+\t.\tName=18S_rRNA;"
+              "product=18S ribosomal RNA (partial);note=aligned only 30 percent of the 18S ribosomal RNA")
+'''
+        rng = random.Random(9)
+        chain = "".join(rng.choice("ACGT") for _ in range(16000))
+        introns = [("18S", 600 + i * 1600, 1600 + i * 1600) for i in range(9)]
+        rows = [dict(kind="18S", contig="c1", start=101, end=16100, strand="+", regions=None, lsu_complete=False,
+                     sequence=chain, contig_length=50000, introns=introns),
+                dict(kind="18S", contig="c2", start=1001, end=2800, strand="+", regions=None, lsu_complete=False,
+                     sequence="ACGT" * 450, contig_length=9000, introns=[]),
+                dict(kind="18S", contig="c3", start=2001, end=18000, strand="-", regions=None, lsu_complete=False,
+                     sequence=chain, contig_length=40000, introns=introns)]
+        with tempfile.TemporaryDirectory() as tmp:
+            barrnap = fx.tool(tmp, "barrnap", stand_in)
+            said = []
+            got = rrna.resplit({"GCA_1": rows}, {"GCA_1": "F"}, barrnap, None, 1, tmp, said.append)["GCA_1"]
+            self.assertEqual([(r["contig"], r["start"], r["end"], r["strand"]) for r in got],
+                             [("c1", 101, 5500, "+"), ("c1", 6501, 11900, "+"), ("c1", 12901, 15100, "+"),
+                              ("c2", 1001, 2800, "+"),  # no joined pieces: as it was
+                              ("c3", 12601, 18000, "-"), ("c3", 6201, 11600, "-"), ("c3", 3001, 5200, "-")])
+            self.assertEqual(got[0]["sequence"], chain[:5400])
+            self.assertEqual(got[4]["sequence"], chain[:5400])  # on its own strand, as the record was
+            self.assertEqual(got[0]["introns"], [("18S", 600, 1600), ("18S", 2200, 3200), ("18S", 3800, 4800)])
+            self.assertIn("2 saved records of joined 18S pieces in 1 genomes extracted again", said[0])
+            self.assertIn("2 records now 6", said[0])
+            calls = os.path.join(tmp, "barrnap.calls")
+            with open(calls) as fh:
+                runs = len(fh.read().split())
+            self.assertEqual(runs, 1)  # one sequence (with its sets) extracted once for both
+            # read from the cache: barrnap not run again
+            self.assertEqual(rrna.resplit({"GCA_1": rows}, {"GCA_1": "F"}, barrnap, None, 1, tmp)["GCA_1"], got)
+            with open(calls) as fh:
+                self.assertEqual(len(fh.read().split()), runs)
+            # records hold their checks' columns as before
+            records = rrna.genome_records("GCA_1", got, 4932, 4932)
+            self.assertEqual([n for n, _s, _r in records][:3], ["GCA_1_18S_1", "GCA_1_18S_2", "GCA_1_18S_3"])
+            # no barrnap: kept as they were, said
+            self.assertEqual(rrna.resplit({"GCA_1": rows}, {}, None, log=said.append)["GCA_1"], rows)
+            self.assertIn("no barrnap", said[-1])
 
     def test_saved_records_and_their_checks(self):
         with tempfile.TemporaryDirectory() as tmp:

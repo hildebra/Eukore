@@ -482,7 +482,12 @@ of frame shipped as `high`, the true owner of a contaminant's sequence called an
   18S-like pieces each within 1,500 bases of the next chained into one span (up to 847 kb), or a published read whose
   regions were not found, taken whole (EUKARYOME's of 32,759 bases); it is `too_long`, `low`, and none of the checks
   run on it (the screen's vsearch, whose alignments cost the product of the lengths, waited an hour on one); a screen
-  part over 10,000 bases is not screened. ROD's operons are NCBI assemblies' own: a record's own
+  part over 10,000 bases is not screened. The chain's cause is fixed in the extraction (since 2026-11-13): barrnap's
+  18S (and 28S) pieces within 1,500 bases are one span only while their shares of the model (barrnap's "aligned only N
+  percent", a whole hit 1) add up to 1.3 at most, one molecule cut by introns covering it about once, and the span
+  stays within 10,000 bases (15,000 for a 28S); two whole 18S hits are two 18S. The done genomes' saved records of
+  joined pieces are extracted again from their own sequence, which holds every piece (barrnap on it alone, no genome
+  needed), and kept in `WORK/rrna/`. ROD's operons are NCBI assemblies' own: a record's own
   assembly in ROD (another version, RefSeq's copy) is now its own genome, no confirmation of it (`screen.genome_of`).
 - **The tiers** ([FORMAT.md](FORMAT.md#confidence-tiers-format-6)). `high` needed a relative of the copy's family
   near it, so a lineage the package holds few species of could not be `high`, and its copies were `medium` beside
