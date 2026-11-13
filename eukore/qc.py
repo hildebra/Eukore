@@ -322,6 +322,27 @@ DEFAULT = Params()
 CM_RECORD = 1  # what makes a kept cmsearch part (CmParams): raised when util.CMSEARCH_OPTIONS or its table change
 
 
+CMALIGN_RECORD = 1  # what makes a kept cmalign part (CmalignParams): raised when regions.align_file's lines change
+
+
+class CmalignParams(tuple):
+    """A cmalign part's settings (since 2026-11-13: the 18S variable regions, regions.run): the model's file (on the
+    file system the helpers share), its digest, and the regions' model columns (regions.cols_text). Its hits: (key,
+    ok/own/left, regions or cmalign's words) (regions.align_file)."""
+    __slots__ = ()
+
+    def __new__(cls, cm, digest, cols):
+        return super().__new__(cls, (cm, digest, cols))
+
+    def text(self):
+        from . import regions  # noqa: PLC0415
+        return (f"cmalign\t{CMALIGN_RECORD}\t{self[1]}\t{self[2]}\t{regions.MXSIZE}\t{regions.SLACK}\t"
+                f"{regions.MAX_SSU}\t{regions.BATCH}\n")
+
+    def columns(self):
+        return ["cmalign", self[0], self[1], self[2]]
+
+
 class CmParams(tuple):
     """A cmsearch part's settings (since 2026-11-13: the SSU models' search, regions.ssu_models): the models' file (on
     the file system the helpers share) and its digest, the options util.CMSEARCH_OPTIONS'. Its hits: (sequence, model
@@ -429,6 +450,11 @@ def search_one(folder, base, vsearch, threads, inputs=None, params=DEFAULT, shar
                 began = time.time()
                 util.cmsearch_files(vsearch, q, params[0], out, threads)
                 took = (None, time.time() - began)
+            elif isinstance(params, CmalignParams):  # cmalign's files on the node's disk (inputs_dir, else TMPDIR)
+                from . import regions  # noqa: PLC0415
+                began = time.time()
+                regions.align_file(vsearch, q, params[0], regions.cols_of(params[2]), out, threads, inputs_dir)
+                took = (None, time.time() - began)
             else:
                 ident, accepts, rejects, options = params
                 took = util.vsearch_files(vsearch, q, db, out, ident, threads, accepts, rejects, options,
@@ -450,6 +476,9 @@ def search_one(folder, base, vsearch, threads, inputs=None, params=DEFAULT, shar
 
 def read_hits(folder, base, params=DEFAULT):
     with gzip.open(search_files(folder, base)[2], "rt") as fh:
+        if isinstance(params, CmalignParams):
+            from . import regions  # noqa: PLC0415
+            return regions.aligned_lines(fh)
         return util.cmsearch_hits(fh) if isinstance(params, CmParams) else util.vsearch_hits(fh)
 
 
@@ -467,6 +496,8 @@ def todo_entry(line):
     f = line.rstrip("\n").split("\t")
     if len(f) >= 7 and f[2] == "cmsearch":  # a cmsearch part (since 2026-11-13): the models' file and digest
         return f[0], CmParams(f[3], f[4]), None
+    if len(f) >= 7 and f[2] == "cmalign":  # a cmalign part (since 2026-11-13): the model's file, digest, columns
+        return f[0], CmalignParams(f[3], f[4], f[5]), None
     if len(f) >= 7:
         return f[0], Params.of_columns(f[2:6]), None if f[6] == "-" else f[6]
     return f[0], DEFAULT, None
@@ -545,10 +576,11 @@ def searched_line(base, timing):
             + ("" if setup is None else f" (database read and indexed in {util.duration(setup)})"))
 
 
-def help_search(root, vsearch, threads, log=print, cmsearch=None):
+def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None):
     """A helper node's part (tools/eukore.sh qc): the loci of every folder under root (its todo.tsv) whose inputs are
     there and hits not yet, each claimed and searched, until none is left that no other node holds -> loci searched.
-    A cmsearch part (CmParams; since 2026-11-13) by cmsearch, left to the other nodes where it is None."""
+    A cmsearch part (CmParams; since 2026-11-13) by cmsearch, a cmalign part (CmalignParams) by cmalign, each left to
+    the other nodes where it is None."""
     done, idle = 0, False
     while not idle:
         idle = True
@@ -561,7 +593,8 @@ def help_search(root, vsearch, threads, log=print, cmsearch=None):
                 continue
             for base, params, shared in entries:
                 q, _d, hits, _claim = search_files(folder, base)
-                tool = cmsearch if isinstance(params, CmParams) else vsearch
+                tool = (cmsearch if isinstance(params, CmParams) else cmalign if isinstance(params, CmalignParams)
+                        else vsearch)
                 if os.path.isfile(hits) or not os.path.isfile(q) or not tool:
                     continue
                 timing = {}
@@ -580,6 +613,7 @@ def main(argv=None):
     p.add_argument("root", help="WORK/qc: the folders of the loci's searches")
     p.add_argument("--vsearch", default="vsearch")
     p.add_argument("--cmsearch", default="cmsearch", help="the SSU models' parts' (none found: left to other nodes)")
+    p.add_argument("--cmalign", default="cmalign", help="the 18S alignments' parts' (none found: left to other nodes)")
     p.add_argument("-t", "--threads", type=int, default=1)
     a = p.parse_args(argv)
     vsearch = shutil.which(a.vsearch)
@@ -587,7 +621,7 @@ def main(argv=None):
         sys.exit(f"no {a.vsearch}")
     help_search(a.root, vsearch, a.threads,
                 log=lambda text: print(f"[{time.strftime('%H:%M:%S')}] {text}", flush=True),
-                cmsearch=shutil.which(a.cmsearch))
+                cmsearch=shutil.which(a.cmsearch), cmalign=shutil.which(a.cmalign))
     return 0
 
 

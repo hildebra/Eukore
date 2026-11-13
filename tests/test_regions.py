@@ -214,6 +214,89 @@ class UnalignedTest(unittest.TestCase):
             self.assertEqual(sorted(os.listdir(tmp)), ["cmalign", "cmalign.calls", "ssu.cm", "work"])
 
 
+class AlignedTogetherTest(unittest.TestCase):
+    """The 18S alignments several cmalign runs at once and in kept parts shared with the helpers (since 2026-11-13)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        tmp = self.tmp.name
+        ref = regions.reference()
+        self.records = [(f"r{i:02d}", ref[i * 7:1700 - i], dict(kind="18S")) for i in range(14)]
+        self.records.append(("bad", ref[:800] + "NNNN" + ref[804:1700], dict(kind="18S")))
+        self.records.append(("long", ref * 3, dict(kind="18S")))
+        self.cm = os.path.join(tmp, "ssu.cm")
+        with open(self.cm, "w") as fh:
+            fh.write("stand-in\n")
+        self.tool = fx.tool(tmp, "cmalign", CMALIGN)
+        self.plain = regions.run(self.records, self.cm, fx.tool(tmp, "plain", CMALIGN), 1, None, log=lambda *_: None)
+        self.local = os.path.join(tmp, "local")
+        os.makedirs(self.local)
+        self.patch = mock.patch.multiple(regions, BATCH=2, SSU_HELPED=2)
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def work(self, name):
+        path = os.path.join(self.tmp.name, name)
+        os.makedirs(path)
+        return path
+
+    def searches(self, work, helpers=None):
+        return {"folder": os.path.join(work, "qc", "cmalign"), "helpers": helpers, "nodes": 1, "scratch": self.local}
+
+    def test_several_runs_at_once_alike(self):
+        said = []
+        rows = regions.run(self.records, self.cm, self.tool, 8, self.work("w"), log=said.append)  # 2 runs of 4
+        self.assertEqual(rows, self.plain)
+        self.assertEqual({r["record"] for r in rows}, {f"r{i:02d}" for i in range(14)})
+        self.assertTrue(any("1 18S over 4000 bases and 1 it could not align left out" in s for s in said), said)
+        self.assertTrue(any("15 18S aligned (cmalign): took" in s for s in said), said)
+        self.assertEqual(len(lines(os.path.join(self.tmp.name, "w", "cmalign", "unaligned.*.tsv"))), 1)
+
+    def test_kept_parts_alike_and_removed(self):
+        work, said = self.work("w"), []
+        rows = regions.run(self.records, self.cm, self.tool, 1, work, log=said.append, searches=self.searches(work))
+        self.assertEqual(rows, self.plain)
+        self.assertFalse(os.path.exists(os.path.join(work, "qc", "cmalign")))  # in the cache now
+        self.assertEqual(os.listdir(self.local), [])
+        self.assertTrue(any("(cmalign, 3 parts): took" in s for s in said), said)
+        self.assertEqual(sum("cmalign-" in s and "searched in" in s for s in said), 3)
+        unaligned = lines(os.path.join(work, "cmalign", "unaligned.*.tsv"))
+        self.assertEqual([u.split("\t")[0] for u in unaligned], [regions._digest(self.records[14][1])])  # noqa: SLF001
+        os.remove(self.tool + ".calls")
+        again = regions.run(self.records, self.cm, self.tool, 1, work, log=lambda *_: None,
+                            searches=self.searches(work))
+        self.assertEqual((again, calls(self.tool)), (rows, [1]))  # the reference alone
+
+    def test_the_helpers_align_the_parts(self):
+        work, started = self.work("w"), []
+
+        def helpers(n):  # another node's run of the helper's command: the model and its columns read from todo.tsv
+            started.append(n)
+            env = dict(os.environ, PYTHONPATH=os.path.dirname(HERE))
+            code = ("import sys; from unittest import mock; from eukore import qc, regions\n"
+                    "with mock.patch.object(regions, 'BATCH', 2):\n"
+                    "    sys.exit(qc.main(sys.argv[1:]))\n")
+            run = subprocess.run([sys.executable, "-c", code, "helper", os.path.join(work, "qc"), "--vsearch",
+                                  self.tool, "--cmalign", self.tool, "-t", "8"], capture_output=True, text=True,
+                                 check=False, env=env)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn("3 loci searched here", run.stdout)
+            return None
+        rows = regions.run(self.records, self.cm, self.tool, 1, work, log=lambda *_: None,
+                           searches=self.searches(work, helpers))
+        self.assertEqual((started, rows), ([3], self.plain))
+
+    def test_columns_text(self):
+        cols = {"V4": (560, 1010), "V9": (1620, 1700)}
+        self.assertEqual(regions.cols_of(regions.cols_text(cols)), cols)
+        from eukore import qc
+        params = qc.CmalignParams("/x/ssu.cm", "abc", regions.cols_text(cols))
+        self.assertEqual(qc.todo_entry(qc.todo_line("cmalign-1.k", 4, params)), ("cmalign-1.k", params, None))
+
+
 class ModelsCacheTest(unittest.TestCase):
     def test_a_sequences_model_is_kept(self):
         # until 2026-11-10 every package stage searched every 18S again

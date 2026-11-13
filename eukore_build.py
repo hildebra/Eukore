@@ -2058,7 +2058,8 @@ def _main(argv, held):
             if cmalign and os.path.isfile(cm):
                 extra_tables.append(("rrna/regions.tsv", regions_mod.REGION_COLUMNS,
                                      regions_mod.run(records, cm, cmalign, opts.threads, opts.work, say,
-                                                     tmp=opts.scratch)))
+                                                     tmp=opts.scratch, searches=qc_searches(opts, "cmalign"),
+                                                     progress=functools.partial(progress_of, opts, unit=""))))
             else:
                 say("WARNING: no cmalign (infernal) or no Rfam SSU model (--stage fetch fetches it): no 18S variable "
                     "regions")

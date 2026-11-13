@@ -244,6 +244,18 @@ holds the calls, the parts' folder is removed. The log gives each part's time an
 (`SSU models: <n> 18S searched (cmsearch, <parts> parts): took <time>`). The one cmsearch of before held ~20 GB on 60
 threads (job 24928071): `SBATCH_QC`'s memory should allow as much for a helper's part.
 
+**The 18S alignments several at once and shared** (since 2026-11-13). The variable regions need each distinct 18S
+not yet in the cache (`WORK/cmalign/ssu.*`) aligned to Rfam's eukaryote SSU model by cmalign, in batches of 500.
+Until then the batches ran one after another, each a cmalign with all threads and then read on one core in the main
+process: 5-9 cores of 60 busy, for 1.5 million 18S in job 24928071. Now each cmalign run has 4 threads, and the
+threads' quarter of runs go at once, each alignment read in its own worker process (the threads in all, and so
+cmalign's matrices, are as many as before). The 18S are split into parts as the SSU models' search is (3 for each
+node searching, at most 20,000 a part), kept in `WORK/qc/cmalign/` as each ends and taken by the `QC_TASKS` helpers
+too (`todo.tsv` names the model's file and the regions' model columns); once the cache holds them, the folder is
+removed. A batch cmalign fails on is aligned in halves as before; the 18S that fail alone are kept as before. The log
+gives each part's time and the step's (`18S variable regions: <n> 18S aligned (cmalign, <parts> parts): took
+<time>`).
+
 **The node's disk and the WORK.** The final job's scratch files go to `--local_tmp`: Python's and the tools'
 temporary files (TMPDIR), hmmalign's, cmalign's and the SSU models' cmsearch files (since 2026-11-13; until then in
 the WORK), and the inputs of a kept search no helper shares. The WORK holds what is kept or shared: the caches, the

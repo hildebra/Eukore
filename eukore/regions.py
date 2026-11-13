@@ -45,11 +45,25 @@ SSU_PART_MIN = 500
 SSU_HELPED = 4
 
 
-def ssu_parts(names, nodes=1):
-    """names (sorted) -> the SSU models' search's parts [[name]], interleaved (part i every n-th name from the i-th)."""
-    n = max(SSU_PER_NODE * max(1, nodes), -(-len(names) // SSU_PART_MAX))
-    n = max(1, min(n, len(names) // SSU_PART_MIN))
+# the 18S alignments (run; since 2026-11-13): each cmalign run with CMALIGN_CPU threads, threads // CMALIGN_CPU runs at
+# once (until then one run of BATCH after another with all threads, each followed by its parsing in the main process:
+# 5-9 cores of 60 busy, 1.5 million 18S for a release); with a WORK, in kept parts as the SSU models' search, the
+# helpers started for them too (CMALIGN_PART_MAX sequences a part at most)
+CMALIGN_CPU = 4
+CMALIGN_PART_MAX = 20000
+
+
+def split_parts(names, nodes=1, most=SSU_PART_MAX, least=SSU_PART_MIN):
+    """names (sorted) -> a kept search's parts [[name]]: SSU_PER_NODE for each of `nodes` nodes searching, more where a
+    part would have over `most`, none under `least`, interleaved (part i every n-th name from the i-th)."""
+    n = max(SSU_PER_NODE * max(1, nodes), -(-len(names) // most))
+    n = max(1, min(n, len(names) // least))
     return [names[i::n] for i in range(n)] if names else []
+
+
+def ssu_parts(names, nodes=1):
+    """The SSU models' search's parts (split_parts)."""
+    return split_parts(names, nodes, SSU_PART_MAX, SSU_PART_MIN)
 
 
 def cm_path(src_dir):
@@ -226,13 +240,14 @@ def _cmalign(cm, seqs, names, cmalign_bin, threads, tmp):
         return {n: align_mod.states_of(row, rf) for n, row in rows.items()}, None, True
 
 
-def cmalign(cm, seqs, cmalign_bin="cmalign", threads=1, tmp=None, log=None, each=None, fail=None):
+def cmalign(cm, seqs, cmalign_bin="cmalign", threads=1, tmp=None, log=None, each=None, fail=None, left=None):
     """seqs {name: sequence} aligned to the CM -> {name: [the model position of each base, or None in an insert]}. A
     sequence over MAX_SSU is left out; a batch cmalign fails on (one sequence over its matrix limit) is aligned in
     halves, a half that fails in its halves, down to the sequences that fail alone: left out (said). Since 2026-11-10;
     until then one sequence at a time, BATCH runs for one sequence that fails, where the halves take ~2 log2(BATCH).
     each: a function given each run's alignments as they come (run's cache); fail: one given {name: cmalign's words}
-    of the sequences that failed alone by cmalign's own exit (one killed says nothing of its sequence)."""
+    of the sequences that failed alone by cmalign's own exit (one killed says nothing of its sequence); left: a list
+    given (name, cmalign's words) of every sequence that failed alone (since 2026-11-13)."""
     out, failed, own = {}, [], {}
     names = sorted(n for n in seqs if len(seqs[n]) <= MAX_SSU)
     for i in range(0, len(names), BATCH):
@@ -253,11 +268,74 @@ def cmalign(cm, seqs, cmalign_bin="cmalign", threads=1, tmp=None, log=None, each
                     own[part[0]] = why
     if fail and own:
         fail(own)
+    if left is not None:
+        left.extend(failed)
     long_ones = len(seqs) - len(names)
     if log and (failed or long_ones):
-        log(f"  cmalign: {long_ones} 18S over {MAX_SSU} bases and {len(failed)} it could not align left out"
-            + (f" (e.g. {failed[0][1][-120:]})" if failed else ""))
+        say_left(log, long_ones, failed)
     return out
+
+
+def say_left(log, long_ones, failed):
+    log(f"  cmalign: {long_ones} 18S over {MAX_SSU} bases and {len(failed)} it could not align left out"
+        + (f" (e.g. {failed[0][1][-120:]})" if failed else ""))
+
+
+def regions_text(states, cols):
+    """A sequence's regions as the cache keeps them: 'V4:560-1010:t,...' (locate's), '-' for none."""
+    return ",".join(f"{n}:{a}-{b}:{'t' if c else 'f'}" for n, (a, b, c) in locate(states, cols).items()) or "-"
+
+
+def cols_text(cols):
+    return ",".join(f"{n}:{a}-{b}" for n, (a, b) in sorted(cols.items()))
+
+
+def cols_of(text):
+    return {n: tuple(map(int, span.split("-"))) for n, span in (p.split(":") for p in text.split(",") if p)}
+
+
+def _align_batch(item):
+    """A worker's cmalign batch (aligned_batches): (cm, cols, {key: 18S}, cmalign, threads, tmp) -> ({key: its
+    regions_text}, {key: cmalign's words}: those that failed alone by its own exit, [(key, words)]: all that did)."""
+    cm, cols, seqs, cmalign_bin, threads, tmp = item
+    own, left = {}, []
+    got = cmalign(cm, seqs, cmalign_bin, threads, tmp, fail=own.update, left=left)
+    return {key: regions_text(states, cols) for key, states in got.items()}, own, left
+
+
+def aligned_batches(seqs, cm, cols, cmalign_bin="cmalign", threads=1, tmp=None):
+    """seqs {key: 18S} (MAX_SSU or less) in batches of BATCH, threads // CMALIGN_CPU cmalign runs at once (each with
+    its share of the threads, its alignment read in its worker) -> each batch's _align_batch result as it comes, in
+    order (since 2026-11-13: one run after another, all threads each, read in the main process)."""
+    workers = max(1, max(1, threads) // CMALIGN_CPU)
+    each = max(1, max(1, threads) // workers)
+    names = sorted(seqs)
+    items = ((cm, cols, {n: seqs[n] for n in names[i:i + BATCH]}, cmalign_bin, each, tmp)
+             for i in range(0, len(names), BATCH))
+    yield from util.ordered(_align_batch, items, workers=workers)
+
+
+def align_file(cmalign_bin, fasta, cm, cols, out, threads=1, tmp=None):
+    """A kept part's alignments (qc.CmalignParams' search_one, on this node or a helper): fasta's 18S (named by their
+    digests) aligned (aligned_batches), out written with a line a sequence: key, ok and its regions_text, or own/left
+    and cmalign's words (failed alone by its own exit / otherwise)."""
+    seqs, name = {}, None
+    with open(fasta) as fh:
+        for line in fh:
+            if line.startswith(">"):
+                name = line[1:].strip()
+                seqs[name] = ""
+            elif name is not None:
+                seqs[name] += line.strip()
+    with open(out, "w", newline="\n") as fh:
+        for got, own, left in aligned_batches(seqs, cm, cols, cmalign_bin, threads, tmp):
+            fh.writelines(f"{k}\tok\t{v}\n" for k, v in sorted(got.items()))
+            fh.writelines(f"{k}\t{'own' if k in own else 'left'}\t{' '.join(why.split()) or '-'}\n" for k, why in left)
+
+
+def aligned_lines(lines):
+    """align_file's lines -> [(key, ok/own/left, regions or cmalign's words)]."""
+    return [tuple(line.rstrip("\n").split("\t", 2)) for line in lines if line.count("\t") >= 2]
 
 
 def columns(states, regions):
@@ -295,10 +373,13 @@ def ssu_of(seq, row):
     return None
 
 
-def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print, tmp=None):
+def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print, tmp=None, searches=None, progress=None):
     """Every record's 18S variable regions (records [(name, sequence, row)]) -> rows (REGION_COLUMNS). Each distinct 18S
     is aligned once (cached under WORK/cmalign/; one cmalign fails on is not aligned again by that cmalign). tmp:
-    cmalign's files (since 2026-11-13; until then in work, the WORK on a shared file system)."""
+    cmalign's files (since 2026-11-13; until then in work, the WORK on a shared file system). Several cmalign runs at
+    once (aligned_batches; since 2026-11-13); searches (the build's qc_searches: folder, helpers, nodes, scratch): with
+    a work folder, the 18S in kept parts there, shared with the helpers (qc.CmalignParams), the folder removed once
+    the cache holds them. progress: the alignments' (util.Progress)."""
     tmp = tmp or work
     regions = read_regions()
     ref = cmalign(cm, {"reference": reference()}, cmalign_bin, threads, tmp).get("reference")
@@ -336,23 +417,60 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print, tmp
             f"{unaligned[known[0]][-120:]} ({failed_stem}.*.tsv: removed, they are tried again)")
         todo = {key: s for key, s in todo.items() if key not in unaligned}
     if todo:
+        began = time.time()
         log(f"18S variable regions: {len(todo)} distinct 18S to align (cmalign)")
         out = util.cache_open(stem) if stem else None
-        failures = {}
+        failures, left = {}, []
+        short = {key: s for key, s in todo.items() if len(s) <= MAX_SSU}
+        kept = (searches or {}).get("folder") if stem else None
+        parts = None
 
-        def keep(aligned):
-            got = {key: ",".join(f"{n}:{a}-{b}:{'t' if c else 'f'}" for n, (a, b, c) in
-                                 locate(states, cols).items()) or "-" for key, states in aligned.items()}
+        def keep(got):
             cache.update(got)
             if out:
                 out.writelines(f"{k}\t{v}\n" for k, v in sorted(got.items()))
                 out.flush()
         try:
-            keep({key: [] for key, s in todo.items() if len(s) > MAX_SSU})  # never aligned: none, for good
-            cmalign(cm, todo, cmalign_bin, threads, tmp, log, each=keep, fail=failures.update)
+            keep({key: "-" for key in todo if key not in short})  # never aligned: none, for good
+            if kept and short:
+                # in kept parts shared with the helpers (since 2026-11-13), each part's batches several at once
+                from . import qc  # noqa: PLC0415
+                parts = [(f"cmalign-{i + 1}", {k: short[k] for k in part}, None) for i, part in
+                         enumerate(split_parts(sorted(short), searches.get("nodes", 1), CMALIGN_PART_MAX, BATCH))]
+                found = qc.searched_loci(parts, cmalign_bin, threads, kept,
+                                         searches.get("helpers") if len(parts) >= SSU_HELPED else None, progress,
+                                         params=qc.CmalignParams(os.path.abspath(cm), util.md5(cm), cols_text(cols)),
+                                         what="18S aligned (cmalign)", scratch=searches.get("scratch") or tmp,
+                                         log=log)
+                got = {}
+                for lines in found.values():
+                    for k, status, text in lines:
+                        if status == "ok":
+                            got[k] = text
+                        else:
+                            left.append((k, text))
+                            if status == "own":
+                                failures[k] = text
+                keep(got)
+            elif short:
+                sizes = [min(BATCH, len(short) - i) for i in range(0, len(short), BATCH)]
+                shown = progress("18S batches aligned (cmalign)", sizes) if progress else None
+                for (got, own, failed), size in zip(aligned_batches(short, cm, cols, cmalign_bin, threads, tmp),
+                                                    sizes):
+                    keep(got)
+                    failures.update(own)
+                    left += failed
+                    if shown:
+                        shown.step(size)
         finally:
             if out:
                 out.close()
+        if kept and parts:  # their alignments in the cache now
+            shutil.rmtree(kept, ignore_errors=True)
+        if left or len(short) < len(todo):
+            say_left(log, len(todo) - len(short), left)
+        log(f"  18S variable regions: {len(short):,} 18S aligned (cmalign"
+            f"{f', {len(parts)} parts' if parts else ''}): took {util.duration(time.time() - began)}")
         if failures and failed_stem and cmalign(cm, {"reference": reference()}, cmalign_bin, threads, tmp):
             with util.cache_open(failed_stem) as fh:
                 fh.writelines(f"{k}\t{' '.join(why.split()) or '-'}\n" for k, why in sorted(failures.items()))
