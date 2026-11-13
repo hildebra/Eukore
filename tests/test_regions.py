@@ -10,6 +10,7 @@ models' calls: test_screen.py.)
 import glob
 import os
 import random
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -261,6 +262,106 @@ class ModelsCacheTest(unittest.TestCase):
             for _ in range(2):
                 self.assertEqual(regions.ssu_models(seqs, cm, tool), calls_of)
             self.assertEqual(calls(tool), [3, 3])
+
+
+class ModelsPartsTest(unittest.TestCase):
+    """The SSU models' search in parts kept in WORK/qc/ssu_models/ and shared with the helpers (since 2026-11-13)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        tmp = self.tmp.name
+        rng = random.Random(3)
+        self.seqs = {f"r{i:02d}": rng.choice("AC") + "".join(rng.choice("ACGT") for _ in range(39)) for i in range(12)}
+        self.seqs["none"] = "T" + "G" * 39
+        self.work, self.cm = os.path.join(tmp, "WORK"), os.path.join(tmp, "models.cm")
+        os.makedirs(self.work)
+        with open(self.cm, "w") as fh:
+            fh.write("stand-in\n")
+        self.local = os.path.join(tmp, "local")
+        os.makedirs(self.local)
+        self.folder = os.path.join(self.work, "qc", "ssu_models")
+        self.tool = fx.tool(tmp, "cmsearch", CMSEARCH)
+        self.plain = regions.ssu_models(self.seqs, self.cm, fx.tool(tmp, "plain", CMSEARCH))  # no cache, one run
+        self.patch = mock.patch.multiple(regions, SSU_PART_MIN=1, SSU_HELPED=2)
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def searches(self, helpers=None, nodes=1):
+        return {"folder": self.folder, "helpers": helpers, "nodes": nodes, "scratch": self.local}
+
+    def test_parts(self):
+        names = [f"n{i:03d}" for i in range(100)]
+        with mock.patch.multiple(regions, SSU_PART_MIN=10, SSU_PART_MAX=40):
+            self.assertEqual(len(regions.ssu_parts(names, 1)), regions.SSU_PER_NODE)
+            self.assertEqual(len(regions.ssu_parts(names, 3)), 9)
+            self.assertEqual(len(regions.ssu_parts(names, 20)), 10)  # none under SSU_PART_MIN
+            self.assertEqual(sorted(n for p in regions.ssu_parts(names, 2) for n in p), names)
+            self.assertEqual(regions.ssu_parts(names, 1)[1][:2], ["n001", "n004"])  # interleaved
+        with mock.patch.multiple(regions, SSU_PART_MIN=1, SSU_PART_MAX=10):
+            self.assertEqual(len(regions.ssu_parts(names, 1)), 10)  # each part SSU_PART_MAX at most
+        self.assertEqual(regions.ssu_parts([], 3), [])
+
+    def test_kept_parts_give_the_same_calls(self):
+        said = []
+        got = regions.ssu_models(self.seqs, self.cm, self.tool, work=self.work, searches=self.searches(),
+                                 log=said.append)
+        self.assertEqual(got, self.plain)
+        self.assertEqual((len(calls(self.tool)), sum(calls(self.tool))), (3, 13))  # 3 parts, each sequence once
+        self.assertFalse(os.path.exists(self.folder))  # the calls in the cache: the parts removed
+        self.assertEqual(os.listdir(self.local), [])
+        self.assertEqual(sum("ssu-" in s and "searched in" in s for s in said), 3)
+        self.assertIn("SSU models: 13 18S searched (cmsearch, 3 parts)", said[-1])
+        # the cache read again: no search
+        self.assertEqual(regions.ssu_models(self.seqs, self.cm, self.tool, work=self.work, searches=self.searches()),
+                         self.plain)
+        self.assertEqual(len(calls(self.tool)), 3)
+
+    def test_a_killed_run_keeps_the_parts_done(self):
+        # the third part's search fails (as a killed node): the two searched before it are kept
+        failing = fx.tool(self.tmp.name, "failing", CMSEARCH.replace(
+            'grep -c', '[ -f "$0.calls" ] && [ "$(wc -l < "$0.calls")" -ge 2 ] && exit 1\ngrep -c'))
+        with self.assertRaises(RuntimeError):
+            regions.ssu_models(self.seqs, self.cm, failing, work=self.work, searches=self.searches(nodes=3))
+        done = sum(calls(failing))
+        kept = [n for n in os.listdir(self.folder) if n.endswith(".hits.gz")]
+        self.assertEqual((len(kept), len(calls(failing))), (2, 2))
+        got = regions.ssu_models(self.seqs, self.cm, self.tool, work=self.work, searches=self.searches(nodes=3))
+        self.assertEqual(got, self.plain)
+        self.assertEqual(sum(calls(self.tool)), 13 - done)  # those of the parts kept not searched again
+
+    def test_the_helpers_search_the_parts(self):
+        started = []
+
+        def helpers(n):  # another node's run of the helper's command: the models' file read from todo.tsv
+            started.append(n)
+            run = subprocess.run([sys.executable, "-m", "eukore.qc", "helper", os.path.dirname(self.folder),
+                                  "--vsearch", self.tool, "--cmsearch", self.tool, "-t", "1"],
+                                 cwd=os.path.dirname(HERE), capture_output=True, text=True, check=False)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn("3 loci searched here", run.stdout)
+            return None
+        got = regions.ssu_models(self.seqs, self.cm, self.tool, work=self.work, searches=self.searches(helpers))
+        self.assertEqual((started, got), ([3], self.plain))
+        self.assertEqual(sum(calls(self.tool)), 13)
+
+    def test_a_helper_without_cmsearch_leaves_the_parts(self):
+        from eukore import qc
+        part = {"x": "ACGT" * 10}
+        params = qc.CmParams(self.cm, "abc")
+        base = qc.search_base("ssu-1", part, None, params)
+        os.makedirs(self.folder)
+        qc.write_inputs(self.folder, base, part)
+        with open(os.path.join(self.folder, "todo.tsv"), "w") as fh:
+            fh.write(qc.todo_line(base, 1, params))
+        self.assertEqual(qc.todo_entry(qc.todo_line(base, 1, params)), (base, params, None))
+        self.assertEqual(qc.help_search(os.path.dirname(self.folder), self.tool, 1, log=lambda *_: None), 0)
+        self.assertEqual(qc.help_search(os.path.dirname(self.folder), self.tool, 1, log=lambda *_: None,
+                                        cmsearch=self.tool), 1)
+        self.assertEqual(qc.read_hits(self.folder, base, params), [("x", "RF01960", 1500.0)])  # A first: eukaryote
+        self.assertNotEqual(qc.search_key(part, None, params), qc.search_key(part, None, qc.CmParams(self.cm, "abd")))
 
 
 if __name__ == "__main__":

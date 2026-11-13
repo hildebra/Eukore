@@ -764,6 +764,31 @@ def vsearch_hits(lines):
     return [(f[0], f[1], float(f[2])) for f in (line.rstrip("\n").split("\t") for line in lines) if len(f) >= 3]
 
 
+# cmsearch's options of the SSU models' search (regions.ssu_models): the models' profile HMMs alone (an HMM search's
+# speed); -Z 1 makes a sequence's hits its own whatever is searched with it, so that its parts may be split anyhow
+CMSEARCH_OPTIONS = ("--hmmonly", "--noali", "-Z", "1")
+
+
+def cmsearch_files(cmsearch, fasta, cm, out, threads=1):
+    """cmsearch of a FASTA file with the models of cm (CMSEARCH_OPTIONS), its table (--tblout) into the file out;
+    raises RuntimeError where it failed (since 2026-11-13 here, for qc.py's parts other nodes run too)."""
+    run = subprocess.run([cmsearch, *CMSEARCH_OPTIONS, "--cpu", str(max(1, threads)), "--tblout", out, "-o",
+                          os.devnull, cm, fasta], capture_output=True, text=True, check=False)
+    if run.returncode != 0 or not os.path.isfile(out):
+        raise RuntimeError(f"cmsearch failed (exit {run.returncode}): {run.stderr.strip()[-200:]}")
+
+
+def cmsearch_hits(lines):
+    """cmsearch_files' table as [(sequence, model accession, bits)]."""
+    out = []
+    for line in lines:
+        if not line.startswith("#"):
+            f = line.split()
+            if len(f) > 14:
+                out.append((f[0], f[3], float(f[14])))
+    return out
+
+
 @contextlib.contextmanager
 def process_pool(workers):
     """A pool of `workers` processes (concurrent.futures'; since 2026-11-08). A worker that dies (killed by the OOM
