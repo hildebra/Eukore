@@ -19,6 +19,7 @@ The record's `screen` column names the parts and ranks (`28S 3':family`); `-` fo
 import collections
 import re
 import tempfile
+import time
 
 from . import util
 
@@ -90,6 +91,76 @@ def search(queries, db_seqs, vsearch, threads, tmp, ident=SCREEN_ID, accepts=SCR
     return hits
 
 
+CHUNK = 10000  # queries a kept search's part: the parts searched by several nodes against one database
+HELPED = 4  # parts a search has at least for the helper nodes to be started for it
+
+
+class Searcher:
+    """The rRNA checks' vsearch searches (own_species', screen's; since 2026-11-13; until then each was run here, one
+    after another, and again in full by every package stage: one node for hours).
+
+    one(): a large search. With a folder (WORK/qc/rrna) it is kept in <folder>_<phase> (qc.searched_loci), its
+    queries in parts of CHUNK against one shared database, each part's hits those of the whole search (a query's hits
+    do not depend on the other queries), searched by the helper nodes too where it has HELPED parts or more: a rerun on
+    the same records reads them. many(): the small searches that follow up on it (a clade's records each), several at
+    once here, each with a share of the threads (until then one after another, each with them all, the parent writing
+    and reading their files on one core). log: each search's time."""
+
+    def __init__(self, vsearch, threads=1, tmp=None, folder=None, helpers=None, progress=None, log=None):
+        self.vsearch, self.threads, self.tmp, self.folder = vsearch, max(1, threads), tmp, folder
+        self.helpers, self.progress, self.log = helpers, progress, log
+
+    def _say(self, text):
+        if self.log:
+            self.log(text)
+
+    def one(self, phase, queries, db, ident, accepts, rejects):
+        """queries {name: sequence} against db (queries itself: the same object) -> {query: [(identity, target)]},
+        self hits left out (search's)."""
+        if not queries or not db:
+            return {}
+        from . import qc  # noqa: PLC0415
+        began = time.time()
+        phase = re.sub(r"[^A-Za-z0-9_-]", "_", phase)
+        if not self.folder:
+            got = search(queries, db, self.vsearch, self.threads, self.tmp, ident, accepts, rejects)
+        else:
+            names = sorted(n for n, s in queries.items() if s)
+            shared = qc.Shared({n: s for n, s in db.items() if s})
+            todo = [(f"{phase}-{i // CHUNK + 1}", {n: queries[n] for n in names[i:i + CHUNK]}, shared)
+                    for i in range(0, len(names), CHUNK)]
+            found = qc.searched_loci(todo, self.vsearch, self.threads, f"{self.folder}_{phase}",
+                                     self.helpers if len(todo) >= HELPED else None, self.progress,
+                                     params=qc.Params(ident, accepts, rejects, ()), what=f"{phase} searched (vsearch)",
+                                     scratch=self.tmp)
+            got = collections.defaultdict(list)
+            for hits in found.values():
+                for a, b, i in hits:
+                    if a != b:
+                        got[a].append((i, b))
+        self._say(f"  rRNA {phase}: {len(queries):,} against {len(db):,} (vsearch at {ident:g}): took "
+                  f"{util.duration(time.time() - began)}")
+        return got
+
+    def many(self, what, items, ident, accepts, rejects):
+        """[(queries, db)] -> [search's {query: [(identity, target)]}], in their order: up to `threads` at once,
+        each with its share of the threads."""
+        if not items:
+            return []
+        import concurrent.futures  # noqa: PLC0415
+        began = time.time()
+        workers = min(len(items), self.threads)
+        each = max(1, self.threads // workers)
+
+        def one(item):
+            return search(item[0], item[1], self.vsearch, each, self.tmp, ident, accepts, rejects)
+        with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+            out = list(pool.map(one, items))
+        self._say(f"  rRNA {what}: {len(items):,} searches, {workers} at once: took "
+                  f"{util.duration(time.time() - began)}")
+        return out
+
+
 def verdict_of(depth, top, own, theirs):
     """A suspect part's verdict: "flagged" or "kept: why" (protal's rdna_screen.verdict_of)."""
     margin = SISTER_MARGIN if depth >= 3 else MARGIN
@@ -144,9 +215,11 @@ def representatives(seqs, owner):
     return out
 
 
-def screen(records, ncbi, vsearch, threads=1):
+def screen(records, ncbi, vsearch, threads=1, searcher=None, log=None):
     """records [(name, sequence, row)] (row: regions_list, accession, taxid or species_taxid) -> ({name: screen text},
-    counts). A genome's copies of a part are screened as one per 99% type (representatives), its verdict theirs."""
+    counts). A genome's copies of a part are screened as one per 99% type (representatives), its verdict theirs.
+    searcher: a Searcher (rrna.finish's: kept and shared searches; since 2026-11-13), else one of this function's
+    own; log: each part's steps and times."""
     if not vsearch or not records:
         return {}, collections.Counter()
     lineage = {n: lineage_of(ncbi, r.get("taxid") or r["species_taxid"]) for n, _s, r in records}
@@ -155,10 +228,15 @@ def screen(records, ncbi, vsearch, threads=1):
     flags = collections.defaultdict(list)
     n = collections.Counter()
     with tempfile.TemporaryDirectory() as tmp:
+        searcher = searcher or Searcher(vsearch, threads, tmp, log=log)
         for part in PARTS:
+            began = time.time()
             every = {k: p[part] for k, p in parts.items() if part in p}
             reps = representatives(every, genome)
             seqs = {k: every[k] for k in reps}
+            if log:
+                log(f"  rRNA screen {part}: {len(every):,} parts, {len(seqs):,} 99% types: took "
+                    f"{util.duration(time.time() - began)}")
             if len(seqs) < 2:
                 continue
             members = [collections.defaultdict(set) for _ in RANKS]
@@ -168,7 +246,7 @@ def screen(records, ncbi, vsearch, threads=1):
                     if key is not None:
                         members[rank][key].add(k)
             genomes_of = [{key: {genome[k] for k in names} for key, names in m.items()} for m in members]
-            hits = search(seqs, seqs, vsearch, threads, tmp)
+            hits = searcher.one(f"screen {part}", seqs, seqs, SCREEN_ID, SCREEN_ACCEPTS, SCREEN_REJECTS)
 
             def tested_rank(k):
                 for rank in range(len(RANKS) - 1, -1, -1):
@@ -201,9 +279,11 @@ def screen(records, ncbi, vsearch, threads=1):
                 if mkey is not None:
                     again[(rank, mkey)].add(matched)
             more = collections.defaultdict(list)
-            for (rank, key), names in sorted(again.items()):
-                got = search({t: seqs[t] for t in sorted(names)}, {t: seqs[t] for t in sorted(members[rank][key])},
-                             vsearch, threads, tmp)
+            asked = sorted(again.items())
+            found = searcher.many(f"screen {part}: suspects among their clades", [
+                ({t: seqs[t] for t in sorted(names)}, {t: seqs[t] for t in sorted(members[rank][key])})
+                for (rank, key), names in asked], SCREEN_ID, SCREEN_ACCEPTS, SCREEN_REJECTS)
+            for ((rank, _key), _names), got in zip(asked, found):
                 for k, v in got.items():
                     more[(rank, k)] += v
             for k, (rank, key, top, matched, depth, own) in sorted(suspects.items()):

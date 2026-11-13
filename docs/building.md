@@ -208,7 +208,24 @@ genomes are all done therefore spreads this step over N nodes; `bash tools/eukor
 
 The 18S records' 99% types are made per species by a pool of processes, and pairs that cannot reach 99% are ruled
 out by their shared 8-mers before they are aligned (the q-gram lemma: the types are the same). Until then this ran
-in one Python process for hours.
+in one Python process for hours. Since 2026-11-12 (later that day) the lemma is first tested on 4-mers against
+every type at once: an assembly's thousands of rDNA copies with 1-2% errors, each its own type, are typed in seconds.
+
+**The rRNA checks' searches kept and shared** (since 2026-11-13). The own-species check searches the genomes' 18S
+against every 18S, then the published reads' against the genomes'; the part screen searches each of four parts
+against itself. Each such search is kept in `WORK/qc/rrna_<phase>/` (`own_genomes`, `own_published`,
+`screen_18S`, ...), its queries in parts of 10,000 against one database, so a package stage run again on the same
+records reads them. A search of 4 parts or more goes to the `QC_TASKS` helpers as the loci's do, each part with
+its own vsearch settings (`todo.tsv` names them); a query's hits do not depend on the other queries, so the result
+is the same however it is split. The smaller searches that follow up on suspects (a clade's records each) run
+several at once on the final job's node, each with a share of its threads (until then one after another). The step
+logs each part's time (`rRNA own-species check: ...`, `rRNA screen 18S: ...`, a species whose 99% typing took a
+minute or more).
+
+**The node's disk and the WORK.** The final job's scratch files go to `--local_tmp`: Python's and the tools'
+temporary files (TMPDIR), hmmalign's, cmalign's and the SSU models' cmsearch files (since 2026-11-13; until then in
+the WORK), and the inputs of a kept search no helper shares. The WORK holds what is kept or shared: the caches, the
+kept searches' hits, and the inputs of the searches the helpers take.
 
 **Few files on the WORK.** These steps add no file per item: a vsearch locus keeps one hits file
 (`WORK/qc/<kind>/<locus>.<digest>.hits.gz`; its input and claim files exist only while it is searched), and the

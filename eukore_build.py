@@ -702,7 +702,9 @@ def qc_searches(opts, kind):
                 subprocess.run(["scancel", job], capture_output=True, check=False)
         return stop
     folder = os.path.join(opts.work, "qc", kind)
-    return {"folder": folder, "helpers": helpers if getattr(opts, "qc_helpers", None) else None}
+    # the inputs of searches no helper shares on the node's disk (--local_tmp; since 2026-11-13), the hits in WORK
+    return {"folder": folder, "helpers": helpers if getattr(opts, "qc_helpers", None) else None,
+            "scratch": getattr(opts, "scratch", None)}
 
 
 def running(opts, progress, workers=None):
@@ -2024,23 +2026,28 @@ def _main(argv, held):
             if not hmmalign:
                 say("WARNING: no hmmalign: introns without their places in the genes, no genetic code check")
             hmm_of = odb_of(opts, src_dir).hmm
-            package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say, opts.threads)
+            # hmmalign's files on the node's disk (--local_tmp; since 2026-11-13: in WORK), its cache in WORK
+            package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say, opts.threads, tmp=opts.scratch)
         with timed(stages, "rRNA records and their checks", opts):
             records = genome_rrna_records(opts, job_map, ncbi, collected) + published(opts, src_dir, ncbi)
             # each 18S's SSU model (since 2026-11-09): a bacterium's or an organelle's SSU is no 18S
             models, cmsearch = regions_mod.models_path(src_dir), shutil.which("cmsearch")
             ssu = functools.partial(regions_mod.ssu_models, cm=models, cmsearch=cmsearch, threads=opts.threads,
-                                    tmp=opts.work) if cmsearch and regions_mod.is_cm(models) else None
+                                    tmp=opts.scratch, work=opts.work) if cmsearch and regions_mod.is_cm(models) else None
             if ssu is None:
                 say("WARNING: no cmsearch (infernal) or no Rfam SSU models (--stage fetch fetches them): the 18S not "
                     "told from a bacterium's or an organelle's SSU (records.tsv's ssu_model -)")
-            records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say, ssu_models=ssu)
+            # its large vsearch searches kept in WORK/qc/rrna_<phase>/ and shared with the helpers (since 2026-11-13)
+            records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say, ssu_models=ssu,
+                                  searches=qc_searches(opts, "rrna"),
+                                  progress=functools.partial(progress_of, opts, unit=""), tmp=opts.scratch)
         extra_tables = []
         with timed(stages, "18S variable regions and amplicons", opts):
             cm, cmalign = regions_mod.cm_path(src_dir), shutil.which("cmalign")
             if cmalign and os.path.isfile(cm):
                 extra_tables.append(("rrna/regions.tsv", regions_mod.REGION_COLUMNS,
-                                     regions_mod.run(records, cm, cmalign, opts.threads, opts.work, say)))
+                                     regions_mod.run(records, cm, cmalign, opts.threads, opts.work, say,
+                                                     tmp=opts.scratch)))
             else:
                 say("WARNING: no cmalign (infernal) or no Rfam SSU model (--stage fetch fetches it): no 18S variable "
                     "regions")

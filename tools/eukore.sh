@@ -149,7 +149,8 @@ _final)
     run_stage process,package --local_tmp "$SCR" ${helpers[@]+"${helpers[@]}"} \
         ${FINAL_OPTS[@]+"${FINAL_OPTS[@]}"}
     ;;
-qc)  # the helpers of the package stage's vsearch checks: QC_TASKS (or N) jobs, each searching loci till none is left
+qc)  # the helpers of the package stage's vsearch checks (the loci's, since 2026-11-13 the rRNA checks' too): QC_TASKS
+    # (or N) jobs, each searching loci till none is left
     tasks=${2:-$QC_TASKS}
     if (( tasks < 1 )); then
         echo "no helpers: QC_TASKS of $CONF is 0, and no number given (bash $SELF qc N)" >&2
