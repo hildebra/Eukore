@@ -808,7 +808,8 @@ def types_of(exons):
     and identity as before, the types the same. Until then each sequence was tested against each type in turn: an
     assembly's 10,000 rDNA copies with 1-2% errors (each its own type) took ~3.5 hours on one core, typed once for
     its species and again for its genome by the own-species check and the screen."""
-    order = sorted(collections.Counter(exons).items(), key=lambda kv: (-kv[1], -len(kv[0]), kv[0]))
+    counts = exons if isinstance(exons, dict) else collections.Counter(exons)  # a Counter: a pool's task (species_types)
+    order = sorted(counts.items(), key=lambda kv: (-kv[1], -len(kv[0]), kv[0]))
     reps, out = [], {}
     if not order:
         return out
@@ -854,26 +855,29 @@ def timed_types(seqs):
     return types_of(seqs), time.time() - began
 
 
-def species_types(parts, threads=1, log=None):
+def species_types(parts, threads=1, log=None, what="species"):
     """{species: [its records' 18S]} -> {species: types_of's}, the species with more than one distinct 18S typed by a
     pool of `threads` processes, the largest first (since 2026-11-12: one after another, on one core). log: the
-    species whose typing took SLOW_TYPES seconds or more (since 2026-11-13: one took hours, unnamed)."""
-    out, many = {}, []
+    species whose typing took SLOW_TYPES seconds or more (since 2026-11-13: one took hours, unnamed); what: what the
+    keys are, in its words (screen.representatives': a genome's)."""
+    out, many, counts = {}, [], {}
     for sp, seqs in parts.items():
-        if len(set(seqs)) > 1:
+        c = collections.Counter(seqs)
+        if len(c) > 1:
             many.append(sp)
+            counts[sp] = c  # each distinct 18S once with its count (since 2026-11-13: every copy) to the workers
         else:
             out[sp] = {seqs[0]: 1} if seqs else {}
     many.sort(key=lambda sp: -len(parts[sp]))
     if threads > 1 and len(many) > 1:
         with util.process_pool(min(threads, len(many))) as pool:
-            got = list(pool.map(timed_types, [parts[sp] for sp in many]))
+            got = list(pool.map(timed_types, [counts[sp] for sp in many]))
     else:
-        got = [timed_types(parts[sp]) for sp in many]
+        got = [timed_types(counts[sp]) for sp in many]
     for sp, (types, took) in zip(many, got):
         out[sp] = types
         if log and took >= SLOW_TYPES:
-            log(f"  rRNA 99% types of species {sp}: {len(parts[sp]):,} 18S, {len(types):,} distinct, "
+            log(f"  rRNA 99% types of {what} {sp}: {len(parts[sp]):,} 18S, {len(types):,} distinct, "
                 f"{len(set(types.values())):,} types: took {util.duration(took)}")
     return out
 
@@ -1065,7 +1069,8 @@ def own_species(records, ncbi, vsearch, threads=1, searcher=None, log=None):
     # it was another genome's, a contaminant's operon confirmed by its own copy)
     owner = {name: screen.genome_of(name, row) for name, _s, row in records}
     group = {name: (row["source"], screen.genome_of(name, row)) for name, _s, row in records}
-    reps = screen.representatives({n: s for n, s in ssu.items() if s}, group)
+    said(f"{len(ssu):,} 18S prepared")
+    reps = screen.representatives({n: s for n, s in ssu.items() if s}, group, threads, log)
     genome_reps = {k for k in reps if group[k][0] == "genome"}
     published_reps = {k for k in reps if group[k][0] != "genome"}
     said(f"{len(ssu):,} 18S, {len(genome_reps):,} genomes' and {len(published_reps):,} published 99% types")
