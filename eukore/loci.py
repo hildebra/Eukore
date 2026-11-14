@@ -7,6 +7,13 @@ own copies, in place of EukDetect1's and EukDetect2's.
    over placement.CHUNK_BASES in pieces, a contig over that in overlapping windows (since 2026-11-10: whole_contigs);
 2. per locus, the alignments overlapping on a contig's strand are one candidate region, of the alignments with
    MIN_IDENTITY and MIN_COVERAGE of their protein;
+2b. a split copy (join_split, since 2026-11-14; after the rescue pass, 5): a locus without a complete region whose
+   query's partial alignments lie on different contigs, tile its protein in order (JOIN_OVERLAP residues of overlap at
+   most) and reach their contigs' ends where the gene goes on (JOIN_EDGE: a skim's gene cut by its contigs' ends) is
+   one copy where the HMMs confirm their proteins joined as in 3: Single where that covers COMPLETE of the profile,
+   else Fragmented; `model` joined, its copy the pieces' joined by JOIN_GAP N (a `join` feature), its place its best
+   piece's (the anchor). miniprot keeps a query's alignments of JOIN_OUTS of its best score for it (the first pass
+   OUTS of them);
 3. hmmsearch scores the translations of a region's TOP_K best alignments (by miniprot's score) against every locus'
    HMM: a region is the locus where its best HMM is the locus' own at the locus' BUSCO score cutoff (scores_cutoff) or
    more, and its gene the confirmed alignment of the best HMM score;
@@ -102,6 +109,21 @@ CDS_STATES = ("clean", "recovered", "stops", "mismatch")
 RECOVER_FLANK = 2_000    # an unclean copy's bases each side aligned again
 RECOVER_RUNS = ((), ("-J", "15"), tuple(RESCUE_OPTIONS))  # miniprot's: as it is, a cheaper intron, sensitive seeding
 ALTERNATES = 3           # a Duplicated locus' other complete copies kept whole, the best HMM scores first
+# Split copies (since 2026-11-14; module docstring, step 2b). Yeast, Drosophila and Blastocystis hominis cut into
+# 1-3 kb contigs, 0-300 bases lost between two, each on a random strand (held-out queries; the first pass alone):
+# Single 107 -> 62, 125 -> 68 and 54 -> 30 of whole. At OUTS a split gene's lesser piece is rarely kept (joined:
+# yeast +2 Single, Drosophila +5); at 0.2, +13, +16, +2. A right join's pieces end 0-12 bases from their contigs'
+# ends mostly (introns: up to 1.8 kb), every wrong one's 299 or more (7 of 60 joins without JOIN_EDGE: a paralog's or
+# another gene's piece); within 200 bases 51 joins, all right. The whole run (rescue, recovery): Single 62 -> 75,
+# 68 -> 87, 37 -> 40, the whole genomes' calls unchanged. miniprot's own --outs at OUTS keeps a few other alignments
+# than best_of_each's OUTS of the JOIN_OUTS run (best_of_each).
+JOIN = True
+JOIN_OUTS = 0.2          # the first pass' miniprot --outs; the calls take OUTS of these (best_of_each), the join all
+JOIN_OUTN = 30
+JOIN_EDGE = 200          # bases at most from a piece's alignment to its contig's end where the gene goes on
+JOIN_OVERLAP = 10        # residues of its protein two pieces may share
+JOIN_MAX = 4             # pieces of a chain at most
+JOIN_GAP = 100           # N between two pieces in a joined copy (an assembly gap of unknown length, AGP's 100)
 
 
 def frameshifts(cigar):
@@ -178,17 +200,19 @@ def parse_alignments(text):
     return out
 
 
-def best_of_each(alignments):
-    """miniprot's --outs and --outn over alignments of several runs (a genome in pieces: placement.chunks) -> each
-    query's of OUTS of its best score or more, its OUTN best (until 2026-11-06 applied in each piece alone: a weak
-    paralogue, its protein's best in its piece, was kept)."""
+def best_of_each(alignments, outs=OUTS, outn=OUTN):
+    """miniprot's --outs and --outn over alignments of several runs (a genome in pieces: placement.chunks), or of one
+    run at a lower --outs (the join's, since 2026-11-14) -> each query's of `outs` of its best score or more, its `outn`
+    best (until 2026-11-06 applied in each piece alone: a weak paralogue, its protein's best in its piece, was kept).
+    By the GFF's score: miniprot's own --outs, by its internal one, keeps a few others (a cut Drosophila's 4,490 at
+    0.95: 6 of them not here, 7 here not there)."""
     by_query = collections.defaultdict(list)
     for a in alignments:
         by_query[a["query"]].append(a)
     out = []
     for hits in by_query.values():
         top = max(a["score"] for a in hits)
-        out += sorted((a for a in hits if a["score"] >= OUTS * top), key=lambda a: -a["score"])[:OUTN]
+        out += sorted((a for a in hits if a["score"] >= outs * top), key=lambda a: -a["score"])[:outn]
     return out
 
 
@@ -217,6 +241,110 @@ def regions(alignments, lengths):
             ranked = sorted(g["members"], key=lambda a: (a["score"], a["identity"], a["query"]), reverse=True)
             out[locus].append(dict(ranked[0], region=(g["start"], g["end"]), support=len(g["members"]),
                                    top=ranked[:TOP_K]))
+    return out
+
+
+def edges(a, size):
+    """An alignment's bases to its contig's ends on the gene's own strand -> (before its first codon, after its last);
+    size: the contig's length."""
+    return (a["start"] - 1, size - a["end"]) if a["strand"] == "+" else (size - a["end"], a["start"] - 1)
+
+
+def split_chains(alignments, lengths, sizes=None, edge=None):
+    """A gene split across contigs (step 2b; module docstring): per locus, each query's partial alignments
+    (MIN_IDENTITY, no coverage gate) on JOIN_MAX different contigs at most that tile its protein in order, JOIN_OVERLAP
+    residues of overlap at most, every piece but the last ending `edge` (JOIN_EDGE) bases or less before its contig's
+    end on the gene's strand and every piece but the first starting as near its contig's start; the chain of the best
+    summed score of each query, MIN_COVERAGE of its protein together -> {locus: [chain [alignments in the protein's
+    order]]}.
+    sizes: {contig: length}; None: the edges not checked (the contigs to read for a later check with them)."""
+    edge = JOIN_EDGE if edge is None else edge
+    by_query = collections.defaultdict(list)
+    for a in alignments:
+        if a["identity"] >= MIN_IDENTITY and (sizes is None or a["contig"] in sizes):
+            by_query[a["query"]].append(a)
+    out = collections.defaultdict(list)
+    for query, hits in sorted(by_query.items()):
+        if len({a["contig"] for a in hits}) < 2:
+            continue
+        hits.sort(key=lambda a: (a["qstart"], a["qend"], a["contig"], a["start"]))
+        ends = [edges(a, sizes[a["contig"]]) if sizes is not None else (0, 0) for a in hits]
+        best = (0.0, ())
+
+        def grow(chain, total):
+            nonlocal best
+            if len(chain) > 1 and total > best[0]:
+                best = (total, tuple(chain))
+            if len(chain) == JOIN_MAX:
+                return
+            last = hits[chain[-1]]
+            if ends[chain[-1]][1] > edge:
+                return
+            for j in range(chain[-1] + 1, len(hits)):
+                a = hits[j]
+                if a["qstart"] > last["qend"] - JOIN_OVERLAP and ends[j][0] <= edge \
+                        and all(hits[i]["contig"] != a["contig"] for i in chain):
+                    grow([*chain, j], total + a["score"])
+        for i in range(len(hits)):
+            grow([i], hits[i]["score"])
+        if best[1]:
+            chain = [hits[i] for i in best[1]]
+            if sum(a["qend"] - a["qstart"] + 1 for a in chain) / max(lengths.get(query, 0), 1) >= MIN_COVERAGE:
+                out[chain[0]["locus"]].append(chain)
+    return dict(out)
+
+
+def joinable(alignments):
+    """The alignments that may be a chain's piece (split_chains, its edges not yet known: MIN_IDENTITY, and another
+    alignment of their query on another contig before or after them on the protein, JOIN_OVERLAP residues of overlap
+    at most): the contigs call reads for the join."""
+    by_query = collections.defaultdict(list)
+    for a in alignments:
+        if a["identity"] >= MIN_IDENTITY:
+            by_query[a["query"]].append(a)
+    return [a for hits in by_query.values() for a in hits
+            if any(b["contig"] != a["contig"] and (b["qstart"] > a["qend"] - JOIN_OVERLAP
+                                                   or a["qstart"] > b["qend"] - JOIN_OVERLAP) for b in hits)]
+
+
+def joined_alignment(chain, lengths):
+    """A chain's pieces (split_chains) as one alignment: its protein theirs joined, its score theirs summed, its
+    identity their mean by residues, its coverage of the protein by their spans; its place (contig, start, end, strand,
+    exons, shifts) its anchor's, the piece of the best score (the copy's row, its window); `pieces` the chain."""
+    anchor = max(chain, key=lambda a: (a["score"], a["qend"] - a["qstart"]))
+    spans = [a["qend"] - a["qstart"] + 1 for a in chain]
+    return dict(anchor, protein="".join(a["protein"] for a in chain), score=sum(a["score"] for a in chain),
+                identity=sum(a["identity"] * n for a, n in zip(chain, spans)) / sum(spans),
+                qstart=chain[0]["qstart"], qend=chain[-1]["qend"],
+                coverage=sum(spans) / max(lengths.get(chain[0]["query"], 0), 1), pieces=list(chain), model="joined")
+
+
+def join_split(alignments, lengths, confirmed, sizes, odb, hmm_db, hmmsearch_bin, threads, work):
+    """The loci without a complete region (confirmed: confirm's, after the rescue), joined from their pieces on several
+    contigs (split_chains; sizes: {contig: length} of the pieces' contigs) where the HMMs confirm the chain's protein
+    as in confirm (the locus' own HMM the best, at its cutoff) -> {locus: the confirmed joined alignment
+    (joined_alignment) of the best HMM score, with hmm_score and hmm_coverage}."""
+    want = {locus for locus in odb.loci if not any(r["hmm_coverage"] >= COMPLETE for r in confirmed.get(locus, ()))}
+    chains = split_chains([a for a in alignments if a["locus"] in want], lengths, sizes)
+    # every query's chain checked (a locus' queries' at most): its TOP_K by summed score, one of each set of contigs,
+    # lost a join of 26 in a cut Drosophila and of 4 in a Blastocystis (another query's chain the HMM's best); all of
+    # them took 3.2 s there (of a 65 s call), 6-7 s in a cut yeast (345 chains, of a 9 s call)
+    candidates = {f"j{i}": joined_alignment(chain, lengths) for i, chain in enumerate(
+        chain for _locus, cs in sorted(chains.items()) for chain in cs)}
+    if not candidates:
+        return {}
+    scores = hmmsearch({n: a["protein"] for n, a in candidates.items()}, hmm_db, hmmsearch_bin, threads, work)
+    out = {}
+    for name, a in candidates.items():
+        got = odb.by_locus(scores.get(name, {}))
+        if not got:
+            continue
+        locus = a["locus"]
+        s, cov = got.get(locus, (0.0, 0.0))
+        if max(got, key=lambda h: got[h][0]) == locus and s >= odb.cutoff[locus] \
+                and (locus not in out or (s, a["score"]) > (out[locus]["hmm_score"], out[locus]["score"])):
+            out[locus] = dict(a, hmm_score=s, hmm_coverage=cov, region=(a["start"], a["end"]),
+                              support=len(a["pieces"]), alts=[])
     return out
 
 
@@ -440,11 +568,13 @@ def whole_contigs(alignments):
     return out
 
 
-def align(target, queries, miniprot, threads, table, work, options=None, index_dir=None, bases=None):
+def align(target, queries, miniprot, threads, table, work, options=None, index_dir=None, bases=None, outs=OUTS,
+          outn=OUTN):
     """miniprot's alignments of queries {name: protein} on a genome or a windows file (in pieces where large; a contig
     over placement.CHUNK_BASES in windows, since 2026-11-10: whole_contigs) -> (alignments, why it failed or None).
     options: its intron and seeding options (default -I: the max intron 3.6 times the square root of the target's
-    length). bases: the target's bases where the caller knows them (placement.chunks).
+    length). bases: the target's bases where the caller knows them (placement.chunks). outs, outn: miniprot's --outs
+    and --outn (call's first pass: the join's JOIN_OUTS, JOIN_OUTN, since 2026-11-14).
     index_dir (since 2026-11-10): a folder that holds miniprot's index of each of the target's pieces, made by the
     first call that names it (miniprot -d, with the indexing options: the genetic code is one, the index holds the
     translated ORFs) and read by every later one of the same target and indexing options in place of the FASTA
@@ -471,12 +601,12 @@ def align(target, queries, miniprot, threads, table, work, options=None, index_d
     alignments = []
     for part in parts:
         run = subprocess.run([miniprot, "-t", str(threads)] + options + code + [
-            "--gff", "--trans", f"--outs={OUTS}", f"--outn={OUTN}", part, faa],
+            "--gff", "--trans", f"--outs={outs}", f"--outn={outn}", part, faa],
             capture_output=True, text=True, check=False)
         if run.returncode != 0:
             return [], "miniprot failed: " + (run.stderr.strip().splitlines() or ["?"])[-1][:200]
         alignments += parse_alignments(run.stdout)
-    return (best_of_each(whole_contigs(alignments)) if len(parts) > 1 else alignments), None
+    return (best_of_each(whole_contigs(alignments), outs, outn) if len(parts) > 1 else alignments), None
 
 
 def confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work):
@@ -524,7 +654,10 @@ def cds_state(cds, protein, table=1):
 
 
 def coding_of(a, contigs):
-    """An alignment's coding sequence as its copy would ship it (copies.whole's exons joined, frameshifts out)."""
+    """An alignment's coding sequence as its copy would ship it (copies.whole's exons joined, frameshifts out; a joined
+    one's, its pieces' joined in the protein's order)."""
+    if a.get("pieces"):
+        return "".join(coding_of(p, contigs) for p in a["pieces"])
     seq = contigs[a["contig"]]
     return in_frame(copies_mod.whole(seq, a["start"], a["end"], a["strand"], a["exons"])["spliced"], a.get("shifts"))
 
@@ -872,6 +1005,8 @@ def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hm
         transcripts = annotated_transcripts(chosen, annotation)
     models, proteins = {}, {}
     for locus, a in chosen.items():
+        if a.get("pieces"):  # a joined copy (join_split, since 2026-11-14): no one contig's model is it
+            continue
         name = annotation_mod.best_transcript(a, transcripts)
         if not name:
             continue
@@ -917,7 +1052,8 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
     """The BUSCO genes of a genome (table: its NCBI genetic code) -> dict(loci {locus: dict(status, copy, spliced,
     features [(kind, start, end)],
     contig, start, end, strand, identity, coverage, score, hmm_score, hmm_coverage, cutoff, copies, query, protein,
-    rescued, model (miniprot, or the annotation's source: ncbi, ensembl, toga2), miniprot (its model: start, end, exons),
+    rescued, model (miniprot, the annotation's source: ncbi, ensembl, toga2, or joined: join_split's, since 2026-11-14),
+    miniprot (its model: start, end, exons),
     others (the coding sequences of the locus' other complete copies, since 2026-11-07: dup_identity), cds_check
     (cds_state's, `recovered`; since 2026-11-09), alternates (the ALTERNATES best other complete copies as copy_record
     makes them; since 2026-11-09))}, failed (why the genome could not be called, or None), windows {name: sequence} of
@@ -936,15 +1072,20 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
     with tempfile.TemporaryDirectory(dir=tmp) as work:
         hmm_db = hmm_db or odb.hmm_db(os.path.join(work, "loci.hmm"))
         # the genome's own alignment alone: the rescue's and the recovery's windows are small files of this call
+        # with JOIN (since 2026-11-14) at the join's lower --outs: the first pass takes OUTS of them (best_of_each)
         alignments, failed = align(genome_path, queries, miniprot, threads, table, work, index_dir=index_dir,
-                                   bases=bases)
+                                   bases=bases, **(dict(outs=JOIN_OUTS, outn=JOIN_OUTN) if JOIN else {}))
         if failed:
             return dict(loci={}, failed=failed, windows={})
+        wide, alignments = (alignments, best_of_each(alignments)) if JOIN else ((), alignments)
         confirmed = confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work)
         missing = [locus for locus in odb.loci if not confirmed.get(locus)]
         if rescue_missing and missing and size <= RESCUE_MAX_BASES and shutil.which(translate):
             confirmed.update(rescue(genome_path, missing, queries, odb, miniprot, hmmsearch_bin, threads, table,
                                     hmm_db, work, translate, bases))
+        incomplete = {locus for locus in odb.loci
+                      if not any(r["hmm_coverage"] >= COMPLETE for r in confirmed.get(locus, ()))}
+        pieces = joinable([a for a in wide if a["locus"] in incomplete])  # a split copy's (join_split)
         reps = [r for rs in confirmed.values() for r in rs]
         transcripts = annotated_transcripts(reps, annotation) if annotation and annotation[0] and reps else None
         # the genome's bases read once: every confirmed alignment's span (since 2026-11-09: their coding sequences
@@ -956,11 +1097,19 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
                 need[a["contig"]].append((a["start"] - WINDOW - RECOVER_FLANK, a["end"] + WINDOW + RECOVER_FLANK))
         for t in (transcripts or {}).values():
             need[t["contig"]].append((t["cds"][0][0] - WINDOW, max(b for _a, b in t["cds"]) + WINDOW))
+        for a in pieces:  # WINDOW each side: the piece may be a joined copy's anchor
+            need[a["contig"]].append((a["start"] - WINDOW, a["end"] + WINDOW))
         contigs = placement.read_spans(genome_path, need)
         for locus, rs in confirmed.items():  # each region's clean alignment first (cleanest)
             confirmed[locus] = [cleanest(r, contigs, table) for r in rs]
+        if pieces:  # a locus without a complete region: its copy split across contigs joined (step 2b)
+            sizes = {c: len(contigs[c]) for c in {a["contig"] for a in pieces}}
+            for locus, a in join_split(pieces, lengths, confirmed, sizes, odb, hmm_db, hmmsearch_bin, threads,
+                                       work).items():
+                confirmed[locus] = [*confirmed.get(locus, ()), checked(a, contigs, table)]
         chosen, statuses = choose(confirmed, odb.loci)
-        unclean = {locus: a for locus, a in chosen.items() if not is_clean(a)}
+        # a joined copy is not aligned again (its pieces' places are several contigs) nor swapped for an annotated model
+        unclean = {locus: a for locus, a in chosen.items() if not is_clean(a) and not a.get("pieces")}
         if unclean:  # aligned again on their place (recover); one that stays unclean ships flagged
             chosen.update(recover(unclean, contigs, queries, odb, miniprot, hmmsearch_bin, threads, table, hmm_db,
                                   work, intron_bound(size)))
@@ -991,18 +1140,33 @@ def call(genome_path, queries, odb, miniprot="miniprot", hmmsearch_bin="hmmsearc
     return dict(loci=loci, failed=None, windows=windows)
 
 
+def piece_record(seq, a):
+    """An alignment's copy on its contig (seq) -> (the copy whole, its coding sequence (frameshifts out), its features:
+    exons, introns, frameshifts, soft-masked and low-complexity runs)."""
+    fitted = copies_mod.whole(seq, a["start"], a["end"], a["strand"], a["exons"])
+    raw = seq[a["start"] - 1:a["end"]]
+    feats = list(fitted["features"])
+    feats += frameshift_features([(s, e) for k, s, e in feats if k == "exon"], a.get("shifts"))
+    feats += [("soft_masked", x, y) for x, y in on_copy(soft_runs(raw), a["start"], a["end"], a["strand"])]
+    feats += [("low_complexity", x, y) for x, y in dust(fitted["copy"])]
+    return fitted["copy"], in_frame(fitted["spliced"], a.get("shifts")), feats
+
+
 def copy_record(best, contigs, cutoff, table=1):
     """A chosen alignment's copy (call's loci values but status, copies, others, alternates): the copy whole and its
     coding sequence, its features (exons, introns, frameshifts, soft-masked and low-complexity runs), its place and
-    scores, its cds_check (checked)."""
+    scores, its cds_check (checked). A joined copy (join_split, since 2026-11-14): its pieces' copies in the protein's
+    order, JOIN_GAP N between two (a `join` feature), its place and contig its anchor's."""
     seq = contigs[best["contig"]]
-    fitted = copies_mod.whole(seq, best["start"], best["end"], best["strand"], best["exons"])
-    raw = seq[best["start"] - 1:best["end"]]
-    feats = list(fitted["features"])
-    feats += frameshift_features([(s, e) for k, s, e in feats if k == "exon"], best.get("shifts"))
-    feats += [("soft_masked", a, b) for a, b in on_copy(soft_runs(raw), best["start"], best["end"], best["strand"])]
-    feats += [("low_complexity", a, b) for a, b in dust(fitted["copy"])]
-    return dict(copy=fitted["copy"], spliced=in_frame(fitted["spliced"], best.get("shifts")),
+    copy, spliced, feats = "", "", []
+    for i, p in enumerate(best.get("pieces") or [best]):
+        if i:
+            feats.append(("join", len(copy), len(copy) + JOIN_GAP))
+            copy += "N" * JOIN_GAP
+        piece, coding, mine = piece_record(contigs[p["contig"]], p)
+        feats += [(k, a + len(copy), b + len(copy)) for k, a, b in mine]
+        copy, spliced = copy + piece, spliced + coding
+    return dict(copy=copy, spliced=spliced,
                 features=sorted(feats, key=lambda f: (f[1], f[0])), contig=best["contig"], contig_length=len(seq),
                 start=best["start"], end=best["end"], strand=best["strand"], identity=best["identity"],
                 coverage=best["coverage"], score=best["score"], hmm_score=best["hmm_score"],

@@ -131,6 +131,8 @@ def copy_confidence(r, family=False, duplicated_genome=False):
         medium.append(r["status"].lower())
     if r.get("rescued") == "t":  # loci.py's rescue pass: its span may fall short of the gene's ends
         medium.append("rescued")
+    if r.get("model") == "joined":  # loci.join_split (since 2026-11-14): pieces on several contigs, their order inferred
+        medium.append("joined")
     if r.get("length_check", "ok") != "ok":
         medium.append(f"length_{r['length_check']}")
     if int(r.get("gaps") or 0):
