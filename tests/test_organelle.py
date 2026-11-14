@@ -188,6 +188,31 @@ class ParseTest(unittest.TestCase):
                               "tufA|NC_000003.1"])
 
 
+class CandidateTest(unittest.TestCase):
+    """An assembly's candidate organelle contigs (since 2026-11-14): no FASTA title names its mitochondrion."""
+
+    def test_the_at_rich_contig_of_a_fungus(self):
+        rnd = random.Random(3)
+
+        def seq(n, gc):
+            return "".join(rnd.choice("GC") if rnd.random() < gc else rnd.choice("AT") for _ in range(n))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "g.fna.gz")
+            with gzip.open(path, "wt") as fh:
+                for i in range(6):
+                    fh.write(f">chr{i}\n{seq(200_000, 0.48)}\n")
+                fh.write(f">ctg_mito\n{seq(40_000, 0.22)}\n")  # a yeast's mitochondrion: AT-rich
+                fh.write(f">ctg_small\n{seq(16_000, 0.47)}\n")  # an animal mitogenome's length
+            stats = organelle.contig_stats(path)
+            self.assertEqual(organelle.candidate_names(stats, "mitochondrion", False), ["ctg_mito"])
+            self.assertEqual(sorted(organelle.candidate_names(stats, "mitochondrion", True)),
+                             ["ctg_mito", "ctg_small"])  # an animal's: its mitogenome's length too
+            self.assertEqual(sorted(organelle.candidate_names(stats, "plastid", False)),
+                             [f"chr{i}" for i in range(6)])  # a plastome's length: searched, they hold no gene
+            got = organelle.candidate_molecules(path, "mitochondrion", False)
+            self.assertEqual([(n, k, len(s)) for n, k, s in got], [("ctg_mito", "mitochondrion", 40_000)])
+
+
 class JoinTest(unittest.TestCase):
     def test_hits_joined_in_the_querys_order_alone(self):
         # a 16 kb mitochondrion opened inside COX1: its first half at the molecule's end, its second at its start;

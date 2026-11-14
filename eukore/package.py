@@ -38,7 +38,9 @@ GENOME_COLUMNS = ("accession", "fetched", "species_taxid", "taxid", "organism", 
                   "type_material",
                   # since 2026-11-09 (format 6): what made its calls (genomes.GENOME_RECORD); its copies another
                   # clade's and the LCA of those clades (qc.cross_summary)
-                  "genome_record", "foreign_copies", "foreign_source")
+                  "genome_record", "foreign_copies", "foreign_source",
+                  # since 2026-11-14 (tiers.py): its group's expected BUSCOs, its share of them whole, its tier
+                  "expected_loci", "complete_expected", "tier")
 COPY_COLUMNS = ("accession", "locus", "status", "contig", "contig_length", "start", "end", "strand", "length",
                 "cds_length", "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies",
                 "query", "rescued", "model", "protein_length", "window_class", "fcs", "own_species", "same_as", "length_check",
@@ -124,6 +126,10 @@ def copy_confidence(r, family=False, duplicated_genome=False):
         low.append("window_prokaryote")
     if r.get("paralog") == "t":  # markers.recheck: its best profile a decoy's (EFL as EF-1a)
         low.append("paralog")
+    if r.get("genome_tier") in ("poor", "partial", "contaminated"):  # tiers.py (2026-11-14): --keep_poor_genomes
+        low.append("poor_genome")
+    elif r.get("genome_tier") == "draft":  # a skim's (contigs under tiers.DRAFT_CONTIG bases on average)
+        medium.append("draft_genome")
     if r.get("transcript") == "t":  # a transcriptome's copy (TSA): no introns, its Duplicated its isoforms
         medium.append("transcript")
     if r.get("status") == "Fragmented" or (r.get("status") == "Duplicated" and r.get("transcript") != "t"
@@ -337,6 +343,20 @@ def lineage_rank(check):
     return 1 if check["own_species"] == "-" and check.get("cross") else LINEAGE_RANK[check["own_species"]]
 
 
+# A transcriptome's Duplicated locus whose copies are this alike (loci.dup_identity, %) is one gene's transcripts: its
+# isoforms, alleles or the assembler's redundant contigs (since 2026-11-14: 2,076 of the 4,263 genomes the 2026-11
+# build's report called duplicated were transcriptomes). Single in the package; a paralog's copies stay Duplicated.
+ISOFORM_ID = 97.0
+
+
+def isoforms(row):
+    """Whether a copy's Duplicated locus is its transcripts' (ISOFORM_ID)."""
+    try:
+        return float(row.get("dup_identity") or "-") >= ISOFORM_ID
+    except ValueError:
+        return False
+
+
 def genome_part(args):
     """One done genome's share of collect (since 2026-11-10 a function of its own, so that a pool of processes reads
     the genomes, `threads` at once; until then one after another, ~30,000 of them from the shared file system, and
@@ -383,7 +403,7 @@ def genome_part(args):
 
 
 def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None, paralogs_of=None, progress=None,
-            searches=None):
+            searches=None, drop_poor=True):
     """What the package holds of the BUSCO genes -> dict(genomes {accession: row}, copy_rows [COPY_COLUMNS dicts],
     taxids, cds and proteins {(accession, locus): sequence}, intron_rows (introns.of_copy's, accession and locus set),
     work and done (the genomes whose copies and features write reads from WORK/done), copy_count, swaps {accession:
@@ -396,7 +416,8 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     a decoy's (markers.recheck; since 2026-11-09: the decoys a marker set gained since a genome's run, EFL's).
     threads: the genomes read `threads` at once by a pool of processes (genome_part; since 2026-11-10), the result
     the same as one after another; vsearch's threads too. progress, searches: qc.check's (its loci's searches
-    reported; kept, and shared with other nodes)."""
+    reported; kept, and shared with other nodes). drop_poor (since 2026-11-14; tiers.py): the copies of a genome of
+    tier poor or partial left out (`dropped`: those genomes), else kept, flagged poor_genome."""
     from . import introns as introns_mod  # noqa: PLC0415
     kinds = kinds or {}
     by_accession = {r["accession"]: r for r in assemblies}
@@ -439,6 +460,8 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         genomes[acc]["genome_record"] = part["record"]  # since 2026-11-09
         for row, seq, protein, introns in part["copies"]:
             row["accession"] = name
+            if job["why"][0] == "tsa" and row["status"] == "Duplicated" and isoforms(row):
+                row["status"] = "Single"  # one gene's transcripts (since 2026-11-14): its `copies` still count them
             for k in SHARED_VALUES:  # a few values, many rows: one string each (in this process: a worker's are not)
                 if isinstance(row.get(k), str):
                     row[k] = sys.intern(row[k])
@@ -459,6 +482,31 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                                       flags=",".join(o.get("flags") or ()) or "-", ftp=o["ftp"], source="assembly",
                                       type_material=type_material_of(o),
                                       representative="f", loci=0)
+    # each representative's tier against its group's expected BUSCOs (tiers.py; since 2026-11-14), before the checks
+    # across species: a poor or partial genome's copies (a fragment's, a skim's, maybe another organism's) are left out
+    # (drop_poor) so that they neither enter the package nor stand as relatives in the others' checks
+    from . import groups as groups_mod, tiers as tiers_mod  # noqa: PLC0415
+    reps = {a: g for a, g in genomes.items() if g["representative"] == "t"}
+    statuses = collections.defaultdict(dict)
+    for r in copy_rows:
+        if r["locus"] not in kinds:
+            statuses[r["accession"]][r["locus"]] = r["status"]
+    busco = set().union(*(g.get("_searched") or () for g in reps.values())) - set(kinds)
+    group_of = {a: groups_mod.group_of(ncbi, int(g["species_taxid"])) for a, g in reps.items()}
+    tiers_mod.assign(reps, statuses, group_of, busco)
+    dropped = {a for a, g in reps.items() if g["tier"] in tiers_mod.DROPPED} if drop_poor else set()
+    if dropped:
+        copy_rows = [r for r in copy_rows if r["accession"] not in dropped]
+        cds = {k: v for k, v in cds.items() if k[0] not in dropped}
+        made = {k: v for k, v in made.items() if k[0] not in dropped}
+        intron_rows = [i for i in intron_rows if i["accession"] not in dropped]
+        alt_cds = {k: v for k, v in alt_cds.items() if k[0] not in dropped}
+        alt_length = {k: v for k, v in alt_length.items() if k[0] not in dropped}
+        for a in dropped:
+            alt_contigs.pop(a, None)
+            count -= genomes[a]["loci"]
+            genomes[a]["loci"] = 0
+        done = [a for a in done if a not in dropped]
     lengths = {(r["accession"], r["locus"]): int(r["protein_length"]) for r in copy_rows}
     checks = qc.check(cds, {a: g["species_taxid"] for a, g in genomes.items()}, ncbi, vsearch, threads,
                       {**lengths, **alt_length}, alt_cds, progress=progress, searches=searches)
@@ -515,6 +563,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                  nearest_id=c["nearest_id"], nearest_depth=c["nearest_depth"])  # the last two: benchmarks', no columns
         if genomes[r["accession"]].get("source") == "tsa":  # since 2026-11-07: a transcriptome's copy
             r["transcript"] = "t"
+        r["genome_tier"] = genomes[r["accession"]].get("tier", "-")  # since 2026-11-14 (tiers.py): no column
         if key in paralogs:  # a marker copy whose best profile is a decoy's (markers.recheck; since 2026-11-09)
             r["paralog"] = "t"
         # its protein before its tier (since 2026-11-09: a stop inside it is a flag); made by genome_part, again for a
@@ -531,11 +580,13 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     for acc, g in genomes.items():
         if g["representative"] == "t":  # its copies another clade's (since 2026-11-09: cross-contamination)
             g["foreign_copies"], g["foreign_source"] = qc.cross_summary(all_rows.get(acc, []), ncbi)
+            if g["foreign_copies"] >= tiers_mod.FOREIGN_MIN:  # flagged on the genome too (since 2026-11-14)
+                g["flags"] = ",".join(sorted((set(g["flags"].split(",")) - {"-"}) | {tiers_mod.FOREIGN_FLAG}))
     taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"} \
         | {int(g["foreign_source"]) for g in genomes.values() if str(g.get("foreign_source", "-")).isdigit()}
     return dict(genomes=genomes, copy_rows=copy_rows, taxids=taxids, cds=cds, proteins=proteins,
                 intron_rows=intron_rows, work=work, done=done, copy_count=count, swaps=dict(swaps),
-                rrna_rows=rrna_rows)
+                rrna_rows=rrna_rows, dropped=sorted(dropped))
 
 
 def copy_row(r, accession, fcs, gaps):

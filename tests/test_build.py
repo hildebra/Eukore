@@ -698,7 +698,7 @@ class ChainTest(unittest.TestCase):
             self.assertIn(f"; the sources in {src} (--sources)", text)
             seen = []
 
-            def fetched(src_dir, *_args):
+            def fetched(src_dir, *_args, **_kwargs):
                 seen.append((src_dir, os.path.isfile(os.path.join(src_dir, ".fetch.lock")),
                              os.path.isfile(os.path.join(tmp, "work", ".fetch.lock"))))
             with mock.patch.object(eukore_build, "fetch_sources", side_effect=fetched):

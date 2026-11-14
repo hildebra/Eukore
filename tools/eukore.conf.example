@@ -11,6 +11,9 @@ LOGS=$PDIR/runs                       # the jobs' STDOUT and STDERR (empty: sbat
 VERSION=2026.11                       # --version, fixed: its default is the month of each run's day, and a build
                                       # that crosses a month's end would write a second Eukore_<version>
 MAMBA_ENV=eukore                      # the micromamba environment with Eukore's tools
+TIARA_ENV=eukore-tiara                # tiara's own environment (envs/tiara.yaml: it needs Python <= 3.9), given to
+                                      # the build as --tiara <env>/bin/tiara; TIARA=/path/to/tiara names the program
+                                      # itself. Without either, the build classifies no windows
 TASKS=8                               # process jobs of the array (`build N` gives another number)
 QC_TASKS=8                            # helper jobs of the package stage's vsearch checks across species, which the
                                       # final job submits once their inputs are written (0: the final job alone)

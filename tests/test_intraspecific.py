@@ -160,7 +160,9 @@ class TsaTest(unittest.TestCase):
                             ("GAAD01", "4932", "Saccharomyces cerevisiae", "9000000", "2016-01-01", "", "false",
                              "ftp.ebi.ac.uk/x/GAAD01.fasta.gz")):  # a species with a genome: not taken
                     fh.write("\t".join(row) + "\n")
-            got = genomes.tsa_jobs(ncbi, genomes.read_tsa(path), job_map)
+            # since 2026-11-14 a set under TSA_MIN_BASES is not taken: both sets of 5 and 9 Mb too small
+            self.assertEqual(genomes.tsa_jobs(ncbi, genomes.read_tsa(path), dict(job_map)), {})
+            got = genomes.tsa_jobs(ncbi, genomes.read_tsa(path), job_map, min_bases=1_000_000)
             self.assertEqual(sorted(got), ["GAAB01"])  # the most bases
             job = got["GAAB01"]
             self.assertEqual((job["why"], job["kind"], job["species_taxid"], job["url"]),

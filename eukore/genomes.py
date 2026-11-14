@@ -92,19 +92,30 @@ def rank(row):
             -int(re.sub(r"\D", "", row.get("date") or "") or 0), row["accession"])
 
 
-def representatives(assemblies, ncbi, inside=None):
+ONLY_EXCLUDED = "excluded, the species' only assemblies"
+
+
+def representatives(assemblies, ncbi, inside=None, keep_excluded=True):
     """{NCBI species taxid: (best assembly row, the species' other rows)} of the assemblies (sources.read_assemblies
     rows of GenBank's tables; a RefSeq row paired with a GenBank one is that one's copy), EXCLUDE'd ones and NCBI's
-    placeholder species left out; inside: a test of a species taxid (--species)."""
-    by_species = collections.defaultdict(list)
+    placeholder species left out (but a species' own where all are EXCLUDE'd, flagged ONLY_EXCLUDED, with
+    keep_excluded); inside: a test of a species taxid (--species)."""
+    by_species, excluded = collections.defaultdict(list), collections.defaultdict(list)
     for row in assemblies:
-        if set(row.get("flags") or ()) & EXCLUDE:
-            continue
         sp = ncbi.species_of(row["species_taxid"])
         if ncbi.rank.get(sp) != "species" or ncbi.is_placeholder(sp) or HYBRID.search(ncbi.name.get(sp, "")) \
                 or (inside and not inside(sp)):
             continue
+        if set(row.get("flags") or ()) & EXCLUDE:
+            excluded[sp].append(row)
+            continue
         by_species[sp].append(row)
+    # a species every assembly of which is excluded (since 2026-11-14: the 2026-11 build lost 256 species so, 176 of
+    # them by NCBI's "contaminated") keeps its best one, flagged ONLY_EXCLUDED: its copies are left out of the package
+    # (tiers.py's tier contaminated), its rRNA and organelle records, checked across species, kept
+    for sp, rows in excluded.items():
+        if sp not in by_species and keep_excluded:
+            by_species[sp] = [dict(r, flags=sorted(set(r.get("flags") or ()) | {ONLY_EXCLUDED})) for r in rows]
     by_species = flag_small(by_species, ncbi)
     out = {}
     for sp, rows in by_species.items():
@@ -152,18 +163,59 @@ def flag_small(by_species, ncbi):
     return out
 
 
-def download_of(row, refseq):
+def download_of(row, refseq, unavailable=()):
     """The accession and URL a genome is fetched from: its RefSeq copy's where it has one (refseq: {GenBank accession:
-    RefSeq row}), else its own."""
+    RefSeq row}), else its own; one NCBI does not serve (unavailable: accessions whose FASTA was not found, since
+    2026-11-14) is not taken: (accession, None) where neither is served."""
     copy = refseq.get(row["accession"])
-    use = copy or row
-    return use["accession"], placement.genome_url(use)
+    for use in ([copy] if copy else []) + [row]:
+        if use["accession"] not in unavailable:
+            return use["accession"], placement.genome_url(use)
+    return row["accession"], None
 
 
-def job_of(ncbi, row, why, sp, refseq, others=(), unit="-", path=None):
+# NCBI's genome folders that hold no FASTA (since 2026-11-14): the 2026-11 build's GCA_055474225.1 (Gecarcoidea lalandii,
+# a chromosome-level assembly) has its assembly report and stats alone, its _genomic.fna.gz a 404 on every fetch, so the
+# species had no genome in every build. The fetch stage notes such an accession (note_unavailable); the next plan takes
+# the species' next assembly (jobs, download_of), and a later fetch that finds the file takes the note back.
+UNAVAILABLE = "unavailable.tsv"  # WORK/: accession, when, why
+NOT_SERVED = "not found"         # util.fetch_file's why of a 404
+
+
+def read_unavailable(work):
+    """The accessions whose genome NCBI did not serve (WORK/unavailable.tsv) -> {accession: (when, why)}."""
+    out = {}
+    with contextlib.suppress(OSError), open(os.path.join(work, UNAVAILABLE)) as fh:
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if len(f) >= 3 and f[0] != "accession":
+                out[f[0]] = (f[1], f[2])
+    return out
+
+
+def note_unavailable(work, found):
+    """WORK/unavailable.tsv updated with a fetch's outcomes, found {accession: why its download failed, or "" where it
+    arrived}: NOT_SERVED noted, an arrival's note removed; written whole, then renamed -> the table {accession: (when,
+    why)}."""
+    table = read_unavailable(work)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    for acc, why in found.items():
+        if why == NOT_SERVED:
+            table.setdefault(acc, (now, why))
+        elif not why:
+            table.pop(acc, None)
+    path = os.path.join(work, UNAVAILABLE)
+    part = util.part_of(path)
+    with open(part, "w", newline="\n") as fh:
+        fh.write("accession\twhen\twhy\n" + "".join(f"{a}\t{w}\t{y}\n" for a, (w, y) in sorted(table.items())))
+    os.replace(part, path)
+    return table
+
+
+def job_of(ncbi, row, why, sp, refseq, others=(), unit="-", path=None, unavailable=()):
     """One assembly's job (jobs()'s), or None where it cannot be fetched."""
     from . import rrna  # noqa: PLC0415
-    fetch, url = download_of(row, refseq) if path is None else (row["accession"], None)
+    fetch, url = download_of(row, refseq, unavailable) if path is None else (row["accession"], None)
     if url is None and path is None:
         return None
     sp = int(sp)
@@ -179,16 +231,17 @@ def job_of(ncbi, row, why, sp, refseq, others=(), unit="-", path=None):
         gencode=ncbi.code_of(int(row.get("taxid") or sp)), annotated=None if genes is None else genes > 0)
 
 
-def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assembly=None):
+def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assembly=None, unavailable=()):
     """The genome set -> {accession: job}: job = dict(accession (GenBank's), fetch (the accession fetched), url, size,
     species_taxid, taxid, organism, why [ncbi | model | no_assembly], lineage (ancestor taxids), itsx (ITSx's sets),
     rdna_unit, flags, others (the species' other assemblies' accessions), path (no_assembly: its records' FASTA), gencode
-    (its NCBI genetic code), annotated (the fetched assembly has NCBI gene models, annotation.py; None: not known))."""
+    (its NCBI genetic code), annotated (the fetched assembly has NCBI gene models, annotation.py; None: not known)).
+    unavailable: the accessions NCBI serves no genome of (read_unavailable): a species takes its next assembly."""
     refseq = {r["paired"]: r for r in refseq_rows if r.get("paired", "na").startswith("GCA_")}
     out = {}
 
     def add(row, why, sp, others=(), unit="-", path=None):
-        job = job_of(ncbi, row, why, sp, refseq, others, unit, path)
+        job = job_of(ncbi, row, why, sp, refseq, others, unit, path, unavailable)
         if job:
             out[row["accession"]] = job
 
@@ -204,7 +257,7 @@ def jobs(ncbi, assemblies, refseq_rows=(), model_rows=(), inside=None, no_assemb
             continue
         # the best that can be fetched (until 2026-11-06 a best row without an FTP path lost the species)
         ranked = [best, *others]
-        chosen = next((r for r in ranked if download_of(r, refseq)[1]), None)
+        chosen = next((r for r in ranked if download_of(r, refseq, unavailable)[1]), None)
         if chosen is not None:
             add(chosen, "ncbi", sp, [r for r in ranked if r is not chosen])
     for sp, m in sorted(model_species.items()):
@@ -227,6 +280,10 @@ TSA_FIELDS = ("accession", "tax_id", "scientific_name", "base_count", "first_pub
 TSA_URL = ("https://www.ebi.ac.uk/ena/portal/api/search?result=tsa_set&query=tax_tree(2759)&format=tsv&limit=0"
            f"&fields={','.join(TSA_FIELDS)}")
 TSA_FILE = "tsa_sets.tsv"
+# A TSA set this small holds next to none of a species' genes (since 2026-11-14: the 2026-11 build's 331 sets under 10
+# Mb held a median 0.8% of the BUSCOs, its 265 under 5 Mb none; 157 of them filled the run report's poorest list): not
+# taken (tsa_jobs), the species keeps its records
+TSA_MIN_BASES = 10_000_000
 
 
 def tsa_path(src_dir):
@@ -266,15 +323,17 @@ def read_tsa(path):
             and r.get("environmental_sample", "false").lower() != "true"]
 
 
-def tsa_jobs(ncbi, rows, job_map, inside=None):
-    """The species with no genome (no NCBI, model or TOGA2 job; EukDetect2's records alone, or nothing) and a TSA set ->
-    {set accession: job} (why "tsa", kind "transcriptome"): of each species, its set of the most bases, then the
-    newest. A species' no_assembly job is then dropped from job_map: its transcriptome stands for it."""
+def tsa_jobs(ncbi, rows, job_map, inside=None, min_bases=TSA_MIN_BASES):
+    """The species with no genome (no NCBI, model or TOGA2 job; EukDetect2's records alone, or nothing) and a TSA set
+    of min_bases or more -> {set accession: job} (why "tsa", kind "transcriptome"): of each species, its set of the most
+    bases, then the newest. A species' no_assembly job is then dropped from job_map: its transcriptome stands for it."""
     held = {int(j["species_taxid"]) for j in job_map.values() if j["why"][0] != "no_assembly"}
     best = {}
     for r in rows:
         sp = ncbi.species_of(int(r["tax_id"]))
         if ncbi.rank.get(sp) != "species" or sp in held or ncbi.is_placeholder(sp) or (inside and not inside(sp)):
+            continue
+        if r.get("base_count", "").isdigit() and int(r["base_count"]) < min_bases:  # TSA_MIN_BASES (2026-11-14)
             continue
         rank = (int(r["base_count"]) if r.get("base_count", "").isdigit() else 0, r.get("first_public", ""))
         if sp not in best or rank > best[sp][0]:
@@ -318,7 +377,7 @@ def intraspecific_jobs(ncbi, assemblies, refseq_rows, job_map, panel, extras=3, 
     BioSample, strain and isolate than the species' genome and those taken. They are runs of their own: job_map keeps
     one genome per species."""
     refseq = {r["paired"]: r for r in refseq_rows if r.get("paired", "na").startswith("GCA_")}
-    reps = representatives(assemblies, ncbi, inside)
+    reps = representatives(assemblies, ncbi, inside, keep_excluded=False)
     by_species = {int(j["species_taxid"]): j for j in job_map.values()}
     by_accession = {r["accession"]: r for r in assemblies}
     out = {}
@@ -341,6 +400,49 @@ def intraspecific_jobs(ncbi, assemblies, refseq_rows, job_map, panel, extras=3, 
                 out[row["accession"]] = job
                 seen.append(row)
                 taken += 1
+    return out
+
+
+# rRNA donors (since 2026-11-14): a species whose genome yields no 18S at all (no lone 18S, no rDNA unit: the 2026-11
+# build's 4,522 genome species without any rRNA record, 34.5% of its scaffold-level genomes without an 18S, the rDNA
+# array left out of the assembly) takes it from its next assembly, by Eukore's ranking, where it has one: fetched and
+# run by barrnap and ITSx alone (eukore_build.donor_pass), its rRNA kept in WORK/rrna_donors/<accession>/rrna.tsv, its
+# records the species' (eukore_build.genome_rrna_records).
+RRNA_DONORS = "rrna_donors"
+
+
+def donor_dir(work, accession):
+    return os.path.join(work, RRNA_DONORS, safe(accession))
+
+
+def donor_done(work, accession):
+    return os.path.isfile(os.path.join(donor_dir(work, accession), "rrna.tsv"))
+
+
+def no_rrna(summary):
+    """Whether a done genome's run found no 18S at all (its summary's rrna counts; None: not extracted)."""
+    counts = (summary or {}).get("rrna")
+    return isinstance(counts, dict) and not counts.get("18S") and not counts.get("rDNA")
+
+
+def rrna_donor_jobs(ncbi, assemblies, refseq_rows, job_map, work, inside=None, unavailable=()):
+    """The rRNA donors -> {accession: job} (why "rrna_donor"): of each species whose genome (an NCBI, model or TOGA2
+    job, done) holds no 18S, its next assembly that can be fetched (representatives' order), not one it excludes."""
+    refseq = {r["paired"]: r for r in refseq_rows if r.get("paired", "na").startswith("GCA_")}
+    reps = representatives(assemblies, ncbi, inside, keep_excluded=False)
+    out = {}
+    for acc, job in sorted(job_map.items()):
+        if job["why"][0] not in ("ncbi", "model", "toga2") or not no_rrna(done_summary(work, acc)):
+            continue
+        sp = int(job["species_taxid"])
+        best, rest = reps.get(sp, (None, []))
+        for row in ([best, *rest] if best else []):
+            if row["accession"] in (acc, job.get("fetch")):
+                continue
+            donor = job_of(ncbi, row, "rrna_donor", sp, refseq, unavailable=unavailable)
+            if donor:
+                out[row["accession"]] = donor
+                break
     return out
 
 
@@ -481,7 +583,7 @@ def fetch_genome(job, path, **how):
 
 
 FATES = ("chosen", "chosen, flagged", "model species", "no assembly (records)", "TOGA2's genome",
-         "every assembly excluded", "placeholder", "hybrid", "not a species", "not in the taxdump", "no download")
+         "every assembly excluded", "every assembly excluded, kept", "placeholder", "hybrid", "not a species", "not in the taxdump", "no download")
 
 
 class Fates(dict):
@@ -507,6 +609,7 @@ def fates(ncbi, assemblies, job_map, inside=None):
         sp = int(job["species_taxid"])
         out[sp] = ("model species" if why == "model" else "no assembly (records)"
                    if why == "no_assembly" else "TOGA2's genome" if why == "toga2"
+                   else "every assembly excluded, kept" if ONLY_EXCLUDED in (job.get("flags") or ())
                    else "chosen, flagged" if job.get("flags") else "chosen")
         out.reasons[sp] = (counted[sp], {f: 1 for f in job.get("flags") or ()})
     excluded, why_not = collections.defaultdict(list), collections.defaultdict(collections.Counter)
@@ -674,11 +777,11 @@ _ODB = {}
 
 def odb_of(settings):
     """The worker's dataset (read once per process)."""
-    key = (settings["odb"], settings.get("markers"), tuple(settings["loci"]))
+    key = (settings["odb"], settings.get("markers"), tuple(settings["loci"]), settings.get("queries"))
     if key not in _ODB:
         _ODB.clear()
         _ODB[key] = odb_mod.Odb(settings["odb"], settings["loci"],
-                                [settings["markers"]] if settings.get("markers") else [])
+                                [settings["markers"]] if settings.get("markers") else [], settings.get("queries"))
     return _ODB[key]
 
 
@@ -1111,8 +1214,10 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
     before = done_summary(settings["work"], acc) if job.get("rerun") == "annotation" else None
     odb = odb_of(settings)
     rrna_job = None
-    # records of a species without an assembly, a transcriptome (since 2026-11-07): no genome's rRNA
-    if settings.get("rrna") and not job.get("path") and job.get("kind") != "transcriptome":
+    # records of a species without an assembly: no genome's rRNA; a transcriptome's since 2026-11-14 (tsa_rrna: until
+    # then none, and 4,734 of the 2026-11 build's 5,028 transcriptome species had no rRNA record at all)
+    if settings.get("rrna") and not job.get("path") and (job.get("kind") != "transcriptome"
+                                                         or settings.get("tsa_rrna")):
         # a run for its gene models alone: its rRNA as it was
         if before is not None and store.extract(folder, "rrna.tsv", os.path.join(tmp, "rrna.tsv")):
             from . import rrna as rrna_mod  # noqa: PLC0415
@@ -1249,6 +1354,7 @@ def _run(job, settings, path, folder, tmp, side, scratch=None):
                # the sources asked before the one taken (all, where none had one): none (better_annotation)
                "annotation_none": [] if gff is False else annotation_mod.none_before(job, source if gff else None),
                "annotated_models": sum(1 for r in got["loci"].values() if r.get("model", "miniprot") != "miniprot"),
+               "queries": settings.get("queries_digest") or "-",  # Eukore's own queries it took (since 2026-11-14)
                "tiara": tiara}  # done, failed (backfill tries again), none (no tiara), - (a transcriptome)
     if held is not None:
         summary["held_out"] = held
@@ -1373,7 +1479,8 @@ def backfill_needs(job, settings, summary=None):
         state = summary.get("tiara")
         if called and (state in ("none", "failed") or (state is None and all(r[TIARA_COLUMN] == "-" for r in called))):
             out.append("tiara")
-    if settings.get("rrna") and not job.get("path") and job.get("kind") != "transcriptome" \
+    if settings.get("rrna") and not job.get("path") \
+            and (job.get("kind") != "transcriptome" or settings.get("tsa_rrna")) \
             and not has(settings["work"], job["accession"], "rrna.tsv") \
             and os.path.isfile(genome_file(settings["genomes"], job["accession"])):
         out.append("rrna")
