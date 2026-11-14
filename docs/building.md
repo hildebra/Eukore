@@ -295,8 +295,8 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   - NCBI's taxdump;
   - NCBI's FCS-GX summaries of its assemblies and its Saccharomycotina ANI report (~70 MB);
   - BUSCO's eukaryota_odb12;
-  - EUKARYOME 2.1 (its long reads and, since 0.2.5, its SSU set, 29 MB) and ROD v1.2;
-  - since 0.2.5 NCBI's UniVec_Core (build 10.0, 1 MB): the published 18S's audit's vectors and adapters;
+  - EUKARYOME 2.1 (its long reads and, since 0.2.6, its SSU set, 29 MB) and ROD v1.2;
+  - since 0.2.6 NCBI's UniVec_Core (build 10.0, 1 MB): the published 18S's audit's vectors and adapters;
   - RefSeq's organelle genomes (mitochondrion and plastid);
   - PR2 5.1.1's taxonomy (5 MB) and KSGP 4.0's (243 MB; not with `--ksgp_tax`);
   - since 0.2: SILVA 138.2's SSU Ref NR99, UNITE 10.0's release of all eukaryotes and Open Tree Taxonomy 3.7.3
@@ -418,7 +418,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
-| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.5, is in the manifest's `eukore`) |
+| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.6, is in the manifest's `eukore`) |
 | `-V` | | print Eukore's own version and exit |
 | `--keep_gb` | none: no genome deleted | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept); with it, a superseded assembly's and the intraspecific panel's genome files are deleted once done too (until 2026-11-08 the default was 1000) |
 | `-t`, `--threads` | 8 | threads in all; since 2026-11-09 also those that compress every `.gz` file the build writes (BGZF: the package's and the release's at level 9, the work folder's at 6) |

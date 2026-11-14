@@ -24,7 +24,7 @@ Since format 6 (Eukore 0.2.3, 2026-11-09) a confidence tier tells a sequence not
 their HMMs confirmed; a Duplicated locus' copy is the one whose lineage fits; a sequence two clades' genomes share goes
 to its owner; an 18S is checked to be a nucleus'; and each genome names what made its calls (`genome_record`).
 
-Since format 7 (Eukore 0.2.5, 2026-11-14) the package is a user's (protal's) only source of eukaryote rRNA and names:
+Since format 7 (Eukore 0.2.6, 2026-11-14) the package is a user's (protal's) only source of eukaryote rRNA and names:
 - EUKARYOME's records the only published 18S beside ROD's operons: its long reads and every record of its SSU set
   (GenBank's, genomes' and UNITE's 18S under EUKARYOME's labels), its organelle SSU as organelle genes; PR2's and
   KSGP's records are not taken, but linked to Eukore's with their labels (`taxonomy/links.tsv`);
@@ -85,7 +85,7 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 | [`benchmarks/`](#benchmarks-optional) | the build's measures of the package | |
 
 ## manifest.json
-`format` (7; a reader of 7 also takes 6, 5 and 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, e.g. `0.2.5`), `built` (ISO time),
+`format` (7; a reader of 7 also takes 6, 5 and 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, e.g. `0.2.6`), `built` (ISO time),
 `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
@@ -801,7 +801,7 @@ them). `genomes.tsv`'s
   and its flags `ssu_prokaryote` and `cross_shared`; `organelle/genes.tsv`'s `cross`, its `internal_stops` `medium`
   (until 6 `low`); `intraspecific/barcode_gap.tsv`'s `inter_rank`, `resolved` `t` against a congener alone. A reader
   of format 5 reads format 6 but for the tier `unverified`, which it may read as `medium`.
-- 7 (2026-11-14, Eukore 0.2.5): EUKARYOME's SSU set's records (its 18S of other studies, GenBank's, genomes' and
+- 7 (2026-11-14, Eukore 0.2.6): EUKARYOME's SSU set's records (its 18S of other studies, GenBank's, genomes' and
   UNITE's) beside its long reads in `rrna/records.tsv`, its mitochondrial SSU in `organelle/genes.tsv` (until 7
   EUKARYOME's mitochondrial, plastid and nucleomorph long reads named by an NCBI genus or species were nuclear operon
   reads of `rrna/records.tsv`; its bacterial and archaeal SSU and pseudogenes are left out); an 18S read's 18S its
