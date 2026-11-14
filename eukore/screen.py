@@ -154,6 +154,37 @@ class Searcher:
                   f"{util.duration(time.time() - began)}")
         return got
 
+    def _shared(self, phase, queries, db, tool, params, what):
+        """A chimera screen's search (since 2026-11-14) in qc's protocol: queries in parts (search_parts) against one
+        Shared database, kept in <folder>_<phase>, taken by the helpers where HELPED parts or more -> its hits' rows
+        (qc.read_hits'), or None without a folder."""
+        if not self.folder:
+            return None
+        from . import qc  # noqa: PLC0415
+        began = time.time()
+        names = sorted(n for n, s in queries.items() if s)
+        shared = qc.Shared({n: s for n, s in db.items() if s})
+        todo = [(f"{phase}-{i + 1}", {n: queries[n] for n in part}, shared)
+                for i, part in enumerate(search_parts(names, self.nodes))]
+        found = qc.searched_loci(todo, tool, self.threads, f"{self.folder}_{phase}",
+                                 self.helpers if len(todo) >= HELPED else None, self.progress, params=params,
+                                 what=what, scratch=self.tmp, log=self.log)
+        self._say(f"  rRNA {phase}: {len(queries):,} 18S against {len(db):,}: took "
+                  f"{util.duration(time.time() - began)}")
+        return [row for hits in found.values() for row in hits]
+
+    def mapped(self, phase, queries, db, minimap2):
+        """The window screen's first pass (chimeras.map_file's rows), shared with the helpers; None without a
+        folder."""
+        from . import chimeras, qc  # noqa: PLC0415
+        return self._shared(phase, queries, db, minimap2, qc.MapParams(chimeras.STEP),
+                            f"{phase}: 18S windows mapped (minimap2)")
+
+    def uchimed(self, phase, queries, db, vsearch):
+        """UCHIME's calls (chimeras.uchime_file's rows), shared with the helpers; None without a folder."""
+        from . import qc  # noqa: PLC0415
+        return self._shared(phase, queries, db, vsearch, qc.UchimeParams(), f"{phase}: 18S screened (UCHIME)")
+
     def many(self, what, items, ident, accepts, rejects):
         """[(queries, db)] -> [search's {query: [(identity, target)]}], in their order: up to `threads` at once,
         each with its share of the threads."""

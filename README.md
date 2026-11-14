@@ -33,7 +33,7 @@ Eukore is two things:
 
 It is made for tools that detect and profile eukaryotes in metagenomes (protal reads it as its eukaryote reference),
 and for anyone needing clean eukaryote marker genes: phylogenetics, primer design, contamination screens. Eukore's
-version is 0.2.4 (package format 6); it was named EUKDB until 2026-11-06.
+version is 0.2.6 (package format 7); it was named EUKDB until 2026-11-06.
 
 <p align="center">
   <img src="docs/figures/overview_slide.png" alt="Eukore at a glance: 21 sources, the build's three stages, the package's parts" width="860">
@@ -45,10 +45,10 @@ version is 0.2.4 (package format 6); it was named EUKDB until 2026-11-06.
 |---|---|---|---|
 | **BUSCO genes** | each of the 129 BUSCOs of eukaryota_odb12 called in its genome, with its exons and introns; their coding sequences and proteins | NCBI's best assembly of the species (else an INSDC transcriptome), called by Eukore (miniprot, then BUSCO's HMMs) | the gene from first to last codon, introns and all, uncut and unmasked |
 | **genetics** | each intron's phase, splice sites, U12 look and site on the gene's HMM; the genome's genetic code checked; its duplicated BUSCOs (haplotypes or a whole-genome duplication) | hmmalign on BUSCO's HMMs; vsearch | `busco/introns.tsv`, `intron_sites.tsv`, `genomes.tsv` |
-| **rDNA operons** | its 18S spans and whole units (18S, ITS1, 5.8S, ITS2, 28S, an inline 5S); the 18S's V1-V9; in-silico PCR of 10 amplicon primer pairs | its assembly (barrnap, ITSx); EUKARYOME's and ROD's long reads; Infernal on Rfam's SSU model | from the 18S's start to the 28S's end |
+| **rDNA operons** | its 18S spans and whole units (18S, ITS1, 5.8S, ITS2, 28S, an inline 5S); the 18S's V1-V9; in-silico PCR of 10 amplicon primer pairs | its assembly (barrnap, ITSx); EUKARYOME's long reads and SSU set (labelled above species too; format 7) and ROD's operons, each audited as KSGP audits its records (vectors, flanks, chimeras); Infernal on Rfam's SSU model | from the 18S's start to the 28S's end |
 | **organelle genes** | mitochondrial and plastid SSU, LSU, 5S rRNA; mitochondrial COX1, COX3, CYTB, nad1, nad5, atp6; plastid rbcL, matK, tufA, psbA, ycf1 and the trnH-psbA spacer; their proteins by the organelle's code, checks and confidence, barcode primers' PCR | RefSeq's organelle genomes, else its assembly's organelle molecules (kept whole too) | the gene with its introns |
 | **assembly metadata** | its genome's size, contiguity, gaps, GC and its spread, soft-masking, CpG, duplicates, telomeres, organelle molecules, tetranucleotides, a sourmash sketch; NCBI's own summary | measured while the genome is on disk, before the build deletes it | in the package's `metadata/` |
-| **taxonomy** | NCBI's lineage (and with its empty ranks filled), supergroup (Obazoa, TSAR, ...) and group; its lineage in PR2, EUKARYOME, KSGP, SILVA, UNITE (and MIDORI2); its Open Tree, GBIF, WoRMS, IRMNG, UNITE SH (and BOLD BIN) ids; its genome's type material | NCBI's taxdump, cut to the package | tied to no GTDB release |
+| **taxonomy** | NCBI's lineage (and with its empty ranks filled), supergroup (Obazoa, TSAR, ...) and group; its complete EUKARYOME lineage in one EUKARYOME tree, as every record's and organelle gene's (format 7); its lineage in PR2, KSGP, SILVA, UNITE (and MIDORI2); its Open Tree, GBIF, WoRMS, IRMNG, UNITE SH (and BOLD BIN) ids; its genome's type material | NCBI's taxdump, cut to the package | tied to no GTDB release |
 | **barcode gap** | for a panel of 40 well-sampled species, each marker's variation within the species beside its distance to the nearest other species | 3 further assemblies of each (other strains) | `intraspecific/` |
 | **checks** | per copy and record: own-species agreement (the owner of a sequence two clades' genomes share told), 99% collapses, length outliers, contig ends, assembly gaps, coding sequences against the proteins confirmed, tiara's and FCS-GX's contamination screens, an rRNA chimera screen, each 18S a nucleus'; a `high`/`unverified`/`medium`/`low` tier with its reasons | Eukore's checks across species | flagged, never silently dropped |
 | **benchmarks** | completeness, agreement with OrthoDB's gene models, marker resolution, rRNA completeness, naming, primer coverage, the barcode gap, run time | measured by each build | in the package's `benchmarks/` |
@@ -60,7 +60,7 @@ FCS-GX and ANI screens find contaminated or misidentified where a better one exi
 (ENA's TSA sets: some 5,000 species, most animals and plants) has its BUSCOs called in it (`species.tsv`'s `source` `tsa`).
 
 A package is plain TSV and gzipped FASTA with a `manifest.json` of checksums; its format is
-[docs/FORMAT.md](docs/FORMAT.md) (format 6). Every `.gz` file is BGZF (blocked gzip, since 2026-11-09): any gzip
+[docs/FORMAT.md](docs/FORMAT.md) (format 7). Every `.gz` file is BGZF (blocked gzip, since 2026-11-09): any gzip
 reader reads it, `bgzip -d -@` decompresses it on many threads.
 
 ```
@@ -70,7 +70,8 @@ Eukore_2026.11/
 ├── crossrefs.tsv            each species' ids: Open Tree, GBIF, WoRMS, IRMNG, UNITE SH, BOLD BIN
 ├── genomes.tsv              the species' genomes: accession, quality flags, rRNA copies, genetic code, duplication
 ├── copy_numbers.tsv.gz      each genome's copies of every locus, rRNA gene and unit, organelle molecule and gene
-├── taxonomy/                NCBI's taxonomy, cut to the package (nodes with nuclear and organelle codes, names)
+├── taxonomy/                NCBI's taxonomy, cut to the package (nodes with nuclear and organelle codes, names);
+│                            EUKARYOME's as one tree (eukaryome.tsv)
 ├── busco/                   loci.tsv (call rates per BUSCO), copies.tsv (calls, checks, confidence),
 │                            features.tsv, introns.tsv, intron_sites.tsv, copies/, cds/, proteins/<locus>.*.gz
 ├── rrna/                    records.tsv, records.fna.gz, regions.tsv (18S V1-V9), amplicons.tsv (in-silico PCR)
@@ -114,6 +115,8 @@ What you may want, where it is in a package, and where it is described. The file
 | its Open Tree, GBIF, WoRMS, IRMNG, Index Fungorum id; UNITE SH; BOLD BIN | `crossrefs.tsv` | `reference`, `id` | [FORMAT: crossrefs.tsv](docs/FORMAT.md#crossrefstsv-format-5) |
 | whether its genome is from type material | `species.tsv`, `genomes.tsv` | `type_material` | [FORMAT: genomes.tsv](docs/FORMAT.md#genomestsv) |
 | species known from a transcriptome alone | `species.tsv` | `source` = `tsa` | [methods](docs/methods.md#the-barcode-gap-and-transcriptomes-since-2026-11-07) |
+| its EUKARYOME lineage, complete, and a record's (labelled above species too) | `species.tsv`, `rrna/records.tsv`, `organelle/genes.tsv`; `taxonomy/eukaryome.tsv` | `eukaryome`, `eukaryome_lineage`, `eukaryome_match`, `rank` | [FORMAT: taxonomy/](docs/FORMAT.md#taxonomy) |
+| species known from organelle genes alone (a RefSeq organelle genome) | `species.tsv` | `source` = `organelle` | [FORMAT: organelle/](docs/FORMAT.md#organelle) |
 | **Genomes** | | | |
 | a genome's size, contiguity, GC, masking, telomeres, sketch | `metadata/assembly.tsv.gz`, `metadata/sketches.zip` | | [FORMAT: metadata/](docs/FORMAT.md#metadata) |
 
@@ -283,7 +286,7 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 
 ## Status and limitations
 
-- Version 0.2.4 (2026-11-12: the comparisons with other references, the read benchmark and the figures, Figure 1 among them, moved out of the build into `benchmarks/`; the build writes an evaluation bundle). The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built; format 6 (2026-11-09: the four confidence tiers, coding sequences checked and recovered, a Duplicated locus' copy chosen by lineage, the owner of a shared sequence told, the 18S checked to be a nucleus', the genome record) is tested on stand-ins and four trial genomes, not yet on a built package.
+- Version 0.2.6 (2026-11-14, package format 7, with the first full build's fixes: genome tiers, rRNA donors, MIDORI2 fetched, a copy split across contigs joined; EUKARYOME's records the only published 18S, its SSU set beside its long reads, each audited at build time as KSGP 4.1-4.5 audit their records (ends, flanks, chimeras: `rrna/audit.tsv`), PR2's and KSGP's records linked, not taken (`taxonomy/links.tsv`), MIDORI2's screened mitochondrial SSU (one a species without a RefSeq mitochondrial genome), EUKARYOME's reads labelled above species, the organelle genes of every species with a RefSeq organelle genome, and every species', record's and organelle gene's EUKARYOME lineage in one tree, `taxonomy/eukaryome.tsv`; tested on stand-ins and a trial clade, not yet on a full build). Version 0.2.4 (2026-11-12: the comparisons with other references, the read benchmark and the figures, Figure 1 among them, moved out of the build into `benchmarks/`; the build writes an evaluation bundle). The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built; format 6 (2026-11-09: the four confidence tiers, coding sequences checked and recovered, a Duplicated locus' copy chosen by lineage, the owner of a shared sequence told, the 18S checked to be a nucleus', the genome record) is tested on stand-ins and four trial genomes, not yet on a built package.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
 - The organelle genes have checks across species and a confidence tier since 0.2, measured on a trial without RefSeq's organelle release (assembly molecules alone). In assemblies, a protein-coding gene with introns takes miniprot's exons (median F1 0.96-0.99 against RefSeq's, against nhmmer's joined hits' 0.27-0.60), one without nhmmer's single hit ([methods.md](docs/methods.md)); a few splice sites stay off by some bases.
 - The genetic code check judges only the stop codons and CTG, where seen often enough at conserved positions (CTG-clade yeasts avoid CTG: not judged); a transcriptome's BUSCO copies (TSA, a species without a genome) have no introns and are at most `medium`.

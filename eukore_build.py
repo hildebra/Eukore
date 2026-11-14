@@ -60,6 +60,7 @@ from eukore import annotation, benchmarks, labels, metadata as metadata_mod, org
 from eukore import groups as groups_mod, intraspecific as intraspecific_mod, markers as markers_mod, quality  # noqa: E402
 from eukore import placement, primers as primers_mod, regions as regions_mod  # noqa: E402
 from eukore import refscreen, release as release_mod  # noqa: E402
+from eukore import audit as audit_mod, chimeras, eukaryome as eukaryome_mod, links, screen as screen_mod  # noqa: E402
 from eukore import __version__  # noqa: E402
 from eukore import store  # noqa: E402
 from eukore import tiers as tiers_mod  # noqa: E402
@@ -69,9 +70,10 @@ TAXDUMP_AGE = 7 * 86400  # a taxdump this much older than the assembly tables is
 NO_ASSEMBLY = os.path.join(sources.DATA, "no_assembly.fna.gz")
 PUBLISHED_BATCH = 250  # published reads a barrnap + ITSx run
 # the published reads' regions, kept in WORK/published: a new name where their borders change (2: ITSx's guessed 5.8S
-# borders no longer taken, 2026-11-06; 3: regions on the record, not the unit, and the read's strand, 2026-11-06), so
-# that a rerun annotates them again
-PUBLISHED_REGIONS = "regions.3.tsv"
+# borders no longer taken, 2026-11-06; 3: regions on the record, not the unit, and the read's strand, 2026-11-06;
+# 4: an 18S read's 18S alone, each read's audit of its ends and flanks, 2026-11-14), so that a rerun annotates them
+# again (its batches named anew: published_batches)
+PUBLISHED_REGIONS = "regions.4.tsv"
 FCS_THREADS = 4  # cores of each FCS-GX run (GX_NUM_CORES); -t / FCS_THREADS runs at once
 PACK_THREADS = 8  # done folders packed at once (pack_pass: small files read, one written)
 QC_TASKS_GUESS = 8  # the helpers --qc_helpers starts where --qc_tasks does not say (tools/eukore.conf.example's)
@@ -118,7 +120,7 @@ def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False, midori2=True):
                 raise
             say(f"WARNING: the taxdump not fetched again ({e}): the old one kept")
     odb_mod.fetch(src_dir, sources.download, say)
-    for name in ("EUKARYOME", "ROD"):
+    for name in ("EUKARYOME", "EUKARYOME_SSU", "ROD", "UniVec"):  # the second and last since 2026-11-14
         sources.fetch(src_dir, name, sources.download, shutil.which("7za") or shutil.which("7z") or "7za", say)
     # the optional sources each on its own: one that fails (a site moved, down) is said, the others still fetched
     # (until 2026-11-06 one failure stopped the stage, NCBI's quality reports then missing from the genome ranking)
@@ -843,36 +845,99 @@ def backfill_one(item):
 
 
 def published(opts, src_dir, ncbi):
-    """The published reads (EUKARYOME, ROD) with their regions and NCBI labels -> records [(name, sequence, row)],
-    their regions kept in WORK/published/PUBLISHED_REGIONS (a rerun reads them). The reads not annotated yet are
-    annotated here, shared with the other runs on the WORK (annotate_published), whose last batches this run awaits."""
+    """The published reads (EUKARYOME's long reads and SSU set, ROD's operons) with their regions and NCBI labels ->
+    (records [(name, sequence, row)], their audits {name: audit.audit_reads' result}), their regions and (since
+    2026-11-14) their ends' and flanks' audits kept in WORK/published/PUBLISHED_REGIONS (a rerun reads them). The reads
+    not annotated yet are annotated here, shared with the other runs on the WORK (annotate_published), whose last
+    batches this run awaits. A read is on its rRNA's strand; one whose line holds no audit of this AUDIT_RECORD (a
+    line of before 2026-11-14) is audited by the package stage (audit.clean)."""
     reads = published_reads(opts, src_dir, ncbi)
     known, unread = annotate_published(opts, reads, ncbi, wait=True)
-    out = []
-    for name, seq, taxid, source, how, accession in reads:
+    out, audits = [], {}
+    for name, seq, taxid, source, how, accession, extra in reads:
         if name in unread:
             continue
-        regions, complete, strand, _digest = known.get(name, ("-", "f", "+", None))
+        regions, complete, strand, _digest, audited = known.get(name, ("-", "f", "+", None, None))
         regions_list = rrna.parse_regions(regions)
         seq = rrna.revcomp(seq) if strand == "-" else seq  # the record on its unit's strand, as its regions
-        out.append((name, seq, dict(kind="rDNA" if regions_list else "18S", accession=accession, source=source,
-                                    taxid=taxid, species_taxid=ncbi.species_of(taxid), regions_list=regions_list,
-                                    lsu_complete=complete == "t", label_from=how)))
-    return out
+        result = audit_mod.parse_audit(audited)
+        if result is not None:
+            audits[name] = result
+        # an operon read with its 28S (rDNA), else an 18S (since 2026-11-14: an 18S read's own 18S its region)
+        kind = "rDNA" if any(n == "28S" for n, _a, _b in regions_list or ()) else "18S"
+        out.append((name, seq, dict(kind=kind, accession=accession, source=source, taxid=taxid,
+                                    species_taxid=ncbi.species_of(taxid), regions_list=regions_list,
+                                    lsu_complete=complete == "t", label_from=how, **extra)))
+    return out, audits
 
 
 def published_pass(opts, src_dir, ncbi):
     """The published reads' annotation by a run of the process stage with --genomes_only (an array's task; since
     2026-11-12), once its genomes and passes are through: the batches no other run holds, none awaited. The reads
-    need no genome: until then the final job annotated all 229,618 alone, one node for 8 hours and more."""
+    need no genome: until then the final job annotated all 229,618 alone, one node for 8 hours and more. Since
+    2026-11-14 each batch's reads are audited too (their ends and flanks: audit.audit_reads), across the array's
+    nodes."""
     if shutil.which("barrnap"):
         annotate_published(opts, published_reads(opts, src_dir, ncbi), ncbi, wait=False)
 
 
+# EUKARYOME's tags (its kingdom `k___<tag>`) of a record of no nucleus: an organelle's SSU, taken as an organelle gene;
+# a prokaryote's SSU and a pseudogene are left out (EUKARYOME 2.1's SSU set: 2,054 mitochondrion, 396 nucleomorph,
+# 248 plastid, 5 apicoplast, 1 chromatophore, 669 Bacteria, 188 Archaea, 7 pseudogene; its long reads mostly the same
+# ids)
+ORGANELLE_TAGS = {"k___mitochondrion": "mitochondrion", "k___plastid": "plastid", "k___nucleomorph": "nucleomorph",
+                  "k___Apicoplast": "plastid", "k___apicoplast": "plastid", "k___chromatophore": "plastid"}
+
+
+def eukaryome_kind(label):
+    """A EUKARYOME label's compartment: `nuclear`, an organelle (ORGANELLE_TAGS), or None (a prokaryote's SSU, a
+    pseudogene: left out)."""
+    k = label.split(";", 1)[0]
+    if not k.startswith("k___"):
+        return "nuclear"
+    return ORGANELLE_TAGS.get(k)
+
+
+def eukaryome_reads(src_dir):
+    """EUKARYOME's records Eukore takes (since 2026-11-14, format 7: its SSU set beside its long reads) -> (nuclear
+    [(id, label, sequence, which: long or SSU)], organelle [(id, label, sequence, organelle)]): every long read but
+    those EUKARYOME marks of compromised quality, and every record of its SSU set but those and the 18S of a long read
+    taken (386,813 of its 407,694 EUK ids: the read is taken whole). A record of no nucleus (eukaryome_kind) is never a
+    nuclear one (until 2026-11-14 EUKARYOME 2.1's mitochondrial, plastid and nucleomorph long reads named by a genus or
+    species NCBI holds were taken as nuclear operon reads): its SSU set's SSU is taken as an organelle gene, a
+    prokaryote's SSU or a pseudogene not at all."""
+    nuclear, organelle = [], []
+    long_ = sources.ready(src_dir, "EUKARYOME")
+    bad = sources.eukaryome_compromised(long_) if long_ else set()
+    taken = set()
+    if long_:
+        for acc, label, seq in sources.eukaryome_long(long_):
+            if acc not in bad and eukaryome_kind(label) == "nuclear":
+                nuclear.append((acc, label, seq, "long"))
+                taken.add(acc)
+    ssu = sources.ready(src_dir, "EUKARYOME_SSU")
+    if ssu:
+        for acc, label, seq in sources.eukaryome_ssu(ssu):
+            if acc in taken or acc in bad:
+                continue
+            kind = eukaryome_kind(label)
+            if kind == "nuclear":
+                nuclear.append((acc, label, seq, "SSU"))
+            elif kind:
+                organelle.append((acc, label, seq, kind))
+    return nuclear, organelle
+
+
 def published_reads(opts, src_dir, ncbi):
-    """The published reads [(name, sequence, taxid, source, how labelled, accession)] of the sources, inside the
-    build's clades."""
+    """The published reads [(name, sequence, taxid, source, how labelled, accession, extra)] of the sources, inside
+    the build's clades; extra: the row's further fields (source_label: its label as published, via: the EUKARYOME
+    file it came from). A EUKARYOME record labelled above its genus is taken (since 2026-11-14, format 7), labelled by
+    the deepest of its ranks NCBI names (rrna.label_taxon: until then by its species or genus alone, and 240,041 of
+    EUKARYOME 2.1's 400,217 reads were left out); its name EUK_<EUKARYOME's id or accession>. Since 2026-11-14 the
+    18S of EUKARYOME's SSU set are taken too (sources.EUKARYOME_SSU: GenBank's, genomes', UNITE's), and PR2's and
+    KSGP's records are not (taxonomy/links.tsv links them)."""
     index = rrna.name_index(ncbi)
+    to_ncbi = eukaryome_mod.to_ncbi()
     reads = []
     rod = sources.ready(src_dir, "ROD")
     if rod:
@@ -880,17 +945,90 @@ def published_reads(opts, src_dir, ncbi):
             if r.get("taxid", "").isdigit() and r.get("sequence") and opts.inside(r["taxid"]):
                 t = int(r["taxid"])
                 reads.append((f"ROD_{r['seqid']}", r["sequence"].upper(), t, "ROD", "rod_taxid",
-                              r.get("assembly_id") or "-"))
-    euk = sources.ready(src_dir, "EUKARYOME")
-    if euk:
-        bad = sources.eukaryome_compromised(euk)
-        for acc, label, seq in sources.eukaryome_long(euk):
-            if acc in bad:
-                continue
-            t, how = rrna.eukaryome_taxid(label, index, ncbi)
-            if t and opts.inside(t):
-                reads.append((f"EUK_{acc}", seq, t, "EUKARYOME", how, "-"))
+                              r.get("assembly_id") or "-", {}))
+    nuclear, _organelle = eukaryome_reads(src_dir)
+    for acc, label, seq, which in nuclear:
+        t, how, _rank = rrna.label_taxon(label, index, ncbi, "eukaryome", to_ncbi)
+        if t and opts.inside(t):
+            reads.append((f"EUK_{acc}", seq, t, "EUKARYOME", how, acc if not acc.startswith("EUK") else "-",
+                          dict(source_label=label, via=f"EUKARYOME_{which}")))
     return reads
+
+
+def organelle_published(opts, src_dir, ncbi, chosen):
+    """EUKARYOME's organelle SSU (its SSU set's mitochondrial, plastid and nucleomorph records, labelled by genus and
+    species; since 2026-11-14) as organelle genes [(name, sequence, row)], inside the build's clades, as EUKARYOME
+    gives them (5' to 3'); a record of a RefSeq organelle genome whose genes the package holds (chosen's) not again."""
+    _nuclear, records = eukaryome_reads(src_dir)
+    if not records:
+        return []
+    index, to_ncbi = rrna.name_index(ncbi), eukaryome_mod.to_ncbi()
+    held = {r["seqid"].split(".")[0] for rows in chosen.values() for r in rows}
+    out, counts = [], collections.Counter()
+    for acc, label, seq, kind in records:
+        if acc.split(".")[0] in held:
+            continue
+        t, how, _rank = rrna.label_taxon("k__unclassified;" + label.split(";", 1)[1], index, ncbi, "eukaryome",
+                                         to_ncbi)
+        if t and opts.inside(t):
+            r = dict(name=f"EUK_{acc}", sequence=seq.upper(), kind=kind, source="EUKARYOME", id=acc)
+            out.append(organelle_mod.published_record(r, t, ncbi.species_of(t), how, label, ncbi, "EUKARYOME_SSU"))
+            counts[kind] += 1
+    say("EUKARYOME: organelle SSU taken: " + ", ".join(f"{k} {n:,}" for k, n in sorted(counts.items())))
+    return out
+
+
+def midori2_published(opts, ncbi, chosen, calls=None):
+    """MIDORI2's mitochondrial SSU (since 2026-11-14: its srRNA file among --midori2's, screened by the reference screen,
+    refscreen.py) as organelle genes [(name, sequence, row)]: of each species inside the build's clades whose
+    mitochondrial genes no RefSeq genome gives (chosen's), one record, its longest the screen keeps (a record it cuts
+    as the part it keeps, one it drops never, one it leaves for review only where the species has no other, flagged
+    `screen_weak`), labelled by the NCBI taxid MIDORI2 gives (a merged one by its new taxid). A species' every
+    haplotype (MIDORI2's UNIQ files) would multiply the organelle checks' searches for no species more; KSGP took one
+    record a species too (58,806 MIDORI SSU in KSGP 5.2). Without the screen (--no_reference_screen) every record
+    counts as kept."""
+    files = [p for p in (opts.midori2 or ()) if labels.midori2_gene(p) == "SSU"]
+    if not files:
+        return []
+    refseq = {sp for sp, o in chosen if o == "mitochondrion"}
+    calls = calls or {}
+    best, counts = {}, collections.Counter()
+    for path in files:
+        version = re.search(r"GB\d+", os.path.basename(path))
+        for accession, taxid, seq in labels.midori2_records(path):
+            t = ncbi.merged.get(taxid, taxid) if taxid else None
+            if t is None or t not in ncbi.parent:
+                counts["no NCBI taxon"] += 1
+                continue
+            sp = ncbi.species_of(t)
+            if ncbi.rank.get(sp) != "species" or not rrna.is_eukaryote(ncbi, sp):
+                counts["no species"] += 1
+                continue
+            if sp in refseq or not opts.inside(sp):
+                counts["RefSeq's genome or outside the clades"] += 1
+                continue
+            c = calls.get(("SSU", accession))
+            action = c["action"] if c else "-"
+            if action == "drop":
+                counts["dropped by the screen"] += 1
+                continue
+            if action == "trim":
+                seq = seq[int(c["keep_start"]) - 1:int(c["keep_end"])]
+            seq = seq.upper()
+            key = (action != "review", len(seq), accession)
+            if sp not in best or key > best[sp][0]:
+                best[sp] = (key, accession, t, seq, action, version.group(0) if version else "?")
+    out = []
+    for sp, (_key, accession, t, seq, action, version) in sorted(best.items()):
+        r = dict(name=f"MIDORI2_{accession}", sequence=seq, kind="mitochondrion", source="MIDORI2", id=accession)
+        name, seq, row = organelle_mod.published_record(r, t, sp, "midori2_taxid", "-", ncbi, f"MIDORI2_{version}")
+        row["flags_extra"] = ["screen_weak"] if action == "review" else []
+        out.append((name, seq, row))
+        counts["taken" + (" (cut by the screen)" if action == "trim" else " (for review)" if action == "review"
+                          else "")] += 1
+    say(f"MIDORI2: {len(out):,} mitochondrial SSU taken, one a species (" +
+        ", ".join(f"{k} {v:,}" for k, v in sorted(counts.items())) + ")")
+    return out
 
 
 def published_known(cache_dir, reads):
@@ -913,7 +1051,8 @@ def published_batches(reads, ncbi):
     out = []
     for i in range(0, len(every), PUBLISHED_BATCH):
         batch = every[i:i + PUBLISHED_BATCH]
-        key = hashlib.md5("".join(f"{n}\t{read_digest(s)}\t{t}\n" for n, s, t in batch).encode()).hexdigest()[:16]
+        key = hashlib.md5((PUBLISHED_REGIONS + "\n" + "".join(f"{n}\t{read_digest(s)}\t{t}\n" for n, s, t in batch))
+                          .encode()).hexdigest()[:16]
         out.append((key, batch))
     return out
 
@@ -1000,7 +1139,10 @@ def annotate_published(opts, reads, ncbi, wait=True):
         me = f"{socket.gethostname()}-{os.getpid()}"
         cache = os.path.join(cache_dir, f"{PUBLISHED_REGIONS[:-len('.tsv')]}.{me}.tsv")
         digest = {n: read_digest(s) for _k, b in left for n, s, _t in b}
-        work = functools.partial(_annotate_claimed, barrnap=barrnap, itsx=shutil.which("ITSx"))
+        # each batch's reads audited too (their ends and flanks; since 2026-11-14), one thread a process
+        univec, primers, nhmmer, hmm = audit_mod.tools(getattr(opts, "sources", None), sources)
+        work = functools.partial(_annotate_claimed, barrnap=barrnap, itsx=shutil.which("ITSx"),
+                                 audit=(univec, primers, nhmmer, hmm))
         try:
             with util.process_pool(opts.threads) as pool, open(cache, "a", newline="\n") as fh, \
                     open(os.path.join(cache_dir, f"done.{me}.txt"), "a", newline="\n") as marks:
@@ -1011,8 +1153,8 @@ def annotate_published(opts, reads, ncbi, wait=True):
                     for key, got, why in util.unordered(pool, work, claimable(), progress,
                                                         lambda: f", {len(held):,} batches under way"):
                         ran = True
-                        fh.writelines(f"{name}\t{regions}\t{complete}\t{strand}\t{digest[name]}\n"
-                                      for name, (regions, complete, strand) in got.items())
+                        fh.writelines(f"{name}\t{regions}\t{complete}\t{strand}\t{digest[name]}\t{audited}\n"
+                                      for name, (regions, complete, strand, audited) in got.items())
                         fh.flush()
                         if why:
                             failed[key] = why
@@ -1047,23 +1189,33 @@ def annotate_published(opts, reads, ncbi, wait=True):
     return known, unread
 
 
-def _annotate_claimed(item, barrnap=None, itsx=None):
+def _annotate_claimed(item, barrnap=None, itsx=None, audit=None):
     """(batch name, batch) -> (batch name, _annotate_batch's result, its failure or None)."""
     key, batch = item
-    got, why = _annotate_batch(batch, barrnap, itsx)
+    got, why = _annotate_batch(batch, barrnap, itsx, audit)
     return key, got, why
 
 
-def _annotate_batch(batch, barrnap=None, itsx=None):
-    """[(name, sequence, ITSx's sets)] -> ({name: (regions text, lsu_complete t/f, strand)}, None), or ({}, why) where
-    barrnap or ITSx failed on it (since 2026-11-08: the error stopped the package stage)."""
+def _annotate_batch(batch, barrnap=None, itsx=None, audit=None):
+    """[(name, sequence, ITSx's sets)] -> ({name: (regions text, lsu_complete t/f, strand, audit text)}, None), or ({},
+    why) where barrnap, ITSx or the audit failed on it (since 2026-11-08: the error stopped the package stage).
+    audit: (UniVec's folder, the rDNA primers, nhmmer, barrnap's HMM) (audit.tools'; since 2026-11-14): each read's
+    ends and flanks audited on its rRNA's strand (audit.audit_reads; audit_text), "-" without."""
     try:
         found = rrna.published_regions([(n, s) for n, s, _t in batch], barrnap, itsx,
                                        sets={n: t for n, _s, t in batch})
+        got = {name: (rrna.regions_text(found[name][0]), "t" if found[name][1] else "f", found[name][3])
+               if name in found else ("-", "f", "+") for name, _s, _t in batch}
+        audited = {}
+        if audit is not None:
+            univec, primers, nhmmer, hmm = audit
+            items = [(n, rrna.revcomp(s) if got[n][2] == "-" else s, rrna.parse_regions(got[n][0]))
+                     for n, s, _t in batch]
+            audited = {n: audit_mod.audit_text(r) for n, r in audit_mod.audit_reads(
+                items, audit_mod.vectors_of(univec), primers, nhmmer, hmm).items()}
     except Exception as e:  # noqa: BLE001  a batch's failure, never the stage's
         return {}, f"{type(e).__name__}: {e}"[:200]
-    return {name: (rrna.regions_text(found[name][0]), "t" if found[name][1] else "f", found[name][3])
-            if name in found else ("-", "f", "+") for name, _s, _t in batch}, None
+    return {n: got[n] + (audited.get(n, "-"),) for n in got}, None
 
 
 def read_digest(seq):
@@ -1072,16 +1224,17 @@ def read_digest(seq):
 
 
 def read_regions(path):
-    """The published reads' regions cache -> {name: (regions text, lsu_complete t/f, strand, its read's digest, or None
-    in a line before 2026-11-08)}; a line a killed run cut (not 4 or 5 fields, or no line end) left out, so that its
-    read is annotated again (until 2026-11-06 it stopped every later run)."""
+    """The published reads' regions cache -> {name: (regions text, lsu_complete t/f, strand, its read's digest (None in
+    a line before 2026-11-08), its audit (audit.audit_text; None in a line before 2026-11-14))}; a line a killed run
+    cut (not 4 to 6 fields, or no line end) left out, so that its read is annotated again (until 2026-11-06 it
+    stopped every later run)."""
     known = {}
     if os.path.isfile(path):
         with open(path) as fh:
             for line in fh:
                 f = line.rstrip("\n").split("\t")
-                if line.endswith("\n") and len(f) in (4, 5) and f[3] in ("+", "-"):
-                    known[f[0]] = (f[1], f[2], f[3], f[4] if len(f) == 5 else None)
+                if line.endswith("\n") and len(f) in (4, 5, 6) and f[3] in ("+", "-"):
+                    known[f[0]] = (f[1], f[2], f[3], f[4] if len(f) >= 5 else None, f[5] if len(f) == 6 else None)
     return known
 
 
@@ -1821,17 +1974,22 @@ def _main(argv, held):
                    help="the assemblies' organelle protein-coding genes: nhmmer's hits alone, or (default) miniprot's "
                         "exons by the organelle's code where nhmmer joined several hits (a gene with introns; "
                         "docs/methods.md)")
-    p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives (protal's "
-                                      f"KSGP, e.g. 4.4 or 5.2; default KSGP's served {labels.KSGP_VERSION}, fetched)")
+    p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives and whose "
+                                      "records taxonomy/links.tsv links to Eukore's (protal's KSGP, e.g. 4.4 or 5.2; "
+                                      f"default KSGP's served {labels.KSGP_VERSION}, fetched)")
     p.add_argument("--midori2", action="append",
                    help="a MIDORI2 RAW FASTA (its COI, e.g. MIDORI2_UNIQ_NUC_GB<release>_CO1_RAW.fasta.gz, from "
                         "reference-midori.info) whose lineages species.tsv gives, by NCBI taxid; given again for its "
                         "other genes' files (since 2026-11-10). Its records are screened (eukore/refscreen.py, with "
                         "minimap2 and vsearch): one that is another organism's gene or another gene names no species "
                         "(reference_screen.tsv). Default (since 2026-11-14): the newest release's UNIQ gene files, "
-                        "which the fetch stage takes from Zenodo (WORK/sources/labels/midori2)")
+                        "which the fetch stage takes from Zenodo (WORK/sources/labels/midori2). Since 2026-11-14 "
+                        "(format 7) its srRNA file's records are organelle genes too: one mitochondrial SSU a species "
+                        "without a RefSeq mitochondrial genome, the screen's drops left out (organelle/genes.tsv, "
+                        "source MIDORI2)")
     p.add_argument("--no_midori2", action="store_true",
-                   help="no MIDORI2: neither fetched nor its lineages in species.tsv, nor its records screened")
+                   help="no MIDORI2: neither fetched nor its lineages in species.tsv, nor its records screened, nor "
+                        "its mitochondrial SSU taken")
     p.add_argument("--no_reference_screen", action="store_true",
                    help="--midori2's records not screened: every one names its species (until 2026-11-10)")
     p.add_argument("--bold_tsv", help="a BOLD data package's TSV (its bin_uri and species columns): its BINs in "
@@ -2251,6 +2409,7 @@ def _main(argv, held):
                 + (f"{len(collected['dropped']):,} poor or partial genomes' copies left out (e.g. "
                    f"{collected['dropped'][:3]}; --keep_poor_genomes keeps them, flagged)" if collected["dropped"]
                    else "no genome's copies left out"))
+        extra_tables = []
         with timed(stages, "introns and genetic codes", opts):
             hmmalign = shutil.which("hmmalign")
             if not hmmalign:
@@ -2258,8 +2417,34 @@ def _main(argv, held):
             hmm_of = odb_of(opts, src_dir).hmm
             # hmmalign's files on the node's disk (--local_tmp; since 2026-11-13: in WORK), its cache in WORK
             package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say, opts.threads, tmp=opts.scratch)
+        # EUKARYOME's taxonomy (since 2026-11-14): the chimera screens' clades, every species', record's and
+        # organelle gene's lineage in it
+        tree = eukaryome_mod.load(sources.ready(src_dir, "EUKARYOME"), sources.SOURCES["EUKARYOME"]["version"],
+                                  log=say)
+        with timed(stages, "rRNA records' audit", opts):
+            # KSGP 4.1-4.5's checks of the published 18S (since 2026-11-14, format 7: eukore/audit.py,
+            # chimeras.py): their ends and flanks (audited by the published batches, across the array's nodes; a read
+            # of an older batch here), then the chimera screens, their searches shared with the helpers
+            published_records, audited = published(opts, src_dir, ncbi)
+            records = genome_rrna_records(opts, job_map, ncbi, collected) + published_records
+            univec, primers, nhmmer, hmm = audit_mod.tools(src_dir, sources)
+            records, trims, audit_counts = audit_mod.clean(records, audit_mod.vectors_of(univec), primers, nhmmer, hmm,
+                                                           opts.threads, opts.scratch, say, audited)
+            if tree is not None:
+                searcher = screen_mod.Searcher(vsearch, opts.threads, opts.scratch,
+                                               **{k: v for k, v in qc_searches(opts, "audit").items()
+                                                  if k in ("folder", "helpers", "nodes")},
+                                               progress=functools.partial(progress_of, opts, unit=""), log=say)
+                records, audit_rows, screen_counts = audit_mod.screen(records, tree, ncbi, shutil.which("minimap2"),
+                                                                      vsearch, searcher, opts.threads, opts.scratch,
+                                                                      say)
+            else:
+                say("WARNING: no EUKARYOME taxonomy: the 18S not screened for chimeras")
+                audit_rows, screen_counts = [], {}
+            audit_rows = audit_mod.trim_rows(trims) + audit_rows
+            extra_tables.append(("rrna/audit.tsv", chimeras.AUDIT_COLUMNS, audit_rows))
+            audit_stamp = audit_mod.stamp(univec, primers, nhmmer, hmm, audit_counts, screen_counts)
         with timed(stages, "rRNA records and their checks", opts):
-            records = genome_rrna_records(opts, job_map, ncbi, collected) + published(opts, src_dir, ncbi)
             # each 18S's SSU model (since 2026-11-09): a bacterium's or an organelle's SSU is no 18S
             models, cmsearch = regions_mod.models_path(src_dir), shutil.which("cmsearch")
             # its new 18S searched in parts kept in WORK/qc/ssu_models/ and shared with the helpers (since 2026-11-13)
@@ -2274,7 +2459,6 @@ def _main(argv, held):
             records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say, ssu_models=ssu,
                                   searches=qc_searches(opts, "rrna"),
                                   progress=functools.partial(progress_of, opts, unit=""), tmp=opts.scratch)
-        extra_tables = []
         with timed(stages, "18S variable regions and amplicons", opts):
             cm, cmalign = regions_mod.cm_path(src_dir), shutil.which("cmalign")
             if cmalign and os.path.isfile(cm):
@@ -2287,11 +2471,24 @@ def _main(argv, held):
                     "regions")
             extra_tables.append(("rrna/amplicons.tsv", primers_mod.AMPLICON_COLUMNS,
                                  primers_mod.run(records, "rrna", threads=opts.threads)))
+        screened = None
+        if opts.midori2 and not opts.no_reference_screen:  # since 2026-11-10: MIDORI2's misnamed, chimeric records
+            # (since 2026-11-14 before the organelle genes: MIDORI2's mitochondrial SSU the screen keeps are taken)
+            with timed(stages, "reference screen", opts):
+                screened = reference_screen(opts, src_dir, ncbi)
+            if screened:
+                extra_tables.append(("reference_screen.tsv", refscreen.TABLE_COLUMNS,
+                                     refscreen.table_rows("MIDORI2", screened[0])))
         with timed(stages, "organelle genes", opts):
             chosen = organelle_genes(opts, src_dir, job_map, ncbi)  # before the prune: the genomes searched while there
             held = {int(g["species_taxid"]) for g in collected["genomes"].values() if g["representative"] == "t"}
-            organelle = organelle_mod.collect(ncbi, job_map, held | {int(r["species_taxid"]) for _n, _s, r in records},
-                                              chosen, os.path.join(opts.work, "organelle"))
+            # every species of RefSeq's organelle genomes (since 2026-11-14, format 7: until then those of the
+            # package's genomes and rRNA records alone), EUKARYOME's organelle SSU and MIDORI2's mitochondrial SSU
+            refseq_species = {sp for sp, _o in chosen if opts.inside(sp)}
+            organelle = organelle_mod.collect(ncbi, job_map, held | {int(r["species_taxid"]) for _n, _s, r in records}
+                                              | refseq_species, chosen, os.path.join(opts.work, "organelle"))
+            organelle += organelle_published(opts, src_dir, ncbi, chosen)
+            organelle += midori2_published(opts, ncbi, chosen, screened[0] if screened else None)
             organelle = organelle_mod.check(organelle, ncbi, vsearch, opts.threads,
                                             progress=functools.partial(progress_of, opts, unit=""),
                                             searches=qc_searches(opts, "organelle"))
@@ -2302,7 +2499,8 @@ def _main(argv, held):
             with timed(stages, "intraspecific barcode gap", opts):
                 writers.append(intraspecific_writer(opts, ncbi, extras, collected, records, organelle, vsearch))
         inputs = {"odb": odb_mod.state_of(src_dir), "taxdump_md5": util.md5(os.path.join(src_dir, "taxdump.tar.gz")),
-                  "sources": {n: sources.state_of(src_dir, n).get("version") for n in ("EUKARYOME", "ROD")},
+                  "sources": {n: sources.state_of(src_dir, n).get("version")
+                              for n in ("EUKARYOME", "EUKARYOME_SSU", "ROD", "UniVec")},
                   "assembly_tables": {os.path.basename(p): util.md5(p) for p in sorted(
                       tables(src_dir, "genbank", opts.groups) + tables(src_dir, "refseq", opts.groups))},
                   "genomes_not_done": len(undone),
@@ -2311,7 +2509,9 @@ def _main(argv, held):
                   "refseq_organelle": {os.path.basename(p): util.md5(p)
                                        for p in organelle_mod.release_files(src_dir) if os.path.isfile(p)},
                   "markers": markers_mod.state_of(markers_of(opts, src_dir)),
-                  "tsa": genomes.tsa_state(src_dir) if not getattr(opts, "no_tsa", False) else None}
+                  "tsa": genomes.tsa_state(src_dir) if not getattr(opts, "no_tsa", False) else None,
+                  # the published 18S's audit (since 2026-11-14): its inputs and counts
+                  "audit": audit_stamp}
         if wanted is not None:
             inputs["partial"] = {"species_clades": sorted(wanted)}  # a trial package: these clades only
         # every genome is called and extracted: the kept ones cut back to the budget, then the package names those kept
@@ -2329,19 +2529,16 @@ def _main(argv, held):
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB ("
             + ("no --keep_gb: none deleted)" if opts.keep_gb is None else
                f"--keep_gb {opts.keep_gb:g}), {sum(st == 'deleted' for *_x, st in rows_kept)} deleted"))
-        screened = None
-        if opts.midori2 and not opts.no_reference_screen:  # since 2026-11-10: MIDORI2's misnamed, chimeric records
-            with timed(stages, "reference screen", opts):
-                screened = reference_screen(opts, src_dir, ncbi)
-            if screened:
-                extra_tables.append(("reference_screen.tsv", refscreen.TABLE_COLUMNS,
-                                     refscreen.table_rows("MIDORI2", screened[0])))
         with timed(stages, "reference labels", opts):
             references = labels.references(
                 src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say, opts.midori2,
                 (refscreen.dropped(screened[0]), refscreen.stamp(screened[1])) if screened else None)
             held_species = {int(g["species_taxid"]) for g in collected["genomes"].values()
-                            if g["representative"] == "t"} | {int(r["species_taxid"]) for _n, _s, r in records}
+                            if g["representative"] == "t"} | {int(r["species_taxid"]) for _n, _s, r in records} | \
+                {int(r["species_taxid"]) for _n, _s, r in organelle}
+            # each record's PR2 and KSGP records and their labels (since 2026-11-14: taxonomy/links.tsv)
+            link_rows, inputs["links"] = links.table(records, src_dir, opts.ksgp_tax, say)
+            extra_tables.append(("taxonomy/links.tsv", links.LINK_COLUMNS, link_rows))
             extra_tables.append(("crossrefs.tsv", labels.CROSSREF_COLUMNS, labels.crossrefs(
                 ncbi, held_species, references, os.path.join(labels.folder_of(src_dir), labels.OTT_FILE),
                 opts.bold_tsv, say)))
@@ -2354,7 +2551,7 @@ def _main(argv, held):
                                  + tables(src_dir, "refseq", opts.groups), jobs=job_map)
         out = package.write(os.path.join(opts.out, f"Eukore_{opts.version}"), opts.version, ncbi, collected,
                             loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook,
-                            metadata=meta, tables=extra_tables, writers=writers, threads=opts.threads)
+                            metadata=meta, tables=extra_tables, writers=writers, threads=opts.threads, eukaryome=tree)
         say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")
         evaluation_bundle(opts, out)  # since 2026-11-12: the run's report and tables, to be looked at elsewhere
         if not opts.no_release:  # the website's data and the downloads (since 2026-11-09; --stage release again)

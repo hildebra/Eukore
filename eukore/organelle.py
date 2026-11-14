@@ -66,7 +66,10 @@ GENE_COLUMNS = ("record", "gene", "organelle", "taxid", "species_taxid", "source
                 # source, a trans-spliced gene, the spacer's regions, its checks (check)
                 "name", "model", "parts", "trans_spliced", "regions", "internal_stops", "own_species", "same_as",
                 "length_check", "confidence", "flags",
-                "cross")  # since 2026-11-09 (format 6): the other clade's species it is shared with (qc.verdict)
+                "cross",  # since 2026-11-09 (format 6): the other clade's species it is shared with (qc.verdict)
+                # since 2026-11-14 (format 7): a published record's file (EUKARYOME_SSU) and own label, how its taxid was
+                # found; every gene's rank, NCBI and EUKARYOME lineages (package.lineages)
+                "via", "source_label", "label_from", "rank", "ncbi_lineage", "eukaryome_lineage", "eukaryome_match")
 CACHE_COLUMNS = ("seqid", "organelle", "taxid", "record_length", "gene", "start", "end", "strand", "exons", "copies",
                  "partial", "sequence", "spliced", "parts", "trans_spliced", "regions",
                  "transl_table",  # since 2026-11-10: a CDS's own /transl_table, `-` where it names none (table_of)
@@ -1205,6 +1208,7 @@ def collect(ncbi, job_map, species_set, chosen, work_folder):
                 name = f"{r['seqid']}_{r['gene']}"
                 model = "refseq" if r["source"] == "refseq" else r.get("model") or "-"
                 out.append((name, seq, dict(record=name, gene=r["gene"], organelle=organelle, taxid=r["taxid"],
+                                            label_from="refseq_taxid" if r["source"] == "refseq" else "assembly",
                                             species_taxid=sp, source=r["source"], seqid=r["seqid"],
                                             accession=r["accession"], start=r["start"], end=r["end"],
                                             strand=r["strand"], length=len(seq), exons=r["exons"], copies=r["copies"],
@@ -1216,6 +1220,26 @@ def collect(ncbi, job_map, species_set, chosen, work_folder):
                                             transl_table=r.get("transl_table") or "-",
                                             transl_except=r.get("transl_except") or "-")))
     return out
+
+
+PUBLISHED_ORGANELLES = ("mitochondrion", "plastid", "nucleomorph")
+
+
+def published_record(r, taxid, species_taxid, how, label, ncbi, via="-"):
+    """A published organelle record (r: name, sequence, kind (its organelle), source, id; since 2026-11-14:
+    EUKARYOME's mitochondrial SSU, eukore_build.organelle_published) -> (name, sequence, row of GENE_COLUMNS): its
+    gene SSU, its seqid its accession, where it lies in it not known."""
+    seq = r["sequence"]
+    organelle = r["kind"]
+    animal, plant = is_animal(ncbi, species_taxid), EMBRYOPHYTA in ncbi.ancestors(ncbi.merged.get(species_taxid,
+                                                                                                species_taxid))
+    name = "18S" if organelle == "nucleomorph" else name_of(organelle, "SSU", animal, plant)
+    return (r["name"], seq, dict(record=r["name"], gene="SSU", organelle=organelle, taxid=taxid,
+                                 species_taxid=species_taxid, source=r["source"], seqid=r["id"], accession="-",
+                                 start="-", end="-", strand="-", length=len(seq), exons="-", copies="-", partial="-",
+                                 ambiguous=f"{rrna.ambiguous(seq):.4f}", name=name, model="-", parts="-",
+                                 trans_spliced="f", regions="-", cds=None, transl_table="-", transl_except="-",
+                                 via=via, source_label=label, label_from=how))
 
 
 def coding_of(r, seq):
@@ -1290,6 +1314,9 @@ def confidence(row):
         medium.append("trans_spliced")
     if row["gene"] in CODING and row.get("model") == "nhmmer" and str(row.get("exons")) != "1":
         medium.append("exons_approximate")
+    # a published record's flags (since 2026-11-14: a MIDORI2 record the reference screen left for review,
+    # `screen_weak`)
+    medium += list(row.get("flags_extra") or ())
     if row.get("own_species") in ("-", None):
         if row.get("cross") not in (None, "-", ""):
             medium.append("cross_shared")

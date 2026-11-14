@@ -79,6 +79,27 @@ def ncbi_lineage_filled(ncbi, taxid):
     return ";".join(out)
 
 
+def rank_of(ncbi, taxid):
+    """A taxon's rank among NCBI_RANKS: its own, its species' below species, else the deepest of them above it (a
+    clade of no rank); None for none."""
+    taxid = ncbi.merged.get(int(taxid), int(taxid))
+    sp = ncbi.species_of(taxid)
+    if ncbi.rank.get(sp) == "species":
+        return "species"
+    ranks = ncbi.rank_ids(taxid)
+    ranks.setdefault("domain", ranks.get("superkingdom"))
+    return next((r for r in reversed(NCBI_RANKS) if ranks.get(r) is not None), None)
+
+
+def ncbi_lineage_to(ncbi, taxid):
+    """ncbi_lineage_filled down to the taxon's rank (rank_of), the ranks below it empty (format 7: a record's or an
+    organelle gene's, labelled above species too)."""
+    names = ncbi_lineage_filled(ncbi, taxid).split(";")
+    rank = rank_of(ncbi, taxid)
+    keep = NCBI_RANKS.index(rank) + 1 if rank else 0
+    return ";".join(n if i < keep else "" for i, n in enumerate(names))
+
+
 def ncbi_lineage(ncbi, taxid):
     """NCBI's lineage of a taxon at NCBI_RANKS (domain is NCBI's superkingdom before 2025), ";"-joined, a rank NCBI does
     not name empty."""
@@ -550,9 +571,10 @@ def crossrefs(ncbi, taxids, references=(), ott=None, bold=None, log=print):
 
 
 def read_xlsx_rows(path):
-    """An xlsx file's first sheet -> [tuple] (openpyxl)."""
+    """An xlsx file's first sheet -> [tuple] (openpyxl): a formula's value as the file saved it (since 2026-11-14:
+    the formula itself, and EUKARYOME 2.1's classification named some 40 subkingdoms `=B31533&U31532`)."""
     import openpyxl  # noqa: PLC0415
-    sheet = openpyxl.load_workbook(path, read_only=True).worksheets[0]
+    sheet = openpyxl.load_workbook(path, read_only=True, data_only=True).worksheets[0]
     return [tuple("" if v is None else str(v).strip() for v in r) for r in sheet.iter_rows(values_only=True)]
 
 

@@ -366,6 +366,44 @@ class CmParams(tuple):
         return ["cmsearch", self[0], self[1], "-"]
 
 
+MAP_RECORD = 1  # what makes a kept window-screen part (MapParams): raised when chimeras.map_file's lines change
+UCHIME_RECORD = 1  # what makes a kept UCHIME part (UchimeParams): raised when chimeras.uchime_file's lines change
+
+
+class MapParams(tuple):
+    """A window-screen part's settings (since 2026-11-14: chimeras.window_screen's first pass): the windows' step and
+    minimap2's preset; the queries are 18S cut into windows by the part (chimeras.map_file), the database the
+    genomes' 18S (Shared). Its hits: (window, target, matches, block, covered)."""
+    __slots__ = ()
+
+    def __new__(cls, step, preset="asm20"):
+        return super().__new__(cls, (int(step), preset))
+
+    def text(self):
+        from . import chimeras  # noqa: PLC0415
+        return (f"minimap2\t{MAP_RECORD}\t{chimeras.WINDOW}\t{self[0]}\t{self[1]}\t"
+                f"{chimeras.PRESETS[self[1]]}\n")
+
+    def columns(self):
+        return ["minimap2", str(self[0]), self[1], "-"]
+
+
+class UchimeParams(tuple):
+    """A UCHIME part's settings (since 2026-11-14: chimeras.uchime_screen): none; its queries the part's distinct 18S,
+    the database (Shared) every distinct 18S, the part's own left out of it by the part (chimeras.uchime_file). Its
+    hits: (query, parent A, parent B, score, crossover, the start's parent)."""
+    __slots__ = ()
+
+    def __new__(cls):
+        return super().__new__(cls, ())
+
+    def text(self):
+        return f"uchime\t{UCHIME_RECORD}\n"
+
+    def columns(self):
+        return ["uchime", "-", "-", "-"]
+
+
 class Shared:
     """A database several searches of a folder share ({name: sequence}), written once as db.<digest>.fna."""
     def __init__(self, seqs):
@@ -462,6 +500,14 @@ def search_one(folder, base, vsearch, threads, inputs=None, params=DEFAULT, shar
                 began = time.time()
                 regions.align_file(vsearch, q, params[0], regions.cols_of(params[2]), out, threads, inputs_dir)
                 took = (None, time.time() - began)
+            elif isinstance(params, (MapParams, UchimeParams)):  # the chimera screens' (since 2026-11-14)
+                from . import chimeras  # noqa: PLC0415
+                began = time.time()
+                if isinstance(params, MapParams):  # `vsearch` is minimap2 here
+                    chimeras.map_file(vsearch, q, db, out, threads, params[1], params[0])
+                else:
+                    chimeras.uchime_file(vsearch, q, db, out, threads, inputs_dir)
+                took = (None, time.time() - began)
             else:
                 ident, accepts, rejects, options = params
                 took = util.vsearch_files(vsearch, q, db, out, ident, threads, accepts, rejects, options,
@@ -532,6 +578,9 @@ def read_hits(folder, base, params=DEFAULT):
         if isinstance(params, CmalignParams):
             from . import regions  # noqa: PLC0415
             return regions.aligned_lines(fh)
+        if isinstance(params, (MapParams, UchimeParams)):
+            from . import chimeras  # noqa: PLC0415
+            return chimeras.map_hits(fh) if isinstance(params, MapParams) else chimeras.uchime_hits(fh)
         return util.cmsearch_hits(fh) if isinstance(params, CmParams) else util.vsearch_hits(fh)
 
 
@@ -551,6 +600,10 @@ def todo_entry(line):
         return f[0], CmParams(f[3], f[4]), None
     if len(f) >= 7 and f[2] == "cmalign":  # a cmalign part (since 2026-11-13): the model's file, digest, columns
         return f[0], CmalignParams(f[3], f[4], f[5]), None
+    if len(f) >= 7 and f[2] == "minimap2":  # a window-screen part (since 2026-11-14): step, preset, shared database
+        return f[0], MapParams(f[3], f[4]), None if f[6] == "-" else f[6]
+    if len(f) >= 7 and f[2] == "uchime":  # a UCHIME part (since 2026-11-14): its shared database
+        return f[0], UchimeParams(), None if f[6] == "-" else f[6]
     if len(f) >= 7:
         return f[0], Params.of_columns(f[2:6]), None if f[6] == "-" else f[6]
     return f[0], DEFAULT, None
@@ -655,11 +708,12 @@ def searched_line(base, timing):
             + ("" if setup is None else f" (database read and indexed in {util.duration(setup)})"))
 
 
-def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None):
+def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, minimap2=None):
     """A helper node's part (tools/eukore.sh qc): the loci of every folder under root (its todo.tsv) whose inputs are
     there and hits not yet, each claimed and searched, until none is left that no other node holds -> loci searched.
-    A cmsearch part (CmParams; since 2026-11-13) by cmsearch, a cmalign part (CmalignParams) by cmalign, each left to
-    the other nodes where it is None."""
+    A cmsearch part (CmParams; since 2026-11-13) by cmsearch, a cmalign part (CmalignParams) by cmalign, a window
+    screen's (MapParams; since 2026-11-14) by minimap2, a UCHIME part (UchimeParams) by vsearch, each left to the
+    other nodes where its tool is None."""
     done, idle = 0, False
     while not idle:
         idle = True
@@ -673,7 +727,7 @@ def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None):
             for base, params, shared in entries:
                 q, _d, hits, _claim = search_files(folder, base)
                 tool = (cmsearch if isinstance(params, CmParams) else cmalign if isinstance(params, CmalignParams)
-                        else vsearch)
+                        else minimap2 if isinstance(params, MapParams) else vsearch)
                 if os.path.isfile(hits) or not os.path.isfile(q) or not tool:
                     continue
                 timing = {}
@@ -693,6 +747,8 @@ def main(argv=None):
     p.add_argument("--vsearch", default="vsearch")
     p.add_argument("--cmsearch", default="cmsearch", help="the SSU models' parts' (none found: left to other nodes)")
     p.add_argument("--cmalign", default="cmalign", help="the 18S alignments' parts' (none found: left to other nodes)")
+    p.add_argument("--minimap2", default="minimap2",
+                   help="the chimera window screen's parts' (since 2026-11-14; none found: left to other nodes)")
     p.add_argument("-t", "--threads", type=int, default=1)
     a = p.parse_args(argv)
     vsearch = shutil.which(a.vsearch)
@@ -700,7 +756,8 @@ def main(argv=None):
         sys.exit(f"no {a.vsearch}")
     help_search(a.root, vsearch, a.threads,
                 log=lambda text: print(f"[{time.strftime('%H:%M:%S')}] {text}", flush=True),
-                cmsearch=shutil.which(a.cmsearch), cmalign=shutil.which(a.cmalign))
+                cmsearch=shutil.which(a.cmsearch), cmalign=shutil.which(a.cmalign),
+                minimap2=shutil.which(a.minimap2))
     return 0
 
 

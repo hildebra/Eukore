@@ -82,7 +82,12 @@ RECORD_COLUMNS = ("record", "kind", "taxid", "species_taxid", "accession", "sour
                   # since 2026-11-09 (format 6): the other clade's species its 18S is shared with (qc.verdict); the
                   # SSU model its 18S scores best by (regions.ssu_models: eukarya, else bacteria or archaea: not a
                   # nucleus' 18S; - unscored)
-                  "cross", "ssu_model")
+                  "cross", "ssu_model",
+                  # since 2026-11-14 (format 7): a published record's file (EUKARYOME_long, EUKARYOME_SSU) and its own
+                  # label (its source's), its longest telomere repeat; every record's rank, NCBI and EUKARYOME
+                  # lineages (package.lineages); what the audit cut off a published record (audit.py, chimeras.py)
+                  "via", "source_label", "telomere", "rank", "ncbi_lineage", "eukaryome_lineage", "eukaryome_match",
+                  "trimmed")
 GAP_MIN = 10        # a run of Ns this long: an assembly gap (or a read's)
 EDGE = 1000         # a genome's record this close to its contig's end: maybe cut, or joined to another sequence
 MAX_AMBIGUOUS = 0.005
@@ -687,8 +692,9 @@ def resplit(saved, sets_of, barrnap, itsx=None, threads=1, work=None, log=None):
 
 def published_regions(reads, barrnap, itsx=None, threads=1, sets=None):
     """Published long reads [(name, sequence)] -> {name: (regions, lsu_complete, 18S exons, strand)}: each read as a
-    window, its regions on the record (the read itself on +, its reverse complement on -: on_record). sets: {name:
-    ITSx's -t for its taxon (itsx_groups)}, else all sets."""
+    window, its regions on the record (the read itself on +, its reverse complement on -: on_record); a read without
+    an operon (since 2026-11-14) its longest 18S alone. sets: {name: ITSx's -t for its taxon (itsx_groups)}, else all
+    sets."""
     if not reads:
         return {}
     with tempfile.TemporaryDirectory() as tmp:
@@ -699,14 +705,20 @@ def published_regions(reads, barrnap, itsx=None, threads=1, sets=None):
     seqs = dict(reads)
     items = {}
     for name, f in feats.items():
-        units = [u for u in units_of(seqs[name], f) if u.get("unit")]
+        every = units_of(seqs[name], f)
+        units = [u for u in every if u.get("unit")]
         if units:
             items[name] = max(units, key=lambda u: len(u["unit"]))
+        elif every:  # an 18S without its operon (since 2026-11-14: EUKARYOME's SSU set): its longest 18S alone
+            u = max(every, key=lambda u: len(u["sequence"]))
+            start, end, _strand = u["span"]
+            items[name] = dict(u, unit=u["sequence"], unit_span=(start, end), regions=[("18S", 0, end - start + 1)],
+                               its=None)
     sets = sets or {}
-    found = run_itsx([u["its"] for u in items.values()], itsx, threads,
-                     {u["its"]: sets.get(n, "all") for n, u in items.items()})
-    return {n: (on_record(refine(u, found.get(u["its"], {})), len(seqs[n])), u["lsu_complete"], u["exons"],
-                u["span"][2]) for n, u in items.items()}
+    found = run_itsx([u["its"] for u in items.values() if u.get("its")], itsx, threads,
+                     {u["its"]: sets.get(n, "all") for n, u in items.items() if u.get("its")})
+    return {n: (on_record(refine(u, found.get(u["its"], {})) if u.get("its") else u, len(seqs[n])),
+                u["lsu_complete"], u["exons"], u["span"][2]) for n, u in items.items()}
 
 
 def on_record(unit, length):
@@ -822,7 +834,116 @@ def eukaryome_taxid(label, index, ncbi):
     return None, None
 
 
+# a label's ranks, EUKARYOME's k__ .. s__ (and KSGP's), deepest last; the rank a record is labelled at (format 7)
+LABEL_RANKS_ALL = (("k", "kingdom"), ("p", "phylum"), ("c", "class"), ("o", "order"), ("f", "family"),
+                   ("g", "genus"), ("s", "species"))
+UNNAMED_LABEL = re.compile(r"^(|\?|unclassified|unidentified|unknown|incertae.sedis)$|_\?$|_X+$|\.incertae\.sedis$",
+                           re.IGNORECASE)
+ORGANELLE_TAG = re.compile(r":(plas|mito|nucl|apic)$")
+
+
+def ksgp_label(label):
+    """A KSGP label (k__ .. s__, its species Genus_epithet, `?` and `Genus_?` for none, PR2's `Order_X`, a genus
+    homonym `Cryptococcus(Fungi)`, a genus of no true genus `(Candida)(Debaryomycetaceae)`, an organelle's ranks
+    `:plas`) -> the same in EUKARYOME's form (eukaryome_taxid's: s__ its epithet, `unclassified` for none, a
+    bracketed genus Candida(Debaryomycetaceae))."""
+    out = []
+    parts = {}
+    for p in label.split(";"):
+        if "__" in p:
+            k, v = p.split("__", 1)
+            parts[k.strip()[-1:]] = ORGANELLE_TAG.sub("", v.strip())
+    genus = parts.get("g", "")
+    m = re.match(r"^\(([^)]+)\)(\(.*\))?$", genus)
+    if m:  # KSGP's genus of no true genus: (Candida)(Debaryomycetaceae)
+        genus = m.group(1) + (m.group(2) or "")
+    for letter, _rank in LABEL_RANKS_ALL:
+        v = genus if letter == "g" else parts.get(letter, "")
+        if letter == "s" and v and not UNNAMED_LABEL.search(v):
+            v = re.sub(r"^\(([^)]+)\)", r"\1", v)            # (Candida)(Family)_epithet
+            v = re.sub(r"^([A-Za-z-]+)\([^)]*\)", r"\1", v)  # Genus(Group)_epithet
+            v = re.sub(r"\([^)]*\)", "", v)
+            plain = re.sub(r"\(.*?\)", "", genus).strip()
+            if plain and v.lower().startswith(plain.lower() + "_"):
+                v = v[len(plain) + 1:]
+        out.append(f"{letter}__{'unclassified' if UNNAMED_LABEL.search(v) else v}")
+    return ";".join(out)
+
+
+def label_rank(label):
+    """The deepest rank a k__ .. s__ label names (EUKARYOME's form: ksgp_label), or None."""
+    parts = {p.split("__", 1)[0][-1:]: p.split("__", 1)[1].strip() for p in label.split(";") if "__" in p}
+    deepest = None
+    for letter, rank in LABEL_RANKS_ALL:
+        v = parts.get(letter, "")
+        if letter == "s":
+            from .labels import is_species_name  # noqa: PLC0415
+            v = species_name(parts.get("g", ""), v.replace("_", " ")) if v and not UNNAMED_LABEL.search(v) else ""
+            if v and not is_species_name(v):
+                v = ""
+        if v and not UNNAMED_LABEL.search(v):
+            deepest = rank
+    return deepest
+
+
+def is_eukaryote(ncbi, taxid):
+    return 2759 in ncbi.ancestors(ncbi.merged.get(taxid, taxid))
+
+
+def label_taxon(label, index, ncbi, source="eukaryome", to_ncbi=None):
+    """A k__ .. s__ label (EUKARYOME's form) -> (NCBI taxid, how, the rank the label reaches) (since 2026-11-14,
+    format 7): its species, else its genus (eukaryome_taxid), else upward: its family's, order's, class',
+    phylum's, kingdom's name NCBI holds above the genus (deepest first; a EUKARYOME name of a deep lineage by
+    data/eukaryome_names.tsv's NCBI name, `to_ncbi`: {name key: NCBI name}; homonyms by the label's lineage), else
+    Eukaryota (2759: EUKARYOME's own lineages NCBI does not name, Eukaryota.reg112b). how: <source>_name,
+    <source>_genus, <source>_upward. A taxon not of the eukaryotes is not taken (a genus a bacterium shares); a
+    label of an organelle's set, or naming no rank, gets (None, None, rank)."""
+    rank = label_rank(label)
+    if rank is None or re.search(r"k___?mitochondri|k__.*:(mito|plas)", label, re.IGNORECASE):
+        return None, None, rank
+    t, how = eukaryome_taxid(label, index, ncbi)
+    if t and is_eukaryote(ncbi, t):
+        return t, how.replace("eukaryome", source), rank
+    parts = {p.split("__", 1)[0][-1:]: re.sub(r"\(.*?\)", "", p.split("__", 1)[1]).strip()
+             for p in label.split(";") if "__" in p}
+    lineage = [parts.get(k, "") for k in LINEAGE_RANKS]
+    homonyms = getattr(index, "homonyms", {})
+
+    def above_genus(t):
+        return ncbi.rank.get(t) not in ("genus", "species", "subgenus", "strain", "subspecies", "varietas",
+                                        "forma", "no rank") and is_eukaryote(ncbi, t) and t != 2759
+    for letter in "focpk":
+        name = parts.get(letter, "")
+        if not name or UNNAMED_LABEL.search(name):
+            continue
+        from .labels import key  # noqa: PLC0415
+        for n in [name] + ([to_ncbi[key(name)]] if to_ncbi and key(name) in to_ncbi else []):
+            t = index.get(n.lower())
+            if not (t and above_genus(t)):
+                t = by_lineage(homonyms.get(n.lower(), ()), lineage, lineage, ncbi, above_genus)
+            if t and above_genus(t):
+                return t, f"{source}_upward", rank
+    return 2759, f"{source}_upward", rank
+
+
 # --- checks ------------------------------------------------------------------------------------------------------
+
+TELOMERE_UNITS = ("TTAGGG", "TTAGG", "TTTAGGG", "TTGGGG", "TTTTGGGG")  # vertebrates' and fungi's, insects', plants',
+TELOMERE = 6                                                          # ciliates' (Tetrahymena's, Oxytricha's)
+# each unit on either strand: its run of TELOMERE - 1 units (which a run of TELOMERE in any phase holds), and the
+# runs of its phases
+_TELOMERE = [((s * (TELOMERE - 1)), [re.compile(f"(?:{s[i:] + s[:i]}){{{TELOMERE},}}") for i in range(len(s))])
+             for unit in TELOMERE_UNITS for s in (unit, revcomp(unit))]
+
+
+def telomere(seq):
+    """A record's longest run of a telomere repeat (TELOMERE_UNITS, either strand, TELOMERE units or more; since
+    2026-11-14: KSGP masked 133 bases of one in EUKARYOME's EUK1400052): an rRNA joined to a chromosome's end, 0 for
+    none."""
+    seq = seq.upper()
+    return max((len(m.group(0)) for core, phases in _TELOMERE if core in seq for p in phases
+                for m in p.finditer(seq)), default=0)
+
 
 def homopolymer(seq):
     """A sequence's longest run of one character (by numpy since 2026-11-08: ~40x a regex's, ~0.08 s a Mb, minutes
@@ -1333,7 +1454,7 @@ def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None, se
         row = dict(row, record=name, length=len(seq), regions=regions_text(row.get("regions_list")),
                    lsu_complete="t" if row.get("lsu_complete") else "f", ambiguous=f"{ambiguous(seq):.4f}",
                    homopolymer=homopolymer(seq), type=type_of.get(name, "-"), own_species=verdict,
-                   cross=cross or "-", ssu_model=models.get(name, "-"),
+                   cross=cross or "-", ssu_model=models.get(name, "-"), telomere=telomere(seq),
                    screen=screened.get(name, "-"), introns=regions_text(row.get("introns_list")), gaps=gaps(seq))
         edge = contig_edge(row)
         row["contig_edge"] = "-" if edge is None else edge
@@ -1446,10 +1567,14 @@ def confidence(row):
     """A record's tier and why (rrna/records.tsv's confidence and flags; package.tier's four since 2026-11-09): low
     where a check calls it another organism's or of bad sequence (own_species f, the part screen, ambiguous bases over
     MAX_AMBIGUOUS, a homopolymer of HOMOPOLYMER; since 2026-11-09 an 18S a bacterial or archaeal SSU model scores best:
-    `ssu_prokaryote`, a bacterium's or an organelle's); medium where something may be wrong (an assembly gap in it, at
-    a contig's end, an operon without a whole 28S, labelled by its genus alone, an 18S shared with another clade's
-    genome, its owner undecided); unverified where nothing is wrong but its own-species check could not decide (until
-    2026-11-09 medium; until 2026-11-10 every published read's, not checked); else high."""
+    `ssu_prokaryote`, a bacterium's or an organelle's; since 2026-11-14 a telomere repeat in it, and the audit's
+    flags of a published read (audit.py, chimeras.py): a chimera, a mislabel, a vector inside its rRNA, no rRNA, a cut
+    that would leave too little); medium where something may be wrong (an assembly gap in it, at a contig's end, an
+    operon without a whole 28S, labelled by its genus alone or since 2026-11-14 by a clade above it, an 18S shared
+    with another clade's genome, its owner undecided; since 2026-11-14 the audit's audit.MEDIUM: a chimera cut to its
+    own part, an uncertain or recurrent chimera call, DNA beside its rRNA kept); unverified where nothing is wrong but
+    its own-species check could not decide (until 2026-11-09 medium; until 2026-11-10 every published read's, not
+    checked); else high."""
     from .package import tier  # noqa: PLC0415
     low, medium, unverified = [], [], []
     if row.get("too_long"):  # its 18S over MAX_SSU_LEN: none of the checks run (since 2026-11-13)
@@ -1464,6 +1589,12 @@ def confidence(row):
         low.append("ambiguous")
     if int(row.get("homopolymer") or 0) >= HOMOPOLYMER:
         low.append("homopolymer")
+    if int(row.get("telomere") or 0):  # since 2026-11-14
+        low.append("telomere")
+    # the audit's flags of a published read (since 2026-11-14: audit.py, chimeras.py), low but audit.MEDIUM's
+    from .audit import MEDIUM  # noqa: PLC0415
+    extra = list(row.get("flags_extra") or ())
+    low += [f for f in extra if f not in MEDIUM]
     if int(row.get("gaps") or 0):
         medium.append("gap")
     edge = row.get("contig_edge")
@@ -1471,8 +1602,12 @@ def confidence(row):
         medium.append("contig_edge")
     if row.get("kind") == "rDNA" and row.get("lsu_complete") != "t":
         medium.append("lsu_partial")
-    if row.get("label_from") == "eukaryome_genus":
+    medium += [f for f in extra if f in MEDIUM]
+    how = row.get("label_from") or ""
+    if how.endswith("_genus"):  # its species not NCBI's (EUKARYOME's)
         medium.append("genus_label")
+    elif how.endswith("_upward"):  # labelled by a clade above its genus (since 2026-11-14)
+        medium.append("higher_label")
     if row.get("own_species") in ("-", None):
         if row.get("cross") not in (None, "-", ""):
             medium.append("cross_shared")

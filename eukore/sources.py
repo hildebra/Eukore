@@ -1,6 +1,7 @@
 """Eukore's sources (since 2026-11-05; copied from protal's scripts/mini_db/eukaryotes.py, rdna_sources.py and
 download_ref_data.py, so that Eukore imports nothing from them): the loci table, NCBI's GenBank and RefSeq assembly
-tables, and the published eukaryote rDNA operons (EUKARYOME 2.1's long reads, ROD v1.2). EukDetect1's and EukDetect2's
+tables, and the published eukaryote rDNA operons (EUKARYOME 2.1's long reads, ROD v1.2; since 2026-11-14 EUKARYOME 2.1's
+SSU set and NCBI's UniVec_Core, the audit's vectors). EukDetect1's and EukDetect2's
 copies were sources until 2026-11-05: Eukore now calls the loci in NCBI's genomes itself (odb.py, loci.py).
 """
 
@@ -138,25 +139,26 @@ def unpack(name, folder, seven_zip="7za"):
                     with z.open(member) as src, open(part, "wb") as dst:
                         shutil.copyfileobj(src, dst)
                     os.replace(part, os.path.join(folder, base))
-    elif name == "EUKARYOME":
+    elif name in ("EUKARYOME", "EUKARYOME_SSU"):
+        stem = "General_EUK_longread_v2.1" if name == "EUKARYOME" else "General_EUK_SSU_v2.1"
         for dead in util.dead_partials(folder, "unpack"):  # the folders of runs that were killed
             shutil.rmtree(dead, ignore_errors=True)
         work = util.part_of(os.path.join(folder, "unpack"))
         shutil.rmtree(work, ignore_errors=True)
         os.makedirs(work)
-        dest = os.path.join(folder, "General_EUK_longread_v2.1.fasta.gz")
+        dest = os.path.join(folder, f"{stem}.fasta.gz")
         part = util.part_of(dest)
         try:
-            with zipfile.ZipFile(os.path.join(folder, "General_EUK_longread_v2.1.zip")) as z:
+            with zipfile.ZipFile(os.path.join(folder, f"{stem}.zip")) as z:
                 z.extractall(work)
-            archive = os.path.join(work, "General_EUK_longread_v2.1.7z")
+            archive = os.path.join(work, f"{stem}.7z")
             if not shutil.which(seven_zip):
                 raise RuntimeError(f"{seven_zip}: not found (conda-forge's p7zip), for EUKARYOME's 7z archive")
             test = subprocess.run([seven_zip, "t", archive], capture_output=True, text=True)
             if test.returncode != 0 or "Everything is Ok" not in test.stdout:
                 raise RuntimeError(f"{archive}: the 7z archive does not test whole")
             subprocess.run([seven_zip, "x", "-y", f"-o{work}", archive], check=True, stdout=subprocess.DEVNULL)
-            with open(os.path.join(work, "General_EUK_longread_v2.1.fasta"), "rb") as src, \
+            with open(os.path.join(work, f"{stem}.fasta"), "rb") as src, \
                     util.bgzf_open(part, "wb", util.WORK_LEVEL) as dst:
                 shutil.copyfileobj(src, dst, 1 << 22)
             os.replace(part, dest)
@@ -164,6 +166,8 @@ def unpack(name, folder, seven_zip="7za"):
             shutil.rmtree(work, ignore_errors=True)
             if os.path.exists(part):
                 os.remove(part)
+        if name == "EUKARYOME_SSU":
+            return
         compromised = os.path.join(folder, "EUK2_1_compromised_quality.tsv")
         from .labels import read_xlsx_rows  # noqa: PLC0415
         try:
@@ -187,9 +191,9 @@ def rod_operons(folder):
             yield dict(zip(head, line.rstrip("\n").split("\t")))
 
 
-def eukaryome_long(folder):
+def eukaryome_long(folder, file="General_EUK_longread_v2.1.fasta.gz"):
     """EUKARYOME's long reads: (EUK id, label k__ to s__, sequence)."""
-    with gzip.open(os.path.join(folder, "General_EUK_longread_v2.1.fasta.gz"), "rt") as fh:
+    with gzip.open(os.path.join(folder, file), "rt") as fh:
         name, parts = None, []
         for line in fh:
             if line.startswith(">"):
@@ -202,6 +206,28 @@ def eukaryome_long(folder):
         if name is not None:
             acc, _, label = name.partition(";")
             yield acc, label, "".join(parts).upper()
+
+
+def eukaryome_ssu(folder):
+    """EUKARYOME's SSU set (since 2026-11-14, format 7): (id, label k__ to s__, sequence), the id an EUK id (386,813 of
+    its 407,694 the 18S of a long read), an INSDC accession (a GenBank 18S), a GCA_ (a genome's 18S, `_dupN` its
+    further copies) or a UDB (UNITE's) id."""
+    return eukaryome_long(folder, "General_EUK_SSU_v2.1.fasta.gz")
+
+
+def univec(folder):
+    """NCBI's UniVec_Core (since 2026-11-14): (id, sequence) of its vectors, adapters, linkers and primers."""
+    name, parts = None, []
+    with open(os.path.join(folder, "UniVec_Core")) as fh:
+        for line in fh:
+            if line.startswith(">"):
+                if name is not None:
+                    yield name, "".join(parts).upper()
+                name, parts = line[1:].split()[0], []
+            else:
+                parts.append(line.strip())
+    if name is not None:
+        yield name, "".join(parts).upper()
 
 
 def eukaryome_compromised(folder):
@@ -233,6 +259,24 @@ SOURCES = {
                    "https://sisu.ut.ee/wp-content/uploads/sites/643/EUKARYOME2_1_classification-2.xlsx", None, 4262950)],
         "unpack": ["General_EUK_longread_v2.1.fasta.gz", "EUK2_1_compromised_quality.tsv"],
         "records": ("General_EUK_longread_v2.1.fasta.gz", 400217),
+    },
+    # since 2026-11-14 (format 7): EUKARYOME's SSU set, its 18S of every source (GenBank's, genomes', UNITE's, the
+    # long reads'): with the long reads Eukore's only published 18S (PR2's and KSGP's records are not taken)
+    "EUKARYOME_SSU": {
+        "dir": "EUKARYOME2.1_SSU", "version": "2.1",
+        "files": [("General_EUK_SSU_v2.1.zip",
+                   "https://sisu.ut.ee/wp-content/uploads/sites/643/General_EUK_SSU_v2.1.zip",
+                   "4a10df2859a78ed8894e8c9b9c420e75", 29161202)],
+        "unpack": ["General_EUK_SSU_v2.1.fasta.gz"],
+        "records": ("General_EUK_SSU_v2.1.fasta.gz", 558632),
+    },
+    # since 2026-11-14: NCBI's vectors, adapters, linkers and primers (UniVec build 10.0, 2017): the audit's end scan
+    "UniVec": {
+        "dir": "UniVec", "version": "10.0",
+        "files": [("UniVec_Core", "https://ftp.ncbi.nlm.nih.gov/pub/UniVec/UniVec_Core",
+                   "82f07865312b1ddc2d86b324f6ff85ac", 921849)],
+        "unpack": [],
+        "records": ("UniVec_Core", 3155),
     },
 }
 

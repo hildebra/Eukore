@@ -1,0 +1,66 @@
+# EUKARYOME's names of the deep lineages beside NCBI's (eukore/eukaryome.py; since 2026-11-14, format 7). EUKARYOME
+# names its superkingdoms, kingdoms and many phyla otherwise than NCBI (Straminipila, Rhodoplantae, Heterolobosa,
+# Kinetoplastia, ...), so that a species whose genus, family, order and class EUKARYOME does not name is still placed
+# under its kingdom (`upward`), and a name two lineages share (a homonym) is told by the kingdom it lies in.
+# eukaryome: EUKARYOME 2.1's name (its classification table); rank: its rank there; ncbi: the NCBI taxon of the same
+# clade (taxdump of 2026-11; - where NCBI has none); groups: Eukore's groups (data/supergroups.tsv's) the clade holds,
+# by which a EUKARYOME kingdom and an NCBI lineage are told apart (- for none: no check).
+eukaryome	rank	ncbi	groups
+Obazoa	superkingdom	Opisthokonta	Vertebrata,Metazoa,Fungi,other Opisthokonta,Apusozoa and Breviatea
+Archaeplastida	superkingdom	-	Viridiplantae,Rhodophyta,Glaucophyta,other Archaeplastida
+Harosa	superkingdom	Sar	Stramenopiles,Alveolata,Rhizaria,Telonemia,other TSAR
+Amoebozoa	superkingdom	-	Amoebozoa
+Discoba	superkingdom	Discoba	Discoba
+Metamonada	superkingdom	-	Metamonada
+Cryptista	superkingdom	-	Cryptophyceae,other Cryptista
+CRuMS	superkingdom	CRuMs	other eukaryotes
+Provora	superkingdom	-	other eukaryotes
+Metazoa	kingdom	Metazoa	Vertebrata,Metazoa
+Fungi	kingdom	Fungi	Fungi
+Viridiplantae	kingdom	Viridiplantae	Viridiplantae
+Rhodoplantae	kingdom	Rhodophyta	Rhodophyta,other Archaeplastida
+Glaucocystoplantae	kingdom	-	Glaucophyta
+Straminipila	kingdom	Stramenopiles	Stramenopiles
+Alveolata	kingdom	Alveolata	Alveolata
+Rhizaria	kingdom	Rhizaria	Rhizaria
+Telonemae	kingdom	Telonemia	Telonemia
+Amoebozoa	kingdom	Amoebozoa	Amoebozoa
+Euglenozoa	kingdom	Euglenozoa	Discoba
+Heterolobosa	kingdom	Heterolobosea	Discoba
+Jakobae	kingdom	Jakobea	Discoba
+Tsukubamonada	kingdom	Tsukubea	Discoba
+Parabasalia	kingdom	Parabasalia	Metamonada
+Fornicata	kingdom	Fornicata	Metamonada
+Preaxostyla	kingdom	Preaxostyla	Metamonada
+Metamonada	kingdom	Metamonada	Metamonada
+Anaeromoebae	kingdom	Anaeramoebidae	Metamonada
+Haptista	kingdom	Haptista	Haptophyta,Centroplasthelida,other Haptista
+Centroheliozoa	kingdom	Centroplasthelida	Centroplasthelida
+Cryptista	kingdom	Cryptophyceae	Cryptophyceae,other Cryptista
+Choanoflagellozoa	kingdom	Choanoflagellata	other Opisthokonta
+Ichthyosporia	kingdom	Ichthyosporea	other Opisthokonta
+Filasteriae	kingdom	Filasterea	other Opisthokonta
+Nucleariae	kingdom	Rotosphaerida	other Opisthokonta
+Corallochytriozoa	kingdom	-	other Opisthokonta
+Apusomonada	kingdom	Apusozoa	Apusozoa and Breviatea
+Breviatae	kingdom	Breviatea	Apusozoa and Breviatea
+Picomonada	kingdom	Picozoa	other Archaeplastida
+Collodictyozoa	kingdom	Collodictyonidae	other eukaryotes
+Mantamonada	kingdom	Mantamonadidae	other eukaryotes
+Planomonada	kingdom	Ancyromonadida	other eukaryotes
+Malawimonada	kingdom	Malawimonada	other eukaryotes
+Hemimastigophora	kingdom	Hemimastigophora	other eukaryotes
+Provora	kingdom	Provora	other eukaryotes
+Caelestes	kingdom	Caelestes	other eukaryotes
+Kinetoplastia	phylum	Kinetoplastea	Discoba
+Diplonemia	phylum	Diplonemea	Discoba
+Labyrinthulidia	phylum	Labyrinthulomycetes	Stramenopiles
+Pelagophyta	phylum	Pelagophyceae	Stramenopiles
+Dictyochophyta	phylum	Dictyochophyceae	Stramenopiles
+Perkinsia	phylum	Perkinsozoa	Alveolata
+Oxymonadia	phylum	Oxymonadida	Metamonada
+Zygnematophyta	phylum	Zygnemophyceae	Viridiplantae
+Anthocerophyta	phylum	Anthocerotophyta	Viridiplantae
+Glaucocystophyta	phylum	Glaucocystophyceae	Glaucophyta
+Rhodelphidia	phylum	Rhodelphea	other Archaeplastida
+Jakobia	phylum	Jakobida	Discoba

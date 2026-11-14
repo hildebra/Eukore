@@ -10,7 +10,7 @@ $t = $stats['totals'];
 $sources = $stats['sources'];
 // each source's colour slot, fixed by the source (not by its place among those present)
 $slot = ['NCBI RefSeq' => 1, 'NCBI GenBank' => 2, 'TOGA2' => 3, 'ENA TSA' => 4, 'EukProt' => 5,
-         'rRNA records only' => 6, 'other' => 0];
+         'rRNA records only' => 6, 'organelle genes only' => 7, 'other' => 0];
 
 function stacked_bar(array $counts, int $scale, string $who, array $slot, array $text): string
 {

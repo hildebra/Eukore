@@ -56,7 +56,8 @@ QUANTILES = (("q05", 0.05), ("q25", 0.25), ("median", 0.5), ("q75", 0.75), ("q95
 SSU_MIN = 1000      # an 18S this long at least, for resolution.tsv (a read's fragment would understate identity)
 REGIONS = ("18S", "ITS1", "5.8S", "ITS2", "28S", "5S")
 TIERS = package.TIERS  # high, unverified, medium, low (format 6; a format-5 package has no unverified: 0)
-MATCHES = ("taxid", "species", "synonym", "genus", "-")  # taxid: MIDORI2's own (since format 5)
+# taxid: MIDORI2's own (since format 5); upward: EUKARYOME's lineage of a clade above the genus (format 7)
+MATCHES = ("taxid", "species", "synonym", "genus", "upward", "-")
 REFERENCES = package.REFERENCES
 ALL_BUSCOS = "BUSCO (all)"
 
@@ -397,7 +398,8 @@ def best_ssu(records):
     "species", the nearest of its own)."""
     best = {}
     for r in records:
-        if r.get("label_from") == "eukaryome_genus":
+        # a record labelled by its genus or above (format 7: EUKARYOME's, labelled at their family too)
+        if r.get("label_from", "").endswith(("_genus", "_upward")):
             continue
         if r["kind"] == "18S":
             span = (0, int(r["length"]))
@@ -742,7 +744,9 @@ def breadth_rows(species, fates, other, ncbi):
     ncbi_species = collections.Counter(supergroup_of(ncbi, t, cache) for t, f in (fates or {}).items()
                                        if f not in ("not a species", "placeholder", "hybrid"))
     with_genome = {int(t): r["supergroup"] for t, r in species.items() if r["representative"] != "-"}
-    rrna_only = collections.Counter(r["supergroup"] for r in species.values() if r["representative"] == "-")
+    # a species of rRNA records alone (format 7's species of organelle genes alone are neither)
+    rrna_only = collections.Counter(r["supergroup"] for r in species.values()
+                                    if r["representative"] == "-" and r.get("source", "rrna") == "rrna")
     theirs = {sp: supergroup_of(ncbi, sp, cache) for sp in (other or ())}
     groups = sorted(set(ncbi_species) | set(with_genome.values()) | set(rrna_only) | set(theirs.values()))
     rows = []
@@ -907,7 +911,7 @@ def composition_rows(folder, species, complete):
             c = counts[g]
             c["species"] += 1
             c["with_genome"] += r["representative"] != "-"
-            c["rrna_only"] += r["representative"] == "-"
+            c["rrna_only"] += r["representative"] == "-" and r.get("source", "rrna") == "rrna"
             c["with_rrna"] += count_of(r.get("rrna_records")) > 0
             c["with_operon"] += str(taxid) in operon
             c["with_organelle"] += count_of(r.get("organelle_genes")) > 0

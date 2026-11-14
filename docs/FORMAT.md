@@ -1,4 +1,4 @@
-# Eukore package format, version 6
+# Eukore package format, version 7
 
 Eukore is a standalone eukaryote reference. It holds every BUSCO gene of eukaryota_odb12 and the rDNA operons of every
 eukaryote species with an NCBI genome, complete (genes with all their introns, operons uncut) and checked, and the
@@ -24,6 +24,20 @@ Since format 6 (Eukore 0.2.3, 2026-11-09) a confidence tier tells a sequence not
 their HMMs confirmed; a Duplicated locus' copy is the one whose lineage fits; a sequence two clades' genomes share goes
 to its owner; an 18S is checked to be a nucleus'; and each genome names what made its calls (`genome_record`).
 
+Since format 7 (Eukore 0.2.6, 2026-11-14) the package is a user's (protal's) only source of eukaryote rRNA and names:
+- EUKARYOME's records the only published 18S beside ROD's operons: its long reads and every record of its SSU set
+  (GenBank's, genomes' and UNITE's 18S under EUKARYOME's labels), its organelle SSU as organelle genes; PR2's and
+  KSGP's records are not taken, but linked to Eukore's with their labels (`taxonomy/links.tsv`);
+- each published read audited as KSGP 4.1-4.5 audit their records, at build time ([rrna/](#rrna), `rrna/audit.tsv`):
+  vectors, adapters, barcodes, telomere repeats, end runs and DNA beside its rRNA cut off; chimeras (KSGP 4.5's window
+  screen for pieces of another phylum, KSGP 4.2's UCHIME check) cut to their own part or flagged, as are mislabels;
+- EUKARYOME's reads labelled above species (a genus, family, order, ...), labelled at the rank their label reaches
+  (`rank`);
+- the organelle genes of every species with a RefSeq organelle genome, not only of the species with a genome: species
+  of organelle genes alone (`species.tsv`'s `source` `organelle`);
+- two taxonomies for everything: every species, record and organelle gene carries its NCBI lineage and its EUKARYOME
+  lineage, complete down to its rank, in one EUKARYOME tree (`taxonomy/eukaryome.tsv`; [taxonomy/](#taxonomy)).
+
 ### Confidence tiers (format 6)
 
 Every copy, record and organelle gene has one of four tiers, and its reasons in `flags` (comma-separated, those of the
@@ -46,8 +60,8 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 | file | what it holds | format |
 |---|---|---|
 | [`manifest.json`](#manifestjson) | versions, inputs, counts, every file's size and MD5 | |
-| [`taxonomy/`](#taxonomy) | NCBI's taxonomy cut to the package; nuclear, mitochondrial and plastid genetic codes | codes: 5 |
-| [`species.tsv`](#speciestsv) | one row per species: its genome, supergroup and group, NCBI lineage (and filled), lineages in PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2, type material | 4, more in 5 |
+| [`taxonomy/`](#taxonomy) | NCBI's taxonomy cut to the package; nuclear, mitochondrial and plastid genetic codes; EUKARYOME's taxonomy as one tree, cut to the package (`eukaryome.tsv`); each rRNA record's PR2 and KSGP records and their labels (`links.tsv`) | codes: 5; eukaryome.tsv, links.tsv: 7 |
+| [`species.tsv`](#speciestsv) | one row per species (of a genome, of rRNA records, of organelle genes alone): its genome, supergroup and group, NCBI lineage (and filled), its complete EUKARYOME lineage, lineages in PR2, KSGP, SILVA, UNITE, MIDORI2, type material | 4, more in 5 and 7 |
 | [`crossrefs.tsv`](#crossrefstsv-format-5) | each species' ids in Open Tree, GBIF, WoRMS, IRMNG, Index Fungorum, UNITE (SH), BOLD (BIN) | 5 |
 | [`reference_screen.tsv`](#reference_screentsv-optional) | the records of the MIDORI2 files the build was given that are another organism's gene, a chimera, another gene, or doubtful (optional) | |
 | [`genomes.tsv`](#genomestsv) | each genome: accession, flags, rRNA copies, genetic code and its check, duplication, introns, type material, genome record, copies another clade's | 4, more in 5 and 6 |
@@ -58,10 +72,11 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 | [`busco/features.tsv`](#busco) | each copy's exons, introns, frameshifts, masked runs, gaps | 4 |
 | [`busco/introns.tsv`, `intron_sites.tsv`](#busco) | each intron's phase, splice sites, class, U12 look, place on the HMM; the sites shared across species | 5 |
 | [`markers/`](#markers-format-5) | Eukore's own marker loci (RPB1, RPB2, EF-2, EF-1α, ...): the same files as `busco/`, for genes BUSCO cannot hold | 5 |
-| [`rrna/records.tsv`, `records.fna.gz`](#rrna) | 18S spans and rDNA units of genomes and published long reads, their parts, checks, confidence, SSU model | 4, more in 6 |
+| [`rrna/records.tsv`, `records.fna.gz`](#rrna) | 18S spans and rDNA units of genomes and published long reads, since 7 EUKARYOME's published 18S, audited; their parts, checks, confidence, SSU model, rank, NCBI and EUKARYOME lineages, what the audit cut off | 4, more in 6 and 7 |
+| [`rrna/audit.tsv`](#rrna) | each published record's audit findings: what was cut off and why, its chimera calls | 7 |
 | [`rrna/regions.tsv`](#rrna) | each record's 18S V1-V5, V7-V9 | 5 |
 | [`rrna/amplicons.tsv`](#rrna) | in-silico PCR of 10 18S, ITS and 28S primer pairs on each record | 5 |
-| [`organelle/genes.tsv`, `genes.fna.gz`](#organelle) | mitochondrial and plastid rRNA and protein-coding genes, the trnH-psbA spacer, their checks and confidence | 4, more in 5 and 6 |
+| [`organelle/genes.tsv`, `genes.fna.gz`](#organelle) | mitochondrial and plastid rRNA and protein-coding genes, the trnH-psbA spacer, of every species with a RefSeq organelle genome or a genome; EUKARYOME's published mitochondrial SSU; their checks, confidence, NCBI and EUKARYOME lineages | 4, more in 5, 6 and 7 |
 | [`organelle/cds.fna.gz`, `proteins.faa.gz`](#organelle) | the protein-coding genes' coding sequences and proteins by the organelle's code | 5 |
 | [`organelle/amplicons.tsv`](#organelle) | in-silico PCR of 8 COI, rbcL, matK, psbA-trnH, 12S and 16S primer pairs | 5 |
 | [`organelle/molecules.fna.gz`](#organelle) | the assemblies' organelle molecules, whole | 4 |
@@ -70,7 +85,7 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 | [`benchmarks/`](#benchmarks-optional) | the build's measures of the package | |
 
 ## manifest.json
-`format` (6; a reader of 6 also takes 5 and 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, e.g. `0.2.4`), `built` (ISO time),
+`format` (7; a reader of 7 also takes 6, 5 and 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, e.g. `0.2.6`), `built` (ISO time),
 `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S
@@ -81,7 +96,13 @@ records screened and flagged, those called `misnamed`, `chimera`, `other_gene` a
 `ko_list`'s and the members table's MD5s, Swiss-Prot's release, NCBI's query scope and proteins fetched per marker, when
 it was built, and per marker its kind, members, cutoff and members dropped as foreign; `null` without one), ENA's list
 of TSA transcriptome sets (`tsa`, since 2026-11-07: its file, MD5, date fetched and sets; `null` without one or with
-`--no_tsa`);
+`--no_tsa`); since format 7 `sources` with EUKARYOME's SSU set's and UniVec's versions (`EUKARYOME_SSU`, `UniVec`),
+the published records' audit (`audit`: its record, UniVec's version, the primers, whether nhmmer and barrnap's models
+were there, and its counts: the ends' and flanks' cuts and flags, `ends_and_flanks`, the chimera screens' calls,
+`chimeras`), the link files (`links`: PR2's and KSGP's version, file, MD5 and records linked) and EUKARYOME's taxonomy
+(`eukaryome_taxonomy`: EUKARYOME's version, its classification table's file and MD5, the tree's taxa by where they come
+from, `eukaryome` the table, `eukaryome_label` EUKARYOME's records' labels, `ncbi` NCBI's names added, and the NCBI
+taxa by how they were placed);
 `inputs.partial.species_clades` in a trial package limited to those clades, which a user
 should not take for Eukore), `counts` (species, species with rRNA alone, genomes, copies and their
 calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa, `busco_loci`, the
@@ -89,7 +110,12 @@ copies' and records' confidence tiers, `copy_unverified` (since 2026-11-10: per 
 `alone_in_family`: of a species no other species of whose family, or genus where NCBI names no family, holds the
 locus in the package), `labels`: per reference the species by how they matched; `metadata`: the rows of
 `metadata/ncbi.tsv.gz`, the genomes, those described, sketched, the organelle molecules, and the genomes by
-`genome_source` and `annotation_source`), `benchmarks` (the
+`genome_source` and `annotation_source`; since format 7 `species_organelle_only` and
+`species_organelle_only_by_organelle`, the species of organelle genes alone; `rrna_sources` and `rrna_ranks`, the
+records by source and by rank, each by confidence tier; `rrna_label_from`; `organelle_sources`, the organelle genes by
+source and tier; `eukaryome_match`, the species by how their EUKARYOME lineage was found; `organelle_genes` by every
+organelle the package holds, `nucleomorph` too; `species_rrna_only` the species of `source` `rrna`, until format 7
+every species without a genome), `benchmarks` (the
 headline figures of `benchmarks/summary.json`, where the build measured them), and `files`: every file of the package
 with `[bytes, md5]`. The manifest is written last: a package without one is unfinished.
 
@@ -100,15 +126,54 @@ name, class: scientific name or synonym), `merged.tsv` (old, new). `eukore.ncbi.
 A taxid is NCBI's of the taxdump the manifest names (`inputs.taxdump_md5`). A taxid NCBI has merged into another since
 is in `merged.tsv`: a user mapping older labels (or a later taxdump's) to the package goes through it.
 
+`eukaryome.tsv` (format 7): EUKARYOME's taxonomy as one tree (`eukore/eukaryome.py`; its version in the manifest's
+`inputs.eukaryome_taxonomy`), cut to every taxon on the package's EUKARYOME lineages, a row per taxon: `name`, `rank`
+(`domain` for its root, Eukaryota; then superkingdom, kingdom, subkingdom, phylum, subphylum, class, order, family,
+genus, species), `parent` and `parent_rank` (a name may stand at two ranks of one lineage, EUKARYOME's
+`Tracheophyta;Tracheophyta`: a taxon is its rank and name), `source` (`eukaryome`: EUKARYOME's classification table;
+`eukaryome_label`: a EUKARYOME record's label, a species or a family or genus the table lacks; `ncbi`: NCBI's name, of
+a taxon EUKARYOME does not name), `ncbi_taxid` (the NCBI taxon a taxon NCBI's names
+added stands for, else `-`). The tree is EUKARYOME's classification table made one tree:
+- an empty rank is filled as EUKARYOME fills its own, with the nearest name above and the rank's abbreviation
+  (`Chordata.subphy.incertae.sedis`, `Pezizomycotina.ord.incertae.sedis`; `Eukaryota.subdomain.incertae.sedis`, the
+  superkingdom of lineages of none);
+- every name is under one lineage: a name the table files under several parents takes the parent of most of its rows
+  (Ascomycota under Dikarya); a name two kingdoms share (a homonym) is two taxa, the one of fewer rows written with its
+  kingdom as EUKARYOME writes its own (`Lankesterella(Viridiplantae)`, which the table's kingdom-specific column gives
+  where it has one); a name of two lineages within one kingdom is written with its parent (`Insecta(Arthropoda)`);
+  a row of the table a column off (EUKARYOME 2.1's `Metazoa;Arthropoda;Insecta;...` with Arthropoda as its subkingdom)
+  is put back where its names stand in most rows; a genus the table names as its family (`Solanaceae;Solanaceae`) is
+  no genus;
+- EUKARYOME's reads' labels add their species (`Genus_epithet`) and the families and genera the table lacks;
+- every NCBI taxon of the package is placed by name: by its species (`species`), one of NCBI's synonyms (`synonym`),
+  its genus (`genus`: added under it by its NCBI name), its own name above species (`name`), else the deepest of its
+  NCBI clades EUKARYOME names (`upward`: by NCBI's name, or by data/eukaryome_names.tsv's EUKARYOME name of a deep
+  lineage, Stramenopiles as Straminipila; the ranks below it filled with NCBI's names, an empty one with EUKARYOME's
+  placeholder), else under `Eukaryota.subdomain.incertae.sedis` (`none`). Of several taxa of a name, one whose kingdom
+  holds the NCBI taxon's group (data/eukaryome_names.tsv's groups: a homonym of another kingdom is never taken), then
+  the one sharing the most names with NCBI's lineage.
+
+A EUKARYOME lineage, here and in `species.tsv`, `rrna/records.tsv` and `organelle/genes.tsv`, is the ten ranks
+superkingdom;kingdom;subkingdom;phylum;subphylum;class;order;family;genus;species, complete down to the taxon's rank,
+the ranks below it empty; a species as EUKARYOME writes it, `Saccharomyces_cerevisiae`.
+
+`links.tsv` (format 7; `eukore/links.py`): each rRNA record's records in PR2 and KSGP, which Eukore no longer takes
+records from: `record`, `accession` (its EUKARYOME id or INSDC accession, ROD's contig's), `reference` (`PR2`, `KSGP`),
+`id` (the record's id there: PR2's `AB353770.1.1740_U`, KSGP's `EUK1194901`, `AB353770_dup1`, `x~AB353770`), `lineage`
+(as that reference writes it). A record and reference's ids match by accession, without version, span or suffix; a
+record has a row per counterpart and none without one. PR2's taxonomy is fetched, KSGP's is its served release's or
+`--ksgp_tax`'s (protal's KSGP 5.2); their versions are the manifest's `inputs.links`.
+
 ## species.tsv
-One row per NCBI species the package holds:
+One row per NCBI species the package holds (since format 7 species alone: a record labelled above species is no row,
+its taxon is in `taxonomy/`; until then a published read's genus was a row):
 
 | column | |
 |---|---|
 | `taxid` | NCBI species taxid |
 | `name` | NCBI scientific name |
 | `representative` | the genome its copies come from (an accession of `genomes.tsv`); `-` for a species with rRNA records alone |
-| `source` | `ncbi` (NCBI's genome of the species by Eukore's ranking), `model` (a model species' reference), `no_assembly` (records of a species NCBI has no assembly of), `toga2` (TOGA2's genome of a vertebrate species NCBI has no assembly of, accession `TOGA2_<assembly>`), `tsa` (format 5: an INSDC transcriptome of a species with no genome, its TSA set's accession; its copies flagged `transcript`), `rrna` (rRNA records alone) |
+| `source` | `ncbi` (NCBI's genome of the species by Eukore's ranking), `model` (a model species' reference), `no_assembly` (records of a species NCBI has no assembly of), `toga2` (TOGA2's genome of a vertebrate species NCBI has no assembly of, accession `TOGA2_<assembly>`), `tsa` (format 5: an INSDC transcriptome of a species with no genome, its TSA set's accession; its copies flagged `transcript`), `rrna` (rRNA records alone), `organelle` (format 7: organelle genes alone, of its RefSeq organelle genome or a published record) |
 | `loci` | BUSCO genes called in its genome |
 | `rrna_records` | its records in `rrna/records.tsv` |
 | `organelle_genes` | its records in `organelle/genes.tsv` |
@@ -117,7 +182,7 @@ One row per NCBI species the package holds:
 | `ncbi_lineage` | NCBI's names at domain;kingdom;phylum;class;order;family;genus;species (a rank NCBI does not name empty) |
 | `ncbi_lineage_filled` | the same, an empty rank filled (format 5): with the next unranked NCBI clade below the rank above it (a protist's `Sar`, `Stramenopiles`, ...), shallowest first; where none is left, the name above with `_X` (PR2's way: `Nematoda_X`, `Nematoda_XX`) |
 | `pr2`, `pr2_match` | its lineage in PR2 (domain;supergroup;division;subdivision;class;order;family;genus;species, as PR2 writes it: `Saccharomyces_cerevisiae`), and how it was found (below) |
-| `eukaryome`, `eukaryome_match` | its lineage in EUKARYOME (superkingdom;kingdom;subkingdom;phylum;subphylum;class;order;family;genus;species: its classification table to the genus, its long reads' species) |
+| `eukaryome`, `eukaryome_match` | its lineage in EUKARYOME (superkingdom;kingdom;subkingdom;phylum;subphylum;class;order;family;genus;species: its classification table to the genus, its long reads' species). Since format 7 every species', complete, in EUKARYOME's one tree (`taxonomy/eukaryome.tsv`): a species EUKARYOME does not name has EUKARYOME's lineage down to the deepest rank EUKARYOME names (its genus, else its family, ...) and NCBI's names below; `eukaryome_match` says how: `species`, `synonym`, `genus`, `upward` (a clade above its genus), `none` (none of its clades; under `Eukaryota.subdomain.incertae.sedis`). Until format 7 the name match below (`-` where none) |
 | `ksgp`, `ksgp_match` | its lineage in KSGP (`k__` .. `s__`, as KSGP writes it; its eukaryote nuclear records) |
 | `silva`, `silva_match` | its lineage in SILVA's SSU Ref NR99 (138.2; format 5): its eukaryote records' path, of any depth, then the species (`Saccharomyces_cerevisiae`; the organism's first two words where they name one) |
 | `unite`, `unite_match` | its lineage in UNITE's general release of all eukaryotes (10.0, 2025-02-19; `k__` .. `s__`; format 5); its species hypotheses are in `crossrefs.tsv` |
@@ -132,7 +197,8 @@ of an organelle (PR2's `:plas`, `:mito`; KSGP's chloroplast, `plas` and `mito` n
 (`sp.`, `Genus_X`, accessions, `?`) are not taken. A name a reference files under several lineages (a homonym of
 another kingdom) takes the lineage that shares the most names with NCBI's lineage of the species, then the one of the
 most records. The labels are a name match, not a placement: a user that names species by its own rules (protal's KSGP
-rules) can compare its name with these. A row's taxid may be above species (a published read labelled by its genus).
+rules) can compare its name with these. Until format 7 a row's taxid could be above species (a published read labelled
+by its genus).
 
 ## crossrefs.tsv (format 5)
 Each species' ids in other taxonomies and databases, one row per id: `taxid` (the species'), `reference`, `id`, `name`
@@ -191,7 +257,7 @@ The species' genomes and their other assemblies:
 | `duplicated_share`, `dup_identity_median`, `duplication` | of its BUSCOs called (Single or Duplicated) the share Duplicated; the median `dup_identity` of those; `haplotypes` (15% or more Duplicated, their copies 99.5% alike or more: an assembly holding both haplotypes of a diploid, or a recent hybrid), `haplotigs` (since 2026-11-10: 15% or more Duplicated, 95% to under 99.5% alike, and a copy of them on a contig under a quarter of the Single copies' median contig far more often than a Single copy lies on one: an assembly not purged of the second haplotype of an outbred diploid; `wgd_or_polyploid` until then), `wgd_or_polyploid` (15% or more Duplicated, less alike than 99.5% and not `haplotigs`: a whole-genome duplication, a polyploid, an older hybrid, or two haplotypes of an outbred diploid assembled equally long, which identity and contig lengths do not tell from a recent polyploid), `low` (under 15%), `-` (under 20 BUSCOs called, or a genome run before 0.2). A heuristic: read it with the genome's size and the species' biology (format 5) |
 | `introns`, `introns_per_kb_cds`, `median_intron_length` | its BUSCO copies' introns (`busco/introns.tsv`): their number, per kb of the copies' coding sequence, their median length (format 5) |
 | `genome_record`, `foreign_copies`, `foreign_source` | what made its calls (Eukore's genome record, `genomes.GENOME_RECORD`: 1 for a run before 2026-11-09, 2 since, 3 since 2026-11-14 (split copies joined); a build runs a genome of an older one again unless `--reversion` keeps its calls); its copies another clade's (`own_species` f); the NCBI taxid of those clades' lowest common ancestor, `-` (format 6) |
-| `expected_loci`, `complete_expected`, `tier` | (since 2026-11-14; `eukore/tiers.py`) its group's expected BUSCOs (those found in half or more of the group's whole assemblies, at least 3 of them; else every BUSCO); its share of them Single or Duplicated; its tier: `genome`, `draft` (contigs under 5 kb on average), `transcriptome`, `poor` (under half its expected BUSCOs whole), `partial` (NCBI's partial genome, or small for its clade), `contaminated` (one of NCBI's excluded assemblies, taken where every assembly of its species is). The copies of a poor, partial or contaminated genome are left out of the package (`--keep_poor_genomes` keeps them, flagged `poor_genome`, low); a draft's are flagged `draft_genome` (medium). A genome with 10 or more copies another clade's has `foreign copies` among its `flags` |
+| `expected_loci`, `complete_expected`, `tier` | (format 7; `eukore/tiers.py`) its group's expected BUSCOs (those found in half or more of the group's whole assemblies, at least 3 of them; else every BUSCO); its share of them Single or Duplicated; its tier: `genome`, `draft` (contigs under 5 kb on average), `transcriptome`, `poor` (under half its expected BUSCOs whole), `partial` (NCBI's partial genome, or small for its clade), `contaminated` (one of NCBI's excluded assemblies, taken where every assembly of its species is). The copies of a poor, partial or contaminated genome are left out of the package (`--keep_poor_genomes` keeps them, flagged `poor_genome`, low); a draft's are flagged `draft_genome` (medium). A genome with 10 or more copies another clade's has `foreign copies` among its `flags` |
 | `gencode_check`, `gencode_codons`, `best_table` | its code checked against its BUSCO genes ([methods.md](methods.md)) on the codons nuclear codes are known to read otherwise (the stops TAA, TAG, TGA and CTG): `agrees`, `differs:<codon>><amino acid>,...` (NCBI's table reads them otherwise than the genes' conserved positions do; `<stop>>*` since 2026-11-11: a stop the table reads as an amino acid at 1% or less of that amino acid's other codons inside the copies, 200 or more: unused, a stop), `undecided` (too few codons at conserved positions); of those four, the ones seen at 10 conserved positions or more (a stop at 5: under its own reading it is at none; a stop not seen is a stop; a CTG not seen is not judged: CTG-clade yeasts avoid it), `-` for none; the NCBI table that fits them best (NCBI's own where it fits as well, a stop called unused read as a stop; `-` where undecided). Every codon's evidence is `metadata/codons.tsv.gz` (format 5) |
 
 A species' genome is NCBI's best by Eukore's ranking: never one NCBI flags as contaminated, of an unverified source
@@ -347,9 +413,9 @@ manifest's `counts.marker_loci` the markers.
 
 | column | |
 |---|---|
-| `record` | its name: `<accession>_rDNA_<n>`, `<accession>_18S_<n>`, `EUK_<EUKARYOME id>`, `ROD_<variant id>` |
+| `record` | its name: `<accession>_rDNA_<n>`, `<accession>_18S_<n>`, `EUK_<EUKARYOME id>`, `ROD_<variant id>`; since format 7 a record of EUKARYOME's SSU set `EUK_<its id>`: `EUK_EUK1194901`, `EUK_AB353770` (an INSDC accession), `EUK_GCA_000340665` (a genome's 18S, `_dup1` its next), `EUK_UDB014743` (UNITE's). Names are unique and stay while EUKARYOME keeps its ids |
 | `kind` | `rDNA` (an operon) or `18S` (an 18S span alone) |
-| `taxid`, `species_taxid` | NCBI's |
+| `taxid`, `species_taxid` | NCBI's; a record labelled above species (format 7: a genus, family, order, ... and Eukaryota, 2759, for a lineage of EUKARYOME's own NCBI names none of) has its taxon's in both |
 | `accession` | its genome (`-` for a published read without one) |
 | `source` | `genome`, `curated_unit`, `EUKARYOME`, `ROD` |
 | `regions` | `name:start-end,...` in order on the record: `18S`, `ITS1`, `5.8S`, `ITS2`, `28S`, and `5S` where a 5S lies in the same block (the unit as one stretch, on either strand: some protists' and fungi's repeats hold it; a tandem array's spacer 5S is one unit's, the one whose 28S it follows; of a unit's several the one after its 28S); a region not found is absent. A published read's record is the read on its unit's strand (reverse-complemented where its unit lies on -), its regions on it |
@@ -359,7 +425,7 @@ manifest's `counts.marker_loci` the markers.
 | `type` | its 99% 18S type within the species (`1`, `2`, ...) |
 | `own_species` | `t`, `f`, or `-`: whether its nearest records of other sources agree with its NCBI lineage to the family or deeper (a genome's contaminant rDNA fails; a genome's copies searched as one per 99% type, so that its own do not fill the hits; its own assembly's records in another source, ROD's, are its own: format 6), `f` by the 18S' own rule (since 2026-11-10; until then `busco/copies.tsv`'s): 97% or more like species all of another class or phylum, its own clade's nearest record (the deepest of its family, order and class another record is of) 2 points or more under that, and the other clade's other species holding it nearer (or that species alone in its clade and its own clade holding nothing 90% like it); a lineage with no record of its class beside it only at 99.5% or more to another phylum's species whose clade holds it too. Of each species the best hit counts; the clades that tell the owner are searched alone where the first 32 hits held none; an 18S with introns is compared as its exons and as its span. A published read's (EUKARYOME's, ROD's; since 2026-11-10, until then `-`) against the genomes' records alone: its source's other reads, labelled by the same hand, vouch for nothing |
 | `screen` | the part screen's flags: `-`, or `part:rank,...`, each a part (`18S`, `junction`, `28S 5'`, `28S 3'`) whose nearest records of other genomes are another clade's at that rank (`kingdom` .. `family`) |
-| `label_from` | how its taxid was found: `assembly`, `rod_taxid`, `eukaryome_name`, `eukaryome_genus` |
+| `label_from` | how its taxid was found: `assembly`, `rod_taxid`, `eukaryome_name`, `eukaryome_genus`; since format 7 `eukaryome_upward` (by the deepest of its label's family, order, class, phylum, kingdom NCBI names, a EUKARYOME name of a deep lineage by data/eukaryome_names.tsv's NCBI name; else Eukaryota). A taxon not a eukaryote's (a genus a bacterium shares) is never taken |
 | `contig`, `start`, `end`, `strand` | a genome's record: where it lies in the assembly (1-based, inclusive; the 18S span's, or the unit's from its first region to its last); `-` for a published read |
 | `contig_edge` | a genome's record: bases to its contig's nearer end |
 | `introns` | the 18S's introns on the record (`18S:start-end,...`: the gaps between barrnap's 18S pieces), `-` for none; the 18S region spans them |
@@ -367,15 +433,30 @@ manifest's `counts.marker_loci` the markers.
 | `confidence`, `flags` | `high`, `unverified`, `medium` or `low`, and why (below) |
 | `cross` | the species of another clade whose record holds its 18S: an `f`'s source; an undecided record's other holder where its own clade's nearest 18S is 2 points or more under it or the two are 99.5% alike (format 6; the 18S' own rule since 2026-11-10) |
 | `ssu_model` | the SSU model of Rfam that scores its 18S best (cmsearch of the profile HMMs of RF01960 and RF02542, eukaryote, RF00177, bacteria, RF01959, archaea; a prokaryote model by 20 bits over the eukaryote's best): `eukarya`, `bacteria` or `archaea` (a bacterium's, a mitochondrion's or a plastid's SSU: `low`), `-` where none scored it or not measured (format 6) |
+| `via` | format 7: the EUKARYOME file a published record comes from, `EUKARYOME_long` (its long reads) or `EUKARYOME_SSU` (its SSU set), else `-` |
+| `source_label` | format 7: a published record's own label as EUKARYOME gives it (`k__..;g__Genus;s__epithet`, `unclassified` for an unnamed rank), else `-` |
+| `telomere` | format 7: its longest run of a telomere repeat (6 units or more of TTAGGG, TTAGG, TTTAGGG, TTGGGG or TTTTGGGG, in any phase, on either strand), 0 for none |
+| `rank` | format 7: the rank it is labelled at: its EUKARYOME lineage's deepest (`species`, `genus`, `family`, `order`, `class`, `phylum`, `kingdom`, ...); without EUKARYOME's taxonomy NCBI's |
+| `ncbi_lineage` | format 7: its taxon's NCBI lineage, domain;kingdom;phylum;class;order;family;genus;species, filled as `species.tsv`'s `ncbi_lineage_filled`, down to its taxon's rank (the ranks below it empty) |
+| `eukaryome_lineage`, `eukaryome_match` | format 7: its EUKARYOME lineage ([taxonomy/](#taxonomy)) and how it was found: its species' as `species.tsv`'s (`species`, `synonym`, `genus`, `upward`, `none`); of a record labelled above species its taxon's (`name`, `upward`, `none`), or its own label's where that reaches deeper (`label`: a EUKARYOME read of a genus or family NCBI does not name, labelled at the rank its label reaches) |
+| `trimmed` | format 7: what the audit cut off a published record, `start-end of length: why; ...` (the part kept, 1-based in the record as published, on its rRNA's strand; each cut's side and why: `vector <UniVec id>`, `leader before primer <name>`, `telomere`, `Ns`, `homopolymer`, `flank_beyond`, `flank_gene`, `flank_joined`, then a chimera's `window chimera: kept a-b`, `uchime chimera: kept a-b`), `-` for none |
 
 A record is `low` where a check calls it another organism's or of bad sequence: `own_species` (f), `screen`,
 `ambiguous` (over 0.5%), `homopolymer` (36 or longer), `ssu_prokaryote` (format 6: its 18S scored best by Rfam's
 bacterial or archaeal SSU model, a bacterium's or an organelle's SSU), `too_long` (since 2026-11-13: its 18S over
 10,000 bases, no one 18S: a run of 18S-like pieces chained into one, or a read whose regions were not found, taken
-whole; none of its checks run, its `type`, `own_species`, `screen` and `ssu_model` `-`). It is `medium` where
-something may be wrong:
+whole; none of its checks run, its `type`, `own_species`, `screen` and `ssu_model` `-`); since format 7 `telomere` (a
+telomere repeat in its rRNA: an rRNA joined to a chromosome's end; one beside it is cut off) and the audit's
+(below): `chimera` (a chimera not cut: an operon read, or its own part too short), `mislabel` (its 18S another
+phylum's throughout), `vector` (a vector of 50 bases or more inside its rRNA), `no_rrna` (barrnap finds no rRNA in
+it), `trim_short` (a cut would leave under 300 bases: not cut). It is `medium` where something may be wrong:
 `gap`, `contig_edge` (under 1,000 bases), `lsu_partial` (an operon without a whole 28S), `genus_label` (a published read
-labelled by its genus alone), `cross_shared` (format 6). It is `unverified` where none of these holds but its
+labelled by its genus alone: its species not NCBI's), `higher_label` (format 7: labelled by a clade above its genus),
+and the audit's `chimera_cut` (a chimera cut to its own part, that part the record), `chimera_weak` (one uncertain
+window of another phylum, or a UCHIME call whose parts' genera meet or are unnamed), `chimera_recurrent` (5 or more
+records of a lineage with the same piece: a trait of the lineage, KSGP 4.5's rule) and `flank` (more than 50 bases
+beside its rRNA kept: the rRNA stops short, a divergent stretch or other DNA following) (format 7),
+`cross_shared` (format 6). It is `unverified` where none of these holds but its
 own-species check is undecided (`own_species_undecided`; `medium` until format 6; until 2026-11-10 every published
 read's, its check not made). Else `high`.
 
@@ -384,6 +465,68 @@ from its 18S to its 28S, and its 5S where that lies in the same block). A 5S els
 plants' 5S arrays) is not searched.
 
 A record that fails a check is kept and flagged, so that a user chooses.
+
+Since format 7 the published records are EUKARYOME's alone beside ROD's operons: its long reads (but those it marks of
+compromised quality) and every record of its SSU set but the 18S of a long read taken (`via` `EUKARYOME_SSU`:
+EUKARYOME's own 18S of other studies, GenBank's 18S, its 18S of genomes and UNITE's, each under EUKARYOME's label),
+labelled at the rank its label reaches (`rank`; EUKARYOME's reads labelled above their genus, left out until format 7,
+`higher_label`). PR2's and KSGP's records are not taken: nearly all are EUKARYOME's under the same id or accession, and
+`taxonomy/links.tsv` gives each record's.
+An 18S read without its operon has its 18S as its region (`kind` `18S`, barrnap's longest 18S in it; until format 7 a
+read without an operon had no region).
+
+Each published read is audited before its checks (`eukore/audit.py`, `eukore/chimeras.py`; KSGP 4.1-4.5's audit of
+its records, KSGP 5.2's README and KSGP 4.5's describing them): what lies beside its rRNA and is no rRNA is cut off
+(`trimmed`), what is wrong inside it flagged.
+- Its ends (on its rRNA's strand, its rRNA what barrnap places): a vector, adapter, linker or primer of NCBI's
+  UniVec_Core or a long-read platform's adapter (PacBio's SMRTbell, Oxford Nanopore's), 25 bases or more matching
+  exactly (25-mers of low complexity left out: UniVec's oligo-dT primers match any poly-A run), beside the rRNA or
+  within 60 bases of an end: cut there; one of 50 bases or more inside the rRNA: `vector`. A barcode or an adapter
+  before an rDNA primer of `data/primers.tsv` at a read's start (after one at its end), where those bases are no rRNA:
+  cut, the primer kept (a gene-end primer's site is the 18S's own end, and most of EUKARYOME's records end there). A
+  telomere repeat beside the rRNA, Ns at an end and a homopolymer of 12 or more there beside the rRNA (a poly-A tail):
+  cut.
+- Its flanks (KSGP 4.4's 18S gene check, 4.5's flank screen): a read with more than 50 bases beside its rRNA is searched
+  again whole with barrnap's models (nhmmer, E 1e-3). Where its rRNA reaches its model's end on that side (within 60
+  positions) the flank lies beyond the gene (an ETS, an IGS, an ITS after an 18S record's whole 18S, a leader) and is
+  cut, 10 bases and the model positions its rRNA did not reach kept (`flank_beyond`); where the flank holds another rRNA
+  gene or a reversed rRNA piece it is cut too (`flank_gene`, `flank_joined`: two parts joined, the longest kept); else
+  (the rRNA stops short, other DNA following) the flank is kept, `flank` (KSGP 4.5 kept such a flank where a relative's
+  rRNA goes on into it and cut it otherwise, a test Eukore does not make), but after an operon read's partial 28S,
+  unflagged (its 28S going on to the primer site the read ends at). An 18S read whose flank holds its ITS's 5.8S or its
+  28S is cut to its 18S (KSGP 4.4's rule; a long read whose operon barrnap did not make whole too). A read barrnap finds
+  no rRNA in: `no_rrna`. A cut that would leave under 300 bases is not made (`trim_short`).
+- Chimeras, pieces of another kingdom (KSGP 4.5's window screen, its 16S phylum the 18S's EUKARYOME kingdom: Fungi,
+  Metazoa, Alveolata, Amoebozoa, ...; a kingdom's phyla are as alike in the 18S as a bacterial phylum's families in the
+  16S): each read's 18S cut into 300-base windows every 150, mapped against the 18S of genomes (Eukore's own, ROD's,
+  EUKARYOME's `GCA_` records; minimap2), each window counting for its best hit's kingdom (the read's label's, a
+  genome's by its NCBI taxon placed in the tree) where that hit covers 75% of it at 95% or more; a read whose windows
+  name two kingdoms, or another than its label's, is checked with windows every 50 against each kingdom alone (a
+  window stands for a kingdom at 97% or more and 2 points above every other, another kingdom by a second genome's hit;
+  a piece certain from two windows running or one at 99%, one uncertain window counting where 2 stand for its label's
+  kingdom). A chimera of an 18S record is cut to its longest stretch of its own where 500 bases or more stay
+  (`chimera_cut`) unless 5 or more such records share that stretch's start and reference (`chimera_recurrent`); else,
+  and an operon read always, `chimera`. Windows of another kingdom over half of it and none of its own: `mislabel`
+  (KSGP 4.5's relabel rule); over less (a conserved stretch of a lineage without a genome relative), or one uncertain
+  window: `chimera_weak`; a label's kingdom a placeholder whose windows stand for one kingdom: no flag (`unplaced` in
+  `audit.tsv`).
+- Chimeras of two genera (KSGP 4.2's class Q, 4.3's parts): every distinct 18S screened against all others (vsearch
+  --uchime_ref, a part's queries left out of its database); a call confirmed where each part (cut at UCHIME's
+  crossover) is 95% or more like a record, the parts' best records name no genus in common and the whole is 2 points
+  or more under its weaker part; cut to the part of its own genus (else family) where that holds 500 bases or more
+  (`chimera_cut`), else `chimera`; where the parts' genera meet or are unnamed, `chimera_weak`.
+The read's ends and flanks are audited with its regions, by the published batches (the process stage's array tasks,
+across their nodes; WORK/published/regions.4.tsv), the window screen's first pass and UCHIME's parts are searches the
+helper nodes share (`--qc_helpers`; WORK/qc/audit_window_screen, audit_uchime), the rest runs on the final node. Each
+published record then gets the checks every record has (the own-species check against the genomes' records, the part
+screen, the SSU model, ...).
+
+- `audit.tsv` (format 7): one row a published record and finding: `record`, `check` (`ends`: its ends' and flanks'
+  cuts; `window`: the window screen; `uchime`: UCHIME), `call` (the cuts' whys; `chimera`, `mislabel`, `weak`,
+  `recurrent`, `unplaced`), `action` (`cut to start-end of length`, `flagged <flag>`, `-`), `evidence` (the windows'
+  phyla and counts, the longest run of another phylum, its best identity and references; UCHIME's score, parents,
+  crossover, the parts' and the whole's identities and genera). Flags without a cut (`no_rrna`, `vector`, `flank`,
+  `trim_short`) are in `records.tsv`'s `flags` alone.
 
 - `regions.tsv` (format 5): each record's 18S variable regions V1-V5 and V7-V9, as Hadziavdic et al. 2014 place them on
   *S. cerevisiae*'s 18S (Z75578; `data/rrna_regions.tsv`), carried to every record by Infernal's cmalign through Rfam's
@@ -412,7 +555,18 @@ barcode), and since format 5 mitochondrial COX3, nad1, nad5 and atp6 and plastid
 species' genes come from one source: its RefSeq organelle genome (the one with the most of these genes, then of the
 species' own taxid, then the longest), else the organelle molecules of its own assembly (those NCBI's FASTA titles
 name a mitochondrion, chloroplast, plastid or apicoplast; since 2026-11-10 also a kinetoplast, maxicircle,
-minicircle, chromatophore or cyanelle).
+minicircle, chromatophore or cyanelle). Since format 7 the species are every species with a RefSeq organelle genome
+(until then the species with a genome or rRNA records alone): a species of organelle genes alone is a row of
+`species.tsv` (`source` `organelle`), its genes all those of its RefSeq genome (its rRNA, COX1, CYTB, ...). And
+EUKARYOME's organelle SSU (its SSU set's `k___mitochondrion`, `k___plastid` and `k___nucleomorph` records, labelled
+by their genus and species; `organelle` `nucleomorph` with `name` `18S`) are
+published organelle records (one of a RefSeq organelle genome whose genes the package holds not again), each gene
+`SSU`, `source` `EUKARYOME`, `seqid` its id, `start`, `end`, `strand`, `exons`, `copies` and `partial` `-`, checked as
+every gene. And MIDORI2's mitochondrial SSU (its srRNA file among `--midori2`'s; `eukore_build.midori2_published`): of
+each species whose mitochondrial genes no RefSeq genome gives, one record, its longest the reference screen keeps (a
+record it cuts as its kept part, one it drops never, one it leaves for review only where the species has no other,
+`medium`: `screen_weak`), `source` `MIDORI2`, `via` `MIDORI2_<GenBank release>`, `label_from` `midori2_taxid` (the
+NCBI taxid MIDORI2 gives), `record` `MIDORI2_<accession>`.
 - `genes.fna.gz`: one record per gene, `>record`, the gene from its first base to its last on its strand, introns and
   all, upper case. A trans-spliced gene (a plant mitochondrion's nad1, nad5: exons on both strands or out of order;
   `trans_spliced` t) is its exons joined. The trnH-psbA record runs from trnH-GUG's first base, across the spacer, to
@@ -428,7 +582,7 @@ minicircle, chromatophore or cyanelle).
 |---|---|
 | `record` | its name: `<seqid>_<gene>` |
 | `gene` | `SSU` (12S in animals' mitochondria, 9S in kinetoplastids' maxicircles, 16S in plastids, 18S in plants' mitochondria, ...), `LSU` (16S in animals' mitochondria, 12S in kinetoplastids' since 2026-11-10, 23S, 26S, ...), `5S`, `COX1`, `COX3`, `CYTB`, `nad1`, `nad5`, `atp6` (mitochondrion), `rbcL`, `matK`, `tufA`, `psbA`, `ycf1`, `trnH-psbA` (plastid) |
-| `organelle` | `mitochondrion` (a kinetoplast too) or `plastid` (chloroplasts, apicoplasts, chromatophores, cyanelles and other plastids) |
+| `organelle` | `mitochondrion` (a kinetoplast too) or `plastid` (chloroplasts, apicoplasts, chromatophores, cyanelles and other plastids); since format 7 `nucleomorph` (a published nucleomorph 18S) |
 | `taxid`, `species_taxid` | NCBI's |
 | `source` | `refseq` (RefSeq's organelle genome, its annotated features) or `assembly` (the species' assembly: each gene by nhmmer with that gene of the 3 nearest RefSeq species, its exons joined; rRNA nhmmer misses by barrnap, `--kingdom mito` in animals' mitochondria, `bac` elsewhere) |
 | `seqid` | the organelle sequence (RefSeq's accession, or the assembly's molecule) |
@@ -446,8 +600,10 @@ minicircle, chromatophore or cyanelle).
 | `regions` | the trnH-psbA record's parts on it, `psbA3':0-200,spacer:200-...,trnH:...` (0-based, end excluded), else `-` (format 5) |
 | `internal_stops` | stops inside a protein-coding gene's protein by the organelle's code: a NUMT, a pseudogene, RNA editing, or a code NCBI does not give (format 5) |
 | `own_species`, `same_as`, `length_check` | as `busco/copies.tsv`'s, each gene of each organelle compared across species (its coding sequence where it has one, else its record; format 5) |
-| `confidence`, `flags` | `low` (`own_species` f, `ambiguous` over 0.005), `medium` (`internal_stops`: RNA editing or a code NCBI does not give leaves stops in a working gene, `low` until format 6; `partial`, `length_short` or `length_long`, `trans_spliced`, `exons_approximate`, `cross_shared`), `unverified` (`own_species_undecided`: format 6, `medium` until then), else `high` (format 5) |
+| `confidence`, `flags` | `low` (`own_species` f, `ambiguous` over 0.005), `medium` (format 7: `screen_weak`, a MIDORI2 record the reference screen left for review; `internal_stops`: RNA editing or a code NCBI does not give leaves stops in a working gene, `low` until format 6; `partial`, `length_short` or `length_long`, `trans_spliced`, `exons_approximate`, `cross_shared`), `unverified` (`own_species_undecided`: format 6, `medium` until then), else `high` (format 5) |
 | `cross` | the species of another clade whose organelle holds its sequence (as `busco/copies.tsv`'s; format 6) |
+| `via`, `source_label`, `label_from` | format 7: a published record's file (`EUKARYOME_SSU`, `MIDORI2_GB273`), its own label and how its taxid was found (`eukaryome_name`, `eukaryome_genus`, `eukaryome_upward`, as `rrna/records.tsv`'s; `midori2_taxid`); `refseq_taxid` or `assembly` for the others' |
+| `rank`, `ncbi_lineage`, `eukaryome_lineage`, `eukaryome_match` | format 7: as `rrna/records.tsv`'s |
 
 - `amplicons.tsv` (format 5): as `rrna/amplicons.tsv`, the organelle genes' primer pairs on their genes: COX1 `COI_Folmer` (LCO1490/HCO2198), `COI_Leray` (mlCOIintF/jgHCO2198); rbcL `rbcLa`; matK `matK_KIM`; `psbA-trnH`; an animal mitochondrion's 12S `MiFish-U`, `12S_V5` and 16S `16S_Palumbi`.
 - `molecules.fna.gz` (since 2026-11-07): the organelle molecules of each species' genome as its assembly holds them
@@ -645,6 +801,35 @@ them). `genomes.tsv`'s
   and its flags `ssu_prokaryote` and `cross_shared`; `organelle/genes.tsv`'s `cross`, its `internal_stops` `medium`
   (until 6 `low`); `intraspecific/barcode_gap.tsv`'s `inter_rank`, `resolved` `t` against a congener alone. A reader
   of format 5 reads format 6 but for the tier `unverified`, which it may read as `medium`.
+- 7 (2026-11-14, Eukore 0.2.6): EUKARYOME's SSU set's records (its 18S of other studies, GenBank's, genomes' and
+  UNITE's) beside its long reads in `rrna/records.tsv`, its mitochondrial SSU in `organelle/genes.tsv` (until 7
+  EUKARYOME's mitochondrial, plastid and nucleomorph long reads named by an NCBI genus or species were nuclear operon
+  reads of `rrna/records.tsv`; its bacterial and archaeal SSU and pseudogenes are left out); an 18S read's 18S its
+  region; every published read audited (KSGP 4.1-4.5's checks: its ends and flanks cut, chimeras cut or flagged;
+  `rrna/audit.tsv`); `taxonomy/links.tsv`, each record's PR2 and KSGP records (no source of records); EUKARYOME's reads
+  labelled above their genus (until 7 left out); the organelle genes of every species with a RefSeq organelle genome,
+  species of organelle genes alone (`species.tsv`'s `source` `organelle`; until 7 the species of a genome or rRNA
+  records alone); `taxonomy/eukaryome.tsv`, EUKARYOME's taxonomy as one tree; `species.tsv`'s `eukaryome` complete for
+  every species, its `eukaryome_match` `upward` and `none`; `species.tsv` of species alone (until 7 a published read's
+  genus was a row); `rrna/records.tsv`'s `via`, `source_label`, `telomere`, `rank`, `ncbi_lineage`, `eukaryome_lineage`,
+  `eukaryome_match` and `trimmed`, its `label_from` `eukaryome_upward`, its flags `telomere`, `chimera`, `mislabel`,
+  `vector`, `no_rrna`, `trim_short` (low), `higher_label`, `chimera_cut`, `chimera_weak`, `chimera_recurrent` and
+  `flank` (medium); `organelle/genes.tsv`'s `via`, `source_label`, `label_from`, `rank`, `ncbi_lineage`,
+  `eukaryome_lineage`, `eukaryome_match`, its sources `EUKARYOME` and `MIDORI2` (one mitochondrial SSU a species without
+  a RefSeq mitochondrial genome, screened), its flag `screen_weak` (medium); the manifest's `inputs.audit`,
+  `inputs.links`, `inputs.eukaryome_taxonomy`, `inputs.sources`' `EUKARYOME_SSU` and `UniVec`, and counts by source,
+  rank and tier; `benchmarks/labels.tsv`'s `upward`. EUKARYOME's classification table is read for the values its
+  formulas saved (until 7 some 40 subkingdoms were the formulas' text, `=B31533&U31532`, in `species.tsv`'s
+  `eukaryome`). A reader of format 6 reads format 7 but for `species.tsv`'s rows of source `organelle` (no rRNA, no
+  genome) and records labelled above species.
+  Merged with the same day's fixes of the first full build (run1-fixes, split-join): `genomes.tsv`'s `expected_loci`,
+  `complete_expected` and `tier` (`eukore/tiers.py`), a poor, partial or contaminated genome's copies left out
+  (`--keep_poor_genomes`: kept, `poor_genome`, low), a draft's flagged `draft_genome` (medium), a genome of 10 or more
+  copies another clade's flagged `foreign copies`; the 18S of a species whose genome holds none taken from its next
+  assembly (its donor, `WORK/rrna_donors/`) and the rRNA of transcriptomes; organelle genes of an assembly's candidate
+  contigs where it titles no molecule an organelle; `species.tsv`'s `midori2` from MIDORI2's newest release, fetched
+  (`--no_midori2`: none), whose srRNA file gives the mitochondrial SSU above; a BUSCO copy split across a skim's contigs
+  joined into one (`genome_record` 3: a genome of an older record is run again).
 - 2026-11-10, no new format (optional): `reference_screen.tsv` and the manifest's `inputs.references.MIDORI2.screen`
   (and `files`), where the build was given MIDORI2 files; `species.tsv`'s `midori2` no longer names a species by a
   record the screen drops. MIDORI2's later header layout (GB273's: a tab, every NCBI rank as `rank_Name_taxid`) is
