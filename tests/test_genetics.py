@@ -60,6 +60,21 @@ class AlignTest(unittest.TestCase):
             self.assertEqual(align.align_locus(hmm, {"f": "WWW"}, "no-hmmalign", cache), {})
 
 
+class FirstProfileTest(unittest.TestCase):
+    def test_a_family_markers_two_profiles(self):
+        # since 2026-11-14: hmmalign takes one profile; a file of two (ACT's) gives it the first
+        with tempfile.TemporaryDirectory() as tmp:
+            one = os.path.join(tmp, "one.hmm")
+            with open(one, "w") as fh:
+                fh.write("HMMER3/f\nNAME  A\n//\n")
+            two = os.path.join(tmp, "two.hmm")
+            with open(two, "w") as fh:
+                fh.write("HMMER3/f\nNAME  A\n//\nHMMER3/f\nNAME  B\n//\n")
+            self.assertEqual(align.first_profile(one, tmp), one)
+            with open(align.first_profile(two, tmp)) as fh:
+                self.assertEqual(fh.read(), "HMMER3/f\nNAME  A\n//\n")
+
+
 class IntronTest(unittest.TestCase):
     U12 = "ATATCCTT" + "G" * 20 + "TCCTTAAC" + "C" * 10 + "AC"  # a U12 donor, its branch point 12 from the end
     U2 = "GTAAGT" + "T" * 40 + "CAG"

@@ -99,6 +99,25 @@ class AliasTest(unittest.TestCase):
             self.assertEqual((alias["2"], alias["chr2"], alias["CM2"]), ("CM2.1", "CM2.1", "CM2.1"))
 
 
+class GenArkTest(unittest.TestCase):
+    """UCSC GenArk's copies of VEuPathDB's gene models (since 2026-11-14)."""
+
+    def test_hub_and_names(self):
+        self.assertEqual(annotation.genark_url("GCA_018398765.1"), "https://hgdownload.soe.ucsc.edu/hubs/GCA/018/398/"
+                                                                   "765/GCA_018398765.1/genes/veupathGenes.gtf.gz")
+        self.assertTrue(annotation.genark_alias_url(annotation.genark_url("GCA_018398765.1")).endswith(
+            "/GCA_018398765.1/GCA_018398765.1.chromAlias.txt"))
+        self.assertEqual(annotation.SOURCES.index("genark"), annotation.SOURCES.index("veupathdb") + 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            gff = annotation.gff_file(tmp, "GCA_1.1", "genark")
+            with open(annotation.genark_alias_file(gff), "w") as fh:
+                fh.write("# genbank\tVEuPathDB\tassembly\tucsc\n"
+                         "JAHB01000001.1\tJAHB01000001\tCvel_scaffold10\tJAHB01000001v1\n")
+            got = annotation.aliases(None, gff)
+            self.assertEqual((got["JAHB01000001"], got["Cvel_scaffold10"]), ("JAHB01000001.1", "JAHB01000001.1"))
+            self.assertEqual(annotation.aliases(None, annotation.gff_file(tmp, "GCA_1.1", "ensembl")), {})
+
+
 class StopCodonTest(unittest.TestCase):
     def test_a_gtfs_stop_codon_is_coding(self):
         with tempfile.TemporaryDirectory() as tmp:

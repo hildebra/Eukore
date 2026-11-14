@@ -381,15 +381,18 @@ def report_package(rep, folder):
                 for f in r["flags"].split(","):
                     if f != "-":
                         reasons[f] += n
-        rows = []
+        rows, weak = [], []
         for g, c in sorted(by_group.items()):
             total = sum(c.values())
             bad = c["low"] + c["unverified"]
             rows.append([g, total, c["high"], c["medium"], c["unverified"], c["low"], pct(bad, total)])
             if total >= 100 and bad > LOW_SHARE * total:
-                rep.find("low", f"{g}: {pct(bad, total)} of its BUSCO copies low or unverified",
-                         "busco/copies.tsv's flags of its genomes: own_species f is another clade's gene (a "
-                         "contaminated or misnamed genome), undecided a clade the others cannot tell")
+                weak.append((bad / total, g))
+        if weak:  # one finding (since 2026-11-14: one a supergroup, eleven alike in the 2026-11 build's report)
+            rep.find("low", f"{len(weak)} supergroups with over {LOW_SHARE:.0%} of their BUSCO copies low or "
+                            "unverified: " + ", ".join(f"{g} {s:.1%}" for s, g in sorted(weak, reverse=True)),
+                     "busco/copies.tsv's flags of their genomes: own_species f is another clade's gene (a "
+                     "contaminated or misnamed genome), undecided a clade the others cannot tell")
         parts.append("The BUSCO copies' confidence:\n\n"
                      + table(["supergroup", "copies", "high", "medium", "unverified", "low", "low+unverified"], rows))
         if reasons:
@@ -401,21 +404,86 @@ def report_package(rep, folder):
                 return float(r[k])
             except (KeyError, ValueError):
                 return 0.0
-        dup = sorted((r for r in genome_rows if f(r, "loci") and f(r, "duplicated") / f(r, "loci") >= DUPLICATED),
+        # the tiers (since 2026-11-14, completeness.tsv's `tier`): drafts, too-small transcriptomes and poor genomes
+        # apart, so that the poorest lists show the genomes a user would take
+        tiers = collections.Counter(r.get("tier", "-") for r in genome_rows)
+        if set(tiers) - {"-"}:
+            parts.append("The genomes' tiers (completeness.tsv `tier`):\n\n" + table(
+                ["tier", "genomes"], [[t, f"{n:,}"] for t, n in tiers.most_common()]))
+        kept = [r for r in genome_rows if r.get("tier", "-") in ("-", "genome")]
+        transcriptome = [r for r in genome_rows if r.get("level") == "transcriptome"]
+        dup = sorted((r for r in kept if f(r, "loci") and f(r, "duplicated") / f(r, "loci") >= DUPLICATED
+                      and r.get("level") != "transcriptome"),
                      key=lambda r: -f(r, "duplicated") / f(r, "loci"))
-        poorest = sorted(genome_rows, key=lambda r: f(r, "complete"))[:SHOWN]
-        parts.append("Poorest genomes:\n\n" + table(
-            ["accession", "name", "supergroup", "source", "level", "complete", "missing"],
-            [[r["accession"], r["name"], r["supergroup"], r["source"], r["level"], r["complete"], r["missing"]]
-             for r in poorest]))
+        dup_tsa = [r for r in transcriptome if f(r, "loci") and f(r, "duplicated") / f(r, "loci") >= DUPLICATED]
+        poorest = sorted(kept, key=lambda r: f(r, "complete"))[:SHOWN]
+        parts.append("Poorest genomes" + (" (of tier genome)" if len(kept) < len(genome_rows) else "") + ":\n\n"
+                     + table(["accession", "name", "supergroup", "source", "level", "complete", "missing"],
+                             [[r["accession"], r["name"], r["supergroup"], r["source"], r["level"], r["complete"],
+                               r["missing"]] for r in poorest]))
         if dup:
             parts.append(f"Duplicated {DUPLICATED:.0%} or more of their BUSCOs ({len(dup):,}):\n\n" + table(
                 ["accession", "name", "supergroup", "duplicated", "loci"],
                 [[r["accession"], r["name"], r["supergroup"], r["duplicated"], r["loci"]] for r in dup[:SHOWN]]))
-            rep.find("low", f"{len(dup):,} genomes with {DUPLICATED:.0%} or more of their BUSCOs duplicated",
+            rep.find("low", f"{len(dup):,} genomes with {DUPLICATED:.0%} or more of their BUSCOs duplicated"
+                     + (f" (and {len(dup_tsa):,} transcriptomes: their isoforms)" if dup_tsa else ""),
                      "a hybrid, a polyploid or two organisms in one assembly: their copies' own_species and cross "
-                     "flags say which")
+                     "flags and genomes.tsv's duplication say which")
     rep.section("The package's species and copies", *parts)
+
+
+def report_inputs(rep, folder, facts=None):
+    """What the build ran without (since 2026-11-14: the 2026-11 build's report said nothing of MIDORI2's missing
+    lineages, an old taxdump, no tiara, KSGP 4.5): the package's manifest, species.tsv's labels, selection.tsv and
+    the done genomes' tiara; and the package stage's steps' times (benchmarks/stages.tsv)."""
+    path = os.path.join(folder, "manifest.json")
+    if not os.path.isfile(path):
+        return
+    with open(path) as fh:
+        manifest = json.load(fh)
+    inputs, counts = manifest.get("inputs") or {}, manifest.get("counts") or {}
+    rows, missing = [], []
+    refs = inputs.get("references") or {}
+    for name, ref in sorted(refs.items()):
+        rows.append([name, ref.get("version", "-"), f"{ref.get('species', 0):,} species"])
+    labels = counts.get("labels") or {}
+    species = counts.get("species", 0) + counts.get("species_rrna_only", 0)
+    for name, got in sorted(labels.items()):
+        if species and got.get("-", 0) >= species:
+            missing.append(f"{name.upper()} names none of the species (not given or not fetched)")
+    ksgp = refs.get("KSGP", {}).get("version")
+    if ksgp and ksgp.split(".")[0].isdigit() and int(ksgp.split(".")[0]) < 5:
+        missing.append(f"KSGP {ksgp}: an older release than 5.x")
+    if inputs.get("genomes_not_done"):
+        missing.append(f"{inputs['genomes_not_done']:,} genomes of the plan not done (manifest inputs.genomes_not_done)")
+    sources = (counts.get("metadata") or {}).get("annotation_sources") or {}
+    if sources:
+        rows.append(["annotations", "-", ", ".join(f"{k} {v:,}" for k, v in sorted(sources.items()) if k != "-")])
+    selection = rows_of(os.path.join(folder, "benchmarks", "selection.tsv"))
+    lost = sum(int(r["taxa"]) for r in selection if r.get("fate") == "not in the taxdump")
+    if lost:
+        missing.append(f"{lost:,} species of NCBI's assembly tables not in the taxdump (an older taxdump: --stage fetch "
+                       "with --refresh fetches both again)")
+    if facts:
+        tiara = collections.Counter(s.get("tiara") for s in facts["summaries"].values())
+        if tiara.get("none") and tiara["none"] > 0.5 * max(1, sum(tiara.values()) - tiara.get("-", 0)):
+            missing.append(f"tiara classified no windows of {tiara['none']:,} genomes (no tiara: tools/eukore.sh's "
+                           "TIARA_ENV, or --tiara)")
+    parts = []
+    if rows:
+        parts.append(table(["input", "version", "what"], rows))
+    if missing:
+        parts.append("Missing or old:\n\n" + "\n".join(f"- {m}" for m in missing))
+        rep.find("medium", f"{len(missing)} inputs missing or old: " + "; ".join(missing),
+                 "give them (--stage fetch fetches MIDORI2 and, with --refresh, the taxdump; KSGP with --ksgp_tax or "
+                 "--ksgp; tiara with TIARA_ENV), then run the package stage again")
+    stages = rows_of(os.path.join(folder, "benchmarks", "stages.tsv"))
+    if stages:
+        total = sum(float(r["seconds"]) for r in stages)
+        parts.append("The package stage's steps:\n\n" + table(
+            ["step", "hours", "share"], [[r["step"], f"{float(r['seconds']) / 3600:.2f}",
+                                          pct(float(r["seconds"]), total)] for r in stages]))
+    rep.section("The inputs and the package stage", *parts)
 
 
 def supergroups(folder):
@@ -430,6 +498,7 @@ def report(work, package=None, genomes_folder=None, threads=16):
     report_run(rep, work, facts, supergroups(package) if package else None)
     if package:
         report_package(rep, package)
+        report_inputs(rep, package, facts)
     return rep.text(f"Eukore run report: {work}" + (f", {package}" if package else ""))
 
 

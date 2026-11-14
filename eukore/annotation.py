@@ -44,7 +44,44 @@ from . import util
 TABLE = "annotation.tsv"
 ANNOTATION_COLUMNS = ("locus", "status", "contig", "source", "transcript", "gene", "exons", "ann_exons", "exact_exons",
                       "introns", "ann_introns", "exact_introns", "bases", "ann_bases", "shared_bases")
-SOURCES = ("ncbi", "veupathdb", "ensembl", "toga2")  # the order a genome's annotation is taken in
+SOURCES = ("ncbi", "veupathdb", "genark", "ensembl", "toga2")  # the order a genome's annotation is taken in
+# UCSC GenArk's copies of VEuPathDB's gene models (since 2026-11-14: VEuPathDB's own files need an API key, which a
+# user may not get). GenArk's hub of an assembly (hgdownload.soe.ucsc.edu/hubs/GCA/nnn/nnn/nnn/<accession>/) holds
+# genes/veupathGenes.gtf.gz (VEuPathDB's release 68, gff3ToGenePred's GTF) and <accession>.chromAlias.txt (VEuPathDB's
+# sequence names to GenBank's). On 2026-11-14, 263 of the 721 annotated genomes of VEuPathDB's organism table had it,
+# 39 of them curated models neither NCBI nor Ensembl has. The fetch stage asks GenArk for each accession of the
+# organism table (genark_probe) and keeps those found in the index.
+GENARK_HUBS = "https://hgdownload.soe.ucsc.edu/hubs"
+GENARK_RELEASE = "VEuPathDB 68 (UCSC GenArk)"
+
+
+def genark_folder(accession):
+    """An assembly's GenArk hub folder (its accession's digits in threes)."""
+    digits = re.sub(r"\D", "", accession.split(".")[0])
+    return f"{GENARK_HUBS}/{accession[:3]}/{digits[0:3]}/{digits[3:6]}/{digits[6:9]}/{accession}"
+
+
+def genark_url(accession):
+    return f"{genark_folder(accession)}/genes/veupathGenes.gtf.gz"
+
+
+def genark_alias_url(gtf_url):
+    folder = gtf_url.rsplit("/genes/", 1)[0]
+    return f"{folder}/{folder.rsplit('/', 1)[1]}.chromAlias.txt"
+
+
+def genark_probe(accessions, threads=8):
+    """Which accessions' GenArk hubs hold VEuPathDB's gene models (a HEAD request each) -> {accession: URL}."""
+    import urllib.request  # noqa: PLC0415
+
+    def head(acc):
+        try:
+            request = urllib.request.Request(genark_url(acc), method="HEAD", headers={"User-Agent": util.USER_AGENT})
+            with urllib.request.urlopen(request, timeout=30) as r:
+                return acc, r.status == 200
+        except OSError:
+            return acc, False
+    return {acc: genark_url(acc) for acc, ok in util.threaded(head, sorted(accessions), threads) if ok}
 INDEX_DIR = "annotation_sources"  # in the build's sources: the other sources' indexes (fetch_indexes)
 # VEuPathDB's genomes (open: each one's GenBank or RefSeq accession and GFF); its files need a user's API key
 VEUPATHDB_ORGANISMS = ("https://veupathdb.org/veupathdb/service/record-types/organism/searches/GenomeDataTypes/reports/"
@@ -250,8 +287,9 @@ def fetch_indexes(src_dir, download, log=print, refresh=False):
     """Ensembl's and TOGA2's indexes into src_dir/INDEX_DIR/annotations.tsv (INDEX_COLUMNS: accession, source, build,
     url), kept where there unless refresh (eukore_build.py --refresh: fetched again, the old kept where that fails)."""
     path = index_file(src_dir)
-    if os.path.isfile(path) and os.path.isfile(toga2_file(src_dir)) and not refresh:
-        return path
+    if os.path.isfile(path) and os.path.isfile(toga2_file(src_dir)) and not refresh \
+            and "genark" in {s for s, _u in (x for v in read_index(src_dir).values() for x in v)}:
+        return path  # an index of before 2026-11-14 (no GenArk rows) is made again
     folder = os.path.dirname(path)
     os.makedirs(folder, exist_ok=True)
     rows = []
@@ -264,9 +302,14 @@ def fetch_indexes(src_dir, download, log=print, refresh=False):
     os.remove(species)
     organisms = util.part_of(os.path.join(folder, "veupathdb_organisms.json"))
     download(VEUPATHDB_ORGANISMS, organisms)
-    rows += [(acc, "veupathdb", build.replace("\t", " "), url)
-             for acc, (build, url) in sorted(veupathdb_index(organisms).items())]
+    vdb = veupathdb_index(organisms)
+    rows += [(acc, "veupathdb", build.replace("\t", " "), url) for acc, (build, url) in sorted(vdb.items())]
     os.remove(organisms)
+    # GenArk's copies of VEuPathDB's models, open (since 2026-11-14); a failed probe leaves none
+    try:
+        rows += [(acc, "genark", GENARK_RELEASE, url) for acc, url in sorted(genark_probe(vdb).items())]
+    except OSError as e:
+        log(f"WARNING: GenArk's VEuPathDB gene models not indexed ({e})")
     table = util.part_of(os.path.join(folder, "toga2_assemblies.tsv"))
     download(f"{TOGA2_URL}/assemblies_and_species.tsv", table)
     listing = util.part_of(os.path.join(folder, "toga2.html"))
@@ -291,7 +334,8 @@ def fetch_indexes(src_dir, download, log=print, refresh=False):
         fh.writelines("\t".join(r) + "\n" for r in rows)
     os.replace(util.part_of(path), path)
     log(f"annotations: Ensembl's of {sum(r[1] == 'ensembl' for r in rows):,} assemblies, VEuPathDB's of "
-        f"{sum(r[1] == 'veupathdb' for r in rows):,}, TOGA2's of {sum(r[1] == 'toga2' for r in rows):,}")
+        f"{sum(r[1] == 'veupathdb' for r in rows):,} (GenArk's open copies of {sum(r[1] == 'genark' for r in rows):,}), "
+        f"TOGA2's of {sum(r[1] == 'toga2' for r in rows):,}")
     return path
 
 
@@ -372,7 +416,7 @@ def aliases(report, gff=None):
     a gene set naming its scaffolds that way matched none, and the genome got no transcripts, silently."""
     out = {}
     if not report or not os.path.isfile(report):
-        return out
+        return genark_aliases(genark_alias_file(gff) if gff else None)  # GenArk's map alone (since 2026-11-14)
     by_length = collections.defaultdict(list)
     named, sequence = collections.defaultdict(set), {}  # a submitter's or UCSC's name -> its sequences; the accessions
     with open(report) as fh:
@@ -403,6 +447,8 @@ def aliases(report, gff=None):
         # sequence
         if len(theirs) == 1 and name not in out and name not in sequence:
             out[name] = next(iter(theirs))
+    for name, gb in genark_aliases(genark_alias_file(gff) if gff else None).items():  # GenArk's map (2026-11-14)
+        out.setdefault(name, gb)
     if gff and os.path.isfile(gff):
         theirs = collections.defaultdict(list)
         with util.open_text(gff) as fh:
@@ -416,6 +462,35 @@ def aliases(report, gff=None):
         for length, names in theirs.items():
             if len(names) == 1 and len(by_length.get(length, ())) == 1 and names[0] not in known:
                 out[names[0]] = by_length[length][0]
+    return out
+
+
+def genark_alias_file(gff):
+    """The GenArk sequence-name map fetched beside a genark annotation (fetch), or None for another source's."""
+    suffix = ".genark.gff.gz"
+    return gff[:-len(suffix)] + ".genark.alias.txt" if gff and gff.endswith(suffix) else None
+
+
+def genark_aliases(path):
+    """A GenArk hub's <accession>.chromAlias.txt (a header `# genbank VEuPathDB assembly ncbi ucsc`, then one line a
+    sequence) -> {each other name of a sequence: its GenBank name}; {} without one."""
+    out = {}
+    if not path or not os.path.isfile(path):
+        return out
+    with open(path) as fh:
+        head = None
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if line.startswith("#"):
+                head = [x.strip("# ").lower() for x in f]
+                continue
+            if not head or "genbank" not in head:
+                continue
+            row = dict(zip(head, f))
+            gb = row.get("genbank")
+            for k, name in row.items():
+                if gb and k != "genbank" and name and name != gb:
+                    out.setdefault(name, gb)
     return out
 
 
@@ -584,6 +659,9 @@ def fetch(job, genomes_folder, veupathdb_key=None, **how):
             continue
         if why:
             raise OSError(f"{url}: {why}")
+        if source == "genark":  # its sequences' names: GenArk's map of VEuPathDB's to GenBank's (since 2026-11-14)
+            util.fetch_file(genark_alias_url(url), genark_alias_file(path), gzip_check=False,
+                            **{k: v for k, v in how.items() if k == "scratch"})
         if has_cds(path):
             return path, source
         os.remove(path)  # NCBI's GFF of an unannotated assembly: its regions alone
@@ -602,7 +680,7 @@ def annotate_genome(work, job, genomes_folder, may_fetch=True, veupathdb_key=Non
     note_annotation_none(work, job, none_before(job, source))  # not asked again (genomes.better_annotation)
     report = report_file(genomes_folder, job["accession"])
     n = annotate(done_dir(work, job["accession"]), path, report, source=source or "-")
-    for done in (path, report):
+    for done in (path, report, genark_alias_file(path) if path else None):
         if done and os.path.isfile(done):
             os.remove(done)
     return n

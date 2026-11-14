@@ -65,6 +65,45 @@ class SetTest(unittest.TestCase):
         fates = genomes.fates(self.ncbi, rows + [dict(rows[0], accession="GCA_9.1", species_taxid=999999)], jobs)
         self.assertEqual(fates[999999], "not in the taxdump")
 
+    def test_a_genome_ncbi_does_not_serve(self):
+        # since 2026-11-14: a FASTA NCBI's folder lacks (404) noted by the fetch; the next plan takes the RefSeq copy's
+        # GenBank original, else the species' next assembly; a later arrival takes the note back
+        work = self.tmp.name
+        table = genomes.note_unavailable(work, {"GCF_000146045.2": genomes.NOT_SERVED, "GCA_000002516.1":
+                                                genomes.NOT_SERVED, "GCA_1.1": "HTTP 500"})
+        self.assertEqual(sorted(table), ["GCA_000002516.1", "GCF_000146045.2"])  # a server's error is no note
+        jobs = genomes.jobs(self.ncbi, self.gb, self.rs, unavailable=genomes.read_unavailable(work))
+        self.assertEqual(jobs[YEAST]["fetch"], YEAST)  # its RefSeq copy not served: the GenBank original
+        self.assertIn("GCA_000002515.1", jobs)  # Kluyveromyces lactis' next assembly
+        self.assertNotIn("GCA_000002516.1", jobs)
+        genomes.note_unavailable(work, {"GCA_000002516.1": ""})
+        self.assertEqual(sorted(genomes.read_unavailable(work)), ["GCF_000146045.2"])
+
+    def test_rrna_donors(self):
+        # since 2026-11-14: a done genome without any 18S takes it from its species' next assembly; one with rRNA, or
+        # not done, none
+        work = self.tmp.name
+        jobs = genomes.jobs(self.ncbi, self.gb, self.rs)
+        lactis = next(a for a, j in jobs.items() if a.startswith("GCA_000002516"))
+        for acc, rrna in ((lactis, {"18S": 0, "rDNA": 0}), ("GCA_000000013.1", {"18S": 2, "rDNA": 1})):
+            os.makedirs(genomes.done_dir(work, acc), exist_ok=True)
+            with open(os.path.join(genomes.done_dir(work, acc), "done.json"), "w") as fh:
+                json.dump({"accession": acc, "rrna": rrna, "loci": 1}, fh)
+        donors = genomes.rrna_donor_jobs(self.ncbi, self.gb, self.rs, jobs, work)
+        self.assertEqual(sorted(donors), ["GCA_000002515.1"])
+        self.assertEqual(donors["GCA_000002515.1"]["why"], ["rrna_donor"])
+        self.assertFalse(genomes.no_rrna({"rrna": None}))  # not extracted: no donor
+
+    def test_midori2_release(self):
+        # MIDORI2's Zenodo record: its RAW archive's release, URL, size and MD5 (labels.fetch_midori2)
+        record = {"files": [{"key": "MIDORI2_GB274_RAW_sp.zip"}, {"key": "MIDORI2_GB274_RAW.zip", "size": 17,
+                             "checksum": "md5:abc", "links": {"self": "https://zenodo.org/x/content"}}]}
+        self.assertEqual(labels.midori2_release(record), ("GB274", "https://zenodo.org/x/content", 17, "abc"))
+        self.assertIsNone(labels.midori2_release({"files": [{"key": "MIDORI2_GB274_BLAST.zip"}]}))
+        self.assertTrue(labels.MIDORI2_MEMBER.search("MIDORI2_UNIQ_NUC_GB274_CO1_RAW.fasta.gz"))
+        self.assertFalse(labels.MIDORI2_MEMBER.search("MIDORI2_TOTAL_NUC_GB274_CO1_RAW.fasta.gz"))
+        self.assertEqual(labels.midori2_gene("MIDORI2_UNIQ_NUC_GB274_lrRNA_RAW.fasta.gz"), "LSU")
+
     def test_a_source_that_cannot_be_fetched(self):
         # its site moved: the source is not ready, the fetch goes on (until 2026-11-06 the stage stopped)
         def gone(url, dest, md5=None):

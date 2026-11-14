@@ -119,7 +119,7 @@ class Odb:
     further datasets in the same layout holding the rest of loci (since 2026-11-07: Eukore's markers, markers.py),
     whose decoy profiles (decoys/*.hmm) join the HMMs a candidate is scored against but are no locus."""
 
-    def __init__(self, folder, loci, extra=()):
+    def __init__(self, folder, loci, extra=(), queries=None):
         self.folder = folder
         self.loci = list(loci)
         wanted = set(self.loci)
@@ -166,6 +166,15 @@ class Odb:
                     locus = name.rsplit("_", 1)[0]
                     if locus in mine:
                         self.ancestral[locus].append((name, seq))
+        # Eukore's own query proteins (tiers.query_proteins; since 2026-11-14): further queries of a BUSCO, named
+        # <locus>_<species taxid>_eukore_<accession>; no dataset species (species(): the OrthoDB benchmark's)
+        self.extra = collections.defaultdict(list)
+        if queries and os.path.isfile(queries):
+            for name, seq in read_fasta(queries):
+                locus, _, rest = name.partition("_")
+                taxid = rest.split("_", 1)[0]
+                if locus in wanted and locus not in self.markers and taxid.isdigit():
+                    self.extra[locus].append((int(taxid), name, seq))
 
     def by_locus(self, hits):
         """A protein's hmmsearch hits {profile: (score, HMM coverage)} -> {locus: (score, coverage)}, per locus its best
@@ -185,7 +194,7 @@ class Odb:
 
     def all_species(self):
         """Every species whose proteins are queries (the markers' too): their lineages rank a genome's queries."""
-        return sorted({t for ps in self.proteins.values() for t, _n, _s in ps})
+        return sorted({t for ps in list(self.proteins.values()) + list(self.extra.values()) for t, _n, _s in ps})
 
     def hmm_db(self, path):
         """The loci's HMMs and the markers' decoys in one file (hmmsearch's query) -> path."""
@@ -210,16 +219,26 @@ class Odb:
         """A genome's queries -> {query name: protein}: per locus its `nearest` proteins of the species closest to it
         (lineage: the genome's ancestor taxids; lineages: {dataset species taxid: its ancestor taxids}), then the
         ancestral variants; leave_out: dataset taxids whose proteins are not taken (the genome's own species', for the
-        OrthoDB benchmark's held-out calls). Query names are <locus>~<record>, so that a hit names its locus."""
+        OrthoDB benchmark's held-out calls). Query names are <locus>~<record>, so that a hit names its locus. Eukore's
+        own proteins (extra; since 2026-11-14) are added where nearer the genome than the dataset's nearest, up to
+        `nearest` of them, never of its own species (lineage[0]); held-out calls (leave_out) take none, so that the
+        benchmark's hold-outs stay hold-outs."""
         mine = set(lineage)
         depth = {t: len(mine & set(anc)) for t, anc in lineages.items()}
         leave_out = set(leave_out)
+        own = lineage[0] if lineage else None
         out = {}
         for locus in self.loci:
             ranked = sorted((p for p in self.proteins.get(locus, ()) if p[0] not in leave_out),
                             key=lambda p: (-depth.get(p[0], 0), p[1]))
             for _t, name, seq in ranked[:nearest]:
                 out[f"{locus}~{name}"] = seq
+            if self.extra.get(locus) and not leave_out:
+                best = depth.get(ranked[0][0], 0) if ranked else 0
+                nearer = sorted((p for p in self.extra[locus] if p[0] != own and depth.get(p[0], 0) > best),
+                                key=lambda p: (-depth.get(p[0], 0), p[1]))
+                for _t, name, seq in nearer[:nearest]:
+                    out[f"{locus}~{name}"] = seq
             for name, seq in self.ancestral.get(locus, ()):
                 out[f"{locus}~{name}"] = seq
         return out

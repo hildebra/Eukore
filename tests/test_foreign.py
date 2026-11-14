@@ -78,6 +78,18 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(self.verdict(CRYPTO, {}, holders), ("-", None))
         self.assertEqual(self.verdict(CRYPTO, {AGARIC: 96.9}, holders), ("-", None))
 
+    def test_alone_in_its_family_its_orders_copy(self):
+        # since 2026-11-14 (qc.verdict): a coding copy of a species alone in its family among the holders, its nearest
+        # all of its own order (Tremella, Cryptococcus' order's other family), is its own; one whose nearest include
+        # another order's stays undecided
+        cache = {}
+        holders = {CRYPTO, TREMELLA, YEAST}
+        members = qc.families(self.ncbi, holders, cache)
+        self.assertEqual(qc.verdict(CRYPTO, [(85.0, TREMELLA), (70.0, YEAST)], self.ncbi, cache, members)[:2],
+                         ("t", None))
+        self.assertEqual(qc.verdict(CRYPTO, [(85.0, TREMELLA), (84.0, YEAST)], self.ncbi, cache, members)[:2],
+                         ("-", None))
+
     def test_another_clades_by_its_own_clades_margin(self):
         # a species of its order holds the 18S (its own clade: the deepest of family, order, class another holder is
         # of): another clade's only where that is MARGIN under the top and the partner's clade holds it nearer

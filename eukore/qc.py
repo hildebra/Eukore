@@ -159,6 +159,13 @@ def verdict(sp, found, ncbi, cache, members, near=NEAR, foreign_id=FOREIGN_ID, r
     agree = max(depth(ncbi, sp, s, cache) for s in near_)
     if agree >= 4:
         return "t", None, top, agree
+    # a species alone in its family among those holding the locus (since 2026-11-14: half of the 2026-11 build's
+    # 247,525 undecided BUSCO copies were such, no relative near enough to agree at the family): its nearest all of its
+    # own order is its own clade's sequence
+    fam = _ranks(ncbi, sp, cache).get("family")
+    alone = fam is None or not (members.get(fam, set()) - {sp})
+    if alone and agree >= 3 and all(depth(ncbi, sp, s, cache) >= 3 for s in near_):
+        return "t", None, top, agree
     if top < foreign_id or not all(apart(ncbi, sp, s, cache) for s in near_):
         return "-", None, top, agree
     partner = max(found)[1]  # the nearest other clade's species
@@ -217,7 +224,7 @@ def check(copies, species_of, ncbi, vsearch=None, threads=1, protein_length=None
                 for locus, seqs in by_locus.items() if len({species_of[a] for a in seqs}) >= 2]
         if searches:  # each locus' search kept, and shared with other nodes (since 2026-11-11)
             found = searched_loci(todo, vsearch, threads, searches["folder"], searches.get("helpers"), progress,
-                                  scratch=searches.get("scratch"))
+                                  scratch=searches.get("scratch"), log=searches.get("log"))
         else:
             found = {}
             shown = progress(SEARCHED, [weight(q) for _l, q, _d in todo]) if progress and todo else None
@@ -474,6 +481,52 @@ def search_one(folder, base, vsearch, threads, inputs=None, params=DEFAULT, shar
     return True
 
 
+# A locus another node holds while this node has nothing left (since 2026-11-14): the 2026-11 build's final job sat at 0
+# cores for 1 h 27 m waiting for one BUSCO locus a helper held. Once such a locus has been held longer than
+# STRAGGLER_TIMES this node's longest own search (at least STRAGGLER_MIN seconds), this node searches it too, from its
+# own copy of the inputs: whichever finishes first writes the hits (both write the same, each whole then renamed).
+STRAGGLER_TIMES = 2.0
+STRAGGLER_MIN = 900
+
+
+def claim_holder(folder, base):
+    """(host, seconds since the claim was made) of the node searching a locus, or None."""
+    claim = search_files(folder, base)[3]
+    try:
+        with open(claim) as fh:
+            host = fh.read().split()[0]
+        return host, time.time() - os.stat(claim).st_ctime
+    except (OSError, IndexError):
+        return None
+
+
+def search_too(folder, base, vsearch, threads, inputs, params=DEFAULT, scratch=None):
+    """A locus another node holds searched here as well (STRAGGLER_TIMES), its inputs written into a folder of this
+    node's (scratch, else TMPDIR), its claim left alone -> whether its hits are there now."""
+    hits = search_files(folder, base)[2]
+    if os.path.isfile(hits) or isinstance(params, (CmParams, CmalignParams)):
+        return os.path.isfile(hits)
+    local = tempfile.mkdtemp(dir=scratch, prefix="search_too.")
+    try:
+        q, d = search_files(local, base)[:2]
+        queries, db = inputs
+        _write_fasta(q, queries)
+        if isinstance(db, Shared):
+            _write_fasta(d, db.seqs)
+        elif db is not None:
+            _write_fasta(d, db)
+        out = os.path.join(local, "hits.tsv")
+        ident, accepts, rejects, options = params
+        util.vsearch_files(vsearch, q, d if os.path.isfile(d) else q, out, ident, threads, accepts, rejects, options)
+        if not os.path.isfile(hits):
+            with open(out, "rb") as src, gzip.open(util.part_of(hits), "wb", compresslevel=3) as dst:
+                shutil.copyfileobj(src, dst)
+            os.replace(util.part_of(hits), hits)
+    finally:
+        shutil.rmtree(local, ignore_errors=True)
+    return os.path.isfile(hits)
+
+
 def read_hits(folder, base, params=DEFAULT):
     with gzip.open(search_files(folder, base)[2], "rt") as fh:
         if isinstance(params, CmalignParams):
@@ -537,21 +590,47 @@ def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, p
     # searched here alone: the inputs on the node's disk (scratch: --local_tmp; since 2026-11-13), the WORK's file
     # system given the hits alone
     local = tempfile.mkdtemp(dir=scratch, prefix="search.") if left and not stop and scratch else None
+    longest, again = 0.0, set()  # this node's longest own search; the loci it searched too (STRAGGLER_TIMES)
     try:
         while left:
             for locus in list(left):
                 timing = {} if log else None
+                began = time.time()
                 if search_one(folder, base[locus], vsearch, threads, inputs[locus], params, shared[locus], local,
                               timing):
                     left.remove(locus)
+                    if time.time() - began > 1:  # searched here (not one another node had finished)
+                        longest = max(longest, time.time() - began)
                     if timing:
                         log(f"  {searched_line(base[locus], timing)}")
                     if shown:
                         shown.step(weight(inputs[locus][0]))
             if left:  # the others' loci: their hits awaited (a dead node's claim taken over by search_one)
-                if shown:
-                    shown.tick(f"; {len(left):,} searched by other nodes")
-                time.sleep(poll)
+                holders = {locus: claim_holder(folder, base[locus]) for locus in left}
+                slow = [locus for locus, h in holders.items() if h and locus not in again
+                        and h[1] > max(STRAGGLER_MIN, STRAGGLER_TIMES * longest)]
+                for locus in slow[:1]:  # one at a time, on all this node's threads
+                    host, held_for = holders[locus]
+                    if log:
+                        log(f"  {base[locus]}: held by {host} for {util.duration(held_for)} (this node's longest "
+                            f"search {util.duration(longest)}): searched here too")
+                    again.add(locus)
+                    try:
+                        done = search_too(folder, base[locus], vsearch, threads, inputs[locus], params, scratch)
+                    except OSError as e:  # the other node's search still counts
+                        done = False
+                        if log:
+                            log(f"  {base[locus]}: the search here too failed ({e}); waiting for {host}")
+                    if done:
+                        left.remove(locus)
+                        if shown:
+                            shown.step(weight(inputs[locus][0]))
+                if shown and left:
+                    named = sorted({h[0] for h in holders.values() if h})
+                    shown.tick(f"; {len(left):,} searched by other nodes"
+                               + (f" ({', '.join(named[:3])})" if named else ""))
+                if left:
+                    time.sleep(poll)
     finally:
         if stop:
             stop()

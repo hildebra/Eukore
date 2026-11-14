@@ -296,8 +296,12 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   - PR2 5.1.1's taxonomy (5 MB) and KSGP 4.0's (243 MB; not with `--ksgp_tax`);
   - since 0.2: SILVA 138.2's SSU Ref NR99, UNITE 10.0's release of all eukaryotes and Open Tree Taxonomy 3.7.3
     (`WORK/sources/labels`), Rfam's eukaryote SSU model (`WORK/sources/rfam`), ENA's list of eukaryote TSA sets
-    (`WORK/sources/tsa`). MIDORI2 and BOLD are not fetched (their URLs change, BOLD's bulk data needs a login): give
-    them with `--midori2` and `--bold_tsv`.
+    (`WORK/sources/tsa`). Since 2026-11-14 MIDORI2's newest release too (its UNIQ gene files, from its Zenodo record:
+    `WORK/sources/labels/midori2/`; `--midori2` gives other files, `--no_midori2` none), the taxdump again with
+    `--refresh` or where it is a week older than the assembly tables, and UCSC GenArk's copies of VEuPathDB's gene
+    models (VEuPathDB's own need an API key). A genome whose FASTA NCBI does not serve (a 404) is noted in
+    `WORK/unavailable.tsv`; the next plan takes its species' next assembly. BOLD is not fetched (its bulk data needs a
+    login): give it with `--bold_tsv`.
   - since 0.2, the inputs of Eukore's marker set (`WORK/sources/eukore_markers`, `eukore/markers.py`): KOfam's
     `ko_list` and its markers' and decoys' profiles (out of KOfam's 1.6 GB archive, fetched in 16 ranges at once and
     deleted), Swiss-Prot's eukaryote proteins (~90 MB, EBI's FTP) and NCBI's proteins named as each marker
@@ -418,7 +422,12 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--downloads` | 8 | the fetch stage's genomes and annotations downloaded at a time, by `curl` where it is on the PATH (one NCBI connection: ~30–40 MB/s by curl, ~10 by Python's urllib); their gzip checks run in one process of their own, a second core, by ISA-L's `igzip` where it is on the PATH (conda-forge's `isa-l`; ~3.5x Python's), else `pigz`, else Python |
 | `--local_tmp DIR` | beside `OUT/genomes`; `TMPDIR` | a node's local disk (or a scratch file system without backups) for temporary files: the fetch stage's unfinished downloads (`.part` files) and their gzip checks, each file copied into `OUT/genomes` once whole; since 0.2.1 the process stage's too: each genome run's copy of its genome (read there by every step, not from `OUT` some six times), miniprot's pieces of a genome over 4 Gb, the rescue's ORFs, tiara's and vsearch's files, and `TMPDIR`'s (barrnap's, ITSx's); only the results are written to `WORK`; since 2026-11-10 `TMPDIR` for the package stage's tools as well. Room: up to ~3 times a genome's size per genome running (a few GB; ~10–20 GB for a mammal's, ~45 GB for a 30 Gb genome's pieces); `--scratch` before 2026-11-09, still taken |
 | `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and the process stage's passes, after a report every minute of each one's first 10 (items left, time left; in the process stage the cores, memory and disk used) |
-| `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
+| `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies (`tools/eukore.sh` gives `--tiara` from the settings' `TIARA_ENV`, default `eukore-tiara`, or `TIARA`; since 2026-11-14) |
+| `--keep_poor_genomes` | left out | the copies of the genomes of tier poor, partial or contaminated kept, flagged `poor_genome` (since 2026-11-14; `eukore/tiers.py`) |
+| `--no_tsa_rrna` | extracted | no rRNA from the transcriptomes (since 2026-11-14 barrnap and ITSx run on them; a done transcriptome without is backfilled where its file is there) |
+| `--no_rrna_donors` | donors | a species whose genome holds no 18S takes none from its next assembly (since 2026-11-14: that assembly fetched and run by barrnap and ITSx alone, `WORK/rrna_donors/`) |
+| `--no_eukore_queries` | taken | no Eukore's own query proteins (since 2026-11-14: the package stage writes the clean copies' proteins of the groups BUSCO's dataset serves poorly, `WORK/eukore_queries.faa.gz`; the next build's genomes of those groups take them where nearer than the dataset's, never their own species', the held-out calls none, and a done one is run again with them) |
+| `--no_midori2` | fetched | no MIDORI2 (since 2026-11-14 the fetch stage takes its newest release from Zenodo) |
 | `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
 | `--held_out_ranks` | `genus,family,order` | the OrthoDB benchmark's clade hold-out: a BUSCO dataset species' genome called again without its genus', family's and order's dataset species in turn, one more BUSCO search each ([benchmarks.md](benchmarks.md); `none`: its own species' hold-out alone; since 2026-11-09) |

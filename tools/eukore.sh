@@ -68,7 +68,7 @@ submit() {  # submit NAME [sbatch's options] -- STEP: the job's ID; fails when s
 }
 
 run_stage() {  # run_stage STAGE [the stage's options]: Eukore's build with the settings' folders, inside a job
-    local stage=$1 cmd
+    local stage=$1 cmd tiara
     shift
     echo "SLURM job ${SLURM_JOB_ID:--} (array ${SLURM_ARRAY_JOB_ID:--} task ${SLURM_ARRAY_TASK_ID:--}) on" \
         "$HOSTNAME: --stage $stage"
@@ -77,7 +77,24 @@ run_stage() {  # run_stage STAGE [the stage's options]: Eukore's build with the 
     [[ -z $GEN ]] || cmd+=(--genomes "$GEN")
     [[ -z $SOURCES ]] || cmd+=(--sources "$SOURCES")
     [[ -z ${REVERSION:-} ]] || cmd+=(--reversion)
+    tiara=$(tiara_of)
+    [[ -z $tiara ]] || cmd+=(--tiara "$tiara")
     "${cmd[@]}" ${BUILD_OPTS[@]+"${BUILD_OPTS[@]}"} -t "${SLURM_CPUS_PER_TASK:-2}" "$@"
+}
+
+tiara_of() {  # tiara's own environment's program (it needs a Python of 3.9 or older: envs/tiara.yaml), or nothing
+    # since 2026-11-14: the 2026-11 build ran without tiara ("no tiara: windows not classified"), as the eukore
+    # environment holds none. TIARA_ENV in the settings names its environment (default eukore-tiara, envs/tiara.yaml's
+    # name), found under micromamba's root; TIARA a program itself
+    local env=${TIARA_ENV:-eukore-tiara} root=${MAMBA_ROOT_PREFIX:-$HOME/micromamba}
+    if [[ -n ${TIARA:-} ]]; then
+        echo "$TIARA"
+    elif [[ -x $root/envs/$env/bin/tiara ]]; then
+        echo "$root/envs/$env/bin/tiara"
+    elif [[ -n ${TIARA_ENV:-} ]] && command -v micromamba > /dev/null \
+            && micromamba env list 2> /dev/null | awk -v e="$env" '$1 == e {print $NF}' | grep -q .; then
+        echo "$(micromamba env list | awk -v e="$env" '$1 == e {print $NF}')/bin/tiara"
+    fi
 }
 
 activate() {  # the settings' micromamba environment, inside a job
