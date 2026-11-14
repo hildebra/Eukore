@@ -159,6 +159,13 @@ def verdict(sp, found, ncbi, cache, members, near=NEAR, foreign_id=FOREIGN_ID, r
     agree = max(depth(ncbi, sp, s, cache) for s in near_)
     if agree >= 4:
         return "t", None, top, agree
+    # a species alone in its family among those holding the locus (since 2026-11-14: half of the 2026-11 build's
+    # 247,525 undecided BUSCO copies were such, no relative near enough to agree at the family): its nearest all of its
+    # own order is its own clade's sequence
+    fam = _ranks(ncbi, sp, cache).get("family")
+    alone = fam is None or not (members.get(fam, set()) - {sp})
+    if alone and agree >= 3 and all(depth(ncbi, sp, s, cache) >= 3 for s in near_):
+        return "t", None, top, agree
     if top < foreign_id or not all(apart(ncbi, sp, s, cache) for s in near_):
         return "-", None, top, agree
     partner = max(found)[1]  # the nearest other clade's species
@@ -217,7 +224,7 @@ def check(copies, species_of, ncbi, vsearch=None, threads=1, protein_length=None
                 for locus, seqs in by_locus.items() if len({species_of[a] for a in seqs}) >= 2]
         if searches:  # each locus' search kept, and shared with other nodes (since 2026-11-11)
             found = searched_loci(todo, vsearch, threads, searches["folder"], searches.get("helpers"), progress,
-                                  scratch=searches.get("scratch"))
+                                  scratch=searches.get("scratch"), log=searches.get("log"))
         else:
             found = {}
             shown = progress(SEARCHED, [weight(q) for _l, q, _d in todo]) if progress and todo else None
@@ -359,6 +366,44 @@ class CmParams(tuple):
         return ["cmsearch", self[0], self[1], "-"]
 
 
+MAP_RECORD = 1  # what makes a kept window-screen part (MapParams): raised when chimeras.map_file's lines change
+UCHIME_RECORD = 1  # what makes a kept UCHIME part (UchimeParams): raised when chimeras.uchime_file's lines change
+
+
+class MapParams(tuple):
+    """A window-screen part's settings (since 2026-11-14: chimeras.window_screen's first pass): the windows' step and
+    minimap2's preset; the queries are 18S cut into windows by the part (chimeras.map_file), the database the
+    genomes' 18S (Shared). Its hits: (window, target, matches, block, covered)."""
+    __slots__ = ()
+
+    def __new__(cls, step, preset="asm20"):
+        return super().__new__(cls, (int(step), preset))
+
+    def text(self):
+        from . import chimeras  # noqa: PLC0415
+        return (f"minimap2\t{MAP_RECORD}\t{chimeras.WINDOW}\t{self[0]}\t{self[1]}\t"
+                f"{chimeras.PRESETS[self[1]]}\n")
+
+    def columns(self):
+        return ["minimap2", str(self[0]), self[1], "-"]
+
+
+class UchimeParams(tuple):
+    """A UCHIME part's settings (since 2026-11-14: chimeras.uchime_screen): none; its queries the part's distinct 18S,
+    the database (Shared) every distinct 18S, the part's own left out of it by the part (chimeras.uchime_file). Its
+    hits: (query, parent A, parent B, score, crossover, the start's parent)."""
+    __slots__ = ()
+
+    def __new__(cls):
+        return super().__new__(cls, ())
+
+    def text(self):
+        return f"uchime\t{UCHIME_RECORD}\n"
+
+    def columns(self):
+        return ["uchime", "-", "-", "-"]
+
+
 class Shared:
     """A database several searches of a folder share ({name: sequence}), written once as db.<digest>.fna."""
     def __init__(self, seqs):
@@ -455,6 +500,14 @@ def search_one(folder, base, vsearch, threads, inputs=None, params=DEFAULT, shar
                 began = time.time()
                 regions.align_file(vsearch, q, params[0], regions.cols_of(params[2]), out, threads, inputs_dir)
                 took = (None, time.time() - began)
+            elif isinstance(params, (MapParams, UchimeParams)):  # the chimera screens' (since 2026-11-14)
+                from . import chimeras  # noqa: PLC0415
+                began = time.time()
+                if isinstance(params, MapParams):  # `vsearch` is minimap2 here
+                    chimeras.map_file(vsearch, q, db, out, threads, params[1], params[0])
+                else:
+                    chimeras.uchime_file(vsearch, q, db, out, threads, inputs_dir)
+                took = (None, time.time() - began)
             else:
                 ident, accepts, rejects, options = params
                 took = util.vsearch_files(vsearch, q, db, out, ident, threads, accepts, rejects, options,
@@ -474,11 +527,60 @@ def search_one(folder, base, vsearch, threads, inputs=None, params=DEFAULT, shar
     return True
 
 
+# A locus another node holds while this node has nothing left (since 2026-11-14): the 2026-11 build's final job sat at 0
+# cores for 1 h 27 m waiting for one BUSCO locus a helper held. Once such a locus has been held longer than
+# STRAGGLER_TIMES this node's longest own search (at least STRAGGLER_MIN seconds), this node searches it too, from its
+# own copy of the inputs: whichever finishes first writes the hits (both write the same, each whole then renamed).
+STRAGGLER_TIMES = 2.0
+STRAGGLER_MIN = 900
+
+
+def claim_holder(folder, base):
+    """(host, seconds since the claim was made) of the node searching a locus, or None."""
+    claim = search_files(folder, base)[3]
+    try:
+        with open(claim) as fh:
+            host = fh.read().split()[0]
+        return host, time.time() - os.stat(claim).st_ctime
+    except (OSError, IndexError):
+        return None
+
+
+def search_too(folder, base, vsearch, threads, inputs, params=DEFAULT, scratch=None):
+    """A locus another node holds searched here as well (STRAGGLER_TIMES), its inputs written into a folder of this
+    node's (scratch, else TMPDIR), its claim left alone -> whether its hits are there now."""
+    hits = search_files(folder, base)[2]
+    if os.path.isfile(hits) or isinstance(params, (CmParams, CmalignParams)):
+        return os.path.isfile(hits)
+    local = tempfile.mkdtemp(dir=scratch, prefix="search_too.")
+    try:
+        q, d = search_files(local, base)[:2]
+        queries, db = inputs
+        _write_fasta(q, queries)
+        if isinstance(db, Shared):
+            _write_fasta(d, db.seqs)
+        elif db is not None:
+            _write_fasta(d, db)
+        out = os.path.join(local, "hits.tsv")
+        ident, accepts, rejects, options = params
+        util.vsearch_files(vsearch, q, d if os.path.isfile(d) else q, out, ident, threads, accepts, rejects, options)
+        if not os.path.isfile(hits):
+            with open(out, "rb") as src, gzip.open(util.part_of(hits), "wb", compresslevel=3) as dst:
+                shutil.copyfileobj(src, dst)
+            os.replace(util.part_of(hits), hits)
+    finally:
+        shutil.rmtree(local, ignore_errors=True)
+    return os.path.isfile(hits)
+
+
 def read_hits(folder, base, params=DEFAULT):
     with gzip.open(search_files(folder, base)[2], "rt") as fh:
         if isinstance(params, CmalignParams):
             from . import regions  # noqa: PLC0415
             return regions.aligned_lines(fh)
+        if isinstance(params, (MapParams, UchimeParams)):
+            from . import chimeras  # noqa: PLC0415
+            return chimeras.map_hits(fh) if isinstance(params, MapParams) else chimeras.uchime_hits(fh)
         return util.cmsearch_hits(fh) if isinstance(params, CmParams) else util.vsearch_hits(fh)
 
 
@@ -498,6 +600,10 @@ def todo_entry(line):
         return f[0], CmParams(f[3], f[4]), None
     if len(f) >= 7 and f[2] == "cmalign":  # a cmalign part (since 2026-11-13): the model's file, digest, columns
         return f[0], CmalignParams(f[3], f[4], f[5]), None
+    if len(f) >= 7 and f[2] == "minimap2":  # a window-screen part (since 2026-11-14): step, preset, shared database
+        return f[0], MapParams(f[3], f[4]), None if f[6] == "-" else f[6]
+    if len(f) >= 7 and f[2] == "uchime":  # a UCHIME part (since 2026-11-14): its shared database
+        return f[0], UchimeParams(), None if f[6] == "-" else f[6]
     if len(f) >= 7:
         return f[0], Params.of_columns(f[2:6]), None if f[6] == "-" else f[6]
     return f[0], DEFAULT, None
@@ -537,21 +643,47 @@ def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, p
     # searched here alone: the inputs on the node's disk (scratch: --local_tmp; since 2026-11-13), the WORK's file
     # system given the hits alone
     local = tempfile.mkdtemp(dir=scratch, prefix="search.") if left and not stop and scratch else None
+    longest, again = 0.0, set()  # this node's longest own search; the loci it searched too (STRAGGLER_TIMES)
     try:
         while left:
             for locus in list(left):
                 timing = {} if log else None
+                began = time.time()
                 if search_one(folder, base[locus], vsearch, threads, inputs[locus], params, shared[locus], local,
                               timing):
                     left.remove(locus)
+                    if time.time() - began > 1:  # searched here (not one another node had finished)
+                        longest = max(longest, time.time() - began)
                     if timing:
                         log(f"  {searched_line(base[locus], timing)}")
                     if shown:
                         shown.step(weight(inputs[locus][0]))
             if left:  # the others' loci: their hits awaited (a dead node's claim taken over by search_one)
-                if shown:
-                    shown.tick(f"; {len(left):,} searched by other nodes")
-                time.sleep(poll)
+                holders = {locus: claim_holder(folder, base[locus]) for locus in left}
+                slow = [locus for locus, h in holders.items() if h and locus not in again
+                        and h[1] > max(STRAGGLER_MIN, STRAGGLER_TIMES * longest)]
+                for locus in slow[:1]:  # one at a time, on all this node's threads
+                    host, held_for = holders[locus]
+                    if log:
+                        log(f"  {base[locus]}: held by {host} for {util.duration(held_for)} (this node's longest "
+                            f"search {util.duration(longest)}): searched here too")
+                    again.add(locus)
+                    try:
+                        done = search_too(folder, base[locus], vsearch, threads, inputs[locus], params, scratch)
+                    except OSError as e:  # the other node's search still counts
+                        done = False
+                        if log:
+                            log(f"  {base[locus]}: the search here too failed ({e}); waiting for {host}")
+                    if done:
+                        left.remove(locus)
+                        if shown:
+                            shown.step(weight(inputs[locus][0]))
+                if shown and left:
+                    named = sorted({h[0] for h in holders.values() if h})
+                    shown.tick(f"; {len(left):,} searched by other nodes"
+                               + (f" ({', '.join(named[:3])})" if named else ""))
+                if left:
+                    time.sleep(poll)
     finally:
         if stop:
             stop()
@@ -576,11 +708,12 @@ def searched_line(base, timing):
             + ("" if setup is None else f" (database read and indexed in {util.duration(setup)})"))
 
 
-def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None):
+def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, minimap2=None):
     """A helper node's part (tools/eukore.sh qc): the loci of every folder under root (its todo.tsv) whose inputs are
     there and hits not yet, each claimed and searched, until none is left that no other node holds -> loci searched.
-    A cmsearch part (CmParams; since 2026-11-13) by cmsearch, a cmalign part (CmalignParams) by cmalign, each left to
-    the other nodes where it is None."""
+    A cmsearch part (CmParams; since 2026-11-13) by cmsearch, a cmalign part (CmalignParams) by cmalign, a window
+    screen's (MapParams; since 2026-11-14) by minimap2, a UCHIME part (UchimeParams) by vsearch, each left to the
+    other nodes where its tool is None."""
     done, idle = 0, False
     while not idle:
         idle = True
@@ -594,7 +727,7 @@ def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None):
             for base, params, shared in entries:
                 q, _d, hits, _claim = search_files(folder, base)
                 tool = (cmsearch if isinstance(params, CmParams) else cmalign if isinstance(params, CmalignParams)
-                        else vsearch)
+                        else minimap2 if isinstance(params, MapParams) else vsearch)
                 if os.path.isfile(hits) or not os.path.isfile(q) or not tool:
                     continue
                 timing = {}
@@ -614,6 +747,8 @@ def main(argv=None):
     p.add_argument("--vsearch", default="vsearch")
     p.add_argument("--cmsearch", default="cmsearch", help="the SSU models' parts' (none found: left to other nodes)")
     p.add_argument("--cmalign", default="cmalign", help="the 18S alignments' parts' (none found: left to other nodes)")
+    p.add_argument("--minimap2", default="minimap2",
+                   help="the chimera window screen's parts' (since 2026-11-14; none found: left to other nodes)")
     p.add_argument("-t", "--threads", type=int, default=1)
     a = p.parse_args(argv)
     vsearch = shutil.which(a.vsearch)
@@ -621,7 +756,8 @@ def main(argv=None):
         sys.exit(f"no {a.vsearch}")
     help_search(a.root, vsearch, a.threads,
                 log=lambda text: print(f"[{time.strftime('%H:%M:%S')}] {text}", flush=True),
-                cmsearch=shutil.which(a.cmsearch), cmalign=shutil.which(a.cmalign))
+                cmsearch=shutil.which(a.cmsearch), cmalign=shutil.which(a.cmalign),
+                minimap2=shutil.which(a.minimap2))
     return 0
 
 

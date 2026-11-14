@@ -56,14 +56,17 @@ QUANTILES = (("q05", 0.05), ("q25", 0.25), ("median", 0.5), ("q75", 0.75), ("q95
 SSU_MIN = 1000      # an 18S this long at least, for resolution.tsv (a read's fragment would understate identity)
 REGIONS = ("18S", "ITS1", "5.8S", "ITS2", "28S", "5S")
 TIERS = package.TIERS  # high, unverified, medium, low (format 6; a format-5 package has no unverified: 0)
-MATCHES = ("taxid", "species", "synonym", "genus", "-")  # taxid: MIDORI2's own (since format 5)
+# taxid: MIDORI2's own (since format 5); upward: EUKARYOME's lineage of a clade above the genus (format 7)
+MATCHES = ("taxid", "species", "synonym", "genus", "upward", "-")
 REFERENCES = package.REFERENCES
 ALL_BUSCOS = "BUSCO (all)"
 
 COMPLETENESS_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "source", "level", "genome_size",
                         "contigs", "loci", "single", "duplicated", "fragmented", "missing", "complete", "high",
                         "unverified",
-                        "medium", "low", "rrna_18s", "rdna_units", "rdna_complete")
+                        "medium", "low", "rrna_18s", "rdna_units", "rdna_complete",
+                        "expected_loci", "complete_expected", "tier")  # the last three since 2026-11-14 (tiers.py)
+KEPT_TIERS = ("genome", "draft", "transcriptome", "-")  # the tiers whose copies the package holds (tiers.DROPPED not)
 ORTHODB_COLUMNS = ("accession", "species_taxid", "name", "supergroup", "locus", "status", "odb_proteins",
                    "odb_length", "protein_length", "recall", "precision", "guided", "verdict")
 HELD_COLUMNS = ("held_out_status", "held_out_query", "held_out_recall", "held_out_precision", "held_out_verdict",
@@ -126,7 +129,8 @@ def completeness(genomes, species, statuses, tiers, n_loci):
                         missing=n_loci - called - s["Fragmented"], complete=f"{called / max(n_loci, 1):.3f}",
                         **{t: tiers.get(acc, collections.Counter())[t] for t in TIERS},
                         rrna_18s=g.get("rrna_18s"), rdna_units=g.get("rdna_units"),
-                        rdna_complete=g.get("rdna_complete")))
+                        rdna_complete=g.get("rdna_complete"), expected_loci=g.get("expected_loci", "-"),
+                        complete_expected=g.get("complete_expected", "-"), tier=g.get("tier", "-")))
     return out
 
 
@@ -380,13 +384,22 @@ def resolution_hist(by_marker):
     return [dict(marker=m, shared_rank=r, identity=i, copies=n) for (m, r, i), n in sorted(counts.items())]
 
 
+# An 18S longer than SSU_TYPICAL bases holds introns or insertions (most eukaryotes' are 1,750-2,100): a species' such
+# copy is taken only where it has no other (since 2026-11-14: the longest was taken first, and the 2026-11 build's
+# all-against-all search of 32,163 species' 18S, many of them intron-holding copies of up to 10,000 bases, ran 3.6 hours
+# on the final job's node, unreported)
+SSU_TYPICAL = 2600
+
+
 def best_ssu(records):
     """Each species' best rRNA record for its 18S (records: records.tsv's rows) -> {record: (species, 18S start, end)}:
-    the most confident, then a genome's, then the longest 18S of SSU_MIN bases or more. A record labelled by its genus
-    alone (EUKARYOME's) is no species' (until 2026-11-06 the genus was a "species", the nearest of its own)."""
+    the most confident, then a genome's, then one of SSU_TYPICAL bases or fewer, then the longest 18S of SSU_MIN bases
+    or more. A record labelled by its genus alone (EUKARYOME's) is no species' (until 2026-11-06 the genus was a
+    "species", the nearest of its own)."""
     best = {}
     for r in records:
-        if r.get("label_from") == "eukaryome_genus":
+        # a record labelled by its genus or above (format 7: EUKARYOME's, labelled at their family too)
+        if r.get("label_from", "").endswith(("_genus", "_upward")):
             continue
         if r["kind"] == "18S":
             span = (0, int(r["length"]))
@@ -395,15 +408,19 @@ def best_ssu(records):
         if not span or span[1] - span[0] < SSU_MIN:
             continue
         key = (TIERS.index(r["confidence"]) if r.get("confidence") in TIERS else len(TIERS),
-               r["source"] not in ("genome", "curated_unit"), -(span[1] - span[0]), r["record"])
+               r["source"] not in ("genome", "curated_unit"), span[1] - span[0] > SSU_TYPICAL, -(span[1] - span[0]),
+               r["record"])
         sp = r["species_taxid"]
         if sp not in best or key < best[sp][0]:
             best[sp] = (key, r["record"], span)
     return {rec: (int(sp), a, b) for sp, (_k, rec, (a, b)) in best.items()}
 
 
-def ssu_nearest(folder, ncbi, vsearch, threads):
-    """[(identity, depth)] of each species' best 18S against the other species' (qc.check's search)."""
+def ssu_nearest(folder, ncbi, vsearch, threads, progress=None, searches=None, log=None):
+    """[(identity, depth)] of each species' best 18S against the other species' (qc.check's search). progress,
+    searches: qc.check's (since 2026-11-14: the search reported, kept in the WORK and shared with the helpers); log:
+    each step's time."""
+    began = time.time()
     chosen = best_ssu(rows_of(os.path.join(folder, "rrna", "records.tsv")))
     if len(chosen) < 2:
         return []
@@ -412,7 +429,88 @@ def ssu_nearest(folder, ncbi, vsearch, threads):
         if name in chosen:
             _sp, a, b = chosen[name]
             seqs[(name, "18S")] = seq[a:b]
-    checks = qc.check(seqs, {name: chosen[name][0] for name, _l in seqs}, ncbi, vsearch, threads)
+    if log:
+        lengths = sorted(len(s) for s in seqs.values())
+        log(f"benchmarks: 18S resolution: {len(seqs):,} species' 18S read (median {lengths[len(lengths) // 2]:,} "
+            f"bases, {sum(n > SSU_TYPICAL for n in lengths):,} over {SSU_TYPICAL:,}); "
+            f"{util.duration(time.time() - began)}")
+    began = time.time()
+    checks = qc.check(seqs, {name: chosen[name][0] for name, _l in seqs}, ncbi, vsearch, threads, progress=progress,
+                      searches=searches)
+    if log:
+        log(f"benchmarks: 18S resolution: searched and judged in {util.duration(time.time() - began)}")
+    return [(c["nearest_id"], c["nearest_depth"]) for c in checks.values()]
+
+
+# Further markers' resolution (since 2026-11-14: the 2026-11 build's resolution.tsv held the BUSCOs, Eukore's nine loci
+# and the 18S alone): the ITS (ITS1, 5.8S and ITS2 of a record, the fungal barcode), the 28S' 5' end (D1-D2: its first
+# D1D2_BASES, the yeasts' barcode) and the organelle genes' coding sequences (COX1, rbcL, matK). Each species' best
+# record (best_ssu's order), its nearest other species by the same search as the 18S'.
+D1D2_BASES = 900
+REGION_MIN = {"ITS": 300, "28S D1-D2": D1D2_BASES}
+ORGANELLE_MARKERS = ("COX1", "rbcL", "matK")
+ORGANELLE_MIN = 400
+
+
+def region_span(r, region):
+    """A records.tsv row's span of a resolution region (REGION_MIN's), or None."""
+    parts = {n: (a, b) for n, a, b in rrna.parse_regions(r.get("regions", "-")) or ()}
+    if region == "ITS" and "ITS1" in parts and "ITS2" in parts:
+        return parts["ITS1"][0], parts["ITS2"][1]
+    if region == "28S D1-D2" and "28S" in parts and parts["28S"][1] - parts["28S"][0] >= D1D2_BASES:
+        return parts["28S"][0], parts["28S"][0] + D1D2_BASES
+    return None
+
+
+def region_nearest(folder, ncbi, vsearch, threads, region, progress=None, searches=None, log=None):
+    """[(identity, depth)] of each species' best record of a region (region_span) against the other species'."""
+    best = {}
+    for r in rows_of(os.path.join(folder, "rrna", "records.tsv")):
+        if r.get("label_from") == "eukaryome_genus" or r["kind"] != "rDNA":
+            continue
+        span = region_span(r, region)
+        if not span or span[1] - span[0] < REGION_MIN[region]:
+            continue
+        key = (TIERS.index(r["confidence"]) if r.get("confidence") in TIERS else len(TIERS),
+               r["source"] not in ("genome", "curated_unit"), -(span[1] - span[0]), r["record"])
+        if r["species_taxid"] not in best or key < best[r["species_taxid"]][0]:
+            best[r["species_taxid"]] = (key, r["record"], span)
+    chosen = {rec: (int(sp), a, b) for sp, (_k, rec, (a, b)) in best.items()}
+    if len(chosen) < 2:
+        return []
+    seqs = {(name, region): seq[a:b] for name, seq in odb_mod.read_fasta(os.path.join(folder, "rrna", "records.fna.gz"))
+            if name in chosen for _sp, a, b in [chosen[name]]}
+    return nearest_of(seqs, {name: chosen[name][0] for name, _l in seqs}, ncbi, vsearch, threads, region, progress,
+                      searches, log)
+
+
+def organelle_nearest(folder, ncbi, vsearch, threads, gene, progress=None, searches=None, log=None):
+    """[(identity, depth)] of each species' organelle gene's coding sequence (organelle/cds.fna.gz; the longest whole
+    one) against the other species'."""
+    best = {}
+    for r in rows_of(os.path.join(folder, "organelle", "genes.tsv")):
+        if r["gene"] != gene or r.get("partial") == "t":
+            continue
+        length = int(r["length"]) if r.get("length", "").isdigit() else 0
+        if r["species_taxid"] not in best or length > best[r["species_taxid"]][0]:
+            best[r["species_taxid"]] = (length, r["record"])
+    chosen = {rec: int(sp) for sp, (_n, rec) in best.items()}
+    path = os.path.join(folder, "organelle", "cds.fna.gz")
+    seqs = {(name, gene): seq for name, seq in (odb_mod.read_fasta(path) if os.path.isfile(path) else ())
+            if name in chosen and len(seq) >= ORGANELLE_MIN}
+    return nearest_of(seqs, {name: chosen[name] for name, _g in seqs}, ncbi, vsearch, threads, gene, progress,
+                      searches, log)
+
+
+def nearest_of(seqs, species_of, ncbi, vsearch, threads, what, progress=None, searches=None, log=None):
+    """qc.check's nearest other species of each sequence -> [(identity, depth)]; [] for fewer than two."""
+    if len(seqs) < 2:
+        return []
+    began = time.time()
+    checks = qc.check(seqs, species_of, ncbi, vsearch, threads, progress=progress, searches=searches)
+    if log:
+        log(f"benchmarks: {what} resolution: {len(seqs):,} species' sequences searched and judged in "
+            f"{util.duration(time.time() - began)}")
     return [(c["nearest_id"], c["nearest_depth"]) for c in checks.values()]
 
 
@@ -478,6 +576,32 @@ def marker_rows(folder, ncbi, marker_folder):
 
 
 PRIMER_COLUMNS = ("pair", "supergroup", "species", "amplified", "share")
+
+
+# The clades each primer pair is for (since 2026-11-14): a pair's share of all species with a record mixes those it was
+# never meant for (the 2026-11 build: COI_Folmer 20% of all, 41% of animals; rbcLa 0% of red algae); a pair not named
+# here is for every eukaryote
+PRIMER_TARGETS = {
+    "COI_Folmer": ("Metazoa", "Vertebrata"), "COI_Leray": ("Metazoa", "Vertebrata"),
+    "16S_Palumbi": ("Metazoa", "Vertebrata"), "12S_V5": ("Vertebrata",), "MiFish-U": ("Vertebrata",),
+    "ITS1F_ITS4": ("Fungi",), "ITS3_ITS4": ("Fungi",), "gITS7_ITS4": ("Fungi",), "ITS86F_ITS4": ("Fungi",),
+    "LR0R_LR5": ("Fungi",), "NL1_NL4": ("Fungi",),
+    "rbcLa": ("Viridiplantae",), "matK_KIM": ("Viridiplantae",), "psbA-trnH": ("Viridiplantae",),
+}
+
+
+def primers_on_target(rows):
+    """{pair: {share, species, groups}} of primers.tsv's rows: each pair's species amplified of those with a record in
+    its target clades (PRIMER_TARGETS; every group's where none is named)."""
+    out = {}
+    for pair in sorted({r["pair"] for r in rows}):
+        groups = PRIMER_TARGETS.get(pair)
+        mine = [r for r in rows if r["pair"] == pair and (r["supergroup"] in groups if groups
+                                                          else r["supergroup"] == "all")]
+        n, got = sum(int(r["species"]) for r in mine), sum(int(r["amplified"]) for r in mine)
+        if n:
+            out[pair] = dict(share=round(got / n, 4), species=n, groups=list(groups or ("all",)))
+    return out
 
 
 def primer_rows(folder, species):
@@ -620,7 +744,9 @@ def breadth_rows(species, fates, other, ncbi):
     ncbi_species = collections.Counter(supergroup_of(ncbi, t, cache) for t, f in (fates or {}).items()
                                        if f not in ("not a species", "placeholder", "hybrid"))
     with_genome = {int(t): r["supergroup"] for t, r in species.items() if r["representative"] != "-"}
-    rrna_only = collections.Counter(r["supergroup"] for r in species.values() if r["representative"] == "-")
+    # a species of rRNA records alone (format 7's species of organelle genes alone are neither)
+    rrna_only = collections.Counter(r["supergroup"] for r in species.values()
+                                    if r["representative"] == "-" and r.get("source", "rrna") == "rrna")
     theirs = {sp: supergroup_of(ncbi, sp, cache) for sp in (other or ())}
     groups = sorted(set(ncbi_species) | set(with_genome.values()) | set(rrna_only) | set(theirs.values()))
     rows = []
@@ -785,7 +911,7 @@ def composition_rows(folder, species, complete):
             c = counts[g]
             c["species"] += 1
             c["with_genome"] += r["representative"] != "-"
-            c["rrna_only"] += r["representative"] == "-"
+            c["rrna_only"] += r["representative"] == "-" and r.get("source", "rrna") == "rrna"
             c["with_rrna"] += count_of(r.get("rrna_records")) > 0
             c["with_operon"] += str(taxid) in operon
             c["with_organelle"] += count_of(r.get("organelle_genes")) > 0
@@ -865,7 +991,8 @@ def paper(folder, out, ncbi, genomes, species, odb, work, fates, inside, flags, 
 
 
 def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, nearest=None, stages=None, out=None,
-        log=print, fates=None, inside=None, databases=None, marker_folder=None, clades=None):
+        log=print, fates=None, inside=None, databases=None, marker_folder=None, clades=None, progress=None,
+        searches=None):
     """The benchmarks of the package in `folder` (finished, or the build's unfinished one once its tables are written)
     into out (default folder/benchmarks), with summary.json and (since 2026-11-10) summary.md -> summary.json's
     figures. clades: a trial's number of clades (summary.md says so). ncbi: the taxonomy (the build's, or the package's
@@ -917,13 +1044,24 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
     rows = completeness({a: g for a, g in genomes.items() if g.get("source") != "no_assembly"}, species, statuses,
                         tiers, len(loci))
     write(out, "completeness.tsv", COMPLETENESS_COLUMNS, rows)
-    by_group = collections.defaultdict(list)
-    for r in rows:
+    # the figures of the genomes whose copies the package holds (since 2026-11-14: a poor or partial genome's are left
+    # out, tiers.py), and against each group's expected BUSCOs too
+    kept = [r for r in rows if r.get("tier", "-") in KEPT_TIERS]
+    by_group, by_group_expected = collections.defaultdict(list), collections.defaultdict(list)
+    for r in kept:
         by_group[r["supergroup"]].append(float(r["complete"]))
-    every = [float(r["complete"]) for r in rows]
+        if r.get("complete_expected", "-") != "-":
+            by_group_expected[r["supergroup"]].append(float(r["complete_expected"]))
+    every = [float(r["complete"]) for r in kept]
+    expected = [v for vs in by_group_expected.values() for v in vs]
     summary["completeness"] = {"median": median_of(every),
                                "at_least_90": round(sum(v >= 0.9 for v in every) / len(every), 4) if every else None,
                                "by_supergroup": {g: median_of(v) for g, v in sorted(by_group.items())}}
+    if expected:
+        summary["completeness"].update(
+            median_expected=median_of(expected),
+            expected_by_supergroup={g: median_of(v) for g, v in sorted(by_group_expected.items())},
+            tiers=dict(collections.Counter(r.get("tier", "-") for r in rows)))
     log(f"benchmarks: completeness of {len(rows)} genomes, median {summary['completeness']['median']}")
     composition = composition_rows(folder, species, rows)  # since 2026-11-10: what the package holds per supergroup
     write(out, "composition.tsv", COMPOSITION_COLUMNS, composition)
@@ -1005,15 +1143,24 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
     if vsearch:
         markers = dict(busco_nearest)
         markers[ALL_BUSCOS] = [v for locus, vs in busco_nearest.items() if locus in set(loci) for v in vs]  # BUSCOs alone
-        ssu = ssu_nearest(folder, ncbi, vsearch, threads)
+        ssu = ssu_nearest(folder, ncbi, vsearch, threads, progress, searches, log)
         if ssu:
             markers["18S"] = ssu
+        for region in REGION_MIN:  # since 2026-11-14: the ITS, the 28S' D1-D2, the organelle barcodes
+            got = region_nearest(folder, ncbi, vsearch, threads, region, progress, searches, log)
+            if got:
+                markers[region] = got
+        for gene in ORGANELLE_MARKERS:
+            got = organelle_nearest(folder, ncbi, vsearch, threads, gene, progress, searches, log)
+            if got:
+                markers[gene] = got
         rows = resolution_rows({m: v for m, v in markers.items() if v})
         write(out, "resolution.tsv", RESOLUTION_COLUMNS, rows)
         write(out, "resolution_hist.tsv", HIST_COLUMNS, resolution_hist({m: v for m, v in markers.items() if v}))
         summary["resolution"] = {}
         for r in rows:  # every copy, and (since 2026-11-10, `congeners`) those whose nearest other species is a congener
-            if r["marker"] in (ALL_BUSCOS, "18S") and r["shared_rank"] in ("all", "genus"):
+            if r["marker"] in (ALL_BUSCOS, "18S") + tuple(REGION_MIN) + ORGANELLE_MARKERS \
+                    and r["shared_rank"] in ("all", "genus"):
                 figures = {"copies": r["copies"], "under_99": round(r["under_99"] / r["copies"], 4),
                            "under_97": round(r["under_97"] / r["copies"], 4)}
                 entry = summary["resolution"].setdefault(r["marker"], {})
@@ -1044,6 +1191,7 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
     if rows:
         write(out, "primers.tsv", PRIMER_COLUMNS, rows)
         summary["primers"] = {r["pair"]: float(r["share"]) for r in rows if r["supergroup"] == "all"}
+        summary["primers_target"] = primers_on_target(rows)
     else:
         summary["left_out"]["primers"] = "no amplicons (a package before format 5)"
     gap = list(rows_of(os.path.join(folder, "intraspecific", "barcode_gap.tsv")) or ())
@@ -1207,6 +1355,11 @@ def summary_md(s, name, clades=None, composition=None):
     if p:
         lines.append("| primer pairs: species amplified of those with a record it runs on | " + ", ".join(
             f"{k} {pct(v)}" for k, v in sorted(p.items(), key=lambda kv: -kv[1])) + " |")
+    t = s.get("primers_target")
+    if t:
+        lines.append("| the same, of the species of the clades each pair is for | " + ", ".join(
+            f"{k} {pct(v['share'])} ({'/'.join(v['groups'])})" for k, v in sorted(t.items(), key=lambda kv:
+                                                                                  -kv[1]["share"])) + " |")
     for ref, modes in (s.get("detection") or {}).items():
         cells = []
         for mode, rank in (("in", "species"), ("held_out", "genus"), ("novel", "class")):

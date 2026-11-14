@@ -41,12 +41,14 @@ from . import __version__
 
 DATA, DOWNLOADS = "data", "downloads"
 STATE = ".release.json"
-SOURCES = ("NCBI RefSeq", "NCBI GenBank", "TOGA2", "ENA TSA", "EukProt", "rRNA records only")
+SOURCES = ("NCBI RefSeq", "NCBI GenBank", "TOGA2", "ENA TSA", "EukProt", "rRNA records only",
+           "organelle genes only")  # the last since format 7 (2026-11-14)
 SOURCE_TEXT = {"NCBI RefSeq": "NCBI's RefSeq assembly", "NCBI GenBank": "NCBI's GenBank assembly",
                "TOGA2": "TOGA2's assembly (vertebrates with no NCBI genome)",
                "ENA TSA": "an INSDC transcriptome (no genome)",
                "EukProt": "EukProt's genome or transcriptome records (no assembly at NCBI)",
-               "rRNA records only": "published rRNA reads alone (EUKARYOME, ROD)"}
+               "rRNA records only": "published rRNA records alone (EUKARYOME, ROD, PR2, GenBank, SILVA, ...)",
+               "organelle genes only": "organelle genes alone (a RefSeq organelle genome, a published record)"}
 TREE_RANKS = ("supergroup", "group", "phylum", "class", "order", "family", "genus", "species")
 SHARED = ("species.tsv", "genomes.tsv")  # in every bundle: what the accessions and taxids are
 SKETCHES = "metadata/sketches.zip"
@@ -290,7 +292,8 @@ def stats(folder):
     by_group = collections.defaultdict(lambda: collections.defaultdict(collections.Counter))
     for r in species_rows:
         rep = r.get("representative", "-")
-        source = "rRNA records only" if rep == "-" else source_of(genomes.get(rep, dict(source=r.get("source", ""),
+        alone = "organelle genes only" if r.get("source") == "organelle" else "rRNA records only"
+        source = alone if rep == "-" else source_of(genomes.get(rep, dict(source=r.get("source", ""),
                                                                                          accession=rep)))
         by_group[r.get("supergroup") or "incertae sedis"][r.get("group") or "other eukaryotes"][source] += 1
     columns = [s for s in SOURCES + ("other",) if any(c[s] for g in by_group.values() for c in g.values())]

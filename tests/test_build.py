@@ -126,11 +126,15 @@ class ResumeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache = os.path.join(tmp, "regions.tsv")
             with open(cache, "w", newline="\n") as fh:
-                fh.write("EUK_1\t18S:0-1800\tt\t+\nEUK_2\t18S:0-1800,ITS1:1800-2\tf\t-\tabc123abc123\nEUK_3\t18S:1-")
-            # a line before 2026-11-08 has no digest of its read; a later one has (a changed read: annotated again)
-            self.assertEqual(eukore_build.read_regions(cache), {"EUK_1": ("18S:0-1800", "t", "+", None),
+                fh.write("EUK_1\t18S:0-1800\tt\t+\nEUK_2\t18S:0-1800,ITS1:1800-2\tf\t-\tabc123abc123\n"
+                         "EUK_4\t18S:0-1800\tf\t+\tabc123abc124\t1|0|1800||\nEUK_3\t18S:1-")
+            # a line before 2026-11-08 has no digest of its read; a later one has (a changed read: annotated again);
+            # since 2026-11-14 its audit (audit.audit_text)
+            self.assertEqual(eukore_build.read_regions(cache), {"EUK_1": ("18S:0-1800", "t", "+", None, None),
                                                                 "EUK_2": ("18S:0-1800,ITS1:1800-2", "f", "-",
-                                                                          "abc123abc123")})
+                                                                          "abc123abc123", None),
+                                                                "EUK_4": ("18S:0-1800", "f", "+", "abc123abc124",
+                                                                          "1|0|1800||")})
             self.assertFalse(eukore_build.util.ends_in_newline(cache))
             self.assertEqual(eukore_build.read_digest("ACGT"), "f1f8f4bf413b")
 
@@ -698,7 +702,7 @@ class ChainTest(unittest.TestCase):
             self.assertIn(f"; the sources in {src} (--sources)", text)
             seen = []
 
-            def fetched(src_dir, *_args):
+            def fetched(src_dir, *_args, **_kwargs):
                 seen.append((src_dir, os.path.isfile(os.path.join(src_dir, ".fetch.lock")),
                              os.path.isfile(os.path.join(tmp, "work", ".fetch.lock"))))
             with mock.patch.object(eukore_build, "fetch_sources", side_effect=fetched):

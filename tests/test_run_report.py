@@ -119,7 +119,7 @@ class RunReport(unittest.TestCase):
         text = rep.text("t")
         for want in ("1 benchmarks left out: reads", "Discoba 0.41", "the held-out calls concordant 0.7",
                      "the held-out calls called 0.8", "18S 0.30", "Rhizaria (10 of 100 with a genome)",
-                     "Discoba: 33.3% of its BUSCO copies low or unverified", "| own_species | 50 |",
+                     "1 supergroups with over 10% of their BUSCO copies low or unverified: Discoba 33.3%", "| own_species | 50 |",
                      "1 genomes with 20% or more of their BUSCOs duplicated", "| Discoba | 1 | 1 | 100.0% |"):
             self.assertIn(want, text)
         self.assertNotIn("the build's calls concordant", text)

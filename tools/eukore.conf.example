@@ -11,6 +11,9 @@ LOGS=$PDIR/runs                       # the jobs' STDOUT and STDERR (empty: sbat
 VERSION=2026.11                       # --version, fixed: its default is the month of each run's day, and a build
                                       # that crosses a month's end would write a second Eukore_<version>
 MAMBA_ENV=eukore                      # the micromamba environment with Eukore's tools
+TIARA_ENV=eukore-tiara                # tiara's own environment (envs/tiara.yaml: it needs Python <= 3.9), given to
+                                      # the build as --tiara <env>/bin/tiara; TIARA=/path/to/tiara names the program
+                                      # itself. Without either, the build classifies no windows
 TASKS=8                               # process jobs of the array (`build N` gives another number)
 QC_TASKS=8                            # helper jobs of the package stage's vsearch checks across species, which the
                                       # final job submits once their inputs are written (0: the final job alone)
@@ -22,9 +25,12 @@ SCR=${SLURM_LOCAL_SCRATCH:+$SLURM_LOCAL_SCRATCH/Eukore}
 # benchmarks/README.md, on the finished package (since 2026-11-12; until then COMPARE, MPA_* and
 # EUKDETECT_* here)
 
-# eukore_build.py's options: every stage's (the same --groups, --species, --ksgp_tax for each), the fetch job's,
-# the final job's (-t is the job's --cpus-per-task)
-BUILD_OPTS=(--ksgp_tax /path/to/KSGP_v4.5_plus2.tax)
+# eukore_build.py's options: every stage's (the same --groups, --species for each), the fetch job's, the final job's
+# (-t is the job's --cpus-per-task). --ksgp_tax: a KSGP release's tax file, species.tsv's KSGP lineages and
+# taxonomy/links.tsv's KSGP records (protal's KSGP; default KSGP's served 4.0). Since 2026-11-14 (format 7) KSGP and
+# PR2 give no record: the published 18S are EUKARYOME's alone, audited by the build (eukore/audit.py, chimeras.py;
+# its window screen needs minimap2, QC_TASKS' helpers take its parts and UCHIME's)
+BUILD_OPTS=(--ksgp_tax /path/to/KSGP_v5.2/KSGP_v5.2_plus2.tax)
 FETCH_OPTS=(--downloads 12)
 FINAL_OPTS=(--keep_gb 1000)
 

@@ -78,9 +78,13 @@ either way.
 
 ### 5. Optional: protal's KSGP
 
-`species.tsv` gives each species' KSGP lineage. The fetch stage takes KSGP 4.0, the newest the KSGP site serves. To
-label species as a protal database does, give the build that KSGP release's tax file:
-`--ksgp_tax /path/to/ksgp_4.4/KSGP_v4.4_plus2.tax`.
+`species.tsv` gives each species' KSGP lineage, and `taxonomy/links.tsv` (format 7) each rRNA record's KSGP and PR2
+records with their labels. The fetch stage takes KSGP 4.0, the newest the KSGP site serves. To label species and link
+records as a protal database does, give the build that KSGP release's tax file:
+`--ksgp_tax /path/to/KSGP_v5.2/KSGP_v5.2_plus2.tax`. Since format 7 KSGP and PR2 give no records: the published 18S are
+EUKARYOME's alone (its long reads and its SSU set, fetched), each audited by the build as KSGP audits its records
+([FORMAT: rrna/](FORMAT.md#rrna)): the audit needs `nhmmer` (HMMER) and barrnap's models for the flanks, `minimap2`
+for the chimeras' window screen (both in `envs/eukore.yaml`), vsearch for UCHIME, and NCBI's UniVec_Core (fetched).
 
 ### 6. Check the install
 
@@ -291,13 +295,18 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   - NCBI's taxdump;
   - NCBI's FCS-GX summaries of its assemblies and its Saccharomycotina ANI report (~70 MB);
   - BUSCO's eukaryota_odb12;
-  - EUKARYOME 2.1 and ROD v1.2;
+  - EUKARYOME 2.1 (its long reads and, since 0.2.5, its SSU set, 29 MB) and ROD v1.2;
+  - since 0.2.5 NCBI's UniVec_Core (build 10.0, 1 MB): the published 18S's audit's vectors and adapters;
   - RefSeq's organelle genomes (mitochondrion and plastid);
   - PR2 5.1.1's taxonomy (5 MB) and KSGP 4.0's (243 MB; not with `--ksgp_tax`);
   - since 0.2: SILVA 138.2's SSU Ref NR99, UNITE 10.0's release of all eukaryotes and Open Tree Taxonomy 3.7.3
     (`WORK/sources/labels`), Rfam's eukaryote SSU model (`WORK/sources/rfam`), ENA's list of eukaryote TSA sets
-    (`WORK/sources/tsa`). MIDORI2 and BOLD are not fetched (their URLs change, BOLD's bulk data needs a login): give
-    them with `--midori2` and `--bold_tsv`.
+    (`WORK/sources/tsa`). Since 2026-11-14 MIDORI2's newest release too (its UNIQ gene files, from its Zenodo record:
+    `WORK/sources/labels/midori2/`; `--midori2` gives other files, `--no_midori2` none), the taxdump again with
+    `--refresh` or where it is a week older than the assembly tables, and UCSC GenArk's copies of VEuPathDB's gene
+    models (VEuPathDB's own need an API key). A genome whose FASTA NCBI does not serve (a 404) is noted in
+    `WORK/unavailable.tsv`; the next plan takes its species' next assembly. BOLD is not fetched (its bulk data needs a
+    login): give it with `--bold_tsv`.
   - since 0.2, the inputs of Eukore's marker set (`WORK/sources/eukore_markers`, `eukore/markers.py`): KOfam's
     `ko_list` and its markers' and decoys' profiles (out of KOfam's 1.6 GB archive, fetched in 16 ranges at once and
     deleted), Swiss-Prot's eukaryote proteins (~90 MB, EBI's FTP) and NCBI's proteins named as each marker
@@ -409,7 +418,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
-| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.4, is in the manifest's `eukore`) |
+| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.5, is in the manifest's `eukore`) |
 | `-V` | | print Eukore's own version and exit |
 | `--keep_gb` | none: no genome deleted | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept); with it, a superseded assembly's and the intraspecific panel's genome files are deleted once done too (until 2026-11-08 the default was 1000) |
 | `-t`, `--threads` | 8 | threads in all; since 2026-11-09 also those that compress every `.gz` file the build writes (BGZF: the package's and the release's at level 9, the work folder's at 6) |
@@ -418,7 +427,12 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--downloads` | 8 | the fetch stage's genomes and annotations downloaded at a time, by `curl` where it is on the PATH (one NCBI connection: ~30–40 MB/s by curl, ~10 by Python's urllib); their gzip checks run in one process of their own, a second core, by ISA-L's `igzip` where it is on the PATH (conda-forge's `isa-l`; ~3.5x Python's), else `pigz`, else Python |
 | `--local_tmp DIR` | beside `OUT/genomes`; `TMPDIR` | a node's local disk (or a scratch file system without backups) for temporary files: the fetch stage's unfinished downloads (`.part` files) and their gzip checks, each file copied into `OUT/genomes` once whole; since 0.2.1 the process stage's too: each genome run's copy of its genome (read there by every step, not from `OUT` some six times), miniprot's pieces of a genome over 4 Gb, the rescue's ORFs, tiara's and vsearch's files, and `TMPDIR`'s (barrnap's, ITSx's); only the results are written to `WORK`; since 2026-11-10 `TMPDIR` for the package stage's tools as well. Room: up to ~3 times a genome's size per genome running (a few GB; ~10–20 GB for a mammal's, ~45 GB for a 30 Gb genome's pieces); `--scratch` before 2026-11-09, still taken |
 | `--report_minutes` | 10 | minutes between progress reports of the genomes' downloads and the process stage's passes, after a report every minute of each one's first 10 (items left, time left; in the process stage the cores, memory and disk used) |
-| `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies |
+| `--tiara PATH`, `--no_tiara` | `tiara` on the PATH | tiara, which classifies the windows around the copies (`tools/eukore.sh` gives `--tiara` from the settings' `TIARA_ENV`, default `eukore-tiara`, or `TIARA`; since 2026-11-14) |
+| `--keep_poor_genomes` | left out | the copies of the genomes of tier poor, partial or contaminated kept, flagged `poor_genome` (since 2026-11-14; `eukore/tiers.py`) |
+| `--no_tsa_rrna` | extracted | no rRNA from the transcriptomes (since 2026-11-14 barrnap and ITSx run on them; a done transcriptome without is backfilled where its file is there) |
+| `--no_rrna_donors` | donors | a species whose genome holds no 18S takes none from its next assembly (since 2026-11-14: that assembly fetched and run by barrnap and ITSx alone, `WORK/rrna_donors/`) |
+| `--no_eukore_queries` | taken | no Eukore's own query proteins (since 2026-11-14: the package stage writes the clean copies' proteins of the groups BUSCO's dataset serves poorly, `WORK/eukore_queries.faa.gz`; the next build's genomes of those groups take them where nearer than the dataset's, never their own species', the held-out calls none, and a done one is run again with them) |
+| `--no_midori2` | fetched | no MIDORI2 (since 2026-11-14 the fetch stage takes its newest release from Zenodo) |
 | `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |
 | `--held_out_ranks` | `genus,family,order` | the OrthoDB benchmark's clade hold-out: a BUSCO dataset species' genome called again without its genus', family's and order's dataset species in turn, one more BUSCO search each ([benchmarks.md](benchmarks.md); `none`: its own species' hold-out alone; since 2026-11-09) |
@@ -427,13 +441,13 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--intraspecific` | 3 | further assemblies of each species of `data/intraspecific_panel.tsv` run for the barcode gap (`intraspecific/`); 0: none |
 | `--no_markers` | markers on | no Eukore marker loci (`data/markers.tsv`: RPB1, RPB2, EF-2, EF-1α, ...), the BUSCOs alone |
 | `--no_tsa` | transcriptomes on | no INSDC transcriptomes (ENA's TSA sets) for the species without a genome |
-| `--midori2` | none | a MIDORI2 RAW FASTA whose lineages `species.tsv` gives (its URLs change with each release: download it yourself); given again for its other genes' files. Its records are screened (since 2026-11-10; minimap2 and vsearch): one that is another organism's gene or another gene names no species (`reference_screen.tsv`; [methods](methods.md#the-reference-screen-since-2026-11-10)) |
+| `--midori2` | the fetched release (since 2026-11-14) | a MIDORI2 RAW FASTA whose lineages `species.tsv` gives; given again for its other genes' files (by default the newest release's UNIQ files, which the fetch stage takes from Zenodo). Its srRNA file's records are organelle genes too (format 7: one mitochondrial SSU a species without a RefSeq mitochondrial genome, the screen's drops left out). Its records are screened (since 2026-11-10; minimap2 and vsearch): one that is another organism's gene or another gene names no species (`reference_screen.tsv`; [methods](methods.md#the-reference-screen-since-2026-11-10)) |
 | `--no_reference_screen` | screened | `--midori2`'s records not screened: every one names its species |
 | `--bold_tsv` | none | a BOLD data package's TSV (`bin_uri`, `species`): its BINs in `crossrefs.tsv` (BOLD's bulk data needs a login) |
 | `--refresh` | off | fetch again NCBI's assembly tables and quality reports and the annotation indexes: newer genomes and gene models taken, old genome files deleted once replaced ([Resuming and rebuilding](#resuming-and-rebuilding)) |
 | `--veupathdb_key KEY` | the environment's `VEUPATHDB_API_KEY`, else none | a VEuPathDB user's API key (its profile's Web Service Access), for VEuPathDB's gene models; it is sent to VEuPathDB's sites alone, over https (since 0.2.2 a redirect elsewhere drops it), and written nowhere; the environment variable keeps it off the command line, which every user of the node can see |
 | `--fcs_gx_db PREFIX`, `--run_gx` | none, `run_gx` | FCS-GX's database (e.g. `/dev/shm/gxdb/all`) and runner |
-| `--ksgp_tax FILE` | KSGP 4.0, fetched | the KSGP release `species.tsv`'s KSGP lineages come from |
+| `--ksgp_tax FILE` | KSGP 4.0, fetched | the KSGP release `species.tsv`'s KSGP lineages and `taxonomy/links.tsv`'s KSGP records come from |
 | `--miniprot`, `--hmmsearch` | on the PATH | the tools, where not on the PATH |
 | `--no_benchmarks` | | write the package without its `benchmarks/` ([benchmarks.md](benchmarks.md)) |
 | `--minimap2` | on the PATH | the reference screen's aligner (`--midori2`) |

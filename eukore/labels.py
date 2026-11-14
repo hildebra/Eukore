@@ -25,6 +25,7 @@ import collections
 import json
 import os
 import re
+import shutil
 
 from . import util
 
@@ -76,6 +77,27 @@ def ncbi_lineage_filled(ncbi, taxid):
             m = re.match(r"^(.*)_(X+)$", above)
             out.append(f"{m.group(1)}_{m.group(2)}X" if m else f"{above}_X" if above else "")
     return ";".join(out)
+
+
+def rank_of(ncbi, taxid):
+    """A taxon's rank among NCBI_RANKS: its own, its species' below species, else the deepest of them above it (a
+    clade of no rank); None for none."""
+    taxid = ncbi.merged.get(int(taxid), int(taxid))
+    sp = ncbi.species_of(taxid)
+    if ncbi.rank.get(sp) == "species":
+        return "species"
+    ranks = ncbi.rank_ids(taxid)
+    ranks.setdefault("domain", ranks.get("superkingdom"))
+    return next((r for r in reversed(NCBI_RANKS) if ranks.get(r) is not None), None)
+
+
+def ncbi_lineage_to(ncbi, taxid):
+    """ncbi_lineage_filled down to the taxon's rank (rank_of), the ranks below it empty (format 7: a record's or an
+    organelle gene's, labelled above species too)."""
+    names = ncbi_lineage_filled(ncbi, taxid).split(";")
+    rank = rank_of(ncbi, taxid)
+    keep = NCBI_RANKS.index(rank) + 1 if rank else 0
+    return ";".join(n if i < keep else "" for i, n in enumerate(names))
 
 
 def ncbi_lineage(ncbi, taxid):
@@ -406,6 +428,97 @@ def read_midori2(path, version=None, dropped=()):
     return ref
 
 
+# MIDORI2 on Zenodo (since 2026-11-14; its own site's download pages moved there with GB274): the concept record
+# resolves to the newest release, whose MIDORI2_GB<release>_RAW.zip (~1.7 GB) holds each gene's FASTA of every unique
+# haplotype per species (MIDORI2_UNIQ_NUC_GB<release>_<gene>_RAW.fasta.gz) beside LONGEST's and TOTAL's. The fetch stage
+# keeps the UNIQ files in WORK/sources/labels/midori2/; a build without --midori2 takes them.
+MIDORI2_RECORD = "https://zenodo.org/api/records/22685700"
+MIDORI2_ARCHIVE = re.compile(r"^MIDORI2_GB(\d+)_RAW\.zip$")
+MIDORI2_MEMBER = re.compile(r"(^|/)MIDORI2_UNIQ_NUC_GB\d+_([A-Za-z0-9]+)_RAW\.fasta\.gz$")
+MIDORI2_STATE = "midori2.json"
+
+
+def midori2_folder(src_dir):
+    return os.path.join(folder_of(src_dir), "midori2")
+
+
+def midori2_release(record):
+    """MIDORI2's Zenodo record (its JSON) -> (release, the RAW archive's URL, size, MD5 or None), or None."""
+    for f in record.get("files", ()):
+        m = MIDORI2_ARCHIVE.match(f.get("key", ""))
+        if m:
+            checksum = f.get("checksum", "")
+            return (f"GB{m.group(1)}", f.get("links", {}).get("self"), f.get("size"),
+                    checksum.split(":", 1)[1] if checksum.startswith("md5:") else None)
+    return None
+
+
+def fetch_midori2(src_dir, download, log=print, refresh=False):
+    """MIDORI2's newest release's UNIQ gene files into WORK/sources/labels/midori2 (kept when there, unless refresh
+    finds a newer release): its archive fetched, checked by Zenodo's MD5, those files taken out, the archive deleted ->
+    the files' paths. Raises OSError where it did not arrive."""
+    folder = midori2_folder(src_dir)
+    have = midori2_files(src_dir)
+    if have and not refresh:
+        log(f"labels: MIDORI2 {midori2_state(src_dir).get('release', '?')} is there ({len(have)} gene files)")
+        return have
+    os.makedirs(folder, exist_ok=True)
+    meta = os.path.join(folder, "record.json")
+    download(MIDORI2_RECORD, meta)
+    with open(meta) as fh:
+        found = midori2_release(json.load(fh))
+    if not found or not found[1]:
+        raise OSError(f"{MIDORI2_RECORD}: no MIDORI2_GB<release>_RAW.zip in its newest version")
+    release, url, size, md5 = found
+    if have and midori2_state(src_dir).get("release") == release:
+        log(f"labels: MIDORI2 {release} is there, the newest")
+        return have
+    archive = os.path.join(folder, f"MIDORI2_{release}_RAW.zip")
+    log(f"labels: fetching MIDORI2 {release} ({(size or 0) / 1e9:.1f} GB) from Zenodo")
+    download(url, archive, md5)
+    import zipfile  # noqa: PLC0415
+    taken = []
+    try:
+        with zipfile.ZipFile(archive) as z:
+            for member in z.namelist():
+                m = MIDORI2_MEMBER.search(member)
+                if not m:
+                    continue
+                dest = os.path.join(folder, os.path.basename(member))
+                with z.open(member) as src, open(util.part_of(dest), "wb") as dst:
+                    shutil.copyfileobj(src, dst, 1 << 22)
+                os.replace(util.part_of(dest), dest)
+                taken.append(dest)
+    finally:
+        os.remove(archive)
+    if not taken:
+        raise OSError(f"{url}: no MIDORI2_UNIQ_NUC_*_RAW.fasta.gz in its archive")
+    for old in midori2_files(src_dir):  # an older release's files
+        if old not in taken:
+            os.remove(old)
+    with open(util.part_of(os.path.join(folder, MIDORI2_STATE)), "w", newline="\n") as fh:
+        json.dump({"release": release, "url": url, "md5": md5, "files": sorted(os.path.basename(p) for p in taken)},
+                  fh, indent=1)
+    os.replace(util.part_of(os.path.join(folder, MIDORI2_STATE)), os.path.join(folder, MIDORI2_STATE))
+    log(f"labels: MIDORI2 {release}: {len(taken)} gene files")
+    return sorted(taken)
+
+
+def midori2_state(src_dir):
+    try:
+        with open(os.path.join(midori2_folder(src_dir), MIDORI2_STATE)) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def midori2_files(src_dir):
+    """The fetched MIDORI2 gene files (fetch_midori2), [] where none."""
+    folder = midori2_folder(src_dir)
+    state = midori2_state(src_dir)
+    return sorted(p for p in (os.path.join(folder, n) for n in state.get("files", ())) if os.path.isfile(p))
+
+
 def crossrefs(ncbi, taxids, references=(), ott=None, bold=None, log=print):
     """crossrefs.tsv's rows (CROSSREF_COLUMNS) of NCBI species: Open Tree's taxon (ott: its release archive) and the
     ids it holds of the same taxon (GBIF's backbone, WoRMS, IRMNG, Index Fungorum), by NCBI taxid, no name matched;
@@ -458,9 +571,10 @@ def crossrefs(ncbi, taxids, references=(), ott=None, bold=None, log=print):
 
 
 def read_xlsx_rows(path):
-    """An xlsx file's first sheet -> [tuple] (openpyxl)."""
+    """An xlsx file's first sheet -> [tuple] (openpyxl): a formula's value as the file saved it (since 2026-11-14:
+    the formula itself, and EUKARYOME 2.1's classification named some 40 subkingdoms `=B31533&U31532`)."""
     import openpyxl  # noqa: PLC0415
-    sheet = openpyxl.load_workbook(path, read_only=True).worksheets[0]
+    sheet = openpyxl.load_workbook(path, read_only=True, data_only=True).worksheets[0]
     return [tuple("" if v is None else str(v).strip() for v in r) for r in sheet.iter_rows(values_only=True)]
 
 

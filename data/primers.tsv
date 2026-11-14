@@ -1,7 +1,9 @@
 # Primers of eukaryote barcodes and amplicon surveys (eukore/primers.py; since 2026-11-07). sequence: 5' to 3', IUPAC
 # (inosine written N); strand: forward (on the gene's strand) or reverse (on the other). The 18S primers' sequences
 # were checked against Hadziavdic et al. 2014 (PLoS ONE 9:e87624, Tables S1-S2); each pair amplifies its reference
-# record in data/primer_references.fna (tests/test_primers.py).
+# record in data/primer_references.fna (tests/test_primers.py). Since 2026-11-14 the rDNA rows (18S, ITS, 28S) also
+# tell the audit (eukore/audit.py) a barcode or an adapter before a primer at a published read's end; the rows from
+# EukA on serve that alone (no pair).
 name	sequence	strand	target	citation
 TAReuk454FWD1	CCAGCASCYGCGGTAATTCC	forward	18S	Stoeck et al. 2010 Mol Ecol 19:21
 TAReukREV3	ACTTTCGTTCTTGATYRA	reverse	18S	Stoeck et al. 2010 Mol Ecol 19:21
@@ -37,3 +39,15 @@ MiFish-U-R	CATAGTGGGGTATCTAATCCCAGTTTG	reverse	12S	Miya et al. 2015 R Soc Open S
 12SV5R	TAGAACAGGCTCCTCTAG	reverse	12S	Riaz et al. 2011 Nucleic Acids Res 39:e145
 16Sar	CGCCTGTTTATCAAAAACAT	forward	16S	Palumbi 1996 Molecular Systematics
 16Sbr	CCGGTCTGAACTCAGATCACGT	reverse	16S	Palumbi 1996 Molecular Systematics
+EukA	AACCTGGTTGATCCTGCCAGT	forward	18S	Medlin et al. 1988 Gene 71:491
+NS1short	CAGTAGTCATATGCTTGTC	forward	18S	Wurzbacher et al. 2019 Mol Ecol Resour 19:118
+SSU_F04	GCTTGTCTCAAAGATTAAGCC	forward	18S	Blaxter et al. 1998 Nature 392:71
+SSU_R22	GCCTGCTGCCTTCCTTGGA	reverse	18S	Blaxter et al. 1998 Nature 392:71
+3NDf	GGCAAGTCTGGTGCCAG	forward	18S	Jamy et al. 2020 Mol Ecol Resour 20:429 (its 3NDf)
+NS8	TCCGCAGGTTCACCTACGGA	reverse	18S	White et al. 1990 PCR Protocols
+ITS5	GGAAGTAAAAGTCGTAACAAGG	forward	ITS	White et al. 1990 PCR Protocols
+ITS9mun	TACACACCGCCCGTCG	forward	ITS	Tedersoo & Lindahl 2016 Environ Microbiol Rep 8:774
+ITS4ngsUni	CCTSCSCTTANTDATATGC	reverse	ITS	Tedersoo & Lindahl 2016 Environ Microbiol Rep 8:774
+LR3	CCGTGTTTCAAGACGGG	reverse	28S	Vilgalys & Hester 1990 J Bacteriol 172:4238
+LR7	TACTACCACCAAGATCT	reverse	28S	Vilgalys & Hester 1990 J Bacteriol 172:4238
+RCA95m	CTATGTTTTAATTAGACAGTCAG	reverse	28S	Wurzbacher et al. 2019 Mol Ecol Resour 19:118

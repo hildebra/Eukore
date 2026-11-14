@@ -37,6 +37,7 @@ import contextlib
 import datetime
 import functools
 import glob
+import gzip
 import hashlib
 import json
 import multiprocessing
@@ -59,16 +60,20 @@ from eukore import annotation, benchmarks, labels, metadata as metadata_mod, org
 from eukore import groups as groups_mod, intraspecific as intraspecific_mod, markers as markers_mod, quality  # noqa: E402
 from eukore import placement, primers as primers_mod, regions as regions_mod  # noqa: E402
 from eukore import refscreen, release as release_mod  # noqa: E402
+from eukore import audit as audit_mod, chimeras, eukaryome as eukaryome_mod, links, screen as screen_mod  # noqa: E402
 from eukore import __version__  # noqa: E402
 from eukore import store  # noqa: E402
+from eukore import tiers as tiers_mod  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
+TAXDUMP_AGE = 7 * 86400  # a taxdump this much older than the assembly tables is fetched again (fetch_sources)
 NO_ASSEMBLY = os.path.join(sources.DATA, "no_assembly.fna.gz")
 PUBLISHED_BATCH = 250  # published reads a barrnap + ITSx run
 # the published reads' regions, kept in WORK/published: a new name where their borders change (2: ITSx's guessed 5.8S
-# borders no longer taken, 2026-11-06; 3: regions on the record, not the unit, and the read's strand, 2026-11-06), so
-# that a rerun annotates them again
-PUBLISHED_REGIONS = "regions.3.tsv"
+# borders no longer taken, 2026-11-06; 3: regions on the record, not the unit, and the read's strand, 2026-11-06;
+# 4: an 18S read's 18S alone, each read's audit of its ends and flanks, 2026-11-14), so that a rerun annotates them
+# again (its batches named anew: published_batches)
+PUBLISHED_REGIONS = "regions.4.tsv"
 FCS_THREADS = 4  # cores of each FCS-GX run (GX_NUM_CORES); -t / FCS_THREADS runs at once
 PACK_THREADS = 8  # done folders packed at once (pack_pass: small files read, one written)
 QC_TASKS_GUESS = 8  # the helpers --qc_helpers starts where --qc_tasks does not say (tools/eukore.conf.example's)
@@ -81,7 +86,7 @@ def say(text):
 
 # --- sources -----------------------------------------------------------------------------------------------------
 
-def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False):
+def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False, midori2=True):
     """Every source into src_dir (kept when there and whole), downloaded and unpacked, nothing computed (since
     2026-11-11 the marker set's inputs alone, the process stage builds it: its hmmsearch of ~230,000 candidates ran on
     the download node). refresh (--refresh): those that choose the genomes and their gene models fetched again
@@ -100,11 +105,22 @@ def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False):
                         raise
                     say(f"WARNING: {kind}'s {group} assembly table not fetched again ({e}): the old one kept")
     taxdump = os.path.join(src_dir, "taxdump.tar.gz")
-    if not os.path.isfile(taxdump):
-        say("NCBI: fetching the taxdump")
-        sources.download(TAXDUMP_URL, taxdump)
+    # the taxdump fetched again with the assembly tables (--refresh), or where it is older than they are by TAXDUMP_AGE
+    # (since 2026-11-14: fetched once and kept, the 2026-11 build's taxdump lacked 39 of its tables' species)
+    tables_time = max((os.path.getmtime(p) for p in glob.glob(os.path.join(src_dir, "ncbi_assemblies", "*.txt"))),
+                      default=0)
+    stale = os.path.isfile(taxdump) and tables_time - os.path.getmtime(taxdump) > TAXDUMP_AGE
+    if not os.path.isfile(taxdump) or refresh or stale:
+        say("NCBI: fetching the taxdump" + (" again (older than the assembly tables)" if stale else
+                                            " again (--refresh)" if refresh and os.path.isfile(taxdump) else ""))
+        try:
+            sources.download(TAXDUMP_URL, taxdump)  # fetch_file: renamed into place once whole, the old one till then
+        except OSError as e:
+            if not os.path.isfile(taxdump):
+                raise
+            say(f"WARNING: the taxdump not fetched again ({e}): the old one kept")
     odb_mod.fetch(src_dir, sources.download, say)
-    for name in ("EUKARYOME", "ROD"):
+    for name in ("EUKARYOME", "EUKARYOME_SSU", "ROD", "UniVec"):  # the second and last since 2026-11-14
         sources.fetch(src_dir, name, sources.download, shutil.which("7za") or shutil.which("7z") or "7za", say)
     # the optional sources each on its own: one that fails (a site moved, down) is said, the others still fetched
     # (until 2026-11-06 one failure stopped the stage, NCBI's quality reports then missing from the genome ranking)
@@ -118,7 +134,10 @@ def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False):
                          lambda: quality.fetch(src_dir, sources.download, say, refresh)),
                         ("PR2's and KSGP's taxonomies", lambda: labels.fetch(src_dir, sources.download, say, ksgp_tax)),
                         ("Ensembl's, VEuPathDB's and TOGA2's annotation indexes",
-                         lambda: annotation.fetch_indexes(src_dir, sources.download, say, refresh))):
+                         lambda: annotation.fetch_indexes(src_dir, sources.download, say, refresh)),
+                        # since 2026-11-14: MIDORI2's newest release (Zenodo), unless the user gives its files
+                        *([("MIDORI2's gene files",
+                            lambda: labels.fetch_midori2(src_dir, sources.download, say, refresh))] if midori2 else [])):
         # (the read benchmark's background: benchmarks/eukore-bench-prep.sh's since 2026-11-12)
         try:
             fetch()
@@ -163,9 +182,14 @@ def plan(opts, src_dir, ncbi):
         say(f"NCBI's FCS-GX and ANI reports: {quality.annotate(assemblies, refseq_rows, src_dir)} assemblies flagged")
     else:
         say("WARNING: no NCBI FCS-GX or ANI reports (--stage fetch fetches them): genomes ranked without them")
-    no_assembly =genomes.no_assembly_genomes(NO_ASSEMBLY, os.path.join(opts.work, "no_assembly"), ncbi)
+    no_assembly = genomes.no_assembly_genomes(NO_ASSEMBLY, os.path.join(opts.work, "no_assembly"), ncbi)
+    # the genomes NCBI serves no FASTA of (the fetch stage's notes, since 2026-11-14): their species' next assembly
+    unavailable = genomes.read_unavailable(opts.work)
+    if unavailable:
+        say(f"{len(unavailable)} assemblies NCBI serves no genome of (WORK/{genomes.UNAVAILABLE}; e.g. "
+            f"{sorted(unavailable)[:3]}): their species take their next assembly")
     job_map = genomes.jobs(ncbi, assemblies, refseq_rows, species.eukaryotes(species.read_table()), opts.inside,
-                           no_assembly)
+                           no_assembly, unavailable)
     # TOGA2's genomes of the vertebrate species NCBI has none of (DNA Zoo's, Bat1K's), with their gene models, and in
     # place of NCBI's where far more contiguous and as long
     toga2 = annotation.read_toga2(src_dir)
@@ -244,10 +268,74 @@ def called_loci(opts, src_dir, unbuilt=False):
     return loci_of(opts, src_dir)
 
 
+def queries_of(opts):
+    """Eukore's own query proteins (tiers.query_proteins, the last package's; since 2026-11-14) -> (path, digest), or
+    (None, None) without them or with --no_eukore_queries."""
+    path = os.path.join(opts.work, tiers_mod.QUERIES)
+    if getattr(opts, "no_eukore_queries", False) or not os.path.isfile(path):
+        return None, None
+    try:
+        with open(os.path.join(opts.work, tiers_mod.QUERIES_STATE)) as fh:
+            return path, json.load(fh).get("digest")
+    except (OSError, ValueError):
+        return path, util.md5(path)
+
+
+def query_reruns(opts, ncbi, job_map):
+    """The genomes of the groups Eukore's own queries serve (their state's `groups`): a done one run without them is
+    run again where its genome is here (plan_of)."""
+    path, _digest = queries_of(opts)
+    if not path:
+        return set()
+    try:
+        with open(os.path.join(opts.work, tiers_mod.QUERIES_STATE)) as fh:
+            served = set(json.load(fh).get("groups") or ())
+    except (OSError, ValueError):
+        return set()
+    out = {a for a, j in job_map.items() if j["why"][0] in ("ncbi", "model", "toga2", "tsa")
+           and groups_mod.group_of(ncbi, int(j["species_taxid"])) in served}
+    if out:
+        say(f"Eukore's own queries ({path}): {len(out):,} genomes of {', '.join(sorted(served))} take them; a done one "
+            "run without them is run again where its genome is here")
+    return out
+
+
+def write_queries(opts, ncbi, collected, kinds):
+    """Eukore's own query proteins (tiers.query_proteins) of the package's copies into WORK/eukore_queries.faa.gz and
+    their state (digest, groups), for the next build's genomes."""
+    reps = {a: g for a, g in collected["genomes"].items() if g["representative"] == "t"}
+    statuses = collections.defaultdict(dict)
+    for r in collected["copy_rows"]:
+        if r["locus"] not in kinds:
+            statuses[r["accession"]][r["locus"]] = r["status"]
+    busco = set().union(*(g.get("_searched") or () for g in reps.values())) - set(kinds)
+    group_of = {a: groups_mod.group_of(ncbi, int(g["species_taxid"])) for a, g in reps.items()}
+    served = tiers_mod.query_groups(reps, statuses, group_of, busco)
+
+    def genus_of(sp):
+        return ncbi.rank_ids(sp).get("genus", sp)
+    rows = tiers_mod.query_proteins(collected["copy_rows"], collected["proteins"], reps, set(served), group_of,
+                                    genus_of, kinds)
+    if not rows:
+        return
+    path = os.path.join(opts.work, tiers_mod.QUERIES)
+    with gzip.open(util.part_of(path), "wt") as fh:
+        fh.writelines(f">{n}\n{s}\n" for n, s in rows)
+    digest = hashlib.md5("".join(f"{n}\t{s}\n" for n, s in rows).encode()).hexdigest()[:12]
+    with open(util.part_of(os.path.join(opts.work, tiers_mod.QUERIES_STATE)), "w", newline="\n") as fh:
+        json.dump({"digest": digest, "groups": served, "proteins": len(rows)}, fh, indent=1)
+    os.replace(util.part_of(path), path)
+    os.replace(util.part_of(os.path.join(opts.work, tiers_mod.QUERIES_STATE)),
+               os.path.join(opts.work, tiers_mod.QUERIES_STATE))
+    say(f"Eukore's own queries: {len(rows):,} proteins of {', '.join(served)} into {path} (the next build's genomes "
+        "of those groups take them)")
+
+
 def odb_of(opts, src_dir):
-    """The loci called (called_loci), in one dataset object."""
+    """The loci called (called_loci), in one dataset object (with Eukore's own queries: queries_of)."""
     marker_folder = markers_of(opts, src_dir)
-    return odb_mod.Odb(odb_mod.folder_of(src_dir), called_loci(opts, src_dir), [marker_folder] if marker_folder else [])
+    return odb_mod.Odb(odb_mod.folder_of(src_dir), called_loci(opts, src_dir), [marker_folder] if marker_folder else [],
+                       queries_of(opts)[0])
 
 
 def loci_items(opts, src_dir):
@@ -275,6 +363,9 @@ def settings_of(opts, src_dir, ncbi, staged_only):
                 esl_translate=shutil.which("esl-translate"), sourmash=sourmash_of(opts),
                 veupathdb_key=opts.veupathdb_key, vsearch=shutil.which("vsearch"), scratch=opts.scratch,
                 pack=not opts.done_folders,  # a genome's results one file (store.py; since 2026-11-10)
+                tsa_rrna=not opts.no_tsa_rrna,  # a transcriptome's rRNA extracted too (since 2026-11-14)
+                # Eukore's own query proteins and their digest (since 2026-11-14; done.json `queries`)
+                queries=queries_of(opts)[0], queries_digest=queries_of(opts)[1],
                 rrna=functools.partial(rrna_hook, barrnap=shutil.which("barrnap"), itsx=shutil.which("ITSx"),
                                        threads=opts.threads_per_genome) if shutil.which("barrnap") else None)
 
@@ -420,10 +511,15 @@ def plan_of(opts, job_map, settings):
                   and genomes.rerun_for_annotation(opts.work, j, opts.genomes, not settings["staged_only"])}
         # and (since 2026-11-09) a done genome of an older genome record (genomes.record_stale; --reversion stamps
         # them)
+        # and (since 2026-11-14) a done genome of a group Eukore's own queries serve, run without these queries
+        # (query_reruns: tiers.query_proteins' groups)
+        reruns, digest = getattr(opts, "query_reruns", set()), settings.get("queries_digest")
         whole = {a for a, j in job_map.items() if not genomes.is_done(opts.work, a, settings["loci"])
                  or ((genomes.held_out_missing(opts.work, j, settings)
                       or genomes.rescue_missing(opts.work, a, settings)
-                      or genomes.record_stale(opts.work, a)) and here(a, j))}
+                      or genomes.record_stale(opts.work, a)
+                      or (a in reruns and digest
+                          and (genomes.done_summary(opts.work, a) or {}).get("queries") != digest)) and here(a, j))}
         # each with its done.json as seen now: a genome another build on the WORK finishes meanwhile is left alone
         # (genomes.done_stamp; since 2026-11-08 it was run again whole)
         return {"rows": [[a, genomes.done_stamp(opts.work, a), None if a in whole else "annotation"]
@@ -707,7 +803,8 @@ def qc_searches(opts, kind):
     # the inputs of searches no helper shares on the node's disk (--local_tmp; since 2026-11-13), the hits in WORK;
     # nodes: this one and its helpers (--qc_tasks), the rRNA searches' parts sized by them (screen.search_parts)
     return {"folder": folder, "helpers": helpers if shared else None, "scratch": getattr(opts, "scratch", None),
-            "nodes": 1 + ((getattr(opts, "qc_tasks", 0) or QC_TASKS_GUESS) if shared else 0)}
+            "nodes": 1 + ((getattr(opts, "qc_tasks", 0) or QC_TASKS_GUESS) if shared else 0),
+            "log": say}  # each search's times, a straggler searched here too (qc.searched_loci; since 2026-11-14)
 
 
 def running(opts, progress, workers=None):
@@ -748,36 +845,99 @@ def backfill_one(item):
 
 
 def published(opts, src_dir, ncbi):
-    """The published reads (EUKARYOME, ROD) with their regions and NCBI labels -> records [(name, sequence, row)],
-    their regions kept in WORK/published/PUBLISHED_REGIONS (a rerun reads them). The reads not annotated yet are
-    annotated here, shared with the other runs on the WORK (annotate_published), whose last batches this run awaits."""
+    """The published reads (EUKARYOME's long reads and SSU set, ROD's operons) with their regions and NCBI labels ->
+    (records [(name, sequence, row)], their audits {name: audit.audit_reads' result}), their regions and (since
+    2026-11-14) their ends' and flanks' audits kept in WORK/published/PUBLISHED_REGIONS (a rerun reads them). The reads
+    not annotated yet are annotated here, shared with the other runs on the WORK (annotate_published), whose last
+    batches this run awaits. A read is on its rRNA's strand; one whose line holds no audit of this AUDIT_RECORD (a
+    line of before 2026-11-14) is audited by the package stage (audit.clean)."""
     reads = published_reads(opts, src_dir, ncbi)
     known, unread = annotate_published(opts, reads, ncbi, wait=True)
-    out = []
-    for name, seq, taxid, source, how, accession in reads:
+    out, audits = [], {}
+    for name, seq, taxid, source, how, accession, extra in reads:
         if name in unread:
             continue
-        regions, complete, strand, _digest = known.get(name, ("-", "f", "+", None))
+        regions, complete, strand, _digest, audited = known.get(name, ("-", "f", "+", None, None))
         regions_list = rrna.parse_regions(regions)
         seq = rrna.revcomp(seq) if strand == "-" else seq  # the record on its unit's strand, as its regions
-        out.append((name, seq, dict(kind="rDNA" if regions_list else "18S", accession=accession, source=source,
-                                    taxid=taxid, species_taxid=ncbi.species_of(taxid), regions_list=regions_list,
-                                    lsu_complete=complete == "t", label_from=how)))
-    return out
+        result = audit_mod.parse_audit(audited)
+        if result is not None:
+            audits[name] = result
+        # an operon read with its 28S (rDNA), else an 18S (since 2026-11-14: an 18S read's own 18S its region)
+        kind = "rDNA" if any(n == "28S" for n, _a, _b in regions_list or ()) else "18S"
+        out.append((name, seq, dict(kind=kind, accession=accession, source=source, taxid=taxid,
+                                    species_taxid=ncbi.species_of(taxid), regions_list=regions_list,
+                                    lsu_complete=complete == "t", label_from=how, **extra)))
+    return out, audits
 
 
 def published_pass(opts, src_dir, ncbi):
     """The published reads' annotation by a run of the process stage with --genomes_only (an array's task; since
     2026-11-12), once its genomes and passes are through: the batches no other run holds, none awaited. The reads
-    need no genome: until then the final job annotated all 229,618 alone, one node for 8 hours and more."""
+    need no genome: until then the final job annotated all 229,618 alone, one node for 8 hours and more. Since
+    2026-11-14 each batch's reads are audited too (their ends and flanks: audit.audit_reads), across the array's
+    nodes."""
     if shutil.which("barrnap"):
         annotate_published(opts, published_reads(opts, src_dir, ncbi), ncbi, wait=False)
 
 
+# EUKARYOME's tags (its kingdom `k___<tag>`) of a record of no nucleus: an organelle's SSU, taken as an organelle gene;
+# a prokaryote's SSU and a pseudogene are left out (EUKARYOME 2.1's SSU set: 2,054 mitochondrion, 396 nucleomorph,
+# 248 plastid, 5 apicoplast, 1 chromatophore, 669 Bacteria, 188 Archaea, 7 pseudogene; its long reads mostly the same
+# ids)
+ORGANELLE_TAGS = {"k___mitochondrion": "mitochondrion", "k___plastid": "plastid", "k___nucleomorph": "nucleomorph",
+                  "k___Apicoplast": "plastid", "k___apicoplast": "plastid", "k___chromatophore": "plastid"}
+
+
+def eukaryome_kind(label):
+    """A EUKARYOME label's compartment: `nuclear`, an organelle (ORGANELLE_TAGS), or None (a prokaryote's SSU, a
+    pseudogene: left out)."""
+    k = label.split(";", 1)[0]
+    if not k.startswith("k___"):
+        return "nuclear"
+    return ORGANELLE_TAGS.get(k)
+
+
+def eukaryome_reads(src_dir):
+    """EUKARYOME's records Eukore takes (since 2026-11-14, format 7: its SSU set beside its long reads) -> (nuclear
+    [(id, label, sequence, which: long or SSU)], organelle [(id, label, sequence, organelle)]): every long read but
+    those EUKARYOME marks of compromised quality, and every record of its SSU set but those and the 18S of a long read
+    taken (386,813 of its 407,694 EUK ids: the read is taken whole). A record of no nucleus (eukaryome_kind) is never a
+    nuclear one (until 2026-11-14 EUKARYOME 2.1's mitochondrial, plastid and nucleomorph long reads named by a genus or
+    species NCBI holds were taken as nuclear operon reads): its SSU set's SSU is taken as an organelle gene, a
+    prokaryote's SSU or a pseudogene not at all."""
+    nuclear, organelle = [], []
+    long_ = sources.ready(src_dir, "EUKARYOME")
+    bad = sources.eukaryome_compromised(long_) if long_ else set()
+    taken = set()
+    if long_:
+        for acc, label, seq in sources.eukaryome_long(long_):
+            if acc not in bad and eukaryome_kind(label) == "nuclear":
+                nuclear.append((acc, label, seq, "long"))
+                taken.add(acc)
+    ssu = sources.ready(src_dir, "EUKARYOME_SSU")
+    if ssu:
+        for acc, label, seq in sources.eukaryome_ssu(ssu):
+            if acc in taken or acc in bad:
+                continue
+            kind = eukaryome_kind(label)
+            if kind == "nuclear":
+                nuclear.append((acc, label, seq, "SSU"))
+            elif kind:
+                organelle.append((acc, label, seq, kind))
+    return nuclear, organelle
+
+
 def published_reads(opts, src_dir, ncbi):
-    """The published reads [(name, sequence, taxid, source, how labelled, accession)] of the sources, inside the
-    build's clades."""
+    """The published reads [(name, sequence, taxid, source, how labelled, accession, extra)] of the sources, inside
+    the build's clades; extra: the row's further fields (source_label: its label as published, via: the EUKARYOME
+    file it came from). A EUKARYOME record labelled above its genus is taken (since 2026-11-14, format 7), labelled by
+    the deepest of its ranks NCBI names (rrna.label_taxon: until then by its species or genus alone, and 240,041 of
+    EUKARYOME 2.1's 400,217 reads were left out); its name EUK_<EUKARYOME's id or accession>. Since 2026-11-14 the
+    18S of EUKARYOME's SSU set are taken too (sources.EUKARYOME_SSU: GenBank's, genomes', UNITE's), and PR2's and
+    KSGP's records are not (taxonomy/links.tsv links them)."""
     index = rrna.name_index(ncbi)
+    to_ncbi = eukaryome_mod.to_ncbi()
     reads = []
     rod = sources.ready(src_dir, "ROD")
     if rod:
@@ -785,17 +945,90 @@ def published_reads(opts, src_dir, ncbi):
             if r.get("taxid", "").isdigit() and r.get("sequence") and opts.inside(r["taxid"]):
                 t = int(r["taxid"])
                 reads.append((f"ROD_{r['seqid']}", r["sequence"].upper(), t, "ROD", "rod_taxid",
-                              r.get("assembly_id") or "-"))
-    euk = sources.ready(src_dir, "EUKARYOME")
-    if euk:
-        bad = sources.eukaryome_compromised(euk)
-        for acc, label, seq in sources.eukaryome_long(euk):
-            if acc in bad:
-                continue
-            t, how = rrna.eukaryome_taxid(label, index, ncbi)
-            if t and opts.inside(t):
-                reads.append((f"EUK_{acc}", seq, t, "EUKARYOME", how, "-"))
+                              r.get("assembly_id") or "-", {}))
+    nuclear, _organelle = eukaryome_reads(src_dir)
+    for acc, label, seq, which in nuclear:
+        t, how, _rank = rrna.label_taxon(label, index, ncbi, "eukaryome", to_ncbi)
+        if t and opts.inside(t):
+            reads.append((f"EUK_{acc}", seq, t, "EUKARYOME", how, acc if not acc.startswith("EUK") else "-",
+                          dict(source_label=label, via=f"EUKARYOME_{which}")))
     return reads
+
+
+def organelle_published(opts, src_dir, ncbi, chosen):
+    """EUKARYOME's organelle SSU (its SSU set's mitochondrial, plastid and nucleomorph records, labelled by genus and
+    species; since 2026-11-14) as organelle genes [(name, sequence, row)], inside the build's clades, as EUKARYOME
+    gives them (5' to 3'); a record of a RefSeq organelle genome whose genes the package holds (chosen's) not again."""
+    _nuclear, records = eukaryome_reads(src_dir)
+    if not records:
+        return []
+    index, to_ncbi = rrna.name_index(ncbi), eukaryome_mod.to_ncbi()
+    held = {r["seqid"].split(".")[0] for rows in chosen.values() for r in rows}
+    out, counts = [], collections.Counter()
+    for acc, label, seq, kind in records:
+        if acc.split(".")[0] in held:
+            continue
+        t, how, _rank = rrna.label_taxon("k__unclassified;" + label.split(";", 1)[1], index, ncbi, "eukaryome",
+                                         to_ncbi)
+        if t and opts.inside(t):
+            r = dict(name=f"EUK_{acc}", sequence=seq.upper(), kind=kind, source="EUKARYOME", id=acc)
+            out.append(organelle_mod.published_record(r, t, ncbi.species_of(t), how, label, ncbi, "EUKARYOME_SSU"))
+            counts[kind] += 1
+    say("EUKARYOME: organelle SSU taken: " + ", ".join(f"{k} {n:,}" for k, n in sorted(counts.items())))
+    return out
+
+
+def midori2_published(opts, ncbi, chosen, calls=None):
+    """MIDORI2's mitochondrial SSU (since 2026-11-14: its srRNA file among --midori2's, screened by the reference screen,
+    refscreen.py) as organelle genes [(name, sequence, row)]: of each species inside the build's clades whose
+    mitochondrial genes no RefSeq genome gives (chosen's), one record, its longest the screen keeps (a record it cuts
+    as the part it keeps, one it drops never, one it leaves for review only where the species has no other, flagged
+    `screen_weak`), labelled by the NCBI taxid MIDORI2 gives (a merged one by its new taxid). A species' every
+    haplotype (MIDORI2's UNIQ files) would multiply the organelle checks' searches for no species more; KSGP took one
+    record a species too (58,806 MIDORI SSU in KSGP 5.2). Without the screen (--no_reference_screen) every record
+    counts as kept."""
+    files = [p for p in (opts.midori2 or ()) if labels.midori2_gene(p) == "SSU"]
+    if not files:
+        return []
+    refseq = {sp for sp, o in chosen if o == "mitochondrion"}
+    calls = calls or {}
+    best, counts = {}, collections.Counter()
+    for path in files:
+        version = re.search(r"GB\d+", os.path.basename(path))
+        for accession, taxid, seq in labels.midori2_records(path):
+            t = ncbi.merged.get(taxid, taxid) if taxid else None
+            if t is None or t not in ncbi.parent:
+                counts["no NCBI taxon"] += 1
+                continue
+            sp = ncbi.species_of(t)
+            if ncbi.rank.get(sp) != "species" or not rrna.is_eukaryote(ncbi, sp):
+                counts["no species"] += 1
+                continue
+            if sp in refseq or not opts.inside(sp):
+                counts["RefSeq's genome or outside the clades"] += 1
+                continue
+            c = calls.get(("SSU", accession))
+            action = c["action"] if c else "-"
+            if action == "drop":
+                counts["dropped by the screen"] += 1
+                continue
+            if action == "trim":
+                seq = seq[int(c["keep_start"]) - 1:int(c["keep_end"])]
+            seq = seq.upper()
+            key = (action != "review", len(seq), accession)
+            if sp not in best or key > best[sp][0]:
+                best[sp] = (key, accession, t, seq, action, version.group(0) if version else "?")
+    out = []
+    for sp, (_key, accession, t, seq, action, version) in sorted(best.items()):
+        r = dict(name=f"MIDORI2_{accession}", sequence=seq, kind="mitochondrion", source="MIDORI2", id=accession)
+        name, seq, row = organelle_mod.published_record(r, t, sp, "midori2_taxid", "-", ncbi, f"MIDORI2_{version}")
+        row["flags_extra"] = ["screen_weak"] if action == "review" else []
+        out.append((name, seq, row))
+        counts["taken" + (" (cut by the screen)" if action == "trim" else " (for review)" if action == "review"
+                          else "")] += 1
+    say(f"MIDORI2: {len(out):,} mitochondrial SSU taken, one a species (" +
+        ", ".join(f"{k} {v:,}" for k, v in sorted(counts.items())) + ")")
+    return out
 
 
 def published_known(cache_dir, reads):
@@ -818,7 +1051,8 @@ def published_batches(reads, ncbi):
     out = []
     for i in range(0, len(every), PUBLISHED_BATCH):
         batch = every[i:i + PUBLISHED_BATCH]
-        key = hashlib.md5("".join(f"{n}\t{read_digest(s)}\t{t}\n" for n, s, t in batch).encode()).hexdigest()[:16]
+        key = hashlib.md5((PUBLISHED_REGIONS + "\n" + "".join(f"{n}\t{read_digest(s)}\t{t}\n" for n, s, t in batch))
+                          .encode()).hexdigest()[:16]
         out.append((key, batch))
     return out
 
@@ -905,7 +1139,10 @@ def annotate_published(opts, reads, ncbi, wait=True):
         me = f"{socket.gethostname()}-{os.getpid()}"
         cache = os.path.join(cache_dir, f"{PUBLISHED_REGIONS[:-len('.tsv')]}.{me}.tsv")
         digest = {n: read_digest(s) for _k, b in left for n, s, _t in b}
-        work = functools.partial(_annotate_claimed, barrnap=barrnap, itsx=shutil.which("ITSx"))
+        # each batch's reads audited too (their ends and flanks; since 2026-11-14), one thread a process
+        univec, primers, nhmmer, hmm = audit_mod.tools(getattr(opts, "sources", None), sources)
+        work = functools.partial(_annotate_claimed, barrnap=barrnap, itsx=shutil.which("ITSx"),
+                                 audit=(univec, primers, nhmmer, hmm))
         try:
             with util.process_pool(opts.threads) as pool, open(cache, "a", newline="\n") as fh, \
                     open(os.path.join(cache_dir, f"done.{me}.txt"), "a", newline="\n") as marks:
@@ -916,8 +1153,8 @@ def annotate_published(opts, reads, ncbi, wait=True):
                     for key, got, why in util.unordered(pool, work, claimable(), progress,
                                                         lambda: f", {len(held):,} batches under way"):
                         ran = True
-                        fh.writelines(f"{name}\t{regions}\t{complete}\t{strand}\t{digest[name]}\n"
-                                      for name, (regions, complete, strand) in got.items())
+                        fh.writelines(f"{name}\t{regions}\t{complete}\t{strand}\t{digest[name]}\t{audited}\n"
+                                      for name, (regions, complete, strand, audited) in got.items())
                         fh.flush()
                         if why:
                             failed[key] = why
@@ -952,23 +1189,33 @@ def annotate_published(opts, reads, ncbi, wait=True):
     return known, unread
 
 
-def _annotate_claimed(item, barrnap=None, itsx=None):
+def _annotate_claimed(item, barrnap=None, itsx=None, audit=None):
     """(batch name, batch) -> (batch name, _annotate_batch's result, its failure or None)."""
     key, batch = item
-    got, why = _annotate_batch(batch, barrnap, itsx)
+    got, why = _annotate_batch(batch, barrnap, itsx, audit)
     return key, got, why
 
 
-def _annotate_batch(batch, barrnap=None, itsx=None):
-    """[(name, sequence, ITSx's sets)] -> ({name: (regions text, lsu_complete t/f, strand)}, None), or ({}, why) where
-    barrnap or ITSx failed on it (since 2026-11-08: the error stopped the package stage)."""
+def _annotate_batch(batch, barrnap=None, itsx=None, audit=None):
+    """[(name, sequence, ITSx's sets)] -> ({name: (regions text, lsu_complete t/f, strand, audit text)}, None), or ({},
+    why) where barrnap, ITSx or the audit failed on it (since 2026-11-08: the error stopped the package stage).
+    audit: (UniVec's folder, the rDNA primers, nhmmer, barrnap's HMM) (audit.tools'; since 2026-11-14): each read's
+    ends and flanks audited on its rRNA's strand (audit.audit_reads; audit_text), "-" without."""
     try:
         found = rrna.published_regions([(n, s) for n, s, _t in batch], barrnap, itsx,
                                        sets={n: t for n, _s, t in batch})
+        got = {name: (rrna.regions_text(found[name][0]), "t" if found[name][1] else "f", found[name][3])
+               if name in found else ("-", "f", "+") for name, _s, _t in batch}
+        audited = {}
+        if audit is not None:
+            univec, primers, nhmmer, hmm = audit
+            items = [(n, rrna.revcomp(s) if got[n][2] == "-" else s, rrna.parse_regions(got[n][0]))
+                     for n, s, _t in batch]
+            audited = {n: audit_mod.audit_text(r) for n, r in audit_mod.audit_reads(
+                items, audit_mod.vectors_of(univec), primers, nhmmer, hmm).items()}
     except Exception as e:  # noqa: BLE001  a batch's failure, never the stage's
         return {}, f"{type(e).__name__}: {e}"[:200]
-    return {name: (rrna.regions_text(found[name][0]), "t" if found[name][1] else "f", found[name][3])
-            if name in found else ("-", "f", "+") for name, _s, _t in batch}, None
+    return {n: got[n] + (audited.get(n, "-"),) for n in got}, None
 
 
 def read_digest(seq):
@@ -977,16 +1224,17 @@ def read_digest(seq):
 
 
 def read_regions(path):
-    """The published reads' regions cache -> {name: (regions text, lsu_complete t/f, strand, its read's digest, or None
-    in a line before 2026-11-08)}; a line a killed run cut (not 4 or 5 fields, or no line end) left out, so that its
-    read is annotated again (until 2026-11-06 it stopped every later run)."""
+    """The published reads' regions cache -> {name: (regions text, lsu_complete t/f, strand, its read's digest (None in
+    a line before 2026-11-08), its audit (audit.audit_text; None in a line before 2026-11-14))}; a line a killed run
+    cut (not 4 to 6 fields, or no line end) left out, so that its read is annotated again (until 2026-11-06 it
+    stopped every later run)."""
     known = {}
     if os.path.isfile(path):
         with open(path) as fh:
             for line in fh:
                 f = line.rstrip("\n").split("\t")
-                if line.endswith("\n") and len(f) in (4, 5) and f[3] in ("+", "-"):
-                    known[f[0]] = (f[1], f[2], f[3], f[4] if len(f) == 5 else None)
+                if line.endswith("\n") and len(f) in (4, 5, 6) and f[3] in ("+", "-"):
+                    known[f[0]] = (f[1], f[2], f[3], f[4] if len(f) >= 5 else None, f[5] if len(f) == 6 else None)
     return known
 
 
@@ -1006,6 +1254,16 @@ def genome_rrna_records(opts, job_map, ncbi, collected=None):
         if rows:
             out += rrna.genome_records(acc, rows, job.get("taxid") or job["species_taxid"],
                                        ncbi.species_of(int(job["species_taxid"])))
+    # the rRNA donors' (since 2026-11-14): the species' next assembly's, where its genome holds no 18S; a species whose
+    # genome has rRNA since (a newer assembly) takes none
+    held = {int(job_map[a]["species_taxid"]) for a in rows_of if rows_of.get(a)}
+    for acc, job in sorted((getattr(opts, "donors", None) or {}).items()):
+        sp = int(job["species_taxid"])
+        if sp in held or not genomes.donor_done(opts.work, acc):
+            continue
+        rows = rrna.load(genomes.donor_dir(opts.work, acc))
+        if rows:
+            out += rrna.genome_records(acc, rows, job.get("taxid") or sp, ncbi.species_of(sp))
     return out
 
 
@@ -1113,6 +1371,64 @@ def extras_of(opts, src_dir, ncbi, job_map, assemblies):
         say(f"intraspecific panel: {len(extras)} further assemblies of "
             f"{len({j['species_taxid'] for j in extras.values()})} species (--intraspecific {opts.intraspecific})")
     return extras
+
+
+def donors_of(opts, src_dir, ncbi, job_map, assemblies):
+    """The rRNA donors (genomes.rrna_donor_jobs; since 2026-11-14) -> {accession: job}, {} with --no_rrna_donors."""
+    if getattr(opts, "no_rrna_donors", False):
+        return {}
+    refseq_rows = sources.read_assemblies(tables(src_dir, "refseq", opts.groups))
+    with genomes.cached_summaries():
+        genomes.prefetch(opts.work, job_map)
+        donors = genomes.rrna_donor_jobs(ncbi, assemblies, refseq_rows, job_map, opts.work, opts.inside,
+                                         genomes.read_unavailable(opts.work))
+    if donors:
+        done = sum(genomes.donor_done(opts.work, a) for a in donors)
+        say(f"rRNA donors: {len(donors):,} species' genomes hold no 18S; their next assemblies give it ({done:,} "
+            f"extracted, {sum((j.get('size') or 0) for a, j in donors.items() if not genomes.donor_done(opts.work, a)) / 1e9:,.0f} "
+            "Gb still to fetch and extract)")
+    return donors
+
+
+def donor_one(args):
+    """A pool's task: (job, genome path, WORK, barrnap, ITSx, threads) -> (accession, why it failed or None): the
+    donor's rRNA (rrna_hook) into WORK/rrna_donors/<accession>/."""
+    job, path, work, barrnap, itsx, threads = args
+    acc = job["accession"]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            rrna_hook(path, job, tmp, barrnap, itsx, threads)
+            folder = genomes.donor_dir(work, acc)
+            os.makedirs(folder, exist_ok=True)
+            shutil.copyfile(os.path.join(tmp, "rrna.tsv"), util.part_of(os.path.join(folder, "rrna.tsv")))
+            os.replace(util.part_of(os.path.join(folder, "rrna.tsv")), os.path.join(folder, "rrna.tsv"))
+        return acc, None
+    except Exception as e:  # noqa: BLE001  a donor's failure, never the pool's
+        return acc, f"{type(e).__name__}: {e}"
+
+
+def donor_pass(opts, donors):
+    """The rRNA donors fetched and not extracted yet: barrnap and ITSx on each (donor_one), -j at once; with --keep_gb
+    its genome file deleted after (only its rRNA is kept)."""
+    barrnap, itsx = shutil.which("barrnap"), shutil.which("ITSx")
+    todo = [(j, genomes.genome_file(opts.genomes, a), opts.work, barrnap, itsx, opts.threads_per_genome)
+            for a, j in sorted(donors.items()) if not genomes.donor_done(opts.work, a)
+            and os.path.isfile(genomes.genome_file(opts.genomes, a))]
+    if not todo or not barrnap:
+        return
+    say(f"rRNA donors: {len(todo):,} assemblies' rRNA to extract")
+    failed = []
+    progress = progress_of(opts, "donors extracted", [t[0].get("size") or 0 for t in todo])
+    with util.process_pool(opts.jobs) as pool:
+        for acc, why in util.unordered(pool, donor_one, todo, progress, lambda: running(opts, progress)):
+            if why:
+                failed.append((acc, why))
+            progress.step(donors[acc].get("size") or 0, failed=bool(why))
+            if not why and opts.keep_gb is not None:
+                with contextlib.suppress(OSError):
+                    os.remove(genomes.genome_file(opts.genomes, acc))
+    if failed:
+        say(f"  {len(failed)} donors failed (e.g. {failed[:2]})")
 
 
 def intraspecific_pass(opts, src_dir, ncbi, extras):
@@ -1338,7 +1654,10 @@ def measure(part, opts, src_dir, ncbi, collected, vsearch, stages, fates=None, r
                               stages, log=say, fates=fates, inside=inside,
                               databases=databases_of(src_dir, ncbi, references, inside),
                               marker_folder=markers_of(opts, src_dir),
-                              clades=len(opts.wanted) if opts.wanted is not None else None)
+                              clades=len(opts.wanted) if opts.wanted is not None else None,
+                              # the 18S resolution's search reported, kept and shared (since 2026-11-14)
+                              progress=functools.partial(progress_of, opts, unit=""),
+                              searches=qc_searches(opts, "benchmarks") if vsearch else None)
     except Exception as e:  # noqa: BLE001
         say(f"WARNING: the benchmarks failed ({type(e).__name__}: {e}): the package is written without them")
         shutil.rmtree(os.path.join(part, benchmarks.FOLDER), ignore_errors=True)
@@ -1635,6 +1954,19 @@ def _main(argv, held):
     p.add_argument("--no_tsa", action="store_true",
                    help="no transcriptomes (ENA's TSA sets) for the species without a genome (default: their BUSCOs "
                         "called in them, source tsa)")
+    p.add_argument("--no_eukore_queries", action="store_true",
+                   help="no Eukore's own query proteins (default since 2026-11-14: the package stage writes the clean "
+                        "copies' proteins of the groups BUSCO's dataset serves poorly into WORK/eukore_queries.faa.gz; "
+                        "the next build's genomes of those groups take them where nearer than the dataset's, never "
+                        "their own species', and a done one is run again with them)")
+    p.add_argument("--no_rrna_donors", action="store_true",
+                   help="no rRNA donors (default since 2026-11-14: a species whose genome holds no 18S takes it from "
+                        "its next assembly, fetched and run by barrnap and ITSx alone)")
+    p.add_argument("--no_tsa_rrna", action="store_true",
+                   help="no rRNA extracted from the transcriptomes (default since 2026-11-14: barrnap and ITSx run on "
+                        "them as on a genome; most TSA sets are poly-A selected, but many keep some rRNA, the only "
+                        "record of thousands of species without a genome; a done transcriptome without them is "
+                        "backfilled where its file is still there)")
     p.add_argument("--intraspecific", type=int, default=3,
                    help="further assemblies of each species of data/intraspecific_panel.tsv run for the barcode gap "
                         "(intraspecific/; default 3; 0: none)")
@@ -1642,18 +1974,30 @@ def _main(argv, held):
                    help="the assemblies' organelle protein-coding genes: nhmmer's hits alone, or (default) miniprot's "
                         "exons by the organelle's code where nhmmer joined several hits (a gene with introns; "
                         "docs/methods.md)")
-    p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives (protal's "
-                                      f"KSGP, e.g. 4.4 or 5.2; default KSGP's served {labels.KSGP_VERSION}, fetched)")
+    p.add_argument("--ksgp_tax", help="a KSGP release's KSGP_v<V>_plus2.tax whose lineages species.tsv gives and whose "
+                                      "records taxonomy/links.tsv links to Eukore's (protal's KSGP, e.g. 4.4 or 5.2; "
+                                      f"default KSGP's served {labels.KSGP_VERSION}, fetched)")
     p.add_argument("--midori2", action="append",
                    help="a MIDORI2 RAW FASTA (its COI, e.g. MIDORI2_UNIQ_NUC_GB<release>_CO1_RAW.fasta.gz, from "
                         "reference-midori.info) whose lineages species.tsv gives, by NCBI taxid; given again for its "
                         "other genes' files (since 2026-11-10). Its records are screened (eukore/refscreen.py, with "
                         "minimap2 and vsearch): one that is another organism's gene or another gene names no species "
-                        "(reference_screen.tsv)")
+                        "(reference_screen.tsv). Default (since 2026-11-14): the newest release's UNIQ gene files, "
+                        "which the fetch stage takes from Zenodo (WORK/sources/labels/midori2). Since 2026-11-14 "
+                        "(format 7) its srRNA file's records are organelle genes too: one mitochondrial SSU a species "
+                        "without a RefSeq mitochondrial genome, the screen's drops left out (organelle/genes.tsv, "
+                        "source MIDORI2)")
+    p.add_argument("--no_midori2", action="store_true",
+                   help="no MIDORI2: neither fetched nor its lineages in species.tsv, nor its records screened, nor "
+                        "its mitochondrial SSU taken")
     p.add_argument("--no_reference_screen", action="store_true",
                    help="--midori2's records not screened: every one names its species (until 2026-11-10)")
     p.add_argument("--bold_tsv", help="a BOLD data package's TSV (its bin_uri and species columns): its BINs in "
                                       "crossrefs.tsv")
+    p.add_argument("--keep_poor_genomes", action="store_true",
+                   help="keep the copies of the genomes of tier poor or partial (eukore/tiers.py: under half their "
+                        "clade's expected BUSCOs whole, or a part of a genome), each flagged poor_genome, confidence "
+                        "low (default since 2026-11-14: left out, the genome's rRNA and organelle records kept)")
     p.add_argument("--no_benchmarks", action="store_true", help="write the package without its benchmarks/ "
                                                                   "(eukore/benchmarks.py; docs/benchmarks.md)")
     p.add_argument("-t", "--threads", type=int, default=8)
@@ -1751,7 +2095,13 @@ def _main(argv, held):
                 held.enter_context(util.single_run(src_dir, "fetch"))
         except util.RunHeld as e:
             sys.exit(f"--stage fetch: {e}")
-        fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh)
+        fetch_sources(src_dir, opts.groups, opts.ksgp_tax, opts.refresh,
+                      midori2=not (opts.midori2 or opts.no_midori2))
+    if not opts.midori2 and not opts.no_midori2:  # the fetched release's gene files (since 2026-11-14)
+        opts.midori2 = labels.midori2_files(src_dir) or None
+        if not opts.midori2 and "package" in opts.stages:
+            say("WARNING: no MIDORI2 files (--stage fetch fetches them; or --midori2): species.tsv without MIDORI2's "
+                "lineages, no reference screen")
     try:
         ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
     except FileNotFoundError:  # said so since 2026-11-11 (a new WORK's array crashed with a traceback in every task)
@@ -1760,6 +2110,9 @@ def _main(argv, held):
     opts.inside = inside_of(ncbi, wanted)
     job_map, assemblies = plan(opts, src_dir, ncbi)
     extras = extras_of(opts, src_dir, ncbi, job_map, assemblies)  # the barcode gap's panel (since 2026-11-07)
+    donors = donors_of(opts, src_dir, ncbi, job_map, assemblies)  # the 18S of genomes without (since 2026-11-14)
+    opts.donors = donors
+    opts.query_reruns = query_reruns(opts, ncbi, job_map)
     if opts.reversion:  # done genomes of an older genome record stamped with this one, kept (since 2026-11-09)
         olds = (genomes.reversion(opts.work, a) for a in sorted({**job_map, **extras}))
         stamped = collections.Counter(old for old in olds if old is not None)
@@ -1790,6 +2143,8 @@ def _main(argv, held):
         todo = [j for a, j in sorted({**job_map, **extras}.items()) if j["url"] and not j.get("path")
                 and not os.path.isfile(genomes.genome_file(opts.genomes, a))
                 and (not genomes.is_done(opts.work, a, loci) or a in again)]
+        todo += [j for a, j in sorted(donors.items()) if a not in job_map and a not in extras and j["url"]
+                 and not genomes.donor_done(opts.work, a) and not os.path.isfile(genomes.genome_file(opts.genomes, a))]
         downloads = max(1, opts.downloads)
         say(f"fetching {len(todo):,} genomes ({sum(j.get('size') or 0 for j in todo) / 1e9:,.1f} Gb) into "
             f"{opts.genomes}, {downloads} at a time by {util.CURL or 'urllib'}, checked by "
@@ -1841,8 +2196,10 @@ def _main(argv, held):
             return path, source
 
         spent = collections.Counter()  # the downloads' seconds of transfer, check and copy (fetch_file's times)
+        outcomes = {}  # {fetched accession: why it failed, "" where it arrived}: WORK/unavailable.tsv's
         for done in at_a_time(fetch_genome, todo, downloads):
             j, why, size, times = done.result()
+            outcomes[j.get("fetch", j["accession"])] = why
             fetched += size
             spent += times
             rate = fetched / max(1e-9, time.time() - progress.started) / 1e6
@@ -1852,6 +2209,14 @@ def _main(argv, held):
                           note=f"; {fetched / 1e9:,.1f} GB at {rate:,.1f} MB/s (a download's time: transfer "
                                f"{spent['transfer'] / busy:.0%} at {each:,.1f} MB/s, "
                                f"check {spent['check'] / busy:.0%}, copy {spent['copy'] / busy:.0%})")
+        # a genome NCBI serves no FASTA of (a 404: its folder holds the reports alone) noted, so that the next plan
+        # takes its species' next assembly (since 2026-11-14: it was fetched, and failed, by every run)
+        gone = [a for a, why in outcomes.items() if why == genomes.NOT_SERVED]
+        if outcomes:
+            genomes.note_unavailable(opts.work, outcomes)
+        if gone:
+            say(f"{len(gone)} genomes NCBI serves no FASTA of (e.g. {gone[:3]}): noted in WORK/{genomes.UNAVAILABLE}; "
+                "the next run's plan takes their species' next assembly")
         # the genomes' own gene models beside them, for the process stage's copies' models and their comparison
         # (annotation.py): NCBI's (RefSeq's, a GenBank submitter's; not where the assembly summary gives no
         # protein-coding genes), else Ensembl's, else TOGA2's
@@ -1939,6 +2304,7 @@ def _main(argv, held):
             published_pass(opts, src_dir, ncbi)
         else:
             intraspecific_pass(opts, src_dir, ncbi, extras)
+            donor_pass(opts, donors)
             describe_pass(opts, job_map)
             drop_superseded(opts, job_map)
             organelle_genes(opts, src_dir, job_map, ncbi)
@@ -2034,7 +2400,16 @@ def _main(argv, held):
                                         markers_mod.kinds(marker_folder),
                                         markers_mod.recheck(marker_folder, opts.hmmsearch, opts.threads),
                                         progress=functools.partial(progress_of, opts, unit=""),
-                                        searches=qc_searches(opts, "busco"))
+                                        searches=qc_searches(opts, "busco"),
+                                        drop_poor=not opts.keep_poor_genomes)
+            if not getattr(opts, "no_eukore_queries", False):
+                write_queries(opts, ncbi, collected, markers_mod.kinds(marker_folder))
+            reps = {a: g for a, g in collected["genomes"].items() if g["representative"] == "t"}
+            say(f"genome tiers (tiers.py): {tiers_mod.summary(reps)}; "
+                + (f"{len(collected['dropped']):,} poor or partial genomes' copies left out (e.g. "
+                   f"{collected['dropped'][:3]}; --keep_poor_genomes keeps them, flagged)" if collected["dropped"]
+                   else "no genome's copies left out"))
+        extra_tables = []
         with timed(stages, "introns and genetic codes", opts):
             hmmalign = shutil.which("hmmalign")
             if not hmmalign:
@@ -2042,8 +2417,34 @@ def _main(argv, held):
             hmm_of = odb_of(opts, src_dir).hmm
             # hmmalign's files on the node's disk (--local_tmp; since 2026-11-13: in WORK), its cache in WORK
             package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say, opts.threads, tmp=opts.scratch)
+        # EUKARYOME's taxonomy (since 2026-11-14): the chimera screens' clades, every species', record's and
+        # organelle gene's lineage in it
+        tree = eukaryome_mod.load(sources.ready(src_dir, "EUKARYOME"), sources.SOURCES["EUKARYOME"]["version"],
+                                  log=say)
+        with timed(stages, "rRNA records' audit", opts):
+            # KSGP 4.1-4.5's checks of the published 18S (since 2026-11-14, format 7: eukore/audit.py,
+            # chimeras.py): their ends and flanks (audited by the published batches, across the array's nodes; a read
+            # of an older batch here), then the chimera screens, their searches shared with the helpers
+            published_records, audited = published(opts, src_dir, ncbi)
+            records = genome_rrna_records(opts, job_map, ncbi, collected) + published_records
+            univec, primers, nhmmer, hmm = audit_mod.tools(src_dir, sources)
+            records, trims, audit_counts = audit_mod.clean(records, audit_mod.vectors_of(univec), primers, nhmmer, hmm,
+                                                           opts.threads, opts.scratch, say, audited)
+            if tree is not None:
+                searcher = screen_mod.Searcher(vsearch, opts.threads, opts.scratch,
+                                               **{k: v for k, v in qc_searches(opts, "audit").items()
+                                                  if k in ("folder", "helpers", "nodes")},
+                                               progress=functools.partial(progress_of, opts, unit=""), log=say)
+                records, audit_rows, screen_counts = audit_mod.screen(records, tree, ncbi, shutil.which("minimap2"),
+                                                                      vsearch, searcher, opts.threads, opts.scratch,
+                                                                      say)
+            else:
+                say("WARNING: no EUKARYOME taxonomy: the 18S not screened for chimeras")
+                audit_rows, screen_counts = [], {}
+            audit_rows = audit_mod.trim_rows(trims) + audit_rows
+            extra_tables.append(("rrna/audit.tsv", chimeras.AUDIT_COLUMNS, audit_rows))
+            audit_stamp = audit_mod.stamp(univec, primers, nhmmer, hmm, audit_counts, screen_counts)
         with timed(stages, "rRNA records and their checks", opts):
-            records = genome_rrna_records(opts, job_map, ncbi, collected) + published(opts, src_dir, ncbi)
             # each 18S's SSU model (since 2026-11-09): a bacterium's or an organelle's SSU is no 18S
             models, cmsearch = regions_mod.models_path(src_dir), shutil.which("cmsearch")
             # its new 18S searched in parts kept in WORK/qc/ssu_models/ and shared with the helpers (since 2026-11-13)
@@ -2058,7 +2459,6 @@ def _main(argv, held):
             records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say, ssu_models=ssu,
                                   searches=qc_searches(opts, "rrna"),
                                   progress=functools.partial(progress_of, opts, unit=""), tmp=opts.scratch)
-        extra_tables = []
         with timed(stages, "18S variable regions and amplicons", opts):
             cm, cmalign = regions_mod.cm_path(src_dir), shutil.which("cmalign")
             if cmalign and os.path.isfile(cm):
@@ -2071,11 +2471,24 @@ def _main(argv, held):
                     "regions")
             extra_tables.append(("rrna/amplicons.tsv", primers_mod.AMPLICON_COLUMNS,
                                  primers_mod.run(records, "rrna", threads=opts.threads)))
+        screened = None
+        if opts.midori2 and not opts.no_reference_screen:  # since 2026-11-10: MIDORI2's misnamed, chimeric records
+            # (since 2026-11-14 before the organelle genes: MIDORI2's mitochondrial SSU the screen keeps are taken)
+            with timed(stages, "reference screen", opts):
+                screened = reference_screen(opts, src_dir, ncbi)
+            if screened:
+                extra_tables.append(("reference_screen.tsv", refscreen.TABLE_COLUMNS,
+                                     refscreen.table_rows("MIDORI2", screened[0])))
         with timed(stages, "organelle genes", opts):
             chosen = organelle_genes(opts, src_dir, job_map, ncbi)  # before the prune: the genomes searched while there
             held = {int(g["species_taxid"]) for g in collected["genomes"].values() if g["representative"] == "t"}
-            organelle = organelle_mod.collect(ncbi, job_map, held | {int(r["species_taxid"]) for _n, _s, r in records},
-                                              chosen, os.path.join(opts.work, "organelle"))
+            # every species of RefSeq's organelle genomes (since 2026-11-14, format 7: until then those of the
+            # package's genomes and rRNA records alone), EUKARYOME's organelle SSU and MIDORI2's mitochondrial SSU
+            refseq_species = {sp for sp, _o in chosen if opts.inside(sp)}
+            organelle = organelle_mod.collect(ncbi, job_map, held | {int(r["species_taxid"]) for _n, _s, r in records}
+                                              | refseq_species, chosen, os.path.join(opts.work, "organelle"))
+            organelle += organelle_published(opts, src_dir, ncbi, chosen)
+            organelle += midori2_published(opts, ncbi, chosen, screened[0] if screened else None)
             organelle = organelle_mod.check(organelle, ncbi, vsearch, opts.threads,
                                             progress=functools.partial(progress_of, opts, unit=""),
                                             searches=qc_searches(opts, "organelle"))
@@ -2086,7 +2499,8 @@ def _main(argv, held):
             with timed(stages, "intraspecific barcode gap", opts):
                 writers.append(intraspecific_writer(opts, ncbi, extras, collected, records, organelle, vsearch))
         inputs = {"odb": odb_mod.state_of(src_dir), "taxdump_md5": util.md5(os.path.join(src_dir, "taxdump.tar.gz")),
-                  "sources": {n: sources.state_of(src_dir, n).get("version") for n in ("EUKARYOME", "ROD")},
+                  "sources": {n: sources.state_of(src_dir, n).get("version")
+                              for n in ("EUKARYOME", "EUKARYOME_SSU", "ROD", "UniVec")},
                   "assembly_tables": {os.path.basename(p): util.md5(p) for p in sorted(
                       tables(src_dir, "genbank", opts.groups) + tables(src_dir, "refseq", opts.groups))},
                   "genomes_not_done": len(undone),
@@ -2095,7 +2509,9 @@ def _main(argv, held):
                   "refseq_organelle": {os.path.basename(p): util.md5(p)
                                        for p in organelle_mod.release_files(src_dir) if os.path.isfile(p)},
                   "markers": markers_mod.state_of(markers_of(opts, src_dir)),
-                  "tsa": genomes.tsa_state(src_dir) if not getattr(opts, "no_tsa", False) else None}
+                  "tsa": genomes.tsa_state(src_dir) if not getattr(opts, "no_tsa", False) else None,
+                  # the published 18S's audit (since 2026-11-14): its inputs and counts
+                  "audit": audit_stamp}
         if wanted is not None:
             inputs["partial"] = {"species_clades": sorted(wanted)}  # a trial package: these clades only
         # every genome is called and extracted: the kept ones cut back to the budget, then the package names those kept
@@ -2113,19 +2529,16 @@ def _main(argv, held):
         say(f"genomes kept in {opts.genomes}: {kept / 1e9:.1f} GB ("
             + ("no --keep_gb: none deleted)" if opts.keep_gb is None else
                f"--keep_gb {opts.keep_gb:g}), {sum(st == 'deleted' for *_x, st in rows_kept)} deleted"))
-        screened = None
-        if opts.midori2 and not opts.no_reference_screen:  # since 2026-11-10: MIDORI2's misnamed, chimeric records
-            with timed(stages, "reference screen", opts):
-                screened = reference_screen(opts, src_dir, ncbi)
-            if screened:
-                extra_tables.append(("reference_screen.tsv", refscreen.TABLE_COLUMNS,
-                                     refscreen.table_rows("MIDORI2", screened[0])))
         with timed(stages, "reference labels", opts):
             references = labels.references(
                 src_dir, sources.ready(src_dir, "EUKARYOME"), opts.ksgp_tax, say, opts.midori2,
                 (refscreen.dropped(screened[0]), refscreen.stamp(screened[1])) if screened else None)
             held_species = {int(g["species_taxid"]) for g in collected["genomes"].values()
-                            if g["representative"] == "t"} | {int(r["species_taxid"]) for _n, _s, r in records}
+                            if g["representative"] == "t"} | {int(r["species_taxid"]) for _n, _s, r in records} | \
+                {int(r["species_taxid"]) for _n, _s, r in organelle}
+            # each record's PR2 and KSGP records and their labels (since 2026-11-14: taxonomy/links.tsv)
+            link_rows, inputs["links"] = links.table(records, src_dir, opts.ksgp_tax, say)
+            extra_tables.append(("taxonomy/links.tsv", links.LINK_COLUMNS, link_rows))
             extra_tables.append(("crossrefs.tsv", labels.CROSSREF_COLUMNS, labels.crossrefs(
                 ncbi, held_species, references, os.path.join(labels.folder_of(src_dir), labels.OTT_FILE),
                 opts.bold_tsv, say)))
@@ -2138,7 +2551,7 @@ def _main(argv, held):
                                  + tables(src_dir, "refseq", opts.groups), jobs=job_map)
         out = package.write(os.path.join(opts.out, f"Eukore_{opts.version}"), opts.version, ncbi, collected,
                             loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook,
-                            metadata=meta, tables=extra_tables, writers=writers, threads=opts.threads)
+                            metadata=meta, tables=extra_tables, writers=writers, threads=opts.threads, eukaryome=tree)
         say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")
         evaluation_bundle(opts, out)  # since 2026-11-12: the run's report and tables, to be looked at elsewhere
         if not opts.no_release:  # the website's data and the downloads (since 2026-11-09; --stage release again)

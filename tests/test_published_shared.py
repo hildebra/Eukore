@@ -163,7 +163,7 @@ class SharedBatchesTest(unittest.TestCase):
 
         def other_run():  # its batch annotated, its lines and its done mark written, its claim removed
             time.sleep(0.3)
-            with open(os.path.join(self.folder, "regions.3.othernode-123.tsv"), "w") as fh:
+            with open(os.path.join(self.folder, eukore_build.PUBLISHED_REGIONS[:-4] + ".othernode-123.tsv"), "w") as fh:
                 fh.writelines(f"{n}\t-\tf\t+\t{eukore_build.read_digest(s)}\n" for n, s, _t in self.batches[0][1])
             with open(os.path.join(self.folder, "done.othernode-123.txt"), "w") as fh:
                 fh.write(first + "\n")

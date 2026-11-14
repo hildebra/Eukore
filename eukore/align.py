@@ -68,6 +68,20 @@ def states_of_a2m(a2m):
     return out
 
 
+def first_profile(hmm, folder):
+    """An HMM file of one profile as it is; of several (a family marker's: markers.py, ACT's two), its first written
+    into folder: hmmalign takes one profile alone (since 2026-11-14: the 2026-11 build's ACT copies were placed on
+    none, `hmmalign placed no proteins of 1 BUSCOs`) -> the path hmmalign is given."""
+    with open(hmm) as fh:
+        text = fh.read()
+    if text.count("\n//") <= 1:
+        return hmm
+    path = os.path.join(folder, "first.hmm")
+    with open(path, "w") as fh:
+        fh.write(text[:text.index("\n//") + 3] + "\n")
+    return path
+
+
 def align_locus(hmm, proteins, hmmalign="hmmalign", cache=None, tmp=None):
     """One locus' proteins ({name: protein}) on its HMM -> {name: [match state or None per residue]}; {} where hmmalign
     could not run. An internal stop (*) is aligned as X. cache: a folder each distinct protein's row on the profile
@@ -87,8 +101,9 @@ def align_locus(hmm, proteins, hmmalign="hmmalign", cache=None, tmp=None):
             fasta, got = os.path.join(work, "p.faa"), os.path.join(work, "a.pfam")
             with open(fasta, "w") as fh:
                 fh.writelines(f">{k}\n{p}\n" for k, p in sorted(todo.items()))
+            profile = first_profile(hmm, work)
             try:
-                run = subprocess.run([hmmalign, "--outformat", "Pfam", "-o", got, hmm, fasta], capture_output=True,
+                run = subprocess.run([hmmalign, "--outformat", "Pfam", "-o", got, profile, fasta], capture_output=True,
                                      text=True, check=False)
             except OSError:  # no such program (since 2026-11-10: raised, the docstring's {} not given)
                 return {}

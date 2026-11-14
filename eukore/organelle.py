@@ -66,7 +66,10 @@ GENE_COLUMNS = ("record", "gene", "organelle", "taxid", "species_taxid", "source
                 # source, a trans-spliced gene, the spacer's regions, its checks (check)
                 "name", "model", "parts", "trans_spliced", "regions", "internal_stops", "own_species", "same_as",
                 "length_check", "confidence", "flags",
-                "cross")  # since 2026-11-09 (format 6): the other clade's species it is shared with (qc.verdict)
+                "cross",  # since 2026-11-09 (format 6): the other clade's species it is shared with (qc.verdict)
+                # since 2026-11-14 (format 7): a published record's file (EUKARYOME_SSU) and own label, how its taxid was
+                # found; every gene's rank, NCBI and EUKARYOME lineages (package.lineages)
+                "via", "source_label", "label_from", "rank", "ncbi_lineage", "eukaryome_lineage", "eukaryome_match")
 CACHE_COLUMNS = ("seqid", "organelle", "taxid", "record_length", "gene", "start", "end", "strand", "exons", "copies",
                  "partial", "sequence", "spliced", "parts", "trans_spliced", "regions",
                  "transl_table",  # since 2026-11-10: a CDS's own /transl_table, `-` where it names none (table_of)
@@ -665,6 +668,84 @@ def organelle_molecules(path):
     return [(n, k, "".join(p).upper()) for n, k, p in out if sum(map(len, p)) <= MAX_MOLECULE]
 
 
+# Candidate organelle contigs (since 2026-11-14): most assemblies title no molecule an organelle (the 2026-11 build: 14.9%
+# of fungal assemblies gave an organelle gene, 16,468 genome species none), though their mitochondrion is often among
+# the contigs. A genome of CANDIDATE_GENOME bases or fewer without a titled molecule of an organelle has its contigs
+# nominated (two passes over its FASTA: their lengths and GC, then the chosen ones' sequences): for a mitochondrion,
+# contigs of CANDIDATE_MITO bases whose GC is CANDIDATE_GC_DROP or more under the genome's (fungi's and most protists'
+# mitochondria are AT-rich), and in an animal those of an animal mitogenome's length (CANDIDATE_ANIMAL); for a plastid,
+# those of a plastome's length (CANDIDATE_PLASTID). At most CANDIDATES of each, the most AT-rich first. They are
+# searched as titled molecules are: a nuclear contig holds none of the genes, and gives no row.
+CANDIDATE_GENOME = 1_000_000_000
+CANDIDATE_MITO = (12_000, 600_000)
+CANDIDATE_ANIMAL = (13_000, 25_000)
+CANDIDATE_PLASTID = (100_000, 250_000)
+CANDIDATE_GC_DROP = 0.08
+CANDIDATES = 30
+CANDIDATE_RECORD = "candidates1"  # in the search's models key: raised when the rules above change
+
+
+def contig_stats(path):
+    """A FASTA's [(name, length, GC share of its ACGT)]."""
+    out, name, n, gc, acgt = [], None, 0, 0, 0
+    with util.open_text(path) as fh:
+        for line in fh:
+            if line.startswith(">"):
+                if name is not None:
+                    out.append((name, n, gc / acgt if acgt else 0.0))
+                name, n, gc, acgt = (line[1:].split() or [""])[0], 0, 0, 0
+            else:
+                s = line.strip().upper()
+                n += len(s)
+                g = s.count("G") + s.count("C")
+                gc, acgt = gc + g, acgt + g + s.count("A") + s.count("T")
+    if name is not None:
+        out.append((name, n, gc / acgt if acgt else 0.0))
+    return out
+
+
+def candidate_names(stats, organelle, animal):
+    """The contigs nominated as an organelle's (module comment) of contig_stats' rows -> [name]."""
+    total = sum(n for _c, n, _g in stats)
+    weighted = sorted((g, n) for _c, n, g in stats if n >= 1000)
+    median, seen = 0.0, 0
+    for g, n in weighted:  # the genome's GC: the length-weighted median of its contigs'
+        seen += n
+        if seen >= sum(x for _g, x in weighted) / 2:
+            median = g
+            break
+    if not total:
+        return []
+    if organelle == "plastid":
+        lo, hi = CANDIDATE_PLASTID
+        chosen = [(g, c) for c, n, g in stats if lo <= n <= hi]
+    else:
+        lo, hi = CANDIDATE_MITO
+        chosen = [(g, c) for c, n, g in stats if lo <= n <= hi and g <= median - CANDIDATE_GC_DROP]
+        if animal:
+            alo, ahi = CANDIDATE_ANIMAL
+            chosen += [(g, c) for c, n, g in stats if alo <= n <= ahi and (g, c) not in chosen]
+    return [c for _g, c in sorted(chosen)[:CANDIDATES]]
+
+
+def candidate_molecules(path, organelle, animal):
+    """A genome's candidate contigs of an organelle -> [(name, organelle, sequence)]."""
+    wanted = set(candidate_names(contig_stats(path), organelle, animal))
+    if not wanted:
+        return []
+    out, cur = [], None
+    with util.open_text(path) as fh:
+        for line in fh:
+            if line.startswith(">"):
+                name = (line[1:].split() or [""])[0]
+                cur = (name, organelle, []) if name in wanted else None
+                if cur:
+                    out.append(cur)
+            elif cur is not None:
+                cur[2].append(line.strip())
+    return [(n, k, "".join(p).upper()) for n, k, p in out]
+
+
 class Nearest:
     """RefSeq's genes (whole, of the chosen records; their exons joined), by organelle, gene and NCBI lineage."""
 
@@ -959,7 +1040,8 @@ def run_assembly(args):
     models of the protein-coding genes nhmmer found in several hits, or (since 2026-11-10) in a single hit that is not
     the gene's coding sequence (with_miniprot)."""
     acc, path, out, animal, queries, barrnap, nhmmer, threads, *more = args
-    proteins, codes, miniprot = more if more else ({}, {}, None)
+    proteins, codes, miniprot, genome = (list(more) + [None])[:4] if more else ({}, {}, None, None)
+    candidates = 0
     try:  # the molecules metadata.describe kept (since 2026-11-08), else the genome read again
         molecules = saved_molecules(path) if os.path.basename(path) == SAVED else organelle_molecules(path)
         rows = []
@@ -967,6 +1049,9 @@ def run_assembly(args):
             if organelle not in queries:  # RefSeq's record taken, or none to hold
                 continue
             group = [m for m in molecules if m[1] == organelle]
+            if not group and genome and os.path.isfile(genome):  # its candidate contigs (since 2026-11-14)
+                group = candidate_molecules(genome, organelle, animal)
+                candidates += len(group)
             found = nhmmer_genes(group, queries.get(organelle, []), nhmmer, threads)
             for (_k, gene), (row, copies) in barrnap_genes(group, barrnap, kingdom, threads).items():
                 found.setdefault(gene, dict(row, copies=copies))
@@ -978,7 +1063,7 @@ def run_assembly(args):
     except (OSError, EOFError, RuntimeError) as e:
         return acc, None, f"{type(e).__name__}: {e}"
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    models = "miniprot" if miniprot else "nhmmer"
+    models = ("miniprot" if miniprot else "nhmmer") + (f"+{CANDIDATE_RECORD}" if genome else "")
     inputs = [f"{k}={search_key(k, animal, queries[k], proteins.get(k, {}), codes.get(k, 1), models)}"
               for k in KINDS if k in queries]  # what it was searched with: assembly_pass searches again where other
     with open(util.part_of(out), "w", newline="\n") as fh:
@@ -1021,10 +1106,17 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
         animal = is_animal(ncbi, sp)
         queries, proteins = {k: nearest.queries(sp, k) for k in need}, {k: nearest.proteins(sp, k) for k in need}
         codes = {k: ncbi.code_of(sp, COMPARTMENT[k]) for k in need}
+        # a genome small enough whose file is here: its candidate contigs searched where it titles no organelle
+        # molecule (since 2026-11-14; its models key says so, so that such a genome is searched again once)
+        genome = genome_of(acc) if job.get("kind") != "transcriptome" and 0 < (job.get("size") or 0) \
+            <= CANDIDATE_GENOME else None
+        genome = genome if genome and os.path.isfile(genome) else None
+        key = models + (f"+{CANDIDATE_RECORD}" if genome else "")
         # since 2026-11-10 searched again also where it was searched with other inputs (search_key: the queries of
         # another release, another genetic code, other thresholds, a CACHE_VERSION raised)
-        same = {f"{k}={search_key(k, animal, queries[k], proteins[k], codes[k], models)}" for k in need}
-        asked.append((acc, assembly_file(work_folder, acc), animal, queries, proteins, codes, (need, same, models)))
+        same = {f"{k}={search_key(k, animal, queries[k], proteins[k], codes[k], key)}" for k in need}
+        asked.append((acc, assembly_file(work_folder, acc), animal, queries, proteins, codes, genome,
+                      (need, same, key)))
 
     def look(item):
         """An assembly's search file and its molecules, or None where it is searched already or not there: asked of
@@ -1037,9 +1129,9 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
         # molecules are written out for the search, store.py)
         path = (saved_of(acc) if saved_of else None) or genome_of(acc)
         return path if os.path.isfile(path) else None
-    todo = [(acc, path, out, animal, queries, barrnap, nhmmer, threads, proteins, codes, miniprot)
-            for (acc, out, animal, queries, proteins, codes, _c), path in zip(asked, util.threaded(look, asked))
-            if path]
+    todo = [(acc, path, out, animal, queries, barrnap, nhmmer, threads, proteins, codes, miniprot, genome)
+            for (acc, out, animal, queries, proteins, codes, genome, _c), path
+            in zip(asked, util.threaded(look, asked)) if path]
     if not todo:
         return 0, 0
     log(f"organelle genes: {len(todo)} assemblies to search" + (", each under its genome's claim" if claim else ""))
@@ -1116,6 +1208,7 @@ def collect(ncbi, job_map, species_set, chosen, work_folder):
                 name = f"{r['seqid']}_{r['gene']}"
                 model = "refseq" if r["source"] == "refseq" else r.get("model") or "-"
                 out.append((name, seq, dict(record=name, gene=r["gene"], organelle=organelle, taxid=r["taxid"],
+                                            label_from="refseq_taxid" if r["source"] == "refseq" else "assembly",
                                             species_taxid=sp, source=r["source"], seqid=r["seqid"],
                                             accession=r["accession"], start=r["start"], end=r["end"],
                                             strand=r["strand"], length=len(seq), exons=r["exons"], copies=r["copies"],
@@ -1127,6 +1220,26 @@ def collect(ncbi, job_map, species_set, chosen, work_folder):
                                             transl_table=r.get("transl_table") or "-",
                                             transl_except=r.get("transl_except") or "-")))
     return out
+
+
+PUBLISHED_ORGANELLES = ("mitochondrion", "plastid", "nucleomorph")
+
+
+def published_record(r, taxid, species_taxid, how, label, ncbi, via="-"):
+    """A published organelle record (r: name, sequence, kind (its organelle), source, id; since 2026-11-14:
+    EUKARYOME's mitochondrial SSU, eukore_build.organelle_published) -> (name, sequence, row of GENE_COLUMNS): its
+    gene SSU, its seqid its accession, where it lies in it not known."""
+    seq = r["sequence"]
+    organelle = r["kind"]
+    animal, plant = is_animal(ncbi, species_taxid), EMBRYOPHYTA in ncbi.ancestors(ncbi.merged.get(species_taxid,
+                                                                                                species_taxid))
+    name = "18S" if organelle == "nucleomorph" else name_of(organelle, "SSU", animal, plant)
+    return (r["name"], seq, dict(record=r["name"], gene="SSU", organelle=organelle, taxid=taxid,
+                                 species_taxid=species_taxid, source=r["source"], seqid=r["id"], accession="-",
+                                 start="-", end="-", strand="-", length=len(seq), exons="-", copies="-", partial="-",
+                                 ambiguous=f"{rrna.ambiguous(seq):.4f}", name=name, model="-", parts="-",
+                                 trans_spliced="f", regions="-", cds=None, transl_table="-", transl_except="-",
+                                 via=via, source_label=label, label_from=how))
 
 
 def coding_of(r, seq):
@@ -1201,6 +1314,9 @@ def confidence(row):
         medium.append("trans_spliced")
     if row["gene"] in CODING and row.get("model") == "nhmmer" and str(row.get("exons")) != "1":
         medium.append("exons_approximate")
+    # a published record's flags (since 2026-11-14: a MIDORI2 record the reference screen left for review,
+    # `screen_weak`)
+    medium += list(row.get("flags_extra") or ())
     if row.get("own_species") in ("-", None):
         if row.get("cross") not in (None, "-", ""):
             medium.append("cross_shared")

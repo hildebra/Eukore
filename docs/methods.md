@@ -572,11 +572,12 @@ Which other outside sequences go into the package, and what checks them (2026-11
 | sequences | used as | checked by |
 |---|---|---|
 | EUKARYOME 2.1's long reads, ROD v1.2's operons | `rrna/records`, by their own labels | the part screen (`screen`) and, since 2026-11-10, `own_species` against the genomes' 18S |
-| MIDORI2's files (`--midori2`) | names of species (`species.tsv`) | the reference screen above |
+| MIDORI2's files (`--midori2`) | names of species (`species.tsv`); since format 7 its srRNA file's mitochondrial SSU, one a species (`organelle/genes`) | the reference screen above, then as every organelle gene |
 | NCBI's and Swiss-Prot's proteins of the marker loci | the markers' members, their HMMs | `markers.foreign()`: a member another phylum's at near identity is dropped |
 | the genomes, transcriptomes and `data/no_assembly.fna.gz`'s records | everything a genome gives | `own_species`, the part screen, FCS-GX, tiara, genetic code check |
 | RefSeq's organelle genomes | organelle models; the reference screen's trusted records | none: curated whole genomes |
-| PR2, KSGP, SILVA, UNITE, EUKARYOME's labels | names of species alone | nothing to screen: Eukore reads their names, not their sequences |
+| PR2, KSGP, SILVA, UNITE, EUKARYOME's labels | names of species alone; PR2's and KSGP's record ids (`taxonomy/links.tsv`) | nothing to screen: Eukore reads their names, not their sequences |
+| EUKARYOME's SSU set (since 2026-11-14, format 7) | `rrna/records` (nuclear 18S), `organelle/genes` (its organelle SSU) | the audit (`audit.py`, `chimeras.py`: ends, flanks, chimeras), then as its long reads: the part screen, `own_species` against the genomes' 18S, the SSU model, telomere repeats |
 | BUSCO's `refseq_db.faa`, benchmarks/'s other references | miniprot's queries; the benchmarks' other databases | not screened: a seed protein names nothing, and a benchmark compares a database as it is |
 
 - **Published reads' own species** (`rrna.own_species`). A published read's label was taken as its source gave it,
@@ -594,3 +595,106 @@ Which other outside sequences go into the package, and what checks them (2026-11
   reads `t`, 27 `-`, none `f`; no genome's record changed. 100 of its passing genomes' and reads' records renamed as
   a species of another phylum: 91 `f`, 9 `-`, none `t` (12 `t` without `related`: Arabidopsis' operons, the trial
   holding one Brassicaceae genome); no other record's verdict changed.
+
+## Eukore as a user's only source of eukaryote rRNA and names, format 7 (since 2026-11-14)
+
+protal asked that Eukore become its only source of eukaryote rRNA records and eukaryote names, so that KSGP holds
+prokaryote 16S alone. Measured on KSGP 5.2 (817,884 records): 476,682 nuclear eukaryote 18S (342,515 of EUKARYOME,
+94,791 of PR2 5.1.1's accessions, 7,803 of SILVA 138.2's eukaryote accessions, 20,931 of GenBank in neither, 8,805 of
+NCBI's assemblies, 1,474 of RefSeq), 953 plastid 16S, 143 nucleomorph 18S and 58,806 mitochondrial SSU (MIDORI's).
+Format 6 held none of PR2's, GenBank's, SILVA's or RefSeq's, and of EUKARYOME's 400,217 long reads only the 160,138
+labelled by a species or genus NCBI names.
+
+- **EUKARYOME alone** (`sources.EUKARYOME_SSU`, `eukore_build.eukaryome_reads`). KSGP 5's eukaryote 18S is EUKARYOME
+  2.1's SSU set: all 342,515 of KSGP 5.2's EUKARYOME ids are in it, and 127,675 of its 134,167 other nuclear 18S under
+  the same accession (PR2 94,020 of 95,113, KSGP's genome 18S all 8,805, SILVA 7,688 of 7,844, GenBank 16,020 of
+  20,931, RefSeq 1,142 of 1,474; 125,651 with the same sequence, 1,474 one inside the other). The SSU set (558,632
+  records) holds 407,694 EUK ids (386,813 the 18S of a long read) and 150,938 accessions (GenBank's 18S, `GCA_` genome
+  18S, UNITE's). So the published 18S are EUKARYOME's alone: its long reads (but those it marks of compromised
+  quality) and every record of its SSU set but the 18S of a long read taken (the read is taken whole); PR2 and KSGP
+  give no record and no taxon. Their records are linked to Eukore's by accession, with their labels
+  (`eukore/links.py`, `taxonomy/links.tsv`; PR2's taxonomy fetched, KSGP's `--ksgp_tax`). EUKARYOME tags a record of
+  no nucleus by its kingdom `k___<tag>`: its mitochondrial (2,054), plastid (248, apicoplast 5, chromatophore 1) and
+  nucleomorph (396) SSU are organelle genes; its bacterial (669) and archaeal (188) SSU and pseudogenes (7) are left
+  out. Until 2026-11-14 its long reads of these tags named by an NCBI genus or species (2,010 mitochondrial, 374
+  nucleomorph, 118 plastid reads among them) were nuclear operon reads.
+- **Coverage** (no checks run; NCBI's taxdump of the trial build, KSGP 5.2's labels by `rrna.label_taxon`'s names):
+  623,160 published records (EUKARYOME's long reads 396,176, its SSU set 157,504, ROD's operons 69,480). Of KSGP 5.2's
+  59,026 NCBI species of its nuclear 18S, 57,962 hold an rRNA record (98.2%), 58,072 with the genomes' species (954
+  not: Fungi 349, Metazoa 206, Alveolata 143, Viridiplantae 69, ...: KSGP's own additions of PR2, RefSeq and SILVA
+  records EUKARYOME lacks); 4,065 species KSGP does not name. Of its 27,606 NCBI genera, 27,128. The records' label
+  rank: EUKARYOME's species 135,638, genus 159,439, above the genus the rest (its environmental long reads mostly).
+  Organelle genes of 18,663 species' mitochondria, 15,032 species' plastids and 69 species' nucleomorphs; organelle
+  genes alone of 22,421 species (mitochondrion 10,972, plastid 11,759, nucleomorph 13). Of KSGP 5.2's plastid species
+  513 of 527 and nucleomorph species 49 of 52 hold organelle genes; of its mitochondrial SSU species (MIDORI's) 13,084
+  of 58,600 without MIDORI2's records.
+- **MIDORI2's mitochondrial SSU** (`eukore_build.midori2_published`, its srRNA file among `--midori2`'s: by default the
+  newest release's UNIQ files, fetched from Zenodo). One record a species whose mitochondrial genes no RefSeq genome
+  gives: its longest the reference screen keeps (a cut record its kept part, a dropped one never, one left for review
+  only where the species has no other, `screen_weak`), as KSGP took one MIDORI record a species (58,806 in KSGP 5.2); a
+  species' every haplotype (MIDORI2's UNIQ files) would multiply the organelle checks' searches for no species more. The
+  reference screen now runs before the organelle genes. On MIDORI2 GB273's LONGEST srRNA file with that release's screen
+  (`~/refscreen/all.v5`: SSU misnamed 75, chimera 19, other gene 173, weak 100): 60,710 records taken (73 cut by the
+  screen, 93 for review), 131 dropped, 17,402 of species with a RefSeq mitochondrial genome not taken, 166 of no NCBI
+  taxon. Species with mitochondrial genes 18,663 -> 78,611, with organelle genes alone 22,421 -> 68,128 (mitochondrion
+  57,033); of KSGP 5.2's mitochondrial SSU species 58,486 of 58,600 hold one.
+- **The audit** (`eukore/audit.py`, `eukore/chimeras.py`; [FORMAT: rrna/](FORMAT.md#rrna)): KSGP 4.1-4.5's checks of
+  their records (KSGP 5.2's and 4.5's READMEs) run on every published read at build time, calibrated on EUKARYOME
+  2.1 (2026-11-14; WSL `~/euk-audit`):
+  - *Primers.* EUKARYOME's records are trimmed of their primers already: 364,417 of its SSU set end 3 bases past
+    EukB's site (the 18S's own last bases), 184,843 begin at one V4 site, 255,487 long reads end at one 28S site; 555
+    long reads end exactly with RCA95m. A gene-end primer's site is the 18S's own end, so no primer is cut, only a
+    barcode or adapter before one (bases of no rRNA, `data/primers.tsv`'s rDNA primers, 12 added).
+  - *Vectors.* UniVec_Core 25-mers in 328 of the SSU set's records and 877 long reads, mostly single 25-mers of
+    oligo-dT primers and poly-A vectors (SMART CDS III, the I.M.A.G.E. libraries' NotI oligo-dT, pSP64) on poly-A runs:
+    K-mers of low complexity are left out, and a vector inside the rRNA counts from 50 bases (VecScreen's internal
+    match: 30).
+  - *Ends and flanks*, on 10,000 random long reads and 10,000 records of the SSU set without a long read (barrnap, then
+    the audit with nhmmer): cut 312 long reads (an 18S read whose flank holds its 5.8S or 28S, an operon barrnap did not
+    make whole, 166; a barcode before a primer 105; DNA beyond the gene 51; telomere repeats 2; vectors 2) and 289 SSU
+    records (a barcode before a primer 172; DNA beyond a whole 18S 67; N tails 50; another gene beside the 18S 8;
+    vectors 2); flagged `flank` 82 long reads (until the 28S was spared: 711, its 28S going on to the primer site the
+    read ends at) and 646 SSU records (DNA of median 200 bases beside an 18S that stops short), `no_rrna` 32 and 189.
+  - *The window screen* (KSGP 4.5), on every distinct 18S of the SSU set (484,839, its 5,763 `GCA_` genome 18S the
+    references; the build adds Eukore's own genome 18S and ROD's): by phylum, as KSGP screens 16S, it called 4,987
+    records mislabels and 2,128 chimeras, most of them Endogonomycetes (Mucoromycota) reads whose windows are 97-99%
+    like Mortierellomycota genomes' 18S, a lineage without a genome of its own: a kingdom's phyla are as alike in the
+    18S as a bacterial phylum's families in the 16S. By EUKARYOME's kingdom: 55,496 of the distinct 18S flagged by the
+    first pass; of the records 392 chimeras cut to their own part, 350 chimeras flagged (their own part under 500
+    bases), 144 mislabels (another kingdom's windows over half of it and none of its own: until KSGP 4.5's share rule
+    was taken, 3,410, most of them Sarcomonadea (Cercozoa) reads with two windows at 98% to stramenopile genomes), 322
+    recurrent, 8,496 uncertain (one window, or a conserved stretch of a lineage without a genome relative) and 4,978
+    under a placeholder kingdom (no flag). Of KSGP 5.2's drops among them it calls (chimera or mislabel) 166 of 1,541
+    chimeras (class Q: mostly of two genera of one kingdom, UCHIME's), 8 of 14 another organism's 18S (B), 5 of 13 genus
+    homonyms (C), 6 of 80 of the wrong kingdom (U).
+  - *UCHIME* (KSGP 4.2's rule), on 4,986 random records of the SSU set and 1,004 that KSGP 5.2 dropped as chimeras
+    (classes Q and E), against all 555,012 of its nuclear 18S: of the random records 1 confirmed and 4 uncertain; of
+    KSGP's chimeras 366 confirmed (224 cut to their own part) and 490 uncertain (their parts' best records of one genus,
+    or of none named). Until the unnamed genera of EUKARYOME's environmental records were set aside, 682 of KSGP's
+    chimeras were uncertain.
+  - *Across nodes.* A read's ends and flanks are audited with its regions in the published batches, which the process
+    stage's array tasks share (WORK/published/regions.4.tsv; the cache's name changed, so every read is annotated
+    again once); the window screen's first pass and UCHIME's parts are searches of qc's protocol (`qc.MapParams`,
+    `qc.UchimeParams`), which the `--qc_helpers` nodes take; the check of the flagged reads and UCHIME's confirmation
+    (a few thousand reads) run on the final node, the confirmation's search shared too.
+- **Labels above the genus** (`rrna.label_taxon`). A label's taxid is its species', else its genus' (as before), else
+  the deepest of its family, order, class, phylum and kingdom NCBI names (a EUKARYOME name of a deep lineage by
+  `data/eukaryome_names.tsv`'s NCBI name: Straminipila, Stramenopiles), else Eukaryota (a lineage of EUKARYOME's own,
+  `Eukaryota.reg112b`, NCBI names none of). A taxon not of the eukaryotes is never taken (KSGP's `Paracoccus(Metazoa)`).
+  The rank the record is labelled at is its label's (`rank`); a record labelled by a clade above its genus is
+  `medium` (`higher_label`), as one labelled by its genus (`genus_label`).
+- **EUKARYOME's taxonomy, one tree** (`eukore/eukaryome.py`; [FORMAT: taxonomy/](FORMAT.md#taxonomy)). On EUKARYOME 2.1's
+  classification table (93,399 rows): 950 genera under several lineages, 1,014 names with several parents, rows a
+  column off, a repeated header, ~40 subkingdoms the text of an Excel formula (`openpyxl` read the formulas, not their
+  values, until 2026-11-14). Made one tree of 106,126 taxa, 52 of them written with a bracket above the genus
+  (EUKARYOME's own oddities: `Nibbleridia(Provora)`), every name under one lineage. EUKARYOME's 400,217 reads' labels
+  add 16,383 taxa (their species, and families and genera the table lacks). Of the NCBI species of KSGP 5.2's 18S and
+  of NCBI's assemblies (78,329): 12,937 placed by their species, 727 by a synonym, 63,523 by their genus, 1,137 upward,
+  4 nowhere (NCBI's `Eukaryota sp.`).
+- **Organelle-only species**. The organelle genes of every species with a RefSeq organelle genome, not only those of
+  a species with a genome or rRNA records: a species of organelle genes alone is a row of `species.tsv`, `source`
+  `organelle`, with all its RefSeq genes (its rRNA, COX1, CYTB, ...), checked as every organelle gene. EUKARYOME's
+  organelle SSU of a RefSeq genome whose genes the package holds are not taken again.
+- **A telomere repeat** in an rRNA record (6 units or more of TTAGGG, TTAGG, TTTAGGG, TTGGGG or TTTTGGGG, in any phase,
+  on either strand) is `low` (`telomere`): an rRNA joined to a chromosome's end (KSGP masked 133 bases of one in
+  EUKARYOME's EUK1400052); one beside the rRNA is cut off by the audit (below).

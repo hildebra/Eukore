@@ -19,10 +19,11 @@ from . import store
 from . import util
 from . import __version__
 
-FORMAT = 6
+FORMAT = 7
 # the formats a reader of this one takes (5 adds files and columns, and regroups supergroup; 6, since 2026-11-09, adds
-# columns and the confidence tier `unverified`, which format 5 counted as medium)
-READABLE = (4, 5, 6)
+# columns and the confidence tier `unverified`, which format 5 counted as medium; 7, since 2026-11-14, adds columns,
+# records labelled above species, EUKARYOME's SSU set, the audit, organelle-only species and the EUKARYOME taxonomy)
+READABLE = (4, 5, 6, 7)
 TIERS = ("high", "unverified", "medium", "low")  # confidence, best first (format 6; until then high, medium, low)
 LOCUS_SETS = ("busco", "markers")  # the loci's folders: BUSCO's, Eukore's own markers (markers.py; since 2026-11-07)
 MANIFEST = "manifest.json"
@@ -38,7 +39,9 @@ GENOME_COLUMNS = ("accession", "fetched", "species_taxid", "taxid", "organism", 
                   "type_material",
                   # since 2026-11-09 (format 6): what made its calls (genomes.GENOME_RECORD); its copies another
                   # clade's and the LCA of those clades (qc.cross_summary)
-                  "genome_record", "foreign_copies", "foreign_source")
+                  "genome_record", "foreign_copies", "foreign_source",
+                  # since 2026-11-14 (tiers.py): its group's expected BUSCOs, its share of them whole, its tier
+                  "expected_loci", "complete_expected", "tier")
 COPY_COLUMNS = ("accession", "locus", "status", "contig", "contig_length", "start", "end", "strand", "length",
                 "cds_length", "exons", "identity", "coverage", "hmm_score", "cutoff", "hmm_coverage", "copies",
                 "query", "rescued", "model", "protein_length", "window_class", "fcs", "own_species", "same_as", "length_check",
@@ -124,6 +127,10 @@ def copy_confidence(r, family=False, duplicated_genome=False):
         low.append("window_prokaryote")
     if r.get("paralog") == "t":  # markers.recheck: its best profile a decoy's (EFL as EF-1a)
         low.append("paralog")
+    if r.get("genome_tier") in ("poor", "partial", "contaminated"):  # tiers.py (2026-11-14): --keep_poor_genomes
+        low.append("poor_genome")
+    elif r.get("genome_tier") == "draft":  # a skim's (contigs under tiers.DRAFT_CONTIG bases on average)
+        medium.append("draft_genome")
     if r.get("transcript") == "t":  # a transcriptome's copy (TSA): no introns, its Duplicated its isoforms
         medium.append("transcript")
     if r.get("status") == "Fragmented" or (r.get("status") == "Duplicated" and r.get("transcript") != "t"
@@ -337,6 +344,20 @@ def lineage_rank(check):
     return 1 if check["own_species"] == "-" and check.get("cross") else LINEAGE_RANK[check["own_species"]]
 
 
+# A transcriptome's Duplicated locus whose copies are this alike (loci.dup_identity, %) is one gene's transcripts: its
+# isoforms, alleles or the assembler's redundant contigs (since 2026-11-14: 2,076 of the 4,263 genomes the 2026-11
+# build's report called duplicated were transcriptomes). Single in the package; a paralog's copies stay Duplicated.
+ISOFORM_ID = 97.0
+
+
+def isoforms(row):
+    """Whether a copy's Duplicated locus is its transcripts' (ISOFORM_ID)."""
+    try:
+        return float(row.get("dup_identity") or "-") >= ISOFORM_ID
+    except ValueError:
+        return False
+
+
 def genome_part(args):
     """One done genome's share of collect (since 2026-11-10 a function of its own, so that a pool of processes reads
     the genomes, `threads` at once; until then one after another, ~30,000 of them from the shared file system, and
@@ -383,7 +404,7 @@ def genome_part(args):
 
 
 def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None, paralogs_of=None, progress=None,
-            searches=None):
+            searches=None, drop_poor=True):
     """What the package holds of the BUSCO genes -> dict(genomes {accession: row}, copy_rows [COPY_COLUMNS dicts],
     taxids, cds and proteins {(accession, locus): sequence}, intron_rows (introns.of_copy's, accession and locus set),
     work and done (the genomes whose copies and features write reads from WORK/done), copy_count, swaps {accession:
@@ -396,7 +417,8 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     a decoy's (markers.recheck; since 2026-11-09: the decoys a marker set gained since a genome's run, EFL's).
     threads: the genomes read `threads` at once by a pool of processes (genome_part; since 2026-11-10), the result
     the same as one after another; vsearch's threads too. progress, searches: qc.check's (its loci's searches
-    reported; kept, and shared with other nodes)."""
+    reported; kept, and shared with other nodes). drop_poor (since 2026-11-14; tiers.py): the copies of a genome of
+    tier poor or partial left out (`dropped`: those genomes), else kept, flagged poor_genome."""
     from . import introns as introns_mod  # noqa: PLC0415
     kinds = kinds or {}
     by_accession = {r["accession"]: r for r in assemblies}
@@ -439,6 +461,8 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         genomes[acc]["genome_record"] = part["record"]  # since 2026-11-09
         for row, seq, protein, introns in part["copies"]:
             row["accession"] = name
+            if job["why"][0] == "tsa" and row["status"] == "Duplicated" and isoforms(row):
+                row["status"] = "Single"  # one gene's transcripts (since 2026-11-14): its `copies` still count them
             for k in SHARED_VALUES:  # a few values, many rows: one string each (in this process: a worker's are not)
                 if isinstance(row.get(k), str):
                     row[k] = sys.intern(row[k])
@@ -459,6 +483,31 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                                       flags=",".join(o.get("flags") or ()) or "-", ftp=o["ftp"], source="assembly",
                                       type_material=type_material_of(o),
                                       representative="f", loci=0)
+    # each representative's tier against its group's expected BUSCOs (tiers.py; since 2026-11-14), before the checks
+    # across species: a poor or partial genome's copies (a fragment's, a skim's, maybe another organism's) are left out
+    # (drop_poor) so that they neither enter the package nor stand as relatives in the others' checks
+    from . import groups as groups_mod, tiers as tiers_mod  # noqa: PLC0415
+    reps = {a: g for a, g in genomes.items() if g["representative"] == "t"}
+    statuses = collections.defaultdict(dict)
+    for r in copy_rows:
+        if r["locus"] not in kinds:
+            statuses[r["accession"]][r["locus"]] = r["status"]
+    busco = set().union(*(g.get("_searched") or () for g in reps.values())) - set(kinds)
+    group_of = {a: groups_mod.group_of(ncbi, int(g["species_taxid"])) for a, g in reps.items()}
+    tiers_mod.assign(reps, statuses, group_of, busco)
+    dropped = {a for a, g in reps.items() if g["tier"] in tiers_mod.DROPPED} if drop_poor else set()
+    if dropped:
+        copy_rows = [r for r in copy_rows if r["accession"] not in dropped]
+        cds = {k: v for k, v in cds.items() if k[0] not in dropped}
+        made = {k: v for k, v in made.items() if k[0] not in dropped}
+        intron_rows = [i for i in intron_rows if i["accession"] not in dropped]
+        alt_cds = {k: v for k, v in alt_cds.items() if k[0] not in dropped}
+        alt_length = {k: v for k, v in alt_length.items() if k[0] not in dropped}
+        for a in dropped:
+            alt_contigs.pop(a, None)
+            count -= genomes[a]["loci"]
+            genomes[a]["loci"] = 0
+        done = [a for a in done if a not in dropped]
     lengths = {(r["accession"], r["locus"]): int(r["protein_length"]) for r in copy_rows}
     checks = qc.check(cds, {a: g["species_taxid"] for a, g in genomes.items()}, ncbi, vsearch, threads,
                       {**lengths, **alt_length}, alt_cds, progress=progress, searches=searches)
@@ -515,6 +564,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
                  nearest_id=c["nearest_id"], nearest_depth=c["nearest_depth"])  # the last two: benchmarks', no columns
         if genomes[r["accession"]].get("source") == "tsa":  # since 2026-11-07: a transcriptome's copy
             r["transcript"] = "t"
+        r["genome_tier"] = genomes[r["accession"]].get("tier", "-")  # since 2026-11-14 (tiers.py): no column
         if key in paralogs:  # a marker copy whose best profile is a decoy's (markers.recheck; since 2026-11-09)
             r["paralog"] = "t"
         # its protein before its tier (since 2026-11-09: a stop inside it is a flag); made by genome_part, again for a
@@ -531,11 +581,13 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     for acc, g in genomes.items():
         if g["representative"] == "t":  # its copies another clade's (since 2026-11-09: cross-contamination)
             g["foreign_copies"], g["foreign_source"] = qc.cross_summary(all_rows.get(acc, []), ncbi)
+            if g["foreign_copies"] >= tiers_mod.FOREIGN_MIN:  # flagged on the genome too (since 2026-11-14)
+                g["flags"] = ",".join(sorted((set(g["flags"].split(",")) - {"-"}) | {tiers_mod.FOREIGN_FLAG}))
     taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"} \
         | {int(g["foreign_source"]) for g in genomes.values() if str(g.get("foreign_source", "-")).isdigit()}
     return dict(genomes=genomes, copy_rows=copy_rows, taxids=taxids, cds=cds, proteins=proteins,
                 intron_rows=intron_rows, work=work, done=done, copy_count=count, swaps=dict(swaps),
-                rrna_rows=rrna_rows)
+                rrna_rows=rrna_rows, dropped=sorted(dropped))
 
 
 def copy_row(r, accession, fcs, gaps):
@@ -689,7 +741,7 @@ def unverified_alone(copy_rows, genomes, ncbi, set_of=None):
 
 
 def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None, organelle=None,
-          references=(), before_manifest=None, metadata=None, tables=(), writers=(), threads=1):
+          references=(), before_manifest=None, metadata=None, tables=(), writers=(), threads=1, eukaryome=None):
     """The package into `out` (written beside it and renamed into place; the manifest last) -> its folder.
     before_manifest: a function of the unfinished package's folder, run once its tables are written (the build's
     benchmarks: benchmarks.run), whose result (a dict) the manifest keeps as `benchmarks`.
@@ -701,7 +753,9 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
     tables [(path in the package, columns, rows)] (since 2026-11-07: rrna/regions.tsv, the amplicons); writers:
     functions of the unfinished folder writing further files (since 2026-11-07: intraspecific/); threads: the done
     genomes' copies and features read `threads` at once by a pool of processes (genome_files; since 2026-11-10), the
-    files the same as one after another."""
+    files the same as one after another. eukaryome: EUKARYOME's taxonomy (eukaryome.Tree; since 2026-11-14, format 7):
+    every species', record's and organelle gene's EUKARYOME lineage, taxonomy/eukaryome.tsv; without one species.tsv's
+    EUKARYOME lineages are the name matches of format 6."""
     part = util.part_of(out)
     shutil.rmtree(part, ignore_errors=True)
     # each locus' set: busco/ (BUSCO's), markers/ (Eukore's own, markers.py; since 2026-11-07), the same files in each
@@ -784,13 +838,15 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
             fh.writelines("\t".join(str(r[c]) for c in codecheck.CODON_COLUMNS) + "\n" for r in collected["codons"])
         os.replace(util.part_of(path), path)
     n_records = collections.Counter()
+    organelle = organelle or []
+    # every record's and organelle gene's rank and lineages (format 7)
+    used = lineages(list(rrna or ()) + list(organelle), ncbi, eukaryome)
     if rrna:
         from . import rrna as rrna_mod  # noqa: PLC0415
         rrna_mod.write_records(os.path.join(part, "rrna"), rrna)
         for _name, _seq, row in rrna:
             n_records[int(row["species_taxid"])] += 1
     from . import organelle as organelle_mod  # noqa: PLC0415
-    organelle = organelle or []
     organelle_mod.write_genes(os.path.join(part, "organelle"), organelle)
     n_organelle = collections.Counter(int(row["species_taxid"]) for _n, _s, row in organelle)
     # every species' genome's copy numbers of its loci, rRNA and organelles in one table (since 2026-11-08)
@@ -808,9 +864,17 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                          loci=r["loci"], rrna_records=n_records.get(sp, 0), organelle_genes=n_organelle.get(sp, 0),
                          type_material=r.get("type_material", "-")))
     held = {int(r["taxid"]) for r in rows}
+
+    def a_species(sp):  # since 2026-11-14 (format 7) species alone: a record labelled above species is no row
+        return ncbi.rank.get(sp) == "species" or sp not in ncbi.rank
     rows += [dict(taxid=sp, name=ncbi.name.get(sp, str(sp)), representative="-", source="rrna", loci=0,
                   rrna_records=n, organelle_genes=n_organelle.get(sp, 0))
-             for sp, n in sorted(n_records.items()) if sp not in held]
+             for sp, n in sorted(n_records.items()) if sp not in held and a_species(sp)]
+    held = {int(r["taxid"]) for r in rows}
+    # a species of organelle genes alone (RefSeq's organelle genome, a published record; since 2026-11-14)
+    rows += [dict(taxid=sp, name=ncbi.name.get(sp, str(sp)), representative="-", source="organelle", loci=0,
+                  rrna_records=0, organelle_genes=n)
+             for sp, n in sorted(n_organelle.items()) if sp not in held and a_species(sp)]
     from . import labels as labels_mod  # noqa: PLC0415
     named = labels_mod.label_species(ncbi, [int(r["taxid"]) for r in rows], references)
     for r in rows:
@@ -821,11 +885,18 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
         for ref in REFERENCES:
             lineage, how = named[sp].get(ref, ("-", "-"))
             r[ref.lower()], r[f"{ref.lower()}_match"] = lineage, how
+        if eukaryome is not None:  # EUKARYOME's lineage, complete, whatever EUKARYOME names (format 7)
+            node, how = eukaryome.place(ncbi, sp)
+            used.add(node)
+            r["eukaryome"], r["eukaryome_match"] = eukaryome.text(node) or "-", how
     _tsv(os.path.join(part, "species.tsv"), SPECIES_COLUMNS, rows)
     taxa = ncbi.write_subset(os.path.join(part, "taxonomy"),
                              set(collected["taxids"]) | {int(r["species_taxid"]) for r in genomes.values()} |
                              set(n_records) | ({int(row["taxid"]) for _n, _s, row in rrna} if rrna else set()) |
                              {int(row["taxid"]) for _n, _s, row in organelle})
+    if eukaryome is not None:  # EUKARYOME's taxonomy, cut to the package's lineages (format 7)
+        from . import eukaryome as eukaryome_mod  # noqa: PLC0415
+        _tsv(os.path.join(part, eukaryome_mod.TABLE), eukaryome_mod.TABLE_COLUMNS, eukaryome.rows(used))
     for writer in writers:
         writer(part)
     described = metadata(part, genomes) if metadata else None
@@ -838,16 +909,40 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
             files[os.path.relpath(path, part).replace(os.sep, "/")] = [os.path.getsize(path), util.md5(path)]
     statuses = collections.Counter(r["status"] for r in collected["copy_rows"])
     inputs = dict(inputs or {}, references={ref.name: ref.stamp() for ref in references})
+    if eukaryome is not None:  # EUKARYOME's version and classification table, its taxa by source (format 7)
+        inputs["eukaryome_taxonomy"] = eukaryome.stamp()
+
+    def tiers_by(records, column):  # {value: {tier: n}} of a column (format 7)
+        out = collections.defaultdict(collections.Counter)
+        for _n, _s, row in records:
+            out[str(row.get(column) or "-")][row.get("confidence", "-")] += 1
+        return {k: dict(v) for k, v in sorted(out.items())}
+    organelle_only = [r for r in rows if r["source"] == "organelle"]
+    kinds_of = collections.defaultdict(set)
+    for _n, _s, row in organelle:
+        kinds_of[int(row["species_taxid"])].add(row["organelle"])
     manifest = {"format": FORMAT, "version": version, "eukore": __version__,
                 "built": datetime.datetime.now().isoformat(timespec="seconds"),
                 "inputs": inputs,
                 "counts": {"species": sum(1 for r in rows if r["representative"] != "-"),
-                           "species_rrna_only": sum(1 for r in rows if r["representative"] == "-"),
+                           "species_rrna_only": sum(1 for r in rows if r["source"] == "rrna"),
+                           # since 2026-11-14 (format 7): the species of organelle genes alone, by organelle
+                           "species_organelle_only": len(organelle_only),
+                           "species_organelle_only_by_organelle": dict(collections.Counter(
+                               k for r in organelle_only for k in kinds_of[int(r["taxid"])])),
                            "genomes": len(genomes), "copies": collected.get("copy_count", 0),
                            "copy_status": dict(statuses), "rrna_records": sum(n_records.values()),
+                           # the records by source, rank and how their taxid was found, each by tier (format 7)
+                           "rrna_sources": tiers_by(rrna or (), "source"),
+                           "rrna_ranks": tiers_by(rrna or (), "rank"),
+                           "rrna_label_from": dict(collections.Counter(row.get("label_from", "-")
+                                                                       for _n, _s, row in rrna or ())),
+                           "organelle_sources": tiers_by(organelle, "source"),
+                           "eukaryome_match": dict(collections.Counter(r["eukaryome_match"] for r in rows)),
                            "organelle_genes": {k: dict(collections.Counter(row["gene"] for _n, _s, row in organelle
                                                                            if row["organelle"] == k))
-                                               for k in organelle_mod.KINDS},
+                                               for k in sorted({*organelle_mod.KINDS,
+                                                                *(row["organelle"] for _n, _s, row in organelle)})},
                            "species_organelle_genes": len(n_organelle), "taxa": taxa,
                            "copy_numbers": dict(collections.Counter(r["set"] for r in copy_number_rows)),
                            "busco_loci": sum(1 for s in set_of.values() if s == "busco"),
@@ -868,6 +963,30 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
     with open(os.path.join(part, MANIFEST), "w", newline="\n") as fh:
         json.dump(manifest, fh, indent=1)
     return put_in_place(part, out)
+
+
+def lineages(records, ncbi, tree=None):
+    """Each record's (rrna/records.tsv's, organelle/genes.tsv's) rank, NCBI lineage (labels.ncbi_lineage_to: filled,
+    down to its taxon's rank) and EUKARYOME lineage and how its EUKARYOME taxon was found (eukaryome.record_node: its
+    species', else its own label's where that is deeper, else its taxon's), set in its row (format 7; since
+    2026-11-14) -> the EUKARYOME nodes of the records (taxonomy/eukaryome.tsv's). Without a tree (no EUKARYOME
+    source) the lineage `-` and the rank NCBI's."""
+    from . import eukaryome as eukaryome_mod, labels as labels_mod  # noqa: PLC0415
+    nodes, ncbi_text = set(), {}
+    for _name, _seq, row in records:
+        t = int(row["taxid"])
+        if t not in ncbi_text:
+            ncbi_text[t] = labels_mod.ncbi_lineage_to(ncbi, t)
+        label = row.get("source_label")
+        if tree is not None:
+            node, how = eukaryome_mod.record_node(tree, ncbi, t, label if label not in (None, "-") else None)
+            nodes.add(node)
+            row.update(rank=eukaryome_mod.RANKS[node[0]] if node else "-", eukaryome_lineage=tree.text(node) or "-",
+                       eukaryome_match=how or "-")
+        else:
+            row.update(rank=labels_mod.rank_of(ncbi, t) or "-", eukaryome_lineage="-", eukaryome_match="-")
+        row["ncbi_lineage"] = ncbi_text[t]
+    return nodes
 
 
 def put_in_place(part, out):

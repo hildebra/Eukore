@@ -599,10 +599,10 @@ class BuildPassesTest(unittest.TestCase):
         reads = [dict(seqid=n, taxid="4932", sequence="ACGT" * 20, assembly_id="-") for n in ("good", "bad")]
         failing = [True]
 
-        def annotate(batch, barrnap=None, itsx=None):
+        def annotate(batch, barrnap=None, itsx=None, audit=None):
             if failing[0] and any(name == "ROD_bad" for name, _s, _t in batch):
                 return {}, "RuntimeError: barrnap failed"
-            return {name: ("18S:0-40", "f", "-") for name, _s, _t in batch}, None
+            return {name: ("18S:0-20,28S:20-40", "f", "-", "-") for name, _s, _t in batch}, None
         with tempfile.TemporaryDirectory() as work, contextlib.ExitStack() as stack:
             for target, name, value in (
                     (eukore_build.sources, "ready", lambda _src, name: "rod" if name == "ROD" else None),
@@ -615,18 +615,18 @@ class BuildPassesTest(unittest.TestCase):
                 stack.enter_context(mock.patch.object(target, name, value))
             opts = types.SimpleNamespace(work=work, threads=1, inside=lambda _taxid: True)
             ncbi = mock.Mock(species_of=lambda taxid: taxid)
-            got, said = self.quiet(eukore_build.published, opts, "src", ncbi)
+            (got, _audits), said = self.quiet(eukore_build.published, opts, "src", ncbi)
             self.assertEqual([(name, row["kind"]) for name, _seq, row in got], [("ROD_good", "rDNA")])
             self.assertIn("1 batches of 1 failed", said)
             self.assertIn("their 1 reads left out of this package", said)
             failing[0] = False  # the next run annotates it: both, the good one from the cache
-            got, said = self.quiet(eukore_build.published, opts, "src", ncbi)
+            (got, _audits), said = self.quiet(eukore_build.published, opts, "src", ncbi)
             self.assertEqual([name for name, _seq, _row in got], ["ROD_good", "ROD_bad"])
             self.assertIn("published reads: 1 to annotate", said)
             # no barrnap: no read has regions, each an 18S record as before
             stack.enter_context(mock.patch.object(eukore_build.shutil, "which", lambda _tool: None))
             stack.enter_context(mock.patch.object(eukore_build, "read_regions", lambda _path: {}))
-            got = self.quiet(eukore_build.published, opts, "src", ncbi)[0]
+            got = self.quiet(eukore_build.published, opts, "src", ncbi)[0][0]
             self.assertEqual([(name, row["kind"]) for name, _seq, row in got], [("ROD_good", "18S"), ("ROD_bad", "18S")])
 
     def test_one_fetch_at_a_time(self):
