@@ -31,6 +31,10 @@ def _jitter(x):  # a pool's task (util.ordered): the later items finish first
     return 2 * x
 
 
+def _state(_x):  # a pool's task: what of its parent's state the worker has (util._parents_state)
+    return os.environ.get("EUKORE_TEST_STATE"), tempfile.gettempdir(), util._BGZF_POOL["threads"]
+
+
 def _killed(x):  # a pool's task whose worker is killed, as by the OOM killer
     if x == 2:
         os.kill(os.getpid(), signal.SIGKILL)
@@ -315,11 +319,32 @@ class ProgressTest(unittest.TestCase):
                         with util.bgzf_open(os.path.join(tmp, "b.gz")) as fh:
                             fh.write("y" * (3 * util.BGZF_BLOCK))
                             self.assertEqual(list(util.ordered(_jitter, [4, 5], pool=pool)), [8, 10])
-                self.assertTrue(seen)
+                self.assertTrue(seen or not fx.pools_fork())  # forkserver's workers fork from its server (3.14)
                 self.assertEqual([names for names in seen if names], [])
                 self.assertTrue(util.bgzf_whole(os.path.join(tmp, "b.gz")))
         finally:
             util.compression_threads(1)
+
+    def test_a_worker_has_its_parents_state_however_it_starts(self):
+        # since 2026-11-11 a pool's worker is given this process' environment, temporary folder (--scratch) and
+        # compression threads as they are when the pool starts: a forked one had them by the fork, but forkserver
+        # (Python 3.14's default) forks its workers from a server made at the first pool, with the environment of
+        # then and its own temporary folder and threads, and spawn from nothing
+        import multiprocessing  # noqa: PLC0415
+        old_tempdir = tempfile.tempdir
+        for method in [m for m in ("fork", "forkserver", "spawn") if m in multiprocessing.get_all_start_methods()]:
+            with self.subTest(method=method), tempfile.TemporaryDirectory() as tmp:
+                with util.process_pool(1, method) as pool:  # forkserver's server made now, if not before
+                    pool.submit(os.getpid).result()
+                os.environ["EUKORE_TEST_STATE"], tempfile.tempdir = method, tmp
+                util.compression_threads(3)
+                try:
+                    with util.process_pool(1, method) as pool:
+                        self.assertEqual(pool.submit(_state, 0).result(), (method, tmp, 3))
+                finally:
+                    os.environ.pop("EUKORE_TEST_STATE")
+                    tempfile.tempdir = old_tempdir
+                    util.compression_threads(1)
 
     def test_usage_of_the_process_tree(self):
         tick, page = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE")

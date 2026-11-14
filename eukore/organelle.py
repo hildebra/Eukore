@@ -1038,9 +1038,12 @@ def run_assembly(args):
     {organelle: genetic code}, miniprot or None) into its out file (ASSEMBLY_COLUMNS; written, even empty, once done)
     -> (accession, genes, why). nhmmer's genes first; barrnap's rRNA where nhmmer found none; with miniprot, its
     models of the protein-coding genes nhmmer found in several hits, or (since 2026-11-10) in a single hit that is not
-    the gene's coding sequence (with_miniprot)."""
+    the gene's coding sequence (with_miniprot). Since 2026-11-14 a 12th item, the genome whose candidate contigs
+    are searched where it titles no organelle molecule, and a 13th, the inputs assembly_pass keyed the search by
+    (search_key), written as they came: a worker that computed them again computed them by its own module, not
+    the caller's (a forkserver's or spawn's worker imports it anew: a CACHE_VERSION raised in the caller was not)."""
     acc, path, out, animal, queries, barrnap, nhmmer, threads, *more = args
-    proteins, codes, miniprot, genome = (list(more) + [None])[:4] if more else ({}, {}, None, None)
+    proteins, codes, miniprot, genome, given = (list(more) + [None, None])[:5] if more else ({}, {}, None, None, None)
     candidates = 0
     try:  # the molecules metadata.describe kept (since 2026-11-08), else the genome read again
         molecules = saved_molecules(path) if os.path.basename(path) == SAVED else organelle_molecules(path)
@@ -1064,8 +1067,9 @@ def run_assembly(args):
         return acc, None, f"{type(e).__name__}: {e}"
     os.makedirs(os.path.dirname(out), exist_ok=True)
     models = ("miniprot" if miniprot else "nhmmer") + (f"+{CANDIDATE_RECORD}" if genome else "")
-    inputs = [f"{k}={search_key(k, animal, queries[k], proteins.get(k, {}), codes.get(k, 1), models)}"
-              for k in KINDS if k in queries]  # what it was searched with: assembly_pass searches again where other
+    # what it was searched with: assembly_pass searches again where other inputs (as the caller made them: given)
+    inputs = list(given) if given else [f"{k}={search_key(k, animal, queries[k], proteins.get(k, {}),
+                                                            codes.get(k, 1), models)}" for k in KINDS if k in queries]
     with open(util.part_of(out), "w", newline="\n") as fh:
         fh.write("\t".join(["#searched"] + [f"{k}:{','.join(GENES_OF[k])}" for k in KINDS if k in queries]
                            + [f"models:{models}", f"inputs:{','.join(inputs)}"]) + "\n")
@@ -1113,10 +1117,11 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
         genome = genome if genome and os.path.isfile(genome) else None
         key = models + (f"+{CANDIDATE_RECORD}" if genome else "")
         # since 2026-11-10 searched again also where it was searched with other inputs (search_key: the queries of
-        # another release, another genetic code, other thresholds, a CACHE_VERSION raised)
-        same = {f"{k}={search_key(k, animal, queries[k], proteins[k], codes[k], key)}" for k in need}
-        asked.append((acc, assembly_file(work_folder, acc), animal, queries, proteins, codes, genome,
-                      (need, same, key)))
+        # another release, another genetic code, other thresholds, a CACHE_VERSION raised); the key made here alone
+        # and handed to the task (since 2026-11-11: a forkserver's worker made it again by its own module)
+        inputs = [f"{k}={search_key(k, animal, queries[k], proteins[k], codes[k], key)}" for k in KINDS if k in need]
+        asked.append((acc, assembly_file(work_folder, acc), animal, queries, proteins, codes, genome, inputs,
+                      (need, set(inputs), key)))
 
     def look(item):
         """An assembly's search file and its molecules, or None where it is searched already or not there: asked of
@@ -1129,8 +1134,8 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
         # molecules are written out for the search, store.py)
         path = (saved_of(acc) if saved_of else None) or genome_of(acc)
         return path if os.path.isfile(path) else None
-    todo = [(acc, path, out, animal, queries, barrnap, nhmmer, threads, proteins, codes, miniprot, genome)
-            for (acc, out, animal, queries, proteins, codes, genome, _c), path
+    todo = [(acc, path, out, animal, queries, barrnap, nhmmer, threads, proteins, codes, miniprot, genome, inputs)
+            for (acc, out, animal, queries, proteins, codes, genome, inputs, _c), path
             in zip(asked, util.threaded(look, asked)) if path]
     if not todo:
         return 0, 0
