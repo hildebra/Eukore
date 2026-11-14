@@ -16,7 +16,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import run_report  # noqa: E402
+from eukore import genomes, run_report  # noqa: E402
 
 PLAN = {"GCA_000001.1": "11", "GCA_000002.1": "12", "GCA_000003.1": "13", "GCA_000004.1": "14",
         "GAJY01000000": "15", "EUK_99": "16", "GCA_000007.1": "17"}
@@ -34,8 +34,9 @@ def tsv(path, head, rows):
 
 def done(work, acc, single, duplicated=0, missing=0, **extra):
     loci = single + duplicated + missing
-    summary = dict(dict(accession=acc, searched=[f"L{i}" for i in range(loci)], genome_record=2, seconds=3600,
-                        threads=8, bytes=1e8, status={"Single": single, "Duplicated": duplicated, "Missing": missing}),
+    summary = dict(dict(accession=acc, searched=[f"L{i}" for i in range(loci)], genome_record=genomes.GENOME_RECORD,
+                        seconds=3600, threads=8, bytes=1e8,
+                        status={"Single": single, "Duplicated": duplicated, "Missing": missing}),
                    **extra)
     write(os.path.join(work, "done", acc, "done.json"), json.dumps(summary))
 

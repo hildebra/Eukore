@@ -71,7 +71,9 @@ ALTERNATES = ("alternates.tsv", "alternates.fna", "alternates_features.tsv")
 # 2: the coding sequence checked against the protein confirmed and recovered (loci.cds_state, cds_check); a region's
 #    clean alignment first; a Duplicated locus' other complete copies kept whole (ALTERNATES); an annotated model
 #    with a stop inside, or a fusion, not taken.
-GENOME_RECORD = 2
+# 3: a copy split across contigs joined (loci.join_split, `model` joined; since 2026-11-14), the first pass' miniprot
+#    at the join's --outs and its alignments of loci.OUTS taken from those.
+GENOME_RECORD = 3
 
 
 def safe(name):

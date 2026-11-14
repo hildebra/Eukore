@@ -79,6 +79,18 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
      ends (median overlap 0.65 with the call made with its own proteins), and its exon ends come from distant proteins.
      A genome over 1 Gb is not rescued (its ORFs' search too long; such genomes are mostly animals' and plants', near
      the dataset's species).
+   - **Split copies** (since 2026-11-14, genome record 3). A genome skim's contigs (a few kb) cut many genes: of the
+     first full build's 2,664 genomes under 50% complete, 2,333 were assemblies of mean contig under 5 kb, most with
+     more Fragmented loci than Missing. A locus with no complete copy after the rescue pass is joined from a query's
+     partial alignments on different contigs that tile its protein in order (10 residues of overlap at most) and reach
+     their contigs' ends where the gene goes on (200 bases or less), 4 pieces at most; where the HMMs confirm their
+     proteins joined, as any call, it is one copy: Single where they cover 80% of the profile, else Fragmented, its
+     `model` joined, its pieces joined with 100 N between two (a `join` feature), at most `medium` (`joined`). For
+     it miniprot keeps a query's alignments of 20% of its best score (a split gene's lesser piece scores under the
+     95% the calls take, which are taken from these). Yeast, *Drosophila* and *B. hominis* cut into 1-3 kb contigs:
+     Single 62 -> 75, 68 -> 87 and 37 -> 40 (of 108, 125 and 72 whole), every join on the gene the whole genome holds;
+     without the contig-end rule 7 of 60 joins were a paralog's or another gene's pieces. The whole genomes' calls
+     did not change.
    - **Frameshifts** (since 2026-11-06). miniprot's GFF keeps a frameshift's bases inside its CDS, so that the exons
      joined read out of frame after it (17 of 69 held-out *B. hominis* copies had an internal stop). The copy's coding
      sequence leaves them out (the alignment's CIGAR places them; `frameshift` features of the copy): its held-out
