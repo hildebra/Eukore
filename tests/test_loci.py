@@ -383,10 +383,11 @@ class LociTest(unittest.TestCase):
 
     # miniprot's index saved (since 2026-11-10; the audit's S1): a genome called more than once indexed once
 
-    def aligned(self, target, table=1, options=("-I",)):
-        """The alignment's command line as loci.align issues it on a target (without the proteins' file)."""
-        return ["-t", "1", *options, "-T", str(table), "--gff", "--trans", f"--outs={loci.OUTS}",
-                f"--outn={loci.OUTN}", target]
+    def aligned(self, target, table=1, options=("-I",), first=True):
+        """The alignment's command line as loci.align issues it on a target (without the proteins' file); first: call's
+        first pass (since 2026-11-14 at the join's --outs, JOIN_OUTS)."""
+        outs, outn = (loci.JOIN_OUTS, loci.JOIN_OUTN) if first and loci.JOIN else (loci.OUTS, loci.OUTN)
+        return ["-t", "1", *options, "-T", str(table), "--gff", "--trans", f"--outs={outs}", f"--outn={outn}", target]
 
     def test_the_index_made_once_for_a_genome_s_calls(self):
         mp, log, _mode = indexing_miniprot(self.dir, self.gff)
@@ -436,7 +437,7 @@ class LociTest(unittest.TestCase):
                     indexes[fh.read().split()[6]] = os.path.join(idx, name)
         self.assertEqual(sorted(indexes), ["-T1", "-T4"])
         self.assertEqual([c[:-1] for c in runs if "-d" not in c],
-                         [self.aligned(indexes[f"-T{t}"], t) for t in (1, 4, 1, 4)])
+                         [self.aligned(indexes[f"-T{t}"], t, first=False) for t in (1, 4, 1, 4)])
         # the seeding options shape the index (theirs another one), the intron's the alignment alone
         for intron in ("5000", "9000"):
             loci.align(self.path, fx.QUERIES, mp, 1, 1, self.dir, ["-G", intron, "-k5", "-M0", "-n1"], index_dir=idx)
@@ -445,7 +446,7 @@ class LociTest(unittest.TestCase):
                                                            self.path]])
         seeded = [c[-2] for c in runs if "-d" not in c]
         self.assertEqual([c[:-1] for c in runs if "-d" not in c],
-                         [self.aligned(seeded[0], 1, ("-G", g, "-n1")) for g in ("5000", "9000")])
+                         [self.aligned(seeded[0], 1, ("-G", g, "-n1"), first=False) for g in ("5000", "9000")])
         self.assertNotIn(seeded[0], indexes.values())
 
     def test_a_failed_index_is_no_index(self):
@@ -643,6 +644,145 @@ class LociTest(unittest.TestCase):
         with mock.patch.object(loci, "RESCUE_MAX_BASES", 1000):  # by the file's size over the gate, by its bases not
             self.assertEqual(rescued(), ("Missing", []))
             self.assertEqual(rescued(bases=900), ("Single", ["10000"]))
+
+
+def rc(s):
+    return s.translate(str.maketrans("ACGTN", "TGCAN"))[::-1]
+
+
+def piece(contig, a, b, strand, qstart, qend, score, exons=None):
+    """An alignment as parse_alignments makes it (split_chains' input), of locus 3's first query."""
+    return dict(query="3at2759~3at2759_4932_0:000000", locus="3at2759", contig=contig, start=a, end=b, strand=strand,
+                score=float(score), identity=0.9, qstart=qstart, qend=qend, exons=exons or [(a, b)],
+                protein=fx.PROTEINS["3at2759"][qstart - 1:qend], shifts=[])
+
+
+class SplitCopyTest(unittest.TestCase):
+    """A copy split across contigs (since 2026-11-14): locus 3's gene, its first 60 codons at contig a's end (+), the
+    rest and its stop at contig b's start where the gene goes on (b holds it on its reverse strand); miniprot aligns
+    each piece alone (the second a lesser score: under OUTS of the first, kept at JOIN_OUTS)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        self.odb = odb_mod.Odb(fx.odb_world(self.dir), fx.LOCI)
+        self.seq, self.gff, _spans = fx.genome()
+        rng = __import__("random").Random(3)
+        self.flank = "".join(rng.choice("ACGT") for _ in range(500))
+        self.cds = fx.cds_of(fx.PROTEINS["3at2759"])  # 120 codons and a stop
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def genome(self, far=0, second=(61, 120)):
+        """The genome (c1, a, b) and its GFF -> (path, GFF); far: bases after piece 1 on a (its contig's end);
+        second: piece 2's span on the protein."""
+        a = self.flank + self.cds[:180] + self.flank[:far]
+        tail = self.cds[180:]
+        b = rc(tail + self.flank[:400])
+        path = os.path.join(self.dir, "split.fna.gz")
+        with gzip.open(path, "wt") as fh:
+            fh.write(f">c1\n{self.seq}\n>a\n{a}\n>b\n{b}\n")
+        q = "3at2759~3at2759_4932_0:000004"
+        s1, e1 = 501, 680
+        s2, e2 = 401, 400 + len(tail)  # on b's forward strand; the stop at s2..s2+2
+        p = fx.PROTEINS["3at2759"]
+        lines = [f"##PAF\t{q}\t120", f"##STA\t{p[:60]}",
+                 f"a\tminiprot\tmRNA\t{s1}\t{e1}\t400\t+\t.\tID=S1;Identity=0.9500;Target={q} 1 60",
+                 f"a\tminiprot\tCDS\t{s1}\t{e1}\t400\t+\t0\tParent=S1;Target={q} 1 60",
+                 f"##PAF\t{q}\t120", f"##STA\t{p[second[0] - 1:second[1]]}",
+                 f"b\tminiprot\tmRNA\t{s2}\t{e2}\t300\t-\t.\tID=S2;Identity=0.9500;Target={q} {second[0]} {second[1]}",
+                 f"b\tminiprot\tCDS\t{s2 + 3}\t{e2}\t300\t-\t0\tParent=S2;Target={q} {second[0]} {second[1]}",
+                 f"b\tminiprot\tstop_codon\t{s2}\t{s2 + 2}\t300\t-\t0\tParent=S2"]
+        return path, self.gff + "\n".join(lines) + "\n"
+
+    def called(self, path, gff, **more):
+        got = loci.call(path, fx.QUERIES, self.odb, fx.miniprot(self.dir, gff), fx.hmmsearch(self.dir), 1, self.dir,
+                        rescue_missing=False, **more)
+        self.assertIsNone(got["failed"])
+        return got["loci"]
+
+    def test_the_pieces_joined(self):
+        path, gff = self.genome()
+        got = self.called(path, gff)
+        three = got["3at2759"]
+        # one copy: its HMM coverage whole (the pieces' proteins joined), Single; its place the best piece's (a)
+        self.assertEqual((three["status"], three["model"], three["copies"]), ("Single", "joined", 1))
+        self.assertEqual((three["contig"], three["start"], three["end"], three["strand"]), ("a", 501, 680, "+"))
+        self.assertEqual((three["hmm_coverage"], three["cds_check"], three["protein"]),
+                         (1.0, "clean", fx.PROTEINS["3at2759"]))
+        # the copy: piece 1, JOIN_GAP N (a join feature), piece 2 read on its gene's strand; the coding sequence whole
+        self.assertEqual(three["copy"], self.cds[:180] + "N" * loci.JOIN_GAP + self.cds[180:])
+        self.assertEqual(three["spliced"], self.cds)
+        feats = [f for f in three["features"] if f[0] in ("exon", "join")]
+        self.assertEqual(feats, [("exon", 0, 180), ("join", 180, 280), ("exon", 280, 280 + len(self.cds) - 180)])
+        self.assertEqual(three["miniprot"], dict(start=501, end=680, exons=[(501, 680)]))
+        # the other loci as without the pieces: the first pass at OUTS of the JOIN_OUTS run (best_of_each)
+        self.assertEqual((got["1at2759"]["status"], got["2at2759"]["status"]), ("Duplicated", "Single"))
+        self.assertEqual(got["1at2759"]["model"], "miniprot")
+
+    def test_not_joined(self):
+        # without JOIN: piece 1 alone a fragment (piece 2's protein alone is not confirmed)
+        path, gff = self.genome()
+        with mock.patch.object(loci, "JOIN", False):
+            three = self.called(path, gff)["3at2759"]
+        self.assertEqual((three["status"], three["model"], three["hmm_coverage"]), ("Fragmented", "miniprot", 0.5))
+        self.assertEqual(three["copy"], self.cds[:180])
+        # piece 1 ending further than JOIN_EDGE from its contig's end: a gene that ends there, not cut
+        path, gff = self.genome(far=loci.JOIN_EDGE + 1)
+        self.assertEqual(self.called(path, gff)["3at2759"]["model"], "miniprot")
+        path, gff = self.genome(far=loci.JOIN_EDGE)  # at the edge: joined
+        self.assertEqual(self.called(path, gff)["3at2759"]["model"], "joined")
+        # the pieces overlapping on the protein by more than JOIN_OVERLAP residues: not one gene's tiling
+        path, gff = self.genome(second=(60 - loci.JOIN_OVERLAP, 120))
+        self.assertEqual(self.called(path, gff)["3at2759"]["model"], "miniprot")
+
+    def test_miniprot_at_the_joins_outs(self):
+        path, gff = self.genome()
+        log = os.path.join(self.dir, "args.log")
+        real = fx.miniprot(self.dir, gff)
+        mp = fx.tool(self.dir, "mp_log", f"#!/bin/sh\necho \"$@\" >> {log}\nexec {real} \"$@\"\n")
+        for join, outs in ((True, f"--outs={loci.JOIN_OUTS} --outn={loci.JOIN_OUTN}"),
+                           (False, f"--outs={loci.OUTS} --outn={loci.OUTN}")):
+            with mock.patch.object(loci, "JOIN", join):
+                loci.call(path, fx.QUERIES, self.odb, mp, fx.hmmsearch(self.dir), 1, self.dir, rescue_missing=False)
+            with open(log) as fh:
+                self.assertIn(outs, fh.read())
+            os.remove(log)
+
+    def test_chains(self):
+        lengths = {"3at2759~3at2759_4932_0:000000": 120}
+        sizes = {"a": 1000, "b": 100, "c": 1000, "d": 5000}
+        one = piece("a", 801, 980, "+", 1, 60, 400)            # 20 bases before a's end
+        two = piece("b", 6, 95, "-", 61, 90, 100)             # a middle piece: near both of b's ends
+        three = piece("c", 1, 90, "+", 91, 120, 100)          # c's start
+        got = loci.split_chains([three, one, two], lengths, sizes)
+        self.assertEqual([[p["contig"] for p in chain] for chain in got["3at2759"]], [["a", "b", "c"]])
+        self.assertEqual((loci.edges(one, 1000), loci.edges(two, 100), loci.edges(two, 1000)),
+                         ((800, 20), (5, 5), (905, 5)))
+        self.assertEqual([[p["contig"] for p in c] for c in loci.split_chains(
+            [three, one, two], lengths, dict(sizes, b=1000))["3at2759"]], [["a", "c"]])  # b's other end far
+        # a piece in the middle of a long contig: no cut gene's end, left out (the protein's gap is allowed)
+        mid = dict(two, contig="d", start=2001, end=2090)
+        self.assertEqual([[p["contig"] for p in c] for c in loci.split_chains([one, mid, three], lengths, sizes)
+                          ["3at2759"]], [["a", "c"]])
+        # pieces on one contig are no split copy; nor a chain short of MIN_COVERAGE of the protein
+        self.assertEqual(loci.split_chains([one, dict(three, contig="a")], lengths, sizes), {})
+        small = [piece("a", 941, 980, "+", 1, 13, 50), piece("c", 1, 39, "+", 14, 26, 50)]
+        self.assertEqual(loci.split_chains(small, lengths, sizes), {})
+        joined = loci.joined_alignment([one, two, three], lengths)
+        self.assertEqual((joined["contig"], joined["qstart"], joined["qend"], joined["score"], joined["coverage"]),
+                         ("a", 1, 120, 600.0, 1.0))
+        self.assertEqual(joined["protein"], fx.PROTEINS["3at2759"])
+        self.assertEqual(sorted(a["contig"] for a in loci.joinable([one, two, three, dict(one, contig="d",
+                                                                                          query="x~y")])),
+                         ["a", "b", "c"])
+
+    def test_a_joined_copy_flagged(self):
+        from eukore import package  # noqa: PLC0415
+        r = dict(status="Single", own_species="t", fcs="-", window_class="eukarya", length_check="ok", gaps=0,
+                 contig_edge=5000, model="joined")
+        self.assertEqual(package.copy_confidence(r), ("medium", "joined"))
 
 
 if __name__ == "__main__":
