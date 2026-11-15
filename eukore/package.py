@@ -841,6 +841,9 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
         os.replace(util.part_of(path), path)
     n_records = collections.Counter()
     organelle = organelle or []
+    if eukaryome is not None:  # each NCBI clade's EUKARYOME taxon learned from its species first (since 2026-11-15)
+        eukaryome.learn(ncbi, {int(r["taxid"]) for _n, _s, r in list(rrna or ()) + list(organelle)}
+                        | {int(g["species_taxid"]) for g in collected["genomes"].values()})
     # every record's and organelle gene's rank and lineages (format 7)
     used = lineages(list(rrna or ()) + list(organelle), ncbi, eukaryome)
     if rrna:

@@ -40,6 +40,12 @@ DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 NAMES = os.path.join(DATA, "eukaryome_names.tsv")
 RANKS = ("superkingdom", "kingdom", "subkingdom", "phylum", "subphylum", "class", "order", "family", "genus", "species")
 GENUS, SPECIES = RANKS.index("genus"), RANKS.index("species")
+# the ranks at which a node of a taxon's name is checked against its NCBI lineage (Tree.conflicts; since 2026-11-15)
+CHECKED = ((RANKS.index("phylum"), "phylum"), (RANKS.index("class"), "class"))
+# the NCBI ranks whose EUKARYOME taxon is learned from their species placed by name (Tree.learn; since 2026-11-15)
+LEARNED = tuple((r, RANKS.index(r)) for r in ("genus", "family", "order", "class", "phylum"))
+# EUKARYOME's way of telling two taxa of one name apart: the name and its parent's (Chilodontidae.Seguenziida)
+DOTTED = re.compile(r"^([A-Z][a-z]+)\.[A-Z][a-z]+$")
 # EUKARYOME's abbreviations of its ranks in the names of its placeholders (Chordata.subphy.incertae.sedis)
 ABBR = {"superkingdom": "subdomain", "kingdom": "reg", "subkingdom": "subreg", "phylum": "phy", "subphylum": "subphy",
         "class": "cl", "order": "ord", "family": "fam", "genus": "gen"}
@@ -98,6 +104,7 @@ class Tree:
         self.to_eukaryome, self.groups = read_names(names) if names else ({}, {})
         self._placed, self._labels, self._groups, self._kingdom = {}, {}, {}, {}
         self.matches = collections.Counter()
+        self.learned = {}  # NCBI taxid -> the one EUKARYOME node of its rank its species stand under (learn)
 
     # --- the tree ------------------------------------------------------------------------------------------------
 
@@ -106,6 +113,9 @@ class Tree:
         self.source[node] = source
         self.by_name[node[1]].add(node)
         self.by_key[labels.key(node[1])].add(node)
+        dotted = DOTTED.match(node[1])
+        if dotted:  # EUKARYOME's homonym Chilodontidae.Seguenziida: found by Chilodontidae too (since 2026-11-15)
+            self.by_key[labels.key(dotted.group(1))].add(node)
         self._kingdom.pop(node, None)
 
     def lineage(self, node):
@@ -198,11 +208,37 @@ class Tree:
                 if not is_placeholder(name) and i:
                     real = name
             paths.append(path)
-        # a node of the rows: (rank, name, kingdom) below the kingdom (a name two kingdoms share: two taxa)
+        # a node of the rows: (rank, name, kingdom) below the kingdom (a name two kingdoms share: two taxa); below the
+        # subphylum a name whose rows stand under two real phyla of its kingdom, each borne out by the name's parent
+        # (a taxon of that phylum by most of its own rows), is two taxa too (since 2026-11-15: EUKARYOME 2.1 files the
+        # golden moles as Mammalia;Alcyonacea;Chrysochloridae, and the one Alcyonacea of most rows, the soft corals',
+        # took them into Anthozoa). A row whose phylum alone is another (Coniferophyta;Tracheophytina;Pinopsida, a
+        # column off) is no taxon of its own: its names take the parent of most rows, as every name's rows do
+        phyla = collections.defaultdict(collections.Counter)
+        for path in paths:
+            phylum = path[3] if len(path) > 3 and not is_placeholder(path[3]) else None
+            for i, n in enumerate(path):
+                if i > 3 and phylum:
+                    phyla[(i, n, path[1])][phylum] += 1
+        borne = collections.defaultdict(set)
+        for path in paths:
+            phylum = path[3] if len(path) > 3 and not is_placeholder(path[3]) else None
+            for i in range(5, len(path)):
+                up = phyla.get((i - 1, path[i - 1], path[1]))
+                if phylum and not is_placeholder(path[i]) and up and up.most_common(1)[0][0] == phylum:
+                    borne[(i, path[i], path[1])].add(phylum)
+        split = {k: max(borne[k], key=lambda p: (c[p], p)) for k, c in phyla.items() if len(borne.get(k, ())) > 1}
+
+        def key_of(i, n, kingdom, phylum):
+            k = (i, n, kingdom if i >= 2 else None)
+            if k in split:
+                return k + (phylum if phylum in borne[k] else split[k],)
+            return k + (None,)
         parents, weight = collections.defaultdict(collections.Counter), collections.Counter()
         for path in paths:
             kingdom = path[1] if len(path) > 1 else None
-            keys = [(i, n, kingdom if i >= 2 else None) for i, n in enumerate(path)]
+            phylum = path[3] if len(path) > 3 and not is_placeholder(path[3]) else None
+            keys = [key_of(i, n, kingdom, phylum) for i, n in enumerate(path)]
             for i, k in enumerate(keys):
                 weight[k] += 1
                 parents[k][keys[i - 1] if i else None] += 1
@@ -234,9 +270,10 @@ class Tree:
                     continue
                 king = kingdom_of(k)
                 tag = king if king and king != kingdom_of(keys[0]) else (parent_of[k][1] if parent_of[k] else "2")
-                new, n = f"{name}({tag})", 2
+                base = re.sub(r"\(.*\)$", "", name)  # beside Triadinium(Alveolata): Triadinium(Goniodomataceae)
+                new, n = f"{base}({tag})", 2
                 while new in used:
-                    new, n = f"{name}({tag}){n}", n + 1
+                    new, n = f"{base}({tag}){n}", n + 1
                 used.add(new)
                 name_of[k] = new
         node_of = {k: (k[0], name_of[k]) for k in parent_of}
@@ -290,7 +327,11 @@ class Tree:
             if name:
                 found = self.candidates(i, name, kingdom)
                 if found:
-                    anchor = found[0]
+                    # of several taxa of the name, the one sharing the most names with the label's lineage (since
+                    # 2026-11-15: EUKARYOME's Triadinium(Dinoflagellata) is its dinoflagellates', not the ciliates')
+                    above = {labels.key(n) for r, n in parts.items() if n and RANKS.index(r) < i}
+                    anchor = max(found, key=lambda n: len({labels.key(re.sub(r"\(.*\)$", "", x))
+                                                           for _j, x in self.lineage(n)} & above))
                     break
         if anchor is None:
             anchor = self.make(0, TOP, None, "eukaryome")
@@ -326,10 +367,45 @@ class Tree:
         allowed = self.groups.get(line[1][1]) if len(line) > 1 else None
         return not allowed or group in allowed
 
+    def conflicts(self, node, ncbi, taxid, names):
+        """Whether a node of the taxon's name is another lineage's, a homonym or a name EUKARYOME misfiles (since
+        2026-11-15): at its phylum or class (CHECKED) it names a taxon not of the taxon's NCBI lineage (names: their
+        keys) while EUKARYOME holds the taxon's own NCBI phylum or class at that rank, NCBI's taxon stands not above
+        it (EUKARYOME's subkingdom Rhodophyta holds its Cyanidiophyta), a class is in NCBI's phylum but of another
+        subphylum than every class of NCBI's name, and below that rank its lineage shares no name with NCBI's. So a
+        genus name EUKARYOME holds in another phylum, or a class of another subphylum of NCBI's phylum, alone (a
+        mammal's genus EUKARYOME knows as an anthozoan's, an insect's as a barnacle's: MIDORI2's species placed by their
+        genus) is not the taxon's, while a genus EUKARYOME classifies otherwise within NCBI's taxon (Neocystis in
+        Trebouxiophyceae, NCBI's Chlorophyceae; Galdieria in Cyanidiophyta, NCBI's Rhodophyta's Bangiophyceae) is:
+        EUKARYOME's classification is Eukore's."""
+        line = self.text(node).split(";")
+        ids = ncbi.rank_ids(taxid)
+        bare = [labels.key(re.sub(r"\(.*\)$", "", x)) for x in line]
+        for i, rank in CHECKED:
+            name = re.sub(r"\(.*\)$", "", line[i]) if i < len(line) else ""
+            if not name or is_placeholder(name) or labels.key(name) in names:
+                continue
+            own = ids.get(rank)
+            key = labels.key(ncbi.name.get(own, "")) if own else ""
+            keys = {key} | ({labels.key(self.to_eukaryome[key])} if key in self.to_eukaryome else set())
+            held = [n for k in keys for n in self.by_key.get(k, ()) if n[0] == i]
+            if not key or not held:
+                continue  # EUKARYOME holds not the taxon's own phylum (class) at that rank: nothing to tell
+            if keys & set(bare[:i]):
+                continue  # inside NCBI's taxon, which EUKARYOME ranks higher
+            if i > CHECKED[0][0] and (bare[CHECKED[0][0]] not in names or
+                                      any(self.text(n).split(";")[i - 1] == line[i - 1] for n in held)):
+                continue  # a class outside NCBI's phylum, or of its class' subphylum: EUKARYOME's own classification
+            below = {labels.key(re.sub(r"\(.*\)$", "", x)) for x in line[i + 1:GENUS] if x and not is_placeholder(x)}
+            if not below & names:
+                return True
+        return False
+
     def best(self, nodes, ncbi, taxid, names):
-        """Of a name's nodes, those that may be the taxon's (fits), the one sharing the most names with its NCBI
-        lineage (names: their keys), then of the most rows."""
-        ok = [n for n in nodes if self.fits(n, ncbi, taxid)]
+        """Of a name's nodes, those that may be the taxon's (fits; since 2026-11-15 not another lineage's:
+        conflicts), the one sharing the most names with its NCBI lineage (names: their keys), then of the most
+        rows."""
+        ok = [n for n in nodes if self.fits(n, ncbi, taxid) and not self.conflicts(n, ncbi, taxid, names)]
         if not ok:
             return None
         return max(ok, key=lambda n: (len({labels.key(x) for _i, x in self.lineage(n)} & names), self.weight[n],
@@ -356,6 +432,17 @@ class Tree:
         at_species = ncbi.rank.get(sp) == "species"
         target = sp if at_species else taxid
         names = self.ncbi_names(ncbi, target)
+        node, how = self._by_name(ncbi, target, sp, at_species, names)
+        if node is None:
+            node, how = self._upward(ncbi, target, names, at_species, rank)
+        self._placed[taxid] = (node, how)
+        self.matches[how] += 1
+        return node, how
+
+    def _by_name(self, ncbi, target, sp, at_species, names, add=True):
+        """A taxon placed by its own name (place): a species by its name or a synonym, else by its genus' (the
+        species added under it, unless not `add`: learn's, the genus node then); a genus by its name -> (node, how) or
+        (None, None)."""
         node, how = None, None
         if at_species:
             sci = ncbi.name.get(sp, "")
@@ -378,13 +465,42 @@ class Tree:
                                   target, names)
                 if found:
                     node, how = found, ("genus" if at_species else "name")
-                    if at_species:
+                    if at_species and add:
                         node = self.make(SPECIES, species_text(ncbi.name.get(sp, str(sp))), node, "ncbi", sp)
-        if node is None:
-            node, how = self._upward(ncbi, target, names, at_species, rank)
-        self._placed[taxid] = (node, how)
-        self.matches[how] += 1
         return node, how
+
+    def learn(self, ncbi, taxids, share=0.01):
+        """The EUKARYOME taxon of each NCBI genus, family, order, class and phylum of the taxa's species (LEARNED;
+        since 2026-11-15): the one taxon of its rank its species placed by their own name (species, synonym, genus)
+        stand under, a taxon of under `share` of them a stray (a misfiled or homonym genus) -> self.learned {NCBI
+        taxid: node}. NCBI's Copepoda is so EUKARYOME's Hexanauplia. A taxon placed upward then stands under its
+        deepest NCBI clade's learned taxon before one EUKARYOME names alike (_upward), so that a clade EUKARYOME names
+        otherwise is one taxon, not two (a second class Copepoda beside Hexanauplia). A clade EUKARYOME splits (NCBI's
+        Pinopsida, its Pinopsida and Cupressopsida) is not learned: its taxon above the parts would leave the ranks
+        between them empty, so it is found by its name as before. Call it with every taxon to be placed, before
+        placing them."""
+        votes = collections.defaultdict(collections.Counter)
+        for t in sorted({ncbi.merged.get(int(x), int(x)) for x in taxids}):
+            sp = ncbi.species_of(t)
+            if ncbi.rank.get(sp) != "species":
+                continue
+            node, _how = self._by_name(ncbi, sp, sp, True, self.ncbi_names(ncbi, sp), add=False)
+            if node is None:
+                continue
+            at = {i: n for i, n in self.lineage(node)}
+            for rank, i in LEARNED:
+                clade = ncbi.rank_ids(sp).get(rank)
+                n = at.get(i)
+                if clade and n and not is_placeholder(n):
+                    votes[clade][(i, n)] += 1
+        self.learned = {}
+        for clade, c in votes.items():
+            total = sum(c.values())
+            held = [node for node, n in c.items() if n >= share * total]
+            if len(held) == 1:
+                self.learned[clade] = held[0]
+        self._placed = {}  # placed again with what was learned
+        return self.learned
 
     def _upward(self, ncbi, target, names, at_species, rank):
         """A taxon whose species and genus EUKARYOME does not name: under the deepest of its NCBI clades EUKARYOME
@@ -403,6 +519,11 @@ class Tree:
             keys = [key] + ([labels.key(self.to_eukaryome[key])] if key in self.to_eukaryome else [])
             nodes = [n for k in keys for n in self.by_key.get(k, ()) if n[0] < GENUS or (n[0] == GENUS and a == target)]
             found = self.best(nodes, ncbi, target, names)
+            if a in self.learned:  # the EUKARYOME taxon its species stand under (learn), or a taxon of the clade's
+                # name below it (NCBI's phylum Microsporidia: EUKARYOME's Rozellomycota, its subphylum Microsporidia)
+                learned = self.learned[a]
+                if not (found and found[0] > learned[0] and learned in self.lineage(found)):
+                    found = learned
             if found:
                 matched = a
                 break
