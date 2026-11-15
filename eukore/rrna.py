@@ -21,6 +21,7 @@ labelled by NCBI taxid, checked without any KSGP.
 """
 
 import collections
+import concurrent.futures
 import os
 import random
 import re
@@ -1406,11 +1407,12 @@ def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None, se
     the searches' files (the node's disk; default TMPDIR).
     ssu_models: a function of {record: its 18S} -> {record: the SSU model it scores best by} (regions.ssu_models;
     since 2026-11-09: a bacterium's or an organelle's SSU, barrnap's 18S by its eukaryote models alone, is told)."""
-    began = time.time()
-
-    def said(what):
+    def timed_part(what, make):
+        began = time.time()
+        got = make()
         if log:
             log(f"  rRNA {what}: took {util.duration(time.time() - began)}")
+        return got
     # an 18S over MAX_SSU_LEN: none of the checks (since 2026-11-13), the record kept, low (too_long)
     too_long = {name for name, seq, row in records if len(ssu_part(seq, row)) > MAX_SSU_LEN}
     if too_long and log:
@@ -1421,33 +1423,34 @@ def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None, se
     for name, seq, row in records:
         if ncbi is None or ncbi.rank.get(int(row["species_taxid"])) == "species":
             by_species[row["species_taxid"]].append((name, ssu_part(seq, row)))
-    type_of = {}
-    typed = species_types({sp: [p for _n, p in items] for sp, items in by_species.items()}, threads, log)
-    for sp, items in by_species.items():
-        for name, part in items:
-            type_of[name] = typed[sp][part]
-    said(f"99% types of {len(by_species):,} species' {len(records):,} records")
+    def types():
+        typed = species_types({sp: [p for _n, p in items] for sp, items in by_species.items()}, threads, log)
+        return {name: typed[sp][part] for sp, items in by_species.items() for name, part in items}
     from . import screen as screen_mod  # noqa: PLC0415
-    with tempfile.TemporaryDirectory(dir=tmp) as tmp:
+    # the four checks need none of each other's results, and read the records alone: at once (since 2026-11-15;
+    # until then one after another, each one's typing on this node while the helpers waited for its search), their
+    # large searches each in its own folder (screen.Searcher: <folder>_<phase>; regions.ssu_models': its own)
+    with tempfile.TemporaryDirectory(dir=tmp) as tmp, concurrent.futures.ThreadPoolExecutor(4) as checks:
         searcher = screen_mod.Searcher(vsearch, threads, tmp, folder=(searches or {}).get("folder"),
                                        helpers=(searches or {}).get("helpers"), progress=progress, log=log,
                                        nodes=(searches or {}).get("nodes", 1))
-        began = time.time()
-        own = own_species(records, ncbi, vsearch, threads, searcher, log)
-        said("own-species check")
-        began = time.time()
-        screened, counts_ = screen_mod.screen(records, ncbi, vsearch, threads, searcher, log)
-        said("part screen")
+        parts = {"types": checks.submit(timed_part, f"99% types of {len(by_species):,} species' {len(records):,} "
+                                        "records", types),
+                 "own": checks.submit(timed_part, "own-species check",
+                                      lambda: own_species(records, ncbi, vsearch, threads, searcher, log)),
+                 "screen": checks.submit(timed_part, "part screen",
+                                         lambda: screen_mod.screen(records, ncbi, vsearch, threads, searcher, log))}
+        if ssu_models:
+            parts["models"] = checks.submit(timed_part, "SSU models (cmsearch)", lambda: ssu_models(
+                {name: ssu_part(seq, row) for name, seq, row in records}))
+        concurrent.futures.wait(parts.values())  # every check ended: one's failure raised below
+        got = {k: f.result() for k, f in parts.items()}
+    type_of, own, (screened, counts_), models = got["types"], got["own"], got["screen"], got.get("models", {})
     if log and counts_:
         log("rRNA part screen: " + ", ".join(f"{k} {v}" for k, v in sorted(counts_.items())))
-    models = {}
-    if ssu_models:
-        began = time.time()
-        models = ssu_models({name: ssu_part(seq, row) for name, seq, row in records})
-        said("SSU models (cmsearch)")
-        if log:
-            log("rRNA SSU models: " + ", ".join(f"{k} {v}" for k, v in sorted(collections.Counter(
-                models.values()).items())))
+    if log and ssu_models:
+        log("rRNA SSU models: " + ", ".join(f"{k} {v}" for k, v in sorted(collections.Counter(
+            models.values()).items())))
     out = []
     for name, seq, row in every:
         verdict, cross = own.get(name, ("-", None))

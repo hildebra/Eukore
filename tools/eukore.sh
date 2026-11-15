@@ -37,7 +37,7 @@ if [[ ! -f $CONF ]]; then
     echo "no settings at $CONF: copy tools/eukore.conf.example there, or name the file with EUKORE_CONF" >&2
     exit 1
 fi
-TASKS=8; QC_TASKS=0; MAMBA_ENV=eukore; GEN=; SOURCES=; SCR=; LOGS=
+TASKS=8; QC_TASKS=0; QC_IDLE=1800; MAMBA_ENV=eukore; GEN=; SOURCES=; SCR=; LOGS=
 BUILD_OPTS=(); FETCH_OPTS=(); FINAL_OPTS=(); SBATCH_ALL=(); SBATCH_FETCH=(); SBATCH_PROCESS=(); SBATCH_FINAL=(); SBATCH_QC=()
 source "$CONF"
 : "${PDIR:?$CONF: PDIR}" "${WORK:?$CONF: WORK}" "${OUT:?$CONF: OUT}" "${VERSION:?$CONF: VERSION}"
@@ -176,13 +176,15 @@ qc)  # the helpers of the package stage's searches (the loci's vsearch, since 20
     [[ -z $LOGS ]] || mkdir -p "$LOGS"
     jid=$(submit Eukore-qc ${SBATCH_QC[@]+"${SBATCH_QC[@]}"} --array=1-"$tasks" -- _qc)
     echo "qc: array job $jid, $tasks helpers searching the loci of $WORK/qc" >&2
-    echo "$jid"  # the last line: the package stage cancels the helpers once every locus is searched
+    echo "$jid"  # the last line: the package stage cancels the helpers when it ends
     ;;
 _qc)
     activate
     echo "SLURM job ${SLURM_JOB_ID:--} (array ${SLURM_ARRAY_JOB_ID:--} task ${SLURM_ARRAY_TASK_ID:--}) on $HOSTNAME: qc"
     cd "$PDIR"
-    python3 -m eukore.qc helper "$WORK/qc" -t "${SLURM_CPUS_PER_TASK:-2}"
+    # waits QC_IDLE seconds for the final job's next search once none is left (since 2026-11-15: one helper array
+    # serves the final job's every search), till the final job ends (WORK/qc/helpers.stop)
+    python3 -m eukore.qc helper "$WORK/qc" -t "${SLURM_CPUS_PER_TASK:-2}" --idle "${QC_IDLE:-1800}"
     ;;
 *)
     echo "unknown step: $STEP (fetch, build, final or qc)" >&2

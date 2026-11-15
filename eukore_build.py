@@ -30,6 +30,7 @@ submits the chain). Every stage is resumable: a rerun does only what is not done
 """
 
 import argparse
+import atexit
 import bisect
 import collections
 import concurrent.futures
@@ -64,6 +65,7 @@ from eukore import audit as audit_mod, chimeras, eukaryome as eukaryome_mod, lin
 from eukore import __version__  # noqa: E402
 from eukore import store  # noqa: E402
 from eukore import tiers as tiers_mod  # noqa: E402
+from eukore import qc as qc_mod  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
 TAXDUMP_AGE = 7 * 86400  # a taxdump this much older than the assembly tables is fetched again (fetch_sources)
@@ -777,36 +779,105 @@ def progress_of(opts, what, weights, unit="Gb", scale=1e9):
                          usage=usage.line if usage else None)
 
 
-def qc_searches(opts, kind):
-    """qc.check's searches (since 2026-11-11): each locus' vsearch search kept in WORK/qc/<kind>/ and, with
-    --qc_helpers, shared with the nodes its command starts."""
-    def helpers(n):
-        say(f"  {n:,} loci to search: their inputs in {folder}; helpers started by: {opts.qc_helpers}")
-        try:
-            run = subprocess.run(shlex.split(opts.qc_helpers), capture_output=True, text=True, timeout=300,
-                                 check=False)
-        except (OSError, subprocess.SubprocessError) as e:
-            run = None
-            why = f"{type(e).__name__}: {e}"
-        else:
-            why = f"exit {run.returncode}: {run.stderr.strip()[-300:]}"
-        if run is None or run.returncode:
-            say(f"WARNING: the helpers were not started ({why}): this node searches every locus; another node can "
-                f"help all the same: python3 -m eukore.qc helper {os.path.dirname(folder)} -t <threads>")
-            return None
-        job = (run.stdout.strip().splitlines() or [""])[-1].strip()
-        say(f"  helpers: job {job or '?'}")
+HELPER_STATES = ("PENDING", "RUNNING", "CONFIGURING", "REQUEUED", "RESIZING", "SUSPENDED")
 
-        def stop():
-            if job.isdigit() and shutil.which("scancel"):  # the helpers still pending or idle: not needed now
-                subprocess.run(["scancel", job], capture_output=True, check=False)
-        return stop
+
+class HelperPool:
+    """The helper nodes of the package stage's searches (--qc_helpers), one array for them all (since 2026-11-15).
+
+    Until then each search (BUSCO's, the rRNA checks' six, the SSU models', cmalign's, the organelle genes', ...)
+    submitted an array of its own and cancelled it at its end, each waiting in the queue again (at least 9 in the
+    2026-11 build). Now the first search submits the array, the later ones (several at once, from the package stage's
+    concurrent steps) find it pending or running (squeue) and leave their searches to it, its helpers waiting
+    QC_IDLE seconds for the next search (qc.help_search's idle_for); an array gone (its helpers idle too long, or
+    killed) is submitted again; close() (the package stage's end) writes WORK/qc/helpers.stop and cancels it. A
+    command whose job squeue cannot tell (not SLURM's) is started for each search and stopped at its end, as
+    before."""
+
+    def __init__(self, opts):
+        self.opts, self.lock, self.job = opts, threading.Lock(), None
+        self.root = os.path.join(opts.work, "qc")
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(os.path.join(self.root, qc_mod.STOP))  # a stop of an earlier final job
+
+    def tracked(self, job):
+        return bool(job) and job.isdigit() and bool(shutil.which("squeue"))
+
+    def running(self):
+        if not self.tracked(self.job):
+            return False
+        run = subprocess.run(["squeue", "-h", "-j", self.job, "-o", "%T"], capture_output=True, text=True,
+                             check=False)
+        return run.returncode == 0 and any(s.strip() in HELPER_STATES for s in run.stdout.splitlines())
+
+    def __call__(self, n, folder):
+        """The helpers of n searches whose inputs are in folder -> the function the search calls at its end."""
+        with self.lock:
+            if self.running():
+                say(f"  {n:,} loci to search: their inputs in {folder}; the helpers of job {self.job} take them")
+                return lambda: None
+            say(f"  {n:,} loci to search: their inputs in {folder}; helpers started by: {self.opts.qc_helpers}")
+            try:
+                run = subprocess.run(shlex.split(self.opts.qc_helpers), capture_output=True, text=True, timeout=300,
+                                     check=False)
+            except (OSError, subprocess.SubprocessError) as e:
+                run = None
+                why = f"{type(e).__name__}: {e}"
+            else:
+                why = f"exit {run.returncode}: {run.stderr.strip()[-300:]}"
+            if run is None or run.returncode:
+                say(f"WARNING: the helpers were not started ({why}): this node searches every locus; another node "
+                    f"can help all the same: python3 -m eukore.qc helper {os.path.dirname(folder)} -t <threads>")
+                return None
+            job = (run.stdout.strip().splitlines() or [""])[-1].strip()
+            say(f"  helpers: job {job or '?'}")
+            if self.tracked(job):  # kept for the stage's next searches, cancelled by close()
+                self.job = job
+                return lambda: None
+
+            def stop():
+                if job.isdigit() and shutil.which("scancel"):  # the helpers still pending or idle: not needed now
+                    subprocess.run(["scancel", job], capture_output=True, check=False)
+            return stop
+
+    def close(self):
+        """The package stage's end: its helpers waiting for work stop (WORK/qc/helpers.stop), the array cancelled."""
+        with self.lock:
+            with contextlib.suppress(OSError):
+                os.makedirs(self.root, exist_ok=True)
+                with open(os.path.join(self.root, qc_mod.STOP), "w") as fh:
+                    fh.write(f"{socket.gethostname()}\t{os.getpid()}\t{time.time():.0f}\n")
+            if self.job and shutil.which("scancel"):
+                subprocess.run(["scancel", self.job], capture_output=True, check=False)
+            self.job = None
+
+
+def helper_pool(opts):
+    """The build's HelperPool (made once), or None without --qc_helpers."""
+    if not getattr(opts, "qc_helpers", None):
+        return None
+    with _POOL_LOCK:
+        if getattr(opts, "_helper_pool", None) is None:
+            opts._helper_pool = HelperPool(opts)
+    return opts._helper_pool
+
+
+_POOL_LOCK = threading.Lock()
+
+
+def qc_searches(opts, kind, prune=True):
+    """qc.check's searches (since 2026-11-11): each locus' vsearch search kept in WORK/qc/<kind>/ and, with
+    --qc_helpers, shared with the helper nodes (HelperPool: one array for the package stage's every search, since
+    2026-11-15). prune: the folder's other searches removed at a search's end (qc.searched_loci); not the
+    benchmarks', several searches one after another in one folder."""
     folder = os.path.join(opts.work, "qc", kind)
-    shared = bool(getattr(opts, "qc_helpers", None))
+    pool = helper_pool(opts)
     # the inputs of searches no helper shares on the node's disk (--local_tmp; since 2026-11-13), the hits in WORK;
-    # nodes: this one and its helpers (--qc_tasks), the rRNA searches' parts sized by them (screen.search_parts)
-    return {"folder": folder, "helpers": helpers if shared else None, "scratch": getattr(opts, "scratch", None),
-            "nodes": 1 + ((getattr(opts, "qc_tasks", 0) or QC_TASKS_GUESS) if shared else 0),
+    # nodes: this one and its helpers (--qc_tasks), the searches' parts sized by them (screen.search_parts,
+    # qc.split_todo)
+    return {"folder": folder, "helpers": (lambda n: pool(n, folder)) if pool else None,
+            "scratch": getattr(opts, "scratch", None),
+            "nodes": 1 + ((getattr(opts, "qc_tasks", 0) or QC_TASKS_GUESS) if pool else 0), "prune": prune,
             "log": say}  # each search's times, a straggler searched here too (qc.searched_loci; since 2026-11-14)
 
 
@@ -1621,7 +1692,7 @@ def measure(part, opts, src_dir, ncbi, collected, vsearch, stages, fates=None, r
                               clades=len(opts.wanted) if opts.wanted is not None else None,
                               # the 18S resolution's search reported, kept and shared (since 2026-11-14)
                               progress=functools.partial(progress_of, opts, unit=""),
-                              searches=qc_searches(opts, "benchmarks") if vsearch else None)
+                              searches=qc_searches(opts, "benchmarks", prune=False) if vsearch else None)
     except Exception as e:  # noqa: BLE001
         say(f"WARNING: the benchmarks failed ({type(e).__name__}: {e}): the package is written without them")
         shutil.rmtree(os.path.join(part, benchmarks.FOLDER), ignore_errors=True)
@@ -2366,6 +2437,23 @@ def _main(argv, held):
                 "before data/marker_decoys.tsv's decoys, EFL for EF-1a, among them): run --stage fetch, then --stage "
                 "process, to build it again; until then the old set serves, a genome holding EFL alone may have it as "
                 "its TEF1")
+        # The package stage's steps that need none of each other's results run at once (since 2026-11-15; until then
+        # one after another, the final job of the 2026-11 build 11 h 39 m, its node mostly waiting on one search or
+        # one core): the reference screen beside the copies' collection; then, beside each other, the copies'
+        # genetics, the rRNA records (their audit, then their checks beside the 18S regions and amplicons) and the
+        # organelle genes (once the records' species are known). Each step's searches go to the helpers as before, in
+        # folders of their own (qc.searched_loci removes other searches' files from its folder). A step that fails
+        # fails the stage once the others have ended, their searches kept for the next run.
+        pool = helper_pool(opts)
+        if pool is not None:
+            atexit.register(pool.close)  # the helpers stopped however the stage ends
+        steps = concurrent.futures.ThreadPoolExecutor(4, thread_name_prefix="package")
+        screen_step = None
+        if opts.midori2 and not opts.no_reference_screen:  # since 2026-11-10: MIDORI2's misnamed, chimeric records
+            def screen_references():
+                with timed(stages, "reference screen", opts):
+                    return reference_screen(opts, src_dir, ncbi)
+            screen_step = steps.submit(screen_references)
         with timed(stages, "BUSCO copies and their checks", opts):
             # the marker copies checked again by the set's profiles, decoys too (since 2026-11-09: markers.recheck)
             collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads,
@@ -2381,96 +2469,142 @@ def _main(argv, held):
                 + (f"{len(collected['dropped']):,} poor or partial genomes' copies left out (e.g. "
                    f"{collected['dropped'][:3]}; --keep_poor_genomes keeps them, flagged)" if collected["dropped"]
                    else "no genome's copies left out"))
-        extra_tables = []
-        with timed(stages, "introns and genetic codes", opts):
-            hmmalign = shutil.which("hmmalign")
-            if not hmmalign:
-                say("WARNING: no hmmalign: introns without their places in the genes, no genetic code check")
-            hmm_of = odb_of(opts, src_dir).hmm
-            # hmmalign's files on the node's disk (--local_tmp; since 2026-11-13: in WORK), its cache in WORK
-            package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say, opts.threads, tmp=opts.scratch)
-        # EUKARYOME's taxonomy (since 2026-11-14): the chimera screens' clades, every species', record's and
-        # organelle gene's lineage in it
-        tree = eukaryome_mod.load(sources.ready(src_dir, "EUKARYOME"), sources.SOURCES["EUKARYOME"]["version"],
-                                  log=say)
-        with timed(stages, "rRNA records' audit", opts):
-            # KSGP 4.1-4.5's checks of the published 18S (since 2026-11-14, format 7: eukore/audit.py,
-            # chimeras.py): their ends and flanks (audited by the published batches, across the array's nodes; a read
-            # of an older batch here), then the chimera screens, their searches shared with the helpers
-            published_records, audited = published(opts, src_dir, ncbi)
-            records = genome_rrna_records(opts, job_map, ncbi, collected) + published_records
-            univec, primers, nhmmer, hmm = audit_mod.tools(src_dir, sources)
-            records, trims, audit_counts = audit_mod.clean(records, audit_mod.vectors_of(univec), primers, nhmmer, hmm,
-                                                           opts.threads, opts.scratch, say, audited)
-            if tree is not None:
-                # each NCBI clade's EUKARYOME taxon learned before the screens place the records (since 2026-11-15:
-                # learned after them, in package.write, the clades their placements had named were learned as
-                # nothing); package.write learns again with every taxon, the organelle genes' too
-                tree.learn(ncbi, {int(r["taxid"]) for _n, _s, r in records if str(r.get("taxid", "")).isdigit()}
-                           | {int(g["species_taxid"]) for g in collected["genomes"].values()})
-                searcher = screen_mod.Searcher(vsearch, opts.threads, opts.scratch,
-                                               **{k: v for k, v in qc_searches(opts, "audit").items()
-                                                  if k in ("folder", "helpers", "nodes")},
-                                               progress=functools.partial(progress_of, opts, unit=""), log=say)
-                records, audit_rows, screen_counts = audit_mod.screen(records, tree, ncbi, shutil.which("minimap2"),
-                                                                      vsearch, searcher, opts.threads, opts.scratch,
-                                                                      say)
-            else:
-                say("WARNING: no EUKARYOME taxonomy: the 18S not screened for chimeras")
-                audit_rows, screen_counts = [], {}
-            audit_rows = audit_mod.trim_rows(trims) + audit_rows
-            extra_tables.append(("rrna/audit.tsv", chimeras.AUDIT_COLUMNS, audit_rows))
-            audit_stamp = audit_mod.stamp(univec, primers, nhmmer, hmm, audit_counts, screen_counts)
-        with timed(stages, "rRNA records and their checks", opts):
-            # each 18S's SSU model (since 2026-11-09): a bacterium's or an organelle's SSU is no 18S
-            models, cmsearch = regions_mod.models_path(src_dir), shutil.which("cmsearch")
-            # its new 18S searched in parts kept in WORK/qc/ssu_models/ and shared with the helpers (since 2026-11-13)
-            ssu = functools.partial(regions_mod.ssu_models, cm=models, cmsearch=cmsearch, threads=opts.threads,
-                                    tmp=opts.scratch, work=opts.work, searches=qc_searches(opts, "ssu_models"),
-                                    progress=functools.partial(progress_of, opts, unit=""),
-                                    log=say) if cmsearch and regions_mod.is_cm(models) else None
-            if ssu is None:
-                say("WARNING: no cmsearch (infernal) or no Rfam SSU models (--stage fetch fetches them): the 18S not "
-                    "told from a bacterium's or an organelle's SSU (records.tsv's ssu_model -)")
-            # its large vsearch searches kept in WORK/qc/rrna_<phase>/ and shared with the helpers (since 2026-11-13)
-            records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say, ssu_models=ssu,
-                                  searches=qc_searches(opts, "rrna"),
-                                  progress=functools.partial(progress_of, opts, unit=""), tmp=opts.scratch)
-        with timed(stages, "18S variable regions and amplicons", opts):
-            cm, cmalign = regions_mod.cm_path(src_dir), shutil.which("cmalign")
-            if cmalign and os.path.isfile(cm):
-                extra_tables.append(("rrna/regions.tsv", regions_mod.REGION_COLUMNS,
-                                     regions_mod.run(records, cm, cmalign, opts.threads, opts.work, say,
-                                                     tmp=opts.scratch, searches=qc_searches(opts, "cmalign"),
-                                                     progress=functools.partial(progress_of, opts, unit=""))))
-            else:
-                say("WARNING: no cmalign (infernal) or no Rfam SSU model (--stage fetch fetches it): no 18S variable "
-                    "regions")
-            extra_tables.append(("rrna/amplicons.tsv", primers_mod.AMPLICON_COLUMNS,
-                                 primers_mod.run(records, "rrna", threads=opts.threads)))
-        screened = None
-        if opts.midori2 and not opts.no_reference_screen:  # since 2026-11-10: MIDORI2's misnamed, chimeric records
-            # (since 2026-11-14 before the organelle genes: MIDORI2's mitochondrial SSU the screen keeps are taken)
-            with timed(stages, "reference screen", opts):
-                screened = reference_screen(opts, src_dir, ncbi)
+        records_species = {}  # the rRNA step's records' species, which the organelle step waits for
+        records_known = threading.Event()
+
+        def genetics_step():
+            with timed(stages, "introns and genetic codes", opts):
+                hmmalign = shutil.which("hmmalign")
+                if not hmmalign:
+                    say("WARNING: no hmmalign: introns without their places in the genes, no genetic code check")
+                hmm_of = odb_of(opts, src_dir).hmm
+                # hmmalign's files on the node's disk (--local_tmp; since 2026-11-13: in WORK), its cache in WORK
+                package.genetics(collected, ncbi, hmm_of, hmmalign, opts.work, say, opts.threads, tmp=opts.scratch)
+
+        def rrna_step():
+            # EUKARYOME's taxonomy (since 2026-11-14): the chimera screens' clades, every species', record's and
+            # organelle gene's lineage in it; this step alone uses it until package.write
+            tree = eukaryome_mod.load(sources.ready(src_dir, "EUKARYOME"), sources.SOURCES["EUKARYOME"]["version"],
+                                      log=say)
+            tables = []
+            try:
+                with timed(stages, "rRNA records' audit", opts):
+                    # KSGP 4.1-4.5's checks of the published 18S (since 2026-11-14, format 7: eukore/audit.py,
+                    # chimeras.py): their ends and flanks (audited by the published batches, across the array's
+                    # nodes; a read of an older batch here), then the chimera screens, their searches shared with the
+                    # helpers
+                    published_records, audited = published(opts, src_dir, ncbi)
+                    records = genome_rrna_records(opts, job_map, ncbi, collected) + published_records
+                    # every record stays a record through the audit and the checks: the organelle step may begin
+                    records_species["species"] = {int(r["species_taxid"]) for _n, _s, r in records}
+                    records_known.set()
+                    univec, primers, nhmmer, hmm = audit_mod.tools(src_dir, sources)
+                    records, trims, audit_counts = audit_mod.clean(records, audit_mod.vectors_of(univec), primers,
+                                                                   nhmmer, hmm, opts.threads, opts.scratch, say,
+                                                                   audited)
+                    if tree is not None:
+                        # each NCBI clade's EUKARYOME taxon learned before the screens place the records (since
+                        # 2026-11-15: learned after them, in package.write, the clades their placements had named
+                        # were learned as nothing); package.write learns again with every taxon, the organelle
+                        # genes' too
+                        tree.learn(ncbi, {int(r["taxid"]) for _n, _s, r in records
+                                          if str(r.get("taxid", "")).isdigit()}
+                                   | {int(g["species_taxid"]) for g in collected["genomes"].values()})
+                        searcher = screen_mod.Searcher(vsearch, opts.threads, opts.scratch,
+                                                       **{k: v for k, v in qc_searches(opts, "audit").items()
+                                                          if k in ("folder", "helpers", "nodes")},
+                                                       progress=functools.partial(progress_of, opts, unit=""),
+                                                       log=say)
+                        records, audit_rows, screen_counts = audit_mod.screen(records, tree, ncbi,
+                                                                              shutil.which("minimap2"), vsearch,
+                                                                              searcher, opts.threads, opts.scratch,
+                                                                              say)
+                    else:
+                        say("WARNING: no EUKARYOME taxonomy: the 18S not screened for chimeras")
+                        audit_rows, screen_counts = [], {}
+                    audit_rows = audit_mod.trim_rows(trims) + audit_rows
+                    tables.append(("rrna/audit.tsv", chimeras.AUDIT_COLUMNS, audit_rows))
+                    stamp = audit_mod.stamp(univec, primers, nhmmer, hmm, audit_counts, screen_counts)
+            finally:
+                records_known.set()  # the organelle step waits no longer (it fails where the records are not known)
+            audited_records = records
+
+            def regions_step():  # the audited records' 18S and kinds alone: beside their checks (since 2026-11-15)
+                out = []
+                with timed(stages, "18S variable regions and amplicons", opts):
+                    cm, cmalign = regions_mod.cm_path(src_dir), shutil.which("cmalign")
+                    if cmalign and os.path.isfile(cm):
+                        out.append(("rrna/regions.tsv", regions_mod.REGION_COLUMNS,
+                                    regions_mod.run(audited_records, cm, cmalign, opts.threads, opts.work, say,
+                                                    tmp=opts.scratch, searches=qc_searches(opts, "cmalign"),
+                                                    progress=functools.partial(progress_of, opts, unit=""))))
+                    else:
+                        say("WARNING: no cmalign (infernal) or no Rfam SSU model (--stage fetch fetches it): no 18S "
+                            "variable regions")
+                    out.append(("rrna/amplicons.tsv", primers_mod.AMPLICON_COLUMNS,
+                                primers_mod.run(audited_records, "rrna", threads=opts.threads)))
+                return out
+            with concurrent.futures.ThreadPoolExecutor(1, thread_name_prefix="regions") as beside:
+                regions_done = beside.submit(regions_step)
+                try:
+                    with timed(stages, "rRNA records and their checks", opts):
+                        # each 18S's SSU model (since 2026-11-09): a bacterium's or an organelle's SSU is no 18S
+                        models, cmsearch = regions_mod.models_path(src_dir), shutil.which("cmsearch")
+                        # its new 18S searched in parts kept in WORK/qc/ssu_models/ and shared with the helpers (since
+                        # 2026-11-13)
+                        ssu = functools.partial(regions_mod.ssu_models, cm=models, cmsearch=cmsearch,
+                                                threads=opts.threads, tmp=opts.scratch, work=opts.work,
+                                                searches=qc_searches(opts, "ssu_models"),
+                                                progress=functools.partial(progress_of, opts, unit=""),
+                                                log=say) if cmsearch and regions_mod.is_cm(models) else None
+                        if ssu is None:
+                            say("WARNING: no cmsearch (infernal) or no Rfam SSU models (--stage fetch fetches them): "
+                                "the 18S not told from a bacterium's or an organelle's SSU (records.tsv's ssu_model "
+                                "-)")
+                        # its large vsearch searches kept in WORK/qc/rrna_<phase>/ and shared with the helpers (since
+                        # 2026-11-13)
+                        records = rrna.finish(records, ncbi, vsearch, opts.threads, log=say, ssu_models=ssu,
+                                              searches=qc_searches(opts, "rrna"),
+                                              progress=functools.partial(progress_of, opts, unit=""),
+                                              tmp=opts.scratch)
+                finally:
+                    concurrent.futures.wait([regions_done])
+                tables += regions_done.result()
+            return records, tables, stamp, tree
+
+        def organelle_step():
+            tables, screened = [], screen_step.result() if screen_step else None
             if screened:
-                extra_tables.append(("reference_screen.tsv", refscreen.TABLE_COLUMNS,
-                                     refscreen.table_rows("MIDORI2", screened[0])))
-        with timed(stages, "organelle genes", opts):
-            chosen = organelle_genes(opts, src_dir, job_map, ncbi)  # before the prune: the genomes searched while there
-            held = {int(g["species_taxid"]) for g in collected["genomes"].values() if g["representative"] == "t"}
-            # every species of RefSeq's organelle genomes (since 2026-11-14, format 7: until then those of the
-            # package's genomes and rRNA records alone), EUKARYOME's organelle SSU and MIDORI2's mitochondrial SSU
-            refseq_species = {sp for sp, _o in chosen if opts.inside(sp)}
-            organelle = organelle_mod.collect(ncbi, job_map, held | {int(r["species_taxid"]) for _n, _s, r in records}
-                                              | refseq_species, chosen, os.path.join(opts.work, "organelle"))
-            organelle += organelle_published(opts, src_dir, ncbi, chosen)
-            organelle += midori2_published(opts, ncbi, chosen, screened[0] if screened else None)
-            organelle = organelle_mod.check(organelle, ncbi, vsearch, opts.threads,
-                                            progress=functools.partial(progress_of, opts, unit=""),
-                                            searches=qc_searches(opts, "organelle"))
-            extra_tables.append(("organelle/amplicons.tsv", primers_mod.AMPLICON_COLUMNS,
-                                 primers_mod.run(organelle, "organelle", threads=opts.threads)))
+                tables.append(("reference_screen.tsv", refscreen.TABLE_COLUMNS,
+                               refscreen.table_rows("MIDORI2", screened[0])))
+            # (since 2026-11-14 after the reference screen: MIDORI2's mitochondrial SSU the screen keeps are taken)
+            with timed(stages, "organelle genes", opts):
+                chosen = organelle_genes(opts, src_dir, job_map, ncbi)  # before the prune: searched while there
+                held = {int(g["species_taxid"]) for g in collected["genomes"].values() if g["representative"] == "t"}
+                records_known.wait()
+                if "species" not in records_species:
+                    raise RuntimeError("the organelle genes: the rRNA records' species are not known (the rRNA step "
+                                       "failed)")
+                # every species of RefSeq's organelle genomes (since 2026-11-14, format 7: until then those of the
+                # package's genomes and rRNA records alone), EUKARYOME's organelle SSU and MIDORI2's mitochondrial SSU
+                refseq_species = {sp for sp, _o in chosen if opts.inside(sp)}
+                organelle = organelle_mod.collect(ncbi, job_map, held | records_species["species"] | refseq_species,
+                                                  chosen, os.path.join(opts.work, "organelle"))
+                organelle += organelle_published(opts, src_dir, ncbi, chosen)
+                organelle += midori2_published(opts, ncbi, chosen, screened[0] if screened else None)
+                organelle = organelle_mod.check(organelle, ncbi, vsearch, opts.threads,
+                                                progress=functools.partial(progress_of, opts, unit=""),
+                                                searches=qc_searches(opts, "organelle"))
+                tables.append(("organelle/amplicons.tsv", primers_mod.AMPLICON_COLUMNS,
+                               primers_mod.run(organelle, "organelle", threads=opts.threads)))
+            return organelle, screened, tables
+
+        running_steps = [steps.submit(step) for step in (genetics_step, rrna_step, organelle_step)]
+        concurrent.futures.wait(running_steps)  # every step ended: one's failure raised below, the others' work kept
+        steps.shutdown()
+        _, (records, rrna_tables, audit_stamp, tree), (organelle, screened, organelle_tables) = \
+            [s.result() for s in running_steps]
+        extra_tables = rrna_tables + organelle_tables  # in the order the steps ran in until 2026-11-15
         writers = []
         if extras:
             with timed(stages, "intraspecific barcode gap", opts):
@@ -2536,6 +2670,8 @@ def _main(argv, held):
                             loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook,
                             metadata=meta, tables=extra_tables, writers=writers, threads=opts.threads, eukaryome=tree)
         say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")
+        if pool is not None:  # the benchmarks' searches were the last: the helpers stop (HelperPool)
+            pool.close()
         evaluation_bundle(opts, out)  # since 2026-11-12: the run's report and tables, to be looked at elsewhere
         if not opts.no_release:  # the website's data and the downloads (since 2026-11-09; --stage release again)
             release_mod.write(out, os.path.join(opts.out, "release"), say, threads=opts.threads)

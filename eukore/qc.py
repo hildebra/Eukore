@@ -223,8 +223,14 @@ def check(copies, species_of, ncbi, vsearch=None, threads=1, protein_length=None
         todo = [(locus, {**seqs, **extra_of.get(locus, {})}, seqs if extra_of.get(locus) else None)
                 for locus, seqs in by_locus.items() if len({species_of[a] for a in seqs}) >= 2]
         if searches:  # each locus' search kept, and shared with other nodes (since 2026-11-11)
-            found = searched_loci(todo, vsearch, threads, searches["folder"], searches.get("helpers"), progress,
-                                  scratch=searches.get("scratch"), log=searches.get("log"))
+            # a large locus in parts against its copies (since 2026-11-15: split_todo), so that no node holds one alone
+            parts, locus_of = split_todo(todo, searches.get("nodes", 1))
+            got = searched_loci(parts, vsearch, threads, searches["folder"], searches.get("helpers"), progress,
+                                scratch=searches.get("scratch"), log=searches.get("log"),
+                                prune=searches.get("prune", True))
+            found = collections.defaultdict(list)
+            for part, hits in got.items():
+                found[locus_of[part]] += hits
         else:
             found = {}
             shown = progress(SEARCHED, [weight(q) for _l, q, _d in todo]) if progress and todo else None
@@ -420,6 +426,42 @@ class Shared:
 def weight(queries):
     """A locus' share of the search's work: its sequences squared."""
     return len(queries) ** 2
+
+
+# A locus' search in parts (since 2026-11-15): one task a locus left a node, a helper of few threads among them, with a
+# large locus for hours while the others waited (the 2026-11 build's final job: 1 h 27 m at 0 cores for one BUSCO
+# locus; its benchmarks: 3 h 36 m for the 18S resolution's one search). A locus of PART_MIN queries or more is split
+# by its queries into PER_NODE parts for each node searching (the final job and its helpers), each of PART_MIN at
+# least, against the locus' copies as one Shared database: a query's hits depend on the database alone, so that the
+# parts' hits are the locus' (as the rRNA checks' searches, screen.search_parts).
+PER_NODE = 3
+PART_MIN = 5000
+
+
+def query_parts(names, nodes=1):
+    """names (sorted) -> [[name]]: PER_NODE parts for each node, fewer where a part would hold under PART_MIN,
+    interleaved (part i every n-th name from the i-th) so that each holds some of every clade."""
+    n = min(max(1, PER_NODE * max(1, nodes)), max(1, len(names) // PART_MIN))
+    return [names[i::n] for i in range(n)] if names else []
+
+
+def split_todo(todo, nodes=1):
+    """check's searches [(locus, queries, db or None: the queries)] -> (searches, {search name: its locus}): a locus
+    of query_parts' several parts as `<locus>~<i>` searches of a part's queries against the locus' copies (Shared),
+    a smaller one as it was (its kept search the same)."""
+    out, locus_of = [], {}
+    for locus, queries, db in todo:
+        parts = query_parts(sorted(queries), nodes)
+        if len(parts) <= 1:
+            out.append((locus, queries, db))
+            locus_of[locus] = locus
+            continue
+        shared = Shared(queries if db is None else db)
+        for i, part in enumerate(parts, 1):
+            name = f"{locus}~{i}"
+            out.append((name, {n: queries[n] for n in part}, shared))
+            locus_of[name] = locus
+    return out, locus_of
 
 
 def search_key(queries, db=None, params=DEFAULT):
@@ -619,7 +661,7 @@ def todo_entry(line):
 
 
 def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, poll=SEARCH_POLL, params=DEFAULT,
-                  what=None, scratch=None, log=None):
+                  what=None, scratch=None, log=None, prune=True):
     """The loci's searches todo [(locus, queries, db or None or a Shared one)], kept in folder: those kept read, the
     others searched here and, with helpers (a function of the number of loci to search -> a function that stops the
     helpers, or None), by other nodes too -> {locus: [(query, target, identity %)]}. params: the searches' settings
@@ -716,7 +758,9 @@ def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, p
         name = os.path.basename(path).lstrip(".")
         if name.endswith(".partial") or os.path.isdir(path):  # a helper's file being written: its own
             continue
-        if name == "todo.tsv" or not any(name.startswith(b + ".") for b in keep):
+        # without prune (since 2026-11-15: the benchmarks' several searches, one after another in one folder, each
+        # removed the one before, every one searched again by a rerun) another search's hits stay
+        if name == "todo.tsv" or (prune and not any(name.startswith(b + ".") for b in keep)):
             os.remove(path)
     return found
 
@@ -729,14 +773,26 @@ def searched_line(base, timing):
             + ("" if setup is None else f" (database read and indexed in {util.duration(setup)})"))
 
 
-def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, minimap2=None):
+STOP = "helpers.stop"  # in WORK/qc: the final job's end (since 2026-11-15): its helpers waiting for work stop
+
+
+def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, minimap2=None, idle_for=0,
+                poll=SEARCH_POLL):
     """A helper node's part (tools/eukore.sh qc): the loci of every folder under root (its todo.tsv) whose inputs are
     there and hits not yet, each claimed and searched, until none is left that no other node holds -> loci searched.
     A cmsearch part (CmParams; since 2026-11-13) by cmsearch, a cmalign part (CmalignParams) by cmalign, a window
     screen's (MapParams; since 2026-11-14) by minimap2, a UCHIME part (UchimeParams) by vsearch, each left to the
-    other nodes where its tool is None."""
-    done, idle = 0, False
-    while not idle:
+    other nodes where its tool is None. idle_for (since 2026-11-15): with nothing left, the folders looked at again
+    every `poll` seconds for the final job's next searches, up to idle_for seconds after the last one searched here
+    or till root/STOP is there (the final job's end): one helper array serves the job's every search, not a new
+    array (and its wait in the queue) for each."""
+    done, idle, last = 0, False, time.time()
+    stop = os.path.join(root, STOP)
+    while True:
+        if idle:
+            if not idle_for or os.path.exists(stop) or time.time() - last > idle_for:
+                break
+            time.sleep(poll)
         idle = True
         for listing in sorted(glob.glob(os.path.join(root, "*", "todo.tsv"))):
             folder = os.path.dirname(listing)
@@ -754,10 +810,10 @@ def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, 
                 timing = {}
                 if search_one(folder, base, tool, threads, params=params, shared=shared, timing=timing):
                     done += 1
-                    idle = False
+                    idle, last = False, time.time()
                     if timing:
                         log(searched_line(base, timing))
-    log(f"{done:,} loci searched here; none left")
+    log(f"{done:,} loci searched here; none left" + (" (the final job ended)" if os.path.exists(stop) else ""))
     return done
 
 
@@ -771,6 +827,9 @@ def main(argv=None):
     p.add_argument("--minimap2", default="minimap2",
                    help="the chimera window screen's parts' (since 2026-11-14; none found: left to other nodes)")
     p.add_argument("-t", "--threads", type=int, default=1)
+    p.add_argument("--idle", type=float, default=0, metavar="SECONDS",
+                   help="with nothing left, wait this long for the final job's next searches (since 2026-11-15; "
+                        "default 0: stop), or till WORK/qc/" + STOP + " is there")
     a = p.parse_args(argv)
     vsearch = shutil.which(a.vsearch)
     if not vsearch:
@@ -778,7 +837,7 @@ def main(argv=None):
     help_search(a.root, vsearch, a.threads,
                 log=lambda text: print(f"[{time.strftime('%H:%M:%S')}] {text}", flush=True),
                 cmsearch=shutil.which(a.cmsearch), cmalign=shutil.which(a.cmalign),
-                minimap2=shutil.which(a.minimap2))
+                minimap2=shutil.which(a.minimap2), idle_for=a.idle)
     return 0
 
 
