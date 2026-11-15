@@ -479,6 +479,7 @@ class Tree:
         Pinopsida, its Pinopsida and Cupressopsida) is not learned: its taxon above the parts would leave the ranks
         between them empty, so it is found by its name as before. Call it with every taxon to be placed, before
         placing them."""
+        self.forget_placed()  # since 2026-11-15: what earlier placements added under NCBI's names votes for nothing
         votes = collections.defaultdict(collections.Counter)
         for t in sorted({ncbi.merged.get(int(x), int(x)) for x in taxids}):
             sp = ncbi.species_of(t)
@@ -501,6 +502,30 @@ class Tree:
                 self.learned[clade] = held[0]
         self._placed = {}  # placed again with what was learned
         return self.learned
+
+    def forget_placed(self):
+        """The nodes placements added under NCBI's names (source ncbi: a species, a genus EUKARYOME lacks, NCBI's
+        clades below a taxon placed upward) taken out of the tree, but those holding another source's node, and the
+        placements made forgotten (since 2026-11-15; the audit's T1). The audit placed the published reads before
+        the package learned (learn): a copepod genus EUKARYOME lacks stood under a class `Copepoda` of NCBI's name,
+        its species then voted for it beside EUKARYOME's Hexanauplia, and Copepoda was learned as nothing."""
+        children = collections.defaultdict(list)
+        for node, parent in self.parent.items():
+            if parent is not None:
+                children[parent].append(node)
+
+        def only_ncbi(node):
+            return self.source.get(node) == "ncbi" and all(only_ncbi(c) for c in children[node])
+        for node in [n for n in self.parent if only_ncbi(n)]:
+            del self.parent[node], self.source[node]
+            self.ncbi_taxid.pop(node, None)
+            self._kingdom.pop(node, None)
+            for index, key in ((self.by_name, node[1]), (self.by_key, labels.key(node[1]))):
+                index[key].discard(node)
+            dotted = DOTTED.match(node[1])
+            if dotted:
+                self.by_key[labels.key(dotted.group(1))].discard(node)
+        self._placed, self._labels = {}, {}
 
     def _upward(self, ncbi, target, names, at_species, rank):
         """A taxon whose species and genus EUKARYOME does not name: under the deepest of its NCBI clades EUKARYOME

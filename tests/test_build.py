@@ -118,6 +118,14 @@ class HomonymTest(unittest.TestCase):
                                              {"eukaryota", "metazoa", "chordata", "morus"}))
         self.assertFalse(labels.other_kingdom(("Eukaryota", "Obazoa", "Metazoa", "Morus"),
                                               {"eukaryota", "metazoa", "chordata", "morus"}))
+        # since 2026-11-15: a protist lineage too (the bird Lessonia as PR2's kelp); a lineage naming no group: no call
+        self.assertTrue(labels.other_kingdom(("Eukaryota", "TSAR", "Stramenopiles", "Gyrista", "Ochrophyta",
+                                              "Phaeophyceae", "Laminariales", "Lessoniaceae", "Lessonia"),
+                                             {"eukaryota", "metazoa", "chordata", "aves", "lessonia"}))
+        self.assertFalse(labels.other_kingdom(("Eukaryota", "TSAR", "Stramenopiles", "Ochrophyta", "Lessonia"),
+                                              {"eukaryota", "sar", "stramenopiles", "phaeophyceae", "lessonia"}))
+        self.assertFalse(labels.other_kingdom(("Eukaryota", "Incertae_sedis", "Lessonia"),
+                                              {"eukaryota", "metazoa", "lessonia"}))
 
 
 class ResumeTest(unittest.TestCase):

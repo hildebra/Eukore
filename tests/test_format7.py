@@ -272,6 +272,13 @@ class HarmonyTest(unittest.TestCase):
         self.assertEqual(how, "upward")
         self.assertIn(";Hexanauplia;Mormonilloida;Mormonillidae;Mormonilla;Mormonilla_phasma", text)
         self.assertEqual(self.lineage(tree, 6661)[0], "genus")  # placed by its own name as before
+        # since 2026-11-15 (the audit's T1): the same where the copepod was placed before learning (the audit places
+        # the published reads before the package learns); until then its NCBI-named class voted, nothing was learned
+        early = eukaryome.Tree.from_classification(HARMONY_ROWS)
+        self.assertIn(";Copepoda;", self.lineage(early, 6665)[1])
+        self.assertEqual(early.learn(self.ncbi, [6661, 6665])[6657], (5, "Hexanauplia"))
+        self.assertEqual(self.lineage(early, 6665), (how, text))
+        self.assertEqual(early.learn(self.ncbi, [6661, 6665])[6657], (5, "Hexanauplia"))  # learned twice: the same
 
     def test_a_learned_clade_yields_to_a_deeper_taxon_of_its_name(self):
         # NCBI's phylum Microsporidia is EUKARYOME's phylum Rozellomycota by its species, and EUKARYOME's subphylum

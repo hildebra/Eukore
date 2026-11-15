@@ -133,9 +133,19 @@ def is_genus_name(name):
         and name[:1].isupper() and " " not in name.strip()
 
 
-# the kingdoms a genus name can be a homonym across, by the names the references and NCBI give them
+# the kingdoms a genus name can be a homonym across, by the names the references and NCBI give them; since 2026-11-15
+# (the audit's T2) the protists' deep lineages too, each name of one alone: the bird genus Lessonia took the kelp's PR2
+# lineage, moths Elachista and Cyclophora a brown alga's and a diatom's (run 1: PR2 32 species, SILVA 24, KSGP 18,
+# UNITE 14), the three kingdoms alone guarded
 KINGDOMS = {"metazoa": "animals", "fungi": "fungi", "viridiplantae": "plants", "streptophyta": "plants",
-            "chlorophyta": "plants"}
+            "chlorophyta": "plants", "chloroplastida": "plants", "rhodophyta": "red algae",
+            "glaucophyta": "glaucophytes", "stramenopiles": "stramenopiles", "stramenopila": "stramenopiles",
+            "straminipila": "stramenopiles", "heterokonta": "stramenopiles", "alveolata": "alveolates",
+            "rhizaria": "rhizaria", "cercozoa": "rhizaria", "foraminifera": "rhizaria", "radiolaria": "rhizaria",
+            "amoebozoa": "amoebozoa", "haptista": "haptista", "haptophyta": "haptista", "centroplasthelida": "haptista",
+            "cryptista": "cryptista", "cryptophyta": "cryptista", "cryptophyceae": "cryptista", "discoba": "discoba",
+            "euglenozoa": "discoba", "heterolobosea": "discoba", "metamonada": "metamonada", "fornicata": "metamonada",
+            "parabasalia": "metamonada"}
 
 
 def other_kingdom(lineage, ncbi_names):
@@ -191,7 +201,9 @@ class Reference:
         found = self.genus.get(key(genus))
         if found:
             lineage = self.best(found, names)
-            if not other_kingdom(lineage, names):
+            # every name of its NCBI lineage (ranks() keeps one unranked clade alone: a diatom's Stramenopiles not)
+            every = {key(ncbi.name.get(t, "")) for t in ncbi.ancestors(ncbi.merged.get(taxid, taxid))}
+            if not other_kingdom(lineage, names | every):
                 return lineage, "genus"
         return None, "-"
 

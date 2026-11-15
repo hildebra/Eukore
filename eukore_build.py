@@ -2400,6 +2400,11 @@ def _main(argv, held):
             records, trims, audit_counts = audit_mod.clean(records, audit_mod.vectors_of(univec), primers, nhmmer, hmm,
                                                            opts.threads, opts.scratch, say, audited)
             if tree is not None:
+                # each NCBI clade's EUKARYOME taxon learned before the screens place the records (since 2026-11-15:
+                # learned after them, in package.write, the clades their placements had named were learned as
+                # nothing); package.write learns again with every taxon, the organelle genes' too
+                tree.learn(ncbi, {int(r["taxid"]) for _n, _s, r in records if str(r.get("taxid", "")).isdigit()}
+                           | {int(g["species_taxid"]) for g in collected["genomes"].values()})
                 searcher = screen_mod.Searcher(vsearch, opts.threads, opts.scratch,
                                                **{k: v for k, v in qc_searches(opts, "audit").items()
                                                   if k in ("folder", "helpers", "nodes")},
