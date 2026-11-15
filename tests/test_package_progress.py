@@ -223,8 +223,10 @@ class SearchesTest(unittest.TestCase):
             self.assertEqual(searches["folder"], self.folder)
             self.assertIsNone(searches["helpers"](3))  # refused: this node alone
             self.assertIn("WARNING: the helpers were not started (exit 1", said[-1])
-            opts.qc_helpers = "echo 4711"
-            with mock.patch.object(eukore_build.shutil, "which", return_value="/bin/scancel"), \
+            # a command whose job squeue cannot tell: started for each search, stopped at its end (as before)
+            opts = types.SimpleNamespace(work=os.path.join(self.tmp.name, "WORK"), qc_helpers="echo 4711")
+            no_squeue = {"scancel": "/bin/scancel"}.get
+            with mock.patch.object(eukore_build.shutil, "which", side_effect=no_squeue), \
                     mock.patch.object(eukore_build.subprocess, "run", wraps=subprocess.run) as run:
                 stop = eukore_build.qc_searches(opts, "busco")["helpers"](3)
                 self.assertIn("helpers: job 4711", said[-1])
@@ -232,7 +234,74 @@ class SearchesTest(unittest.TestCase):
                     stop()
                 cancel.assert_called_once_with(["scancel", "4711"], capture_output=True, check=False)
                 self.assertEqual(run.call_args_list[0].args[0], ["echo", "4711"])
+            # SLURM's (since 2026-11-15): one array for every search while squeue has it, stopped by close()
+            opts = types.SimpleNamespace(work=os.path.join(self.tmp.name, "WORK"), qc_helpers="echo 4712")
+            calls, state, real_run = [], {"squeue": "RUNNING\n"}, subprocess.run
+
+            def fake(cmd, **kw):
+                calls.append(cmd[0])
+                if cmd[0] == "squeue":
+                    return subprocess.CompletedProcess(cmd, 0, state["squeue"], "")
+                if cmd[0] == "scancel":
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return real_run(cmd, **kw)
+            with mock.patch.object(eukore_build.shutil, "which", return_value="/bin/tool"), \
+                    mock.patch.object(eukore_build.subprocess, "run", side_effect=fake):
+                first = eukore_build.qc_searches(opts, "busco")["helpers"](3)
+                second = eukore_build.qc_searches(opts, "rrna")["helpers"](5)
+                self.assertEqual(calls, ["echo", "squeue"])  # submitted once; the second search found it running
+                self.assertIn("the helpers of job 4712 take them", said[-1])
+                first(), second()  # a search's end leaves the array to the next
+                self.assertNotIn("scancel", calls)
+                state["squeue"] = ""  # its helpers idle too long: gone, submitted again for the next search
+                eukore_build.qc_searches(opts, "organelle")["helpers"](2)
+                self.assertEqual(calls[-2:], ["squeue", "echo"])
+                eukore_build.helper_pool(opts).close()
+                self.assertEqual(calls[-1], "scancel")
+                self.assertTrue(os.path.isfile(os.path.join(opts.work, "qc", qc.STOP)))
+                eukore_build.HelperPool(opts)  # the next final job's: an old stop removed
+                self.assertFalse(os.path.isfile(os.path.join(opts.work, "qc", qc.STOP)))
         self.assertIsNone(eukore_build.qc_searches(types.SimpleNamespace(work="W", qc_helpers=None), "x")["helpers"])
+
+    def test_a_helper_waits_for_the_next_search_and_stops(self):
+        # since 2026-11-15: a helper with idle_for looks again for the final job's next searches, and stops at
+        # WORK/qc/helpers.stop (or idle_for after its last search)
+        root = os.path.join(self.tmp.name, "WORK", "qc")
+        os.makedirs(root, exist_ok=True)
+        began = time.time()
+        self.assertEqual(qc.help_search(root, self.vsearch, 1, log=lambda _t: None, idle_for=0.3, poll=0.05), 0)
+        self.assertGreaterEqual(time.time() - began, 0.3)
+        with open(os.path.join(root, qc.STOP), "w"):
+            pass
+        began = time.time()
+        self.assertEqual(qc.help_search(root, self.vsearch, 1, log=lambda _t: None, idle_for=60, poll=0.05), 0)
+        self.assertLess(time.time() - began, 5)
+
+    def test_a_large_locus_in_parts(self):
+        # since 2026-11-15 (qc.split_todo): a locus of qc.PART_MIN queries or more searched in parts against its copies
+        # (Shared), the parts' hits the whole search's
+        rng = __import__("random").Random(4)
+        base = fx.cds_of(fx.protein(7))
+        seqs = {}
+        for i in range(40):
+            s = list(base)
+            for j in rng.sample(range(len(s)), 3 + i % 7):
+                s[j] = rng.choice("ACGT")
+            seqs[f"G{i}"] = "".join(s)
+        species = {a: (YEAST, PARADOXUS, LACTIS)[i % 3] for i, a in enumerate(seqs)}
+        copies = {(a, "L0"): s for a, s in seqs.items()}
+        whole = qc.check(copies, species, self.ncbi, self.vsearch, 1)
+        with mock.patch.object(qc, "PART_MIN", 10):
+            parts, locus_of = qc.split_todo([("L0", seqs, None)], nodes=3)
+            self.assertEqual(len(parts), 4)  # 40 // 10, under 3 nodes' 9
+            self.assertTrue(all(isinstance(db, qc.Shared) and len(db.seqs) == 40 for _n, _q, db in parts))
+            self.assertEqual(set(locus_of.values()), {"L0"})
+            split = qc.check(copies, species, self.ncbi, self.vsearch, 1,
+                             searches={"folder": self.folder, "helpers": None, "nodes": 3})
+        self.assertEqual(split, whole)
+        self.assertEqual(len([n for n in os.listdir(self.folder) if n.endswith(".hits.gz")]), 4)
+        small, _ = qc.split_todo([("L1", dict(list(seqs.items())[:5]), None)], nodes=3)
+        self.assertEqual(small[0][0], "L1")  # a small locus searched whole, its kept search unchanged
 
     def test_the_nodes_searching(self):
         # this node and its helpers (--qc_tasks; a guess where only --qc_helpers is given): the rRNA searches' parts

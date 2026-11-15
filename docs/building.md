@@ -203,6 +203,29 @@ Where a compute node cannot submit jobs, the final job says so and searches alon
 login node, `bash tools/eukore.sh qc N`, once its log names the inputs. Outside SLURM, run
 `python3 -m eukore.qc helper WORK/qc -t <threads>` on any node that sees the WORK.
 
+**One helper array for the final job, a large locus in parts** (since 2026-11-15). The first search submits the
+helper array, and every later search of the final job finds it pending or running (squeue) and leaves its parts to
+it: until then each search (the BUSCOs', the six rRNA searches, the SSU models', cmalign's, the organelle genes', the
+benchmarks') submitted an array of its own and waited in the queue again. A helper with nothing left waits
+`QC_IDLE` seconds (default 1,800; `--idle` of `python3 -m eukore.qc helper`) for the next search; an array whose
+helpers have all left is submitted again by the next search; at its end the final job writes `WORK/qc/helpers.stop`
+and cancels the array. A command whose job squeue cannot tell (not SLURM's) is started for each search and stopped at
+its end, as before. A locus of 5,000 copies or more is searched in parts (3 for each node searching, 5,000 queries
+each at least) against all its copies, as the rRNA searches are: a query's hits do not depend on the other queries,
+so the verdicts are the same, but no node holds a large locus alone (the 2026-11 build's final job waited 1 h 27 m
+at 0 cores for one BUSCO locus a helper held, and 3 h 36 m for the benchmarks' one 18S resolution search). The
+loci's kept searches are made again once, in parts. The benchmarks' searches share `WORK/qc/benchmarks/` without
+removing each other's (until then each removed the one before, and a rerun searched every marker again).
+
+**The package stage's steps at once** (since 2026-11-15). Steps that need none of each other's results run at the
+same time, each searching in folders of its own: the reference screen of MIDORI2 beside the copies' collection and
+checks; then the introns and genetic codes, the rRNA records and the organelle genes (which wait only for the
+records' species); within the rRNA records, their checks beside the 18S variable regions and amplicons (which need
+the audited records alone), and within the checks the 99% typing, the own-species check, the part screen and the SSU
+models. A step that fails fails the stage once the others have ended, their searches kept for the next run. The
+final node's memory holds the copies, the records and the organelle genes as before (they are all kept until the
+package is written); what the steps' process pools add at once has not been measured on a full build.
+
 **The published reads' annotation on several nodes** (since 2026-11-12). EUKARYOME's and ROD's reads (some
 230,000) are annotated by barrnap and ITSx, which needs no genome. Every run on the WORK splits them into the same
 batches of 250. The array's tasks, once their genomes and passes are done, annotate the batches no other task holds

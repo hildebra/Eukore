@@ -17,6 +17,9 @@ TIARA_ENV=eukore-tiara                # tiara's own environment (envs/tiara.yaml
 TASKS=8                               # process jobs of the array (`build N` gives another number)
 QC_TASKS=8                            # helper jobs of the package stage's vsearch checks across species, which the
                                       # final job submits once their inputs are written (0: the final job alone)
+QC_IDLE=1800                          # seconds a helper waits for the final job's next search once none is left
+                                      # (since 2026-11-15: one helper array serves every search of the final job;
+                                      # the final job submits another where none is left, and stops them at its end)
 
 # a node's local disk for temporary files (--local_tmp); read inside the job, where SLURM names it
 SCR=${SLURM_LOCAL_SCRATCH:+$SLURM_LOCAL_SCRATCH/Eukore}
