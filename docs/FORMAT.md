@@ -277,7 +277,7 @@ The species' genomes and their other assemblies:
 | `duplicated_share`, `dup_identity_median`, `duplication` | of its BUSCOs called (Single or Duplicated) the share Duplicated; the median `dup_identity` of those; `haplotypes` (15% or more Duplicated, their copies 99.5% alike or more: an assembly holding both haplotypes of a diploid, or a recent hybrid), `haplotigs` (since 2026-11-10: 15% or more Duplicated, 95% to under 99.5% alike, and a copy of them on a contig under a quarter of the Single copies' median contig far more often than a Single copy lies on one: an assembly not purged of the second haplotype of an outbred diploid; `wgd_or_polyploid` until then), `wgd_or_polyploid` (15% or more Duplicated, less alike than 99.5% and not `haplotigs`: a whole-genome duplication, a polyploid, an older hybrid, or two haplotypes of an outbred diploid assembled equally long, which identity and contig lengths do not tell from a recent polyploid), `low` (under 15%), `-` (under 20 BUSCOs called, or a genome run before 0.2). A heuristic: read it with the genome's size and the species' biology (format 5) |
 | `introns`, `introns_per_kb_cds`, `median_intron_length` | its BUSCO copies' introns (`busco/introns.tsv`): their number, per kb of the copies' coding sequence, their median length (format 5) |
 | `genome_record`, `foreign_copies`, `foreign_source` | what made its calls (Eukore's genome record, `genomes.GENOME_RECORD`: 1 for a run before 2026-11-09, 2 since, 3 since 2026-11-14 (split copies joined); a build runs a genome of an older one again unless `--reversion` keeps its calls); its copies another clade's (`own_species` f); the NCBI taxid of those clades' lowest common ancestor, `-` (format 6) |
-| `expected_loci`, `complete_expected`, `tier` | (format 7; `eukore/tiers.py`) its group's expected BUSCOs (those found in half or more of the group's whole assemblies, at least 3 of them; else every BUSCO); its share of them Single or Duplicated; its tier: `genome`, `draft` (contigs under 5 kb on average), `transcriptome`, `poor` (under half its expected BUSCOs whole), `partial` (NCBI's partial genome, or small for its clade), `contaminated` (one of NCBI's excluded assemblies, taken where every assembly of its species is). The copies of a poor, partial or contaminated genome are left out of the package (`--keep_poor_genomes` keeps them, flagged `poor_genome`, low); a draft's are flagged `draft_genome` (medium). A genome with 10 or more copies another clade's has `foreign copies` among its `flags` |
+| `expected_loci`, `complete_expected`, `tier` | (format 7; `eukore/tiers.py`) its group's expected BUSCOs (those found in half or more of the group's whole assemblies, at least 3 of them; else every BUSCO); its share of them Single or Duplicated; its tier: `genome`, `draft` (contigs under 5 kb on average), `transcriptome`, `poor` (under half its expected BUSCOs whole), `partial` (NCBI's partial genome, or small for its clade, holding under half its expected BUSCOs whole; since 2026-11-15, until then whatever it held), `contaminated` (one of NCBI's excluded assemblies, taken where every assembly of its species is: `flags` `excluded (the species' only assemblies)`, until 2026-11-15 `excluded, the species' only assemblies`, which the comma split and no genome was given this tier). The copies of a poor, partial or contaminated genome are left out of the package (`--keep_poor_genomes` keeps them, flagged `poor_genome`, low); a draft's are flagged `draft_genome` (medium). A genome with 10 or more copies another clade's has `foreign copies` among its `flags` |
 | `gencode_check`, `gencode_codons`, `best_table` | its code checked against its BUSCO genes ([methods.md](methods.md)) on the codons nuclear codes are known to read otherwise (the stops TAA, TAG, TGA and CTG): `agrees`, `differs:<codon>><amino acid>,...` (NCBI's table reads them otherwise than the genes' conserved positions do; `<stop>>*` since 2026-11-11: a stop the table reads as an amino acid at 1% or less of that amino acid's other codons inside the copies, 200 or more: unused, a stop), `undecided` (too few codons at conserved positions); of those four, the ones seen at 10 conserved positions or more (a stop at 5: under its own reading it is at none; a stop not seen is a stop; a CTG not seen is not judged: CTG-clade yeasts avoid it), `-` for none; the NCBI table that fits them best (NCBI's own where it fits as well, a stop called unused read as a stop; `-` where undecided). Every codon's evidence is `metadata/codons.tsv.gz` (format 5) |
 
 A species' genome is NCBI's best by Eukore's ranking: never one NCBI flags as contaminated, of an unverified source
@@ -340,7 +340,7 @@ Every BUSCO gene of BUSCO's eukaryota_odb12 (129 at its 2026-05-22 release) call
 | `contig`, `contig_length`, `start`, `end`, `strand` | where it lies in the assembly (1-based, inclusive) |
 | `length`, `cds_length`, `exons` | of the copy; of its coding sequence; its exons |
 | `identity`, `coverage` | miniprot's identity and the share of the query protein aligned (of miniprot's own model also where `model` names an annotation: the annotated model is not aligned to the query) |
-| `hmm_score`, `cutoff`, `hmm_coverage` | its translation's score against the locus' BUSCO HMM, BUSCO's cutoff, the share of the profile aligned |
+| `hmm_score`, `cutoff`, `hmm_coverage` | its translation's score against the locus' BUSCO HMM, BUSCO's cutoff, the share of the profile aligned; since genome record 4 (2026-11-15) over the share its query protein (a BUSCO dataset protein) aligns itself, at least 0.5, at most 1: `Single` and `Duplicated` mean 0.8 or more of it, as for the markers |
 | `copies` | complete copies of the locus in the genome |
 | `query` | the dataset protein that placed it (`<busco>_<taxid>_<id>`, or an ancestral variant; `<busco>_self` for the rescue pass' self protein) |
 | `rescued` | `t` where the rescue pass called it (its HMM in the genome's six-frame ORFs placed it; [methods.md](methods.md)), `f`, or `-` for a genome run before 2026-11-06 |
@@ -530,8 +530,10 @@ its records, KSGP 5.2's README and KSGP 4.5's describing them): what lies beside
   (KSGP 4.5's relabel rule); over less (a conserved stretch of a lineage without a genome relative), or one uncertain
   window: `chimera_weak`; a label's kingdom a placeholder whose windows stand for one kingdom: no flag (`unplaced` in
   `audit.tsv`).
-- Chimeras of two genera (KSGP 4.2's class Q, 4.3's parts): every distinct 18S screened against all others (vsearch
-  --uchime_ref, a part's queries left out of its database); a call confirmed where each part (cut at UCHIME's
+- Chimeras of two genera (KSGP 4.2's class Q, 4.3's parts): every distinct 18S of EUKARYOME's records but its genome
+  18S screened against every distinct 18S, its own record left out (vsearch --uchime_ref --self; until 2026-11-15 a
+  part's every query was left out of its database, so that records screened in one part could not be each other's
+  parents); a call confirmed where each part (cut at UCHIME's
   crossover) is 95% or more like a record, the parts' best records name no genus in common and the whole is 2 points
   or more under its weaker part; cut to the part of its own genus (else family) where that holds 500 bases or more
   (`chimera_cut`), else `chimera`; where the parts' genera meet or are unnamed, `chimera_weak`.
@@ -627,7 +629,7 @@ is turned where an 8-mer model of the species' SSU taken reads it on the minus s
 | `regions` | the trnH-psbA record's parts on it, `psbA3':0-200,spacer:200-...,trnH:...` (0-based, end excluded), else `-` (format 5) |
 | `internal_stops` | stops inside a protein-coding gene's protein by the organelle's code: a NUMT, a pseudogene, RNA editing, or a code NCBI does not give (format 5) |
 | `own_species`, `same_as`, `length_check` | as `busco/copies.tsv`'s, each gene of each organelle compared across species (its coding sequence where it has one, else its record; format 5) |
-| `confidence`, `flags` | `low` (`own_species` f, `ambiguous` over 0.005), `medium` (format 7: `screen_weak`, a MIDORI2 record the reference screen left for review; `internal_stops`: RNA editing or a code NCBI does not give leaves stops in a working gene, `low` until format 6; `partial`, `length_short` or `length_long`, `trans_spliced`, `exons_approximate`, `cross_shared`), `unverified` (`own_species_undecided`: format 6, `medium` until then), else `high` (format 5) |
+| `confidence`, `flags` | `low` (`own_species` f, `ambiguous` over 0.005), `medium` (format 7: `screen_weak`, a MIDORI2 record the reference screen left for review; `internal_stops`: RNA editing or a code NCBI does not give leaves stops in a working gene, `low` until format 6; `partial`, `length_short` or `length_long`, `trans_spliced`, `exons_approximate`, `cross_shared`; since 2026-11-15 `candidate_contig`: found on an assembly's contig no title names an organelle, nominated by its length and GC, kept only where the contig holds a protein-coding gene of the organelle), `unverified` (`own_species_undecided`: format 6, `medium` until then), else `high` (format 5) |
 | `cross` | the species of another clade whose organelle holds its sequence (as `busco/copies.tsv`'s; format 6) |
 | `via`, `source_label`, `label_from` | format 7: a published record's file (`EUKARYOME_SSU`, `MIDORI2_GB273`), its own label and how its taxid was found (`eukaryome_name`, `eukaryome_genus`, `eukaryome_upward`, as `rrna/records.tsv`'s; `midori2_taxid`); `refseq_taxid` or `assembly` for the others' |
 | `rank`, `ncbi_lineage`, `eukaryome_lineage`, `eukaryome_match` | format 7: as `rrna/records.tsv`'s |
@@ -866,6 +868,18 @@ them). `genomes.tsv`'s
   NCBI's names (a homonym) is not a species' genus, and
   a species placed upward goes under its NCBI clade's EUKARYOME taxon, learned from the clade's species, and a
   label's name of several taxa is the one sharing the most of the label's names ([taxonomy/](#taxonomy)).
+  Since 2026-11-15 (the pipeline audit, `docs/claude/pipeline-audit-2026-11-15.md`), the same format: a BUSCO copy
+  complete against its query protein's own HMM coverage (`hmm_coverage` over it; `genome_record` 4: a genome of an
+  older record is run again); the genome tier `contaminated` given (its flag `excluded (the species' only
+  assemblies)`, without a comma), `partial` only under half the expected BUSCOs; a dropped genome counted nowhere in
+  `busco/loci.tsv`'s call rates nor `copy_numbers.tsv.gz`; a bare `<taxon> sp.` above the genus a placeholder, no
+  species; a species' assembly under 30% of its unflagged assemblies' median size left out, NCBI's reference genome
+  never; the space between a joined copy's pieces no intron; an organelle gene read along its molecule spanning its
+  first base to its last (a long intron was taken for the origin), a candidate contig's genes kept only beside a
+  coding gene and flagged `candidate_contig`; EUKARYOME's clades learned before the published reads are placed; a
+  reference's genus lineage of another deep lineage (Stramenopiles, Alveolata, Rhizaria, ...) no species' match; the
+  window screen's references 3 distinct 18S a genome, an assembly's copies one genome; the manifest's
+  `inputs.queries` (Eukore's own query proteins: the set, and how many genomes took which).
 - 2026-11-10, no new format (optional): `reference_screen.tsv` and the manifest's `inputs.references.MIDORI2.screen`
   (and `files`), where the build was given MIDORI2 files; `species.tsv`'s `midori2` no longer names a species by a
   record the screen drops. MIDORI2's later header layout (GB273's: a tab, every NCBI rank as `rank_Name_taxid`) is

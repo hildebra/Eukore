@@ -29,7 +29,11 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
 
    Its RefSeq copy is fetched where it has one (RefSeq screens eukaryote genomes for contamination). A model species
    (`data/model_species.tsv`) takes its reference assembly. NCBI's placeholder species and interspecies hybrids
-   ("A x B") are left out.
+   ("A x B") are left out; since 2026-11-15 so is a bare "<taxon> sp." of a clade above the genus ("Eukaryota sp."
+   held 200 unrelated assemblies in 2026-11; a genus' "Fusarium sp." stays). Of a species with 3 assemblies or more,
+   one under 30% of their median size is left out (a part, an organelle's); since 2026-11-15 the median is that of
+   its unflagged assemblies where it has 3, and NCBI's reference or representative genome is never left out (nine
+   oversized contig assemblies of *Cygnus atratus* had dropped its 1.12 Gb chromosome-level reference).
 
    A vertebrate species NCBI has no assembly of takes TOGA2's (since 2026-11-06; TOGA2's `assemblies_and_species.tsv`:
    DNA Zoo's, Bat1K's, the Hiller lab's), of its assemblies the one of the longest scaffold N50, as TOGA2 serves it
@@ -64,6 +68,15 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
    - A locus is Single, Duplicated (the best copy taken), Fragmented (under 80% of the profile) or Missing. The
      share is the union of every domain hmmsearch reports: counting only domains of E-value 1e-3 or less was
      measured (2026-11-10) and called whole genes fragments (27 of 27 shifts judged by OrthoDB's own models).
+   - **Complete against the query** (since 2026-11-15, genome record 4). A lineage whose proteins lack a stretch of the
+     profile (an insertion or extension of the animals') had its whole genes Fragmented: in the first full build 1,410
+     of 1,707 Fragmented calls of the dataset species held 90% or more of OrthoDB's own protein at 90% of its length
+     (1,200 identical), Fragmented 13-15% of Alveolata's, Discoba's and Haptophyta's calls against under 1% of
+     animals' and plants'. Each dataset protein's own coverage of its locus' profile is measured once
+     (`odb.query_coverage`, `query_coverage.tsv` in the dataset's folder), and a call's coverage is read over its
+     query's (at least 0.5), as the markers' is over their members' (`hmm_spans`). On the 7-clade trial
+     (Eukore_2026.11-paper) 267 of 385 Fragmented calls turn Single (mostly *Blastocystis*'); of the 34 that OrthoDB
+     annotates, 32 are its protein (5-mers 0.9 both ways) and 2 not; of the 4 that stay Fragmented, none is.
    - **The rescue pass** (since 2026-11-06; `--no_rescue` leaves it out). In a genome far from every dataset species,
      miniprot finds no seed for many genes with the distant proteins: *Blastocystis hominis* called without its own
      proteins lost 27 of the 98 BUSCOs OrthoDB annotates in it (its genes compact, its introns ~30 bases), though its
@@ -172,6 +185,18 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
   metadata scan kept (`WORK/done/<accession>/organelle.fna.gz`; since 2026-11-08, else the genome where still on
   disk). An assembly searched before a gene of its organelles was added (its `WORK/organelle/assembly/` file's
   `#searched` line, none before 2026-11-07) is searched again.
+- **Else its candidate contigs** (since 2026-11-14): of a genome of 1 Gb or less titling no molecule an organelle,
+  contigs of an organelle genome's length (AT-rich ones for a mitochondrion), searched as titled molecules are. Since
+  2026-11-15 a candidate gives genes only where nhmmer or miniprot find a protein-coding gene of the organelle on it
+  (a nuclear contig of a plastome's length holds an rRNA-like stretch more easily than a COX1 or rbcL), barrnap's
+  bacterial models are not run on candidates (a contaminant's 16S became an organelle's), a contig the
+  mitochondrion's genes are on is no plastid candidate, and its genes are flagged `candidate_contig` (medium).
+
+A gene read along its molecule spans its first base to its last, introns and all; one across a circular molecule's
+origin (its parts in the order transcribed turn once) runs from its first part across the origin to its last. Until
+2026-11-15 the largest space between a gene's parts was taken for the origin wherever the rest of the circle was
+shorter: 129 RefSeq genes with a long intron, most of them hexacorals' nad5, shipped as their second exon, the genes
+between and their first exon.
 
 A gene is kept whole, introns and all (fungi's and plants' COX1 hold group I and II introns). Checked on real genomes
 (2026-11-05): human's mitochondrion (queried with the chimpanzee's) gave its 12S, 16S and COX1 within 6 bases of
@@ -315,7 +340,10 @@ So that a user (protal's build) has what it needs without computing it again:
   Stramenopiles, ...), shallowest first, else the name above with `_X` (PR2's way).
 - **References.** SILVA 138.2 (SSU Ref NR99: paths of any depth), UNITE 10.0 (all eukaryotes, with SH codes) and, given
   by the user, MIDORI2 (COI; its records carry NCBI taxids, so a species is found by taxid) join PR2, EUKARYOME and
-  KSGP, by the same name match. `crossrefs.tsv`: Open Tree Taxonomy 3.7.3's taxon of each species found by its NCBI
+  KSGP, by the same name match. A species matched by its genus alone takes no lineage of another deep lineage than
+  its own (a genus homonym): until 2026-11-15 only animals, fungi and plants were told apart, and the bird genus
+  *Lessonia* took PR2's kelp lineage; now Stramenopiles, Alveolata, Rhizaria, Rhodophyta, Glaucophyta, Amoebozoa,
+  Haptista, Cryptista, Discoba and Metamonada too, judged on every name of the species' NCBI lineage. `crossrefs.tsv`: Open Tree Taxonomy 3.7.3's taxon of each species found by its NCBI
   taxid (no name matched), and the GBIF, WoRMS, IRMNG and Index Fungorum ids Open Tree gives it; UNITE's SH codes and,
   given a BOLD data package, BOLD's BINs by name.
 - **The reference screen** (since 2026-11-10): MIDORI2's records are screened before they name species; see
@@ -684,7 +712,16 @@ labelled by a species or genus NCBI names.
     (classes Q and E), against all 555,012 of its nuclear 18S: of the random records 1 confirmed and 4 uncertain; of
     KSGP's chimeras 366 confirmed (224 cut to their own part) and 490 uncertain (their parts' best records of one genus,
     or of none named). Until the unnamed genera of EUKARYOME's environmental records were set aside, 682 of KSGP's
-    chimeras were uncertain.
+    chimeras were uncertain. Since 2026-11-15 a record's own sequence alone is left out of the database it is
+    screened against (vsearch's `--self`): until then each part's every query was, so that with three parts a third
+    of the published 18S could be no parent (a true chimera scored 35 alone, 2.5 with a parent in its part); and the
+    distinct 18S are named in their names' order (a set's order, another in each process, renamed them every run and no
+    kept part was found again). These figures were measured before both changes.
+  - *The window screen's references* (since 2026-11-15): of each genome its 3 longest distinct 18S, and one genome for
+    an assembly's every copy (its own records, ROD's, EUKARYOME's `EUK_GCA_` and `_dup` records). Every genome 18S and
+    operon was one (4.43 M in the first full build, 8,140 of 22,740 genomes holding 31 or more): minimap2 skips a seed
+    seen in over 500 references, and a window's 30 secondary hits fell to one genome, so the second genome the screen
+    asks for never showed. The calibration above (5,763 references) has not been repeated on the build's references.
   - *Across nodes.* A read's ends and flanks are audited with its regions in the published batches, which the process
     stage's array tasks share (WORK/published/regions.4.tsv; the cache's name changed, so every read is annotated
     again once); the window screen's first pass and UCHIME's parts are searches of qc's protocol (`qc.MapParams`,
@@ -784,7 +821,11 @@ EUKARYOME's one tree, whose higher taxa are one name each.
     taxon of the clade's name below it is taken before it (NCBI's phylum Microsporidia is EUKARYOME's Rozellomycota,
     its subphylum Microsporidia). A clade EUKARYOME splits (NCBI's Pinopsida into Pinopsida and Cupressopsida) is
     not learned: a taxon above its parts left the ranks between empty (the Triphoridae lost their Gastropoda), so it
-    is found by its name as before.
+    is found by its name as before. Since 2026-11-15 the build learns before the audit places the published reads, and
+    learning forgets what earlier placements added under NCBI's names (`Tree.forget_placed`): the audit placed the
+    reads before the package learned, a copepod genus EUKARYOME lacks stood under a class `Copepoda`, its species
+    voted for it beside Hexanauplia, and Copepoda was learned as nothing. The figures below were measured without a
+    build, so without that order.
 
   | NCBI taxa whose species stand under two or more EUKARYOME taxa of their rank (species not in the largest) | main (0.2.6) | now |
   |---|---|---|
