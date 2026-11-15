@@ -367,7 +367,9 @@ class CmParams(tuple):
 
 
 MAP_RECORD = 1  # what makes a kept window-screen part (MapParams): raised when chimeras.map_file's lines change
-UCHIME_RECORD = 1  # what makes a kept UCHIME part (UchimeParams): raised when chimeras.uchime_file's lines change
+# what makes a kept UCHIME part (UchimeParams): raised when chimeras.uchime_file's lines change; 2 (2026-11-15): the
+# whole database, a query's own record left out by --self
+UCHIME_RECORD = 2
 
 
 class MapParams(tuple):

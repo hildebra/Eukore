@@ -550,6 +550,43 @@ class ChimeraTest(unittest.TestCase):
         self.assertEqual(call, "chimera")
         self.assertTrue(keep[0] == 0 and 600 <= keep[1] <= 800, (keep, evidence))  # its own genus' part
 
+    @unittest.skipUnless(shutil.which("vsearch"), "no vsearch")
+    def test_uchime_parents_among_the_screened(self):
+        # since 2026-11-15 (the audit's R2): a chimera whose parents are published records screened beside it (one
+        # part: every record of the set screened at once) is found; until then a part's records were taken out of its
+        # database and could be no parent of each other
+        rng = random.Random(9)
+        a = seq_of(rng, 1500)
+        b = mutate(rng, a, 0.15)
+        screened = {"EUK_a": a, "EUK_b": b, "EUK_chim": mutate(rng, a[:700], 0.003) + mutate(rng, b[700:], 0.003)}
+        others = {"G": seq_of(rng, 1500)}
+        genera = {"EUK_a": ("Alpha", "Fam"), "EUK_b": ("Beta", "Fam"), "EUK_chim": ("Alpha", "Fam"), "G": None}
+        with tempfile.TemporaryDirectory() as tmp:
+            searcher = screen.Searcher(shutil.which("vsearch"), 2, tmp)
+            calls = chimeras.uchime_screen(screened, others, genera, searcher, shutil.which("vsearch"), 2, tmp)
+        self.assertIn("EUK_chim", calls)
+        self.assertNotIn("EUK_a", calls)
+
+    def test_references_one_assembly_few_copies(self):
+        # since 2026-11-15 (the audit's R1, R3): a genome's copies one genome whatever their names (its own records,
+        # ROD's copy, EUKARYOME's EUK_GCA_ and _dup records), its distinct 18S, at most audit.REFS_PER_GENOME of them
+        rows = {"g1": dict(source="genome", accession="GCA_000340665.1"),
+                "g2": dict(source="genome", accession="GCA_000340665.1"),
+                "r1": dict(source="ROD", accession="GCF_000340665.2"),
+                "EUK_GCA_000340665_dup1": dict(source="EUKARYOME"),
+                "EUK_GCA_000340665": dict(source="EUKARYOME")}
+        self.assertEqual({audit.genome_id(n, r) for n, r in rows.items()}, {"GC_000340665"})
+        self.assertEqual(screen.genome_of("x", {"accession": "GCA_000340665_dup1"}), "GC_000340665")
+        seqs = {"g1": "A" * 1800, "g2": "A" * 1800, "r1": "C" * 1790, "EUK_GCA_000340665_dup1": "G" * 1700,
+                "EUK_GCA_000340665": "T" * 1600}
+        records = [(n, seqs[n], r) for n, r in rows.items()]
+        lin = {n: [""] * (audit.CLADE + 1) for n in rows}
+        for n in rows:
+            lin[n][audit.CLADE] = "Fungi"
+        refs = audit.references(records, seqs, lin)
+        self.assertEqual(sorted(refs), ["EUK_GCA_000340665_dup1", "g1", "r1"])  # g2 a copy of g1; the 3 longest
+        self.assertEqual({g for _s, _c, g in refs.values()}, {"GC_000340665"})
+
     def test_crossovers(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "alns.txt")

@@ -325,22 +325,16 @@ def fold_of(seq, folds):
 
 
 def uchime_file(vsearch, queries, database, out, threads=1, tmp=None):
-    """A UCHIME part (qc.UchimeParams): the queries (a FASTA file) against the database less themselves (written to
-    tmp) -> out: a line a chimera, `query <tab> parent A <tab> parent B <tab> score <tab> crossover (bases of the
-    query before it) <tab> which parent the start holds (A or B)`."""
-    names = set(read_fasta(queries))
+    """A UCHIME part (qc.UchimeParams): the queries (a FASTA file) against the whole database, each query's own record
+    in it left out (vsearch's --self: the record of its name; the database's sequences distinct, so that one is its
+    sequence's only record) -> out: a line a chimera, `query <tab> parent A <tab> parent B <tab> score <tab> crossover
+    (bases of the query before it) <tab> which parent the start holds (A or B)`. Until 2026-11-15 the part's every
+    query was taken out of the database: records screened in one part could not be each other's parents, a third of
+    the published 18S with three parts (a true chimera scored 35 alone, 2.5 with a parent in its part)."""
     with tempfile.TemporaryDirectory(dir=tmp) as d:
-        db = os.path.join(d, "db.fna")
-        with open(database) as src, open(db, "w") as dst:
-            keep = True
-            for line in src:
-                if line.startswith(">"):
-                    keep = line[1:].strip() not in names
-                if keep:
-                    dst.write(line)
         table, alns = os.path.join(d, "uchime.tsv"), os.path.join(d, "alns.txt")
-        subprocess.run([vsearch, "--uchime_ref", queries, "--db", db, "--uchimeout", table, "--uchimealns", alns,
-                        "--threads", str(max(1, threads)), "--quiet"], check=True)
+        subprocess.run([vsearch, "--uchime_ref", queries, "--db", database, "--self", "--uchimeout", table,
+                        "--uchimealns", alns, "--threads", str(max(1, threads)), "--quiet"], check=True)
         crossings = crossovers(alns)
         with open(table) as fh, open(out, "w", newline="\n") as dst:
             for line in fh:
@@ -402,7 +396,9 @@ def uchime_screen(screened, others, genera, searcher, vsearch, threads=1, tmp=No
         return {}
     distinct, members = {}, collections.defaultdict(list)
     for pool in (screened, others):
-        for name, seq in pool.items():
+        # in the names' order (since 2026-11-15: a set's order, another in every process, named the distinct 18S, so
+        # that the parts' keys and folds changed from run to run and no kept part was found again)
+        for name, seq in sorted(pool.items()):
             if len(seq) < MIN_LENGTH:
                 continue
             rep = distinct.setdefault(seq, f"u{len(distinct)}")

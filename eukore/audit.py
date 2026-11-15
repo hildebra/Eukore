@@ -561,9 +561,37 @@ def is_reference(name, row):
 
 
 def genome_id(name, row):
+    """A reference's genome: one id for an assembly's every copy (screen.assembly_of: GCA_x.1, GCF_x.2, EUKARYOME's
+    EUK_GCA_x and its _dup records; since 2026-11-15 they were three genomes, and the window screen's "a second genome"
+    was met by one assembly), else its accession, else its name."""
     if row.get("source") == "EUKARYOME":
-        return name.split("_dup")[0]
-    return row.get("accession") if row.get("accession") not in (None, "-", "") else name
+        acc = name[4:] if name.startswith("EUK_") else name
+    else:
+        acc = row.get("accession") if row.get("accession") not in (None, "-", "") else name
+    from .screen import assembly_of  # noqa: PLC0415
+    return assembly_of(acc)
+
+
+# a genome's references in the window screen, at most (since 2026-11-15; the audit's R1): every genome 18S and operon
+# was one, 4.43 M in the 2026-11 build, 8,140 of 22,740 genomes holding 31 or more; minimap2 skips a seed seen in over
+# 500 references, so a window like a genome of 600 copies had no hit, and at 40 copies a window's 30 secondary hits
+# were all one genome's: the second genome the screen asks for never showed
+REFS_PER_GENOME = 3
+
+
+def references(records, ssu, lin):
+    """The window screen's references {name: (18S, its EUKARYOME clade, its genome)}: of each genome its distinct 18S,
+    the REFS_PER_GENOME longest (then by name)."""
+    by_genome = collections.defaultdict(dict)
+    for name, _s, row in sorted(records, key=lambda r: r[0]):
+        clade = _named(lin[name][CLADE])
+        if is_reference(name, row) and clade and ssu[name]:
+            by_genome[genome_id(name, row)].setdefault(ssu[name], (name, clade))
+    out = {}
+    for genome, seqs in by_genome.items():
+        for seq, (name, clade) in sorted(seqs.items(), key=lambda kv: (-len(kv[0]), kv[1][0]))[:REFS_PER_GENOME]:
+            out[name] = (seq, clade, genome)
+    return out
 
 
 def screen(records, tree, ncbi, minimap2=None, vsearch=None, searcher=None, threads=1, tmp=None, log=None):
@@ -577,8 +605,7 @@ def screen(records, tree, ncbi, minimap2=None, vsearch=None, searcher=None, thre
     rows, counts = [], collections.Counter()
     found = {}  # name -> [(check, call, keep, evidence)]
     if minimap2:
-        refs = {name: (ssu[name], _named(lin[name][CLADE]), genome_id(name, row)) for name, _s, row in records
-                if is_reference(name, row) and _named(lin[name][CLADE])}
+        refs = references(records, ssu, lin)
         reps, members = {}, collections.defaultdict(list)
         for name in sorted(screened):
             key = (ssu[name], _named(lin[name][CLADE]))
