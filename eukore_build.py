@@ -518,8 +518,11 @@ def plan_of(opts, job_map, settings):
                  or ((genomes.held_out_missing(opts.work, j, settings)
                       or genomes.rescue_missing(opts.work, a, settings)
                       or genomes.record_stale(opts.work, a)
+                      # run without any of them (since 2026-11-15: run with another set of them too, so that each
+                      # package's new set reran the served groups' genomes still on disk, whose calls changed the set
+                      # again, the package depending on what was on disk: a genome takes them once)
                       or (a in reruns and digest
-                          and (genomes.done_summary(opts.work, a) or {}).get("queries") != digest)) and here(a, j))}
+                          and (genomes.done_summary(opts.work, a) or {}).get("queries") in (None, "-"))) and here(a, j))}
         # each with its done.json as seen now: a genome another build on the WORK finishes meanwhile is left alone
         # (genomes.done_stamp; since 2026-11-08 it was run again whole)
         return {"rows": [[a, genomes.done_stamp(opts.work, a), None if a in whole else "annotation"]
@@ -2485,7 +2488,13 @@ def _main(argv, held):
                   "markers": markers_mod.state_of(markers_of(opts, src_dir)),
                   "tsa": genomes.tsa_state(src_dir) if not getattr(opts, "no_tsa", False) else None,
                   # the published 18S's audit (since 2026-11-14): its inputs and counts
-                  "audit": audit_stamp}
+                  "audit": audit_stamp,
+                  # Eukore's own query proteins (since 2026-11-15): the set of WORK now, and how many genomes took which
+                  # set ("-": none), so that a reader sees what a package's calls were made with
+                  "queries": {"digest": queries_of(opts)[1] if queries_of(opts)[0] else None,
+                              "genomes": dict(collections.Counter(
+                                  g.get("_queries", "-") for g in collected["genomes"].values()
+                                  if g.get("representative") == "t"))}}
         if wanted is not None:
             inputs["partial"] = {"species_clades": sorted(wanted)}  # a trial package: these clades only
         # every genome is called and extracted: the kept ones cut back to the budget, then the package names those kept

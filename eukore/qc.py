@@ -538,21 +538,28 @@ STRAGGLER_MIN = 900
 
 
 def claim_holder(folder, base):
-    """(host, seconds since the claim was made) of the node searching a locus, or None."""
+    """(host, its process) of the node searching a locus, or None. Since 2026-11-15 not how long it has held it: the
+    claim's file times are its heartbeat's (genomes._held), so searched_loci counts from when it first saw the claim."""
     claim = search_files(folder, base)[3]
     try:
         with open(claim) as fh:
-            host = fh.read().split()[0]
-        return host, time.time() - os.stat(claim).st_ctime
+            words = fh.read().split()
+        return words[0], " ".join(words[1:])
     except (OSError, IndexError):
         return None
+
+
+def can_search_too(params):
+    """Whether search_too can make a search of these settings: vsearch's alone (since 2026-11-15: a window-screen or
+    UCHIME part, whose settings unpack otherwise, raised a ValueError that ended the final job)."""
+    return not isinstance(params, (CmParams, CmalignParams, MapParams, UchimeParams))
 
 
 def search_too(folder, base, vsearch, threads, inputs, params=DEFAULT, scratch=None):
     """A locus another node holds searched here as well (STRAGGLER_TIMES), its inputs written into a folder of this
     node's (scratch, else TMPDIR), its claim left alone -> whether its hits are there now."""
     hits = search_files(folder, base)[2]
-    if os.path.isfile(hits) or isinstance(params, (CmParams, CmalignParams)):
+    if os.path.isfile(hits) or not can_search_too(params):
         return os.path.isfile(hits)
     local = tempfile.mkdtemp(dir=scratch, prefix="search_too.")
     try:
@@ -646,6 +653,9 @@ def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, p
     # system given the hits alone
     local = tempfile.mkdtemp(dir=scratch, prefix="search.") if left and not stop and scratch else None
     longest, again = 0.0, set()  # this node's longest own search; the loci it searched too (STRAGGLER_TIMES)
+    # when this node first saw each locus held by its node (since 2026-11-15: the claim file's own times are its
+    # heartbeat's, touched every minute, so that no claim was ever held 15 minutes and none searched too)
+    first_seen = {}
     try:
         while left:
             for locus in list(left):
@@ -661,8 +671,17 @@ def searched_loci(todo, vsearch, threads, folder, helpers=None, progress=None, p
                     if shown:
                         shown.step(weight(inputs[locus][0]))
             if left:  # the others' loci: their hits awaited (a dead node's claim taken over by search_one)
-                holders = {locus: claim_holder(folder, base[locus]) for locus in left}
-                slow = [locus for locus, h in holders.items() if h and locus not in again
+                now = time.time()
+                holders = {}
+                for locus in left:
+                    h = claim_holder(folder, base[locus])
+                    if h:
+                        seen = first_seen.get(locus)
+                        if seen is None or seen[0] != h[0]:  # held anew (another node took it over)
+                            seen = first_seen[locus] = (h[0], now)
+                        h = (h[0], now - seen[1])
+                    holders[locus] = h
+                slow = [locus for locus, h in holders.items() if h and locus not in again and can_search_too(params)
                         and h[1] > max(STRAGGLER_MIN, STRAGGLER_TIMES * longest)]
                 for locus in slow[:1]:  # one at a time, on all this node's threads
                     host, held_for = holders[locus]
