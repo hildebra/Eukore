@@ -90,6 +90,12 @@ class IntronTest(unittest.TestCase):
         b = 7 + len(self.U2)
         (row,) = introns.of_copy(copy, [("exon", 0, 7), ("intron", 7, b), ("exon", b, len(copy))])
         self.assertEqual((row["class"], row["u12"], row["hmm_position"]), ("GT-AG", "f", "-"))
+        # a joined copy (loci.join_split): the space between its pieces, 100 N and their contigs' ends, is no intron
+        joined = "ATGAAAC" + self.U2 + "AAG" + "ACG" + "N" * 100 + "TT" + "AAATAA"
+        j = 7 + len(self.U2)
+        feats = [("exon", 0, 7), ("intron", 7, j), ("exon", j, j + 3), ("join", j + 6, j + 106),
+                 ("exon", j + 108, len(joined))]
+        self.assertEqual([r["class"] for r in introns.of_copy(joined, feats)], ["GT-AG"])
         # a frameshift's base in the first exon is not coding: the intron falls between codons
         (row,) = introns.of_copy(copy, [("exon", 0, 7), ("frameshift", 2, 3), ("intron", 7, b),
                                         ("exon", b, len(copy))])

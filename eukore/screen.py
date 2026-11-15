@@ -218,7 +218,15 @@ def verdict_of(depth, top, own, theirs):
     return "flagged"
 
 
-ASSEMBLY = re.compile(r"^GC[AF]_(\d+)(?:\.\d+)?$")
+# an assembly's accession, of any version, GenBank's or RefSeq's, EUKARYOME's copy (EUK_) and its further records
+# (_dup1: since 2026-11-15; until then such a record was another genome than its own assembly)
+ASSEMBLY = re.compile(r"^(?:EUK_)?GC[AF]_(\d+)(?:\.\d+)?(?:_dup\d+)?$")
+
+
+def assembly_of(accession):
+    """One id of an assembly's every copy and version (GC_<number>), or the accession as it is."""
+    m = ASSEMBLY.match(accession or "")
+    return f"GC_{m.group(1)}" if m else accession
 
 
 def genome_of(name, row):
@@ -229,8 +237,7 @@ def genome_of(name, row):
     acc = row.get("accession") or "-"
     if acc == "-":
         return name
-    m = ASSEMBLY.match(acc)
-    return f"GC_{m.group(1)}" if m else acc
+    return assembly_of(acc)
 
 
 def representatives(seqs, owner, threads=1, log=None):

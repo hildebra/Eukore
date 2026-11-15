@@ -148,6 +148,11 @@ class Odb:
             if os.path.isfile(path):
                 with open(path) as fh:
                     self.span.update({x[0]: float(x[1]) for x in (line.split() for line in fh) if len(x) >= 2})
+        self.query_span = {}  # a dataset protein's own HMM coverage (query_coverage; since 2026-11-15)
+        path = os.path.join(folder, QUERY_COVERAGE)
+        if os.path.isfile(path):
+            with open(path) as fh:
+                self.query_span = {x[0]: float(x[1]) for x in (line.split() for line in fh) if len(x) >= 2}
         self.decoys = sorted(os.path.join(f, "decoys", n) for f in folders[1:]
                              if os.path.isdir(os.path.join(f, "decoys"))
                              for n in os.listdir(os.path.join(f, "decoys")) if n.endswith(".hmm"))
@@ -186,6 +191,15 @@ class Odb:
             if locus not in got or s > got[locus][0]:
                 got[locus] = (s, min(1.0, cov / self.span.get(h, 1.0)))
         return got
+
+    def relative(self, query, coverage):
+        """A call's HMM coverage over its query protein's own (query_coverage: a dataset protein's; at least
+        QUERY_SPAN_MIN, at most 1) -> the coverage COMPLETE reads; a query of no known coverage (a marker's, Eukore's
+        own, the rescue's self protein, a dataset without the file) leaves it as it is."""
+        q = getattr(self, "query_span", {}).get(query.split("~", 1)[-1]) if query else None
+        if q is None or q >= 1.0:
+            return coverage
+        return min(1.0, coverage / max(q, QUERY_SPAN_MIN))
 
     def species(self):
         """The BUSCO dataset's species (its loci's proteins'; the markers' UniProt species left out): the OrthoDB
@@ -242,6 +256,45 @@ class Odb:
             for name, seq in self.ancestral.get(locus, ()):
                 out[f"{locus}~{name}"] = seq
         return out
+
+
+# Each dataset protein's own coverage of its locus' HMM (since 2026-11-15; the audit's L1): a call is complete where it
+# covers COMPLETE of what its query protein covers (at least QUERY_SPAN_MIN of the profile), not of the profile. A
+# lineage whose proteins lack a stretch of the profile (an insertion of the animals', an extension) had its whole genes
+# Fragmented: in the first full build 1,410 of 1,707 Fragmented calls of the dataset species held 90% or more of
+# OrthoDB's own protein at 90% of its length, Fragmented 10-15% of Alveolata's, Discoba's and Haptophyta's calls, under
+# 1% of animals' and plants'. On the 7-clade trial (Eukore_2026.11-paper) 267 of 385 Fragmented calls turn Single; of the
+# 34 with OrthoDB's own protein, 32 are it (5-mers 0.9 both ways), 2 not (recall under 0.8); of the 4 that stay, 0 are it.
+QUERY_COVERAGE = "query_coverage.tsv"
+QUERY_SPAN_MIN = 0.5
+
+
+def query_coverage(folder, hmmsearch_bin="hmmsearch", threads=1, log=print):
+    """Each protein of the dataset (refseq_db.faa.gz, ancestral_variants) with its HMM coverage by its own locus'
+    profile (loci.hmmsearch's union of domains), into folder/QUERY_COVERAGE once (kept) -> its path."""
+    path = os.path.join(folder, QUERY_COVERAGE)
+    if os.path.isfile(path):
+        return path
+    from . import loci  # noqa: PLC0415 (loci reads no odb)
+    by_locus = collections.defaultdict(dict)
+    for name, seq in read_fasta(os.path.join(folder, "refseq_db.faa.gz")):
+        by_locus[name.split("_", 1)[0]][name] = seq
+    variants = os.path.join(folder, "ancestral_variants")
+    if os.path.isfile(variants):
+        for name, seq in read_fasta(variants):
+            by_locus[name.rsplit("_", 1)[0]][name] = seq
+    lines = []
+    for locus, proteins in sorted(by_locus.items()):
+        hmm = os.path.join(folder, "hmms", f"{locus}.hmm")
+        if not os.path.isfile(hmm):
+            continue
+        got = loci.hmmsearch(proteins, hmm, hmmsearch_bin, threads)
+        lines += [f"{n}\t{max((c for _s, c in got.get(n, {}).values()), default=0.0):.4f}\n" for n in sorted(proteins)]
+    with open(util.part_of(path), "w", newline="\n") as fh:
+        fh.writelines(lines)
+    os.replace(util.part_of(path), path)
+    log(f"the BUSCO dataset's {len(lines):,} proteins' own HMM coverage: {path}")
+    return path
 
 
 def read_fasta(path):

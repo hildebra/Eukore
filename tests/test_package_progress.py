@@ -6,6 +6,7 @@ by a progress (util.Progress), its checks the same with or without one.
     python3 -m unittest discover -s tests -t tests
 """
 
+import contextlib
 import gzip
 import os
 import shutil
@@ -182,6 +183,37 @@ class SearchesTest(unittest.TestCase):
         self.assertTrue(all(got.values()))
         self.assertIn("searched by other nodes", "".join(said))
         self.assertFalse(any(n.endswith(".claim") for n in os.listdir(self.folder)))
+
+    def test_a_straggler_searched_here_too(self):
+        # since 2026-11-15 (the audit's C1): a locus another node holds, its claim touched every few moments by its
+        # heartbeat, is searched here too once this node has seen it held longer than STRAGGLER_MIN (until then the
+        # claim's file time, its heartbeat's, never grew old); a window-screen part is never searched too
+        todo = [(f"L{i}", {a: self.copies[(a, f"L{i}")] for a in "ABC"}, None) for i in range(2)]
+        os.makedirs(self.folder)
+        claim = qc.search_files(self.folder, qc.search_base(*todo[0][:2]))[3]
+        with open(claim, "w") as fh:
+            fh.write("othernode\t123\n")
+        stop = threading.Event()
+
+        def heartbeat():
+            while not stop.wait(0.05):
+                with contextlib.suppress(OSError):
+                    os.utime(claim)
+        t = threading.Thread(target=heartbeat, daemon=True)
+        t.start()
+        said = []
+        try:
+            with mock.patch.object(qc, "STRAGGLER_MIN", 0.3):
+                got = qc.searched_loci(todo, self.vsearch, 1, self.folder, poll=0.05, log=said.append)
+        finally:
+            stop.set()
+            t.join()
+        self.assertEqual(sorted(got), ["L0", "L1"])
+        self.assertTrue(got["L0"])
+        self.assertTrue(any("held by othernode" in s and "searched here too" in s for s in said), said)
+        self.assertFalse(qc.can_search_too(qc.MapParams(150)))
+        self.assertFalse(qc.can_search_too(qc.UchimeParams()))
+        self.assertTrue(qc.can_search_too(qc.DEFAULT))
 
     def test_the_build_starts_and_stops_its_helpers(self):
         said = []

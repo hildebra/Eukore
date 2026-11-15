@@ -400,8 +400,10 @@ def genome_part(args):
     # beside the copies, for the choice by lineage; their copies read again where one is taken
     alternates = [(a["locus"], a["alt"], qc.spliced(a["copy"], a["features"]), int(a["protein_length"]),
                    a.get("contig_length")) for a in done_alternates(work, acc)]
+    summary = done_summary(work, acc) or {}
     return dict(loci=len(got), rrna=rrna, rrna_rows=rrna_rows, molecules=organelle_molecules_of(folder),
-                searched={r["locus"] for r in searched}, record=record_of(done_summary(work, acc)) or "-",
+                searched={r["locus"] for r in searched}, record=record_of(summary) or "-",
+                queries=summary.get("queries") or "-",  # Eukore's own queries it took (since 2026-11-15: in manifest)
                 copies=copies, alternates=alternates)
 
 
@@ -461,6 +463,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         name = sys.intern(acc)
         genomes[acc]["_searched"] = part["searched"]  # Missing ones too: copy_numbers.tsv's zeros
         genomes[acc]["genome_record"] = part["record"]  # since 2026-11-09
+        genomes[acc]["_queries"] = part.get("queries", "-")
         for row, seq, protein, introns in part["copies"]:
             row["accession"] = name
             if job["why"][0] == "tsa" and row["status"] == "Duplicated" and isoforms(row):
@@ -509,6 +512,9 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             alt_contigs.pop(a, None)
             count -= genomes[a]["loci"]
             genomes[a]["loci"] = 0
+            # searched for none in the package (since 2026-11-15): its BUSCOs are left out, not 0 copies of each in
+            # copy_numbers.tsv.gz nor a species failing every locus in busco/loci.tsv's call rates
+            genomes[a]["_searched"] = ()
         done = [a for a in done if a not in dropped]
     lengths = {(r["accession"], r["locus"]): int(r["protein_length"]) for r in copy_rows}
     checks = qc.check(cds, {a: g["species_taxid"] for a, g in genomes.items()}, ncbi, vsearch, threads,

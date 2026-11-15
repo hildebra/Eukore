@@ -15,6 +15,10 @@ SYNONYM_CLASSES = ("synonym", "equivalent name", "basionym", "genbank synonym", 
                    "genbank anamorph", "includes")
 # NCBI's placeholders for organisms it cannot name (uncultured eukaryote): one taxid for many unrelated genomes
 PLACEHOLDER = re.compile(r"^(uncultured|unidentified|unclassified|environmental)\b|metagenome", re.IGNORECASE)
+# a bare "<taxon> sp." under a clade above the genus is one too (since 2026-11-15): NCBI's "Eukaryota sp." held 200
+# unrelated assemblies in 2026-11, "Ascomycota sp." and "Bacillariophyta sp." others; a genus' "Fusarium sp." is that
+# genus' isolates and stays a species of the package, as does a named isolate ("Fusarium sp. FIESC_28")
+BARE_SP = re.compile(r"^(Candidatus )?\S+ sp\.$")
 
 
 class Ncbi:
@@ -112,7 +116,10 @@ class Ncbi:
         return at
 
     def is_placeholder(self, taxid):
-        return bool(PLACEHOLDER.search(self.name.get(taxid, "")))
+        name = self.name.get(taxid, "")
+        if PLACEHOLDER.search(name):
+            return True
+        return bool(BARE_SP.match(name)) and self.rank.get(self.parent.get(taxid)) not in ("genus", "subgenus")
 
     def write_subset(self, folder, taxids):
         """taxonomy/nodes.tsv, names.tsv and merged.tsv of every taxon on the lineages of `taxids`, with their synonyms,

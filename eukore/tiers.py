@@ -9,7 +9,8 @@ REFERENCE_LEVELS, else contigs of REFERENCE_CONTIG mean length; REFERENCE_MIN of
 `complete_expected` is the share of its group's expected BUSCOs it holds whole (Single or Duplicated).
 
 A representative genome's tier (genomes.tsv `tier`):
-- partial: NCBI's partial genome, or one small for its clade (genomes.SMALL): a part of a genome;
+- partial: NCBI's partial genome, or one small for its clade (genomes.SMALL), holding under POOR of its group's
+  expected BUSCOs whole (or its group having none): a part of a genome (since 2026-11-15; until then whatever it held);
 - poor: under POOR of its group's expected BUSCOs whole: a fragment, a skim, or another organism's genome with a
   few of the species' genes (the evaluation: 2,333 of the 2,664 NCBI genomes under half complete had contigs of a
   mean under 5 kb);
@@ -36,7 +37,8 @@ REFERENCE_CONTIG = 100_000   # a scaffold-level assembly of contigs this long on
 POOR = 0.5
 DRAFT_CONTIG = 5_000
 PARTIAL_FLAGS = {"partial", "partial genome", "small for its clade"}
-EXCLUDED_FLAG = "excluded, the species' only assemblies"  # genomes.ONLY_EXCLUDED
+EXCLUDED_FLAG = "excluded (the species' only assemblies)"  # genomes.ONLY_EXCLUDED
+OLD_EXCLUDED_FLAG = "excluded, the species' only assemblies"  # its text until 2026-11-15 (a comma: read as two flags)
 TIERS = ("genome", "draft", "transcriptome", "poor", "partial", "contaminated")
 DROPPED = ("poor", "partial", "contaminated")
 FOUND = ("Single", "Duplicated", "Fragmented")
@@ -59,7 +61,9 @@ def is_transcriptome(genome):
 
 def flags_of(genome):
     flags = genome.get("flags") or "-"
-    return set(flags.split(",") if isinstance(flags, str) else flags) - {"-"}
+    if isinstance(flags, str):  # a package's genomes.tsv, or collect's row: the flags joined with commas
+        flags = flags.replace(OLD_EXCLUDED_FLAG, EXCLUDED_FLAG).split(",")
+    return {EXCLUDED_FLAG if f == OLD_EXCLUDED_FLAG else f for f in flags} - {"-"}
 
 
 def is_reference(genome):
@@ -103,9 +107,13 @@ def complete_expected(statuses, expected):
 
 def tier_of(genome, complete):
     """A representative genome's tier (module docstring) from its row and complete_expected."""
-    if EXCLUDED_FLAG in flags_of(genome):  # NCBI excluded every assembly of its species (contaminated, ...)
+    flags = flags_of(genome)
+    if EXCLUDED_FLAG in flags:  # NCBI excluded every assembly of its species (contaminated, ...)
         return "contaminated"
-    if flags_of(genome) & PARTIAL_FLAGS:
+    # a partial genome holds few of its group's expected BUSCOs: one that holds POOR of them or more is not a part of
+    # its genome, whatever its size says (since 2026-11-15: "small for its clade" took chromosome-level genomes of 100%,
+    # Setaria italica and Spirodela polyrhiza among them, its median a family's or an order's)
+    if flags & PARTIAL_FLAGS and (complete is None or complete < POOR):
         return "partial"
     if complete is not None and complete < POOR:
         return "poor"

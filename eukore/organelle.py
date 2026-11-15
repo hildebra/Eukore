@@ -80,10 +80,12 @@ CACHE_COLUMNS = ("seqid", "organelle", "taxid", "record_length", "gene", "start"
 # /transl_table, the spacer across the origin. 3 (2026-11-10), on two branches at once: /transl_except on one; on
 # the other a kinetoplastid's 12S its LSU (rrna_gene) and miniprot's model in place of nhmmer's single hit that is
 # not the gene's coding sequence (with_miniprot). 4: the two together, so that a cache either branch wrote is made
-# again.
-CACHE_VERSION = 4
+# again. 5 (2026-11-15, the audit's O1 and O2): a gene read along its molecule spans its first base to its last
+# (turns_of), a candidate contig's genes kept only beside a protein-coding gene of its organelle.
+CACHE_VERSION = 5
 ASSEMBLY_COLUMNS = ("gene", "organelle", "seqid", "start", "end", "strand", "exons", "copies", "partial", "sequence",
-                    "parts", "model")  # parts, model: since 2026-11-07
+                    "parts", "model",  # parts, model: since 2026-11-07
+                    "candidate")  # since 2026-11-15: t where the gene is on a candidate contig (candidate_molecules)
 
 
 # --- RefSeq's release ---------------------------------------------------------------------------------------------
@@ -218,9 +220,14 @@ def trans_spliced(parts, circular=True):
     one strand (once across a circular molecule's origin at most): a trans-spliced gene, its record its exons joined."""
     if len({s for _a, _b, s in parts}) > 1:
         return True
+    return turns_of(parts) > (1 if circular else 0)
+
+
+def turns_of(parts):
+    """How often a gene's parts (on one strand, in the order transcribed) go back along its strand: 0 for a gene read
+    along its molecule, 1 for one across a circular molecule's origin."""
     sign = 1 if parts[0][2] == "+" else -1
-    turns = sum(1 for p, q in zip(parts, parts[1:]) if sign * (q[0] - p[0]) < 0)
-    return turns > (1 if circular else 0)
+    return sum(1 for p, q in zip(parts, parts[1:]) if sign * (q[0] - p[0]) < 0)
 
 
 def span_of(spans, length, circular=True):
@@ -450,7 +457,11 @@ def record_genes(rec, organelle, animal=False):
             start, end, strand, whole = min(a for a, _b, _s in parts), max(b for _a, b, _s in parts), parts[0][2], joined
         else:
             strand = parts[0][2]
-            start, end = span_of([(a, b) for a, b, _s in parts], rec["length"], rec["circular"])
+            # read along its molecule (no turn in the order transcribed): its first base to its last, however long an
+            # intron (since 2026-11-15: span_of took a long intron for the origin, 129 RefSeq genes, a hexacoral's nad5
+            # shipped as exon 2, the genes between, exon 1); across the origin: span_of's
+            start, end = (min(a for a, _b, _s in parts), max(b for _a, b, _s in parts)) if turns_of(parts) == 0 \
+                else span_of([(a, b) for a, b, _s in parts], rec["length"], rec["circular"])
             whole = subsequence(seq, start, end, strand)
         # the feature's own genetic code (a CDS's /transl_table; table_of reads it before NCBI's of the taxid)
         table = next((v for n, v in quals if n == "transl_table" and v.isdigit()), "-") if key == "CDS" else "-"
@@ -1044,24 +1055,32 @@ def run_assembly(args):
     the caller's (a forkserver's or spawn's worker imports it anew: a CACHE_VERSION raised in the caller was not)."""
     acc, path, out, animal, queries, barrnap, nhmmer, threads, *more = args
     proteins, codes, miniprot, genome, given = (list(more) + [None, None])[:5] if more else ({}, {}, None, None, None)
-    candidates = 0
+    candidates, taken = 0, set()
     try:  # the molecules metadata.describe kept (since 2026-11-08), else the genome read again
         molecules = saved_molecules(path) if os.path.basename(path) == SAVED else organelle_molecules(path)
         rows = []
         for organelle, kingdom in (("mitochondrion", "mito" if animal else "bac"), ("plastid", "bac")):
             if organelle not in queries:  # RefSeq's record taken, or none to hold
                 continue
-            group = [m for m in molecules if m[1] == organelle]
+            group, nominated = [m for m in molecules if m[1] == organelle], False
             if not group and genome and os.path.isfile(genome):  # its candidate contigs (since 2026-11-14)
-                group = candidate_molecules(genome, organelle, animal)
+                # not a contig the mitochondrion's genes were found on (since 2026-11-15: one contig gave both)
+                group, nominated = [m for m in candidate_molecules(genome, organelle, animal) if m[0] not in taken], True
                 candidates += len(group)
             found = nhmmer_genes(group, queries.get(organelle, []), nhmmer, threads)
-            for (_k, gene), (row, copies) in barrnap_genes(group, barrnap, kingdom, threads).items():
-                found.setdefault(gene, dict(row, copies=copies))
+            if not nominated:  # barrnap's bacterial models on a nuclear contig call a contaminant's 16S an organelle's
+                for (_k, gene), (row, copies) in barrnap_genes(group, barrnap, kingdom, threads).items():
+                    found.setdefault(gene, dict(row, copies=copies))
             if miniprot:
                 found = with_miniprot(found, miniprot_genes(group, proteins.get(organelle, {}), miniprot,
                                                             codes.get(organelle, 1), threads),
                                       codes.get(organelle, 1))
+            if nominated:  # since 2026-11-15 (the audit's O1): a candidate contig's genes only on a contig holding a
+                # protein-coding gene of the organelle (a nuclear contig of a plastome's length holds an rRNA-like
+                # stretch more easily than a COX1 or rbcL), flagged candidate_contig
+                coding = {r["seqid"] for r in found.values() if r["gene"] in CODING}
+                found = {g: dict(r, candidate="t") for g, r in found.items() if r["seqid"] in coding}
+                taken |= coding
             rows += found.values()
     except (OSError, EOFError, RuntimeError) as e:
         return acc, None, f"{type(e).__name__}: {e}"
@@ -1459,6 +1478,8 @@ def confidence(row):
         medium.append("trans_spliced")
     if row["gene"] in CODING and row.get("model") == "nhmmer" and str(row.get("exons")) != "1":
         medium.append("exons_approximate")
+    if row.get("candidate") in ("t", True):  # on a contig nominated by its length and GC, no title (since 2026-11-15)
+        medium.append("candidate_contig")
     # a published record's flags (since 2026-11-14: a MIDORI2 record the reference screen left for review,
     # `screen_weak`)
     medium += list(row.get("flags_extra") or ())

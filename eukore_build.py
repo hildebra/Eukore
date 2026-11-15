@@ -518,8 +518,11 @@ def plan_of(opts, job_map, settings):
                  or ((genomes.held_out_missing(opts.work, j, settings)
                       or genomes.rescue_missing(opts.work, a, settings)
                       or genomes.record_stale(opts.work, a)
+                      # run without any of them (since 2026-11-15: run with another set of them too, so that each
+                      # package's new set reran the served groups' genomes still on disk, whose calls changed the set
+                      # again, the package depending on what was on disk: a genome takes them once)
                       or (a in reruns and digest
-                          and (genomes.done_summary(opts.work, a) or {}).get("queries") != digest)) and here(a, j))}
+                          and (genomes.done_summary(opts.work, a) or {}).get("queries") in (None, "-"))) and here(a, j))}
         # each with its done.json as seen now: a genome another build on the WORK finishes meanwhile is left alone
         # (genomes.done_stamp; since 2026-11-08 it was run again whole)
         return {"rows": [[a, genomes.done_stamp(opts.work, a), None if a in whole else "annotation"]
@@ -2234,6 +2237,14 @@ def _main(argv, held):
     if "process" in opts.stages:
         # the marker set built of the inputs the fetch stage fetched, before the genomes it is called in (since
         # 2026-11-11: the fetch stage built it, on the download node); one process run at a time, the others wait
+        # and each BUSCO dataset protein's own HMM coverage, once (odb.query_coverage; since 2026-11-15): a call is
+        # complete against what its query covers of the profile
+        if os.path.isfile(os.path.join(odb_mod.folder_of(src_dir), "refseq_db.faa.gz")):
+            try:
+                odb_mod.query_coverage(odb_mod.folder_of(src_dir), opts.hmmsearch, opts.threads, say)
+            except (OSError, RuntimeError) as e:
+                say(f"WARNING: {e}: the BUSCO proteins' own HMM coverage not measured: a call complete against "
+                    "the profile (loci.COMPLETE), its lineage's whole genes perhaps Fragmented")
         if not getattr(opts, "no_markers", False):
             try:
                 markers_mod.prepare(src_dir, opts.hmmsearch, opts.threads, say)
@@ -2392,6 +2403,11 @@ def _main(argv, held):
             records, trims, audit_counts = audit_mod.clean(records, audit_mod.vectors_of(univec), primers, nhmmer, hmm,
                                                            opts.threads, opts.scratch, say, audited)
             if tree is not None:
+                # each NCBI clade's EUKARYOME taxon learned before the screens place the records (since 2026-11-15:
+                # learned after them, in package.write, the clades their placements had named were learned as
+                # nothing); package.write learns again with every taxon, the organelle genes' too
+                tree.learn(ncbi, {int(r["taxid"]) for _n, _s, r in records if str(r.get("taxid", "")).isdigit()}
+                           | {int(g["species_taxid"]) for g in collected["genomes"].values()})
                 searcher = screen_mod.Searcher(vsearch, opts.threads, opts.scratch,
                                                **{k: v for k, v in qc_searches(opts, "audit").items()
                                                   if k in ("folder", "helpers", "nodes")},
@@ -2472,7 +2488,13 @@ def _main(argv, held):
                   "markers": markers_mod.state_of(markers_of(opts, src_dir)),
                   "tsa": genomes.tsa_state(src_dir) if not getattr(opts, "no_tsa", False) else None,
                   # the published 18S's audit (since 2026-11-14): its inputs and counts
-                  "audit": audit_stamp}
+                  "audit": audit_stamp,
+                  # Eukore's own query proteins (since 2026-11-15): the set of WORK now, and how many genomes took which
+                  # set ("-": none), so that a reader sees what a package's calls were made with
+                  "queries": {"digest": queries_of(opts)[1] if queries_of(opts)[0] else None,
+                              "genomes": dict(collections.Counter(
+                                  g.get("_queries", "-") for g in collected["genomes"].values()
+                                  if g.get("representative") == "t"))}}
         if wanted is not None:
             inputs["partial"] = {"species_clades": sorted(wanted)}  # a trial package: these clades only
         # every genome is called and extracted: the kept ones cut back to the budget, then the package names those kept

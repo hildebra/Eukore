@@ -1063,7 +1063,9 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
             expected_by_supergroup={g: median_of(v) for g, v in sorted(by_group_expected.items())},
             tiers=dict(collections.Counter(r.get("tier", "-") for r in rows)))
     log(f"benchmarks: completeness of {len(rows)} genomes, median {summary['completeness']['median']}")
-    composition = composition_rows(folder, species, rows)  # since 2026-11-10: what the package holds per supergroup
+    # since 2026-11-10: what the package holds per supergroup; its medians those of the genomes whose copies it holds
+    # (since 2026-11-15: a dropped genome's copies are none, its completeness 0 in completeness.tsv, its `tier` says why)
+    composition = composition_rows(folder, species, kept)
     write(out, "composition.tsv", COMPOSITION_COLUMNS, composition)
     summary["composition"] = {k: v for k, v in composition[-1].items() if k != "supergroup"}
 

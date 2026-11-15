@@ -230,7 +230,11 @@ runs of 10,000 consecutive names, and a part of one dense clade's sequences (man
 long as the others while the search waited for it. A rerun with another `QC_TASKS` splits the search differently and
 searches it again. A search of 4 parts or more goes to the helpers as the loci's do, each part with its own vsearch
 settings (`todo.tsv` names them); a query's hits do not depend on the other queries, so the result is the same
-however it is split. The smaller searches that follow up on suspects (a clade's records each) run several at once
+however it is split. A part another node has held longer than twice this node's longest own search (15 minutes at
+least), counted from when this node first saw it held, is searched here too once this node has nothing left, and
+whichever finishes first writes the hits (since 2026-11-14; until 2026-11-15 it never fired: the claim file's time
+is its heartbeat's, renewed every minute). The window screen's and UCHIME's parts are not searched twice. The
+smaller searches that follow up on suspects (a clade's records each) run several at once
 on the final job's node, each with a share of its threads (until then one after another). The step logs each
 search's time (`rRNA own-species check: ...`, `rRNA screen 18S: ...`, a species whose 99% typing took a minute or
 more), and each part's, wherever it was searched, with the share vsearch spent reading and indexing the database
@@ -431,7 +435,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--keep_poor_genomes` | left out | the copies of the genomes of tier poor, partial or contaminated kept, flagged `poor_genome` (since 2026-11-14; `eukore/tiers.py`) |
 | `--no_tsa_rrna` | extracted | no rRNA from the transcriptomes (since 2026-11-14 barrnap and ITSx run on them; a done transcriptome without is backfilled where its file is there) |
 | `--no_rrna_donors` | donors | a species whose genome holds no 18S takes none from its next assembly (since 2026-11-14: that assembly fetched and run by barrnap and ITSx alone, `WORK/rrna_donors/`) |
-| `--no_eukore_queries` | taken | no Eukore's own query proteins (since 2026-11-14: the package stage writes the clean copies' proteins of the groups BUSCO's dataset serves poorly, `WORK/eukore_queries.faa.gz`; the next build's genomes of those groups take them where nearer than the dataset's, never their own species', the held-out calls none, and a done one is run again with them) |
+| `--no_eukore_queries` | taken | no Eukore's own query proteins (since 2026-11-14: the package stage writes the clean copies' proteins of the groups BUSCO's dataset serves poorly, `WORK/eukore_queries.faa.gz`; the next build's genomes of those groups take them where nearer than the dataset's, never their own species', the held-out calls none, and a done one run without any is run again with them where its genome is on disk, once: since 2026-11-15 not again for a newer set, whose reruns changed the set again; the manifest's `inputs.queries` gives the set and how many genomes took which) |
 | `--no_midori2` | fetched | no MIDORI2 (since 2026-11-14 the fetch stage takes its newest release from Zenodo) |
 | `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
 | `--no_rescue` | the rescue pass on (with `esl-translate` on the PATH) | no rescue pass of the BUSCOs miniprot missed ([methods.md](methods.md)) |

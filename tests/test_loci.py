@@ -91,6 +91,21 @@ class OdbTest(unittest.TestCase):
                          "eukaryota_odb12.2\t2026-05-13\tccc\tEukaryota\tlineages\n")
             self.assertEqual(odb_mod.latest(versions), ("2026-05-22", "bbb"))
 
+    def test_coverage_relative_to_the_query(self):
+        # since 2026-11-15 (the audit's L1): a call covering 0.6 of the profile, its query (a lineage's protein) 0.7 of
+        # it, is complete; a query of no known coverage leaves the coverage as it is; QUERY_SPAN_MIN bounds it
+        with tempfile.TemporaryDirectory() as tmp:
+            root = fx.odb_world(tmp)
+            with open(os.path.join(root, odb_mod.QUERY_COVERAGE), "w") as fh:
+                fh.write("1at2759_4932_0:000004\t0.7000\n1at2759_9606_0:000002\t1.0000\n1at2759_0\t0.2000\n")
+            odb = odb_mod.Odb(root, fx.LOCI)
+            self.assertAlmostEqual(odb.relative("1at2759~1at2759_4932_0:000004", 0.6), 0.6 / 0.7)
+            self.assertGreaterEqual(odb.relative("1at2759~1at2759_4932_0:000004", 0.6), loci.COMPLETE)
+            self.assertEqual(odb.relative("1at2759~1at2759_9606_0:000002", 0.6), 0.6)
+            self.assertEqual(odb.relative("1at2759~1at2759_self", 0.6), 0.6)
+            self.assertEqual(odb.relative("1at2759~1at2759_0", 0.3), 0.6)  # over QUERY_SPAN_MIN, not 0.2
+            self.assertEqual(odb.relative("1at2759~1at2759_4932_0:000004", 0.9), 1.0)
+
 
 class LociTest(unittest.TestCase):
     def setUp(self):
