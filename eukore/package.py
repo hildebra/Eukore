@@ -509,6 +509,9 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             alt_contigs.pop(a, None)
             count -= genomes[a]["loci"]
             genomes[a]["loci"] = 0
+            # searched for none in the package (since 2026-11-15): its BUSCOs are left out, not 0 copies of each in
+            # copy_numbers.tsv.gz nor a species failing every locus in busco/loci.tsv's call rates
+            genomes[a]["_searched"] = ()
         done = [a for a in done if a not in dropped]
     lengths = {(r["accession"], r["locus"]): int(r["protein_length"]) for r in copy_rows}
     checks = qc.check(cds, {a: g["species_taxid"] for a, g in genomes.items()}, ncbi, vsearch, threads,

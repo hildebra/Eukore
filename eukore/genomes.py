@@ -73,7 +73,9 @@ ALTERNATES = ("alternates.tsv", "alternates.fna", "alternates_features.tsv")
 #    with a stop inside, or a fusion, not taken.
 # 3: a copy split across contigs joined (loci.join_split, `model` joined; since 2026-11-14), the first pass' miniprot
 #    at the join's --outs and its alignments of loci.OUTS taken from those.
-GENOME_RECORD = 3
+# 4: a call complete against its query protein's own HMM coverage (odb.relative; since 2026-11-15): a lineage's whole
+#    genes no longer Fragmented where its proteins lack a stretch of the profile.
+GENOME_RECORD = 4
 
 
 def safe(name):
@@ -94,7 +96,9 @@ def rank(row):
             -int(re.sub(r"\D", "", row.get("date") or "") or 0), row["accession"])
 
 
-ONLY_EXCLUDED = "excluded, the species' only assemblies"
+# no comma in a flag: genomes.tsv joins a genome's flags with commas (until 2026-11-15 "excluded, the species' only
+# assemblies", which tiers.flags_of read as two flags: the tier contaminated was never given)
+ONLY_EXCLUDED = "excluded (the species' only assemblies)"
 
 
 def representatives(assemblies, ncbi, inside=None, keep_excluded=True):

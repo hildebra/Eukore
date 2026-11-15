@@ -2234,6 +2234,14 @@ def _main(argv, held):
     if "process" in opts.stages:
         # the marker set built of the inputs the fetch stage fetched, before the genomes it is called in (since
         # 2026-11-11: the fetch stage built it, on the download node); one process run at a time, the others wait
+        # and each BUSCO dataset protein's own HMM coverage, once (odb.query_coverage; since 2026-11-15): a call is
+        # complete against what its query covers of the profile
+        if os.path.isfile(os.path.join(odb_mod.folder_of(src_dir), "refseq_db.faa.gz")):
+            try:
+                odb_mod.query_coverage(odb_mod.folder_of(src_dir), opts.hmmsearch, opts.threads, say)
+            except (OSError, RuntimeError) as e:
+                say(f"WARNING: {e}: the BUSCO proteins' own HMM coverage not measured: a call complete against "
+                    "the profile (loci.COMPLETE), its lineage's whole genes perhaps Fragmented")
         if not getattr(opts, "no_markers", False):
             try:
                 markers_mod.prepare(src_dir, opts.hmmsearch, opts.threads, say)

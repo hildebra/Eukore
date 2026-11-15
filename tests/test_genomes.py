@@ -142,6 +142,35 @@ class SetTest(unittest.TestCase):
                      "GCA_1.1\t4932\t4932\tSaccharomyces cerevisiae\tPartial\t5000000\n")
         self.assertEqual(sources.read_assemblies([table])[0]["flags"], ["partial genome"])
 
+    def test_partial_share(self):
+        # a species' assemblies under PARTIAL_SHARE of its median left out, the median that of its unflagged ones where 3
+        # or more, NCBI's reference genome never (since 2026-11-15: Cygnus atratus' reference and nine 9 Gb assemblies)
+        table = os.path.join(self.tmp.name, "genbank_vertebrate_other.txt")
+        rows = [("GCA_1.1", "reference genome", "na", 1_100_000_000)]
+        rows += [(f"GCA_{i}.1", "na", "genome length too large", 9_000_000_000) for i in range(2, 11)]
+        rows += [("GCA_20.1", "na", "na", 200_000_000), ("GCA_30.1", "na", "na", 2_500_000)]
+        with open(table, "w") as fh:
+            fh.write("# assembly_accession\trefseq_category\ttaxid\tspecies_taxid\torganism_name\texcluded_from_refseq\t"
+                     "genome_size\n")
+            fh.writelines(f"{a}\t{c}\t8869\t8869\tCygnus atratus\t{e}\t{s}\n" for a, c, e, s in rows)
+        kept = {r["accession"] for r in sources.read_assemblies([table])}
+        self.assertIn("GCA_1.1", kept)  # NCBI's reference, whatever the median
+        self.assertIn("GCA_2.1", kept)
+        self.assertNotIn("GCA_30.1", kept)  # 2.5 Mb: under a third of the unflagged ones' median (200 Mb)
+        self.assertIn("GCA_20.1", kept)  # by the median of all (9 Gb) it would not be
+
+    def test_bare_sp_placeholder(self):
+        # "Eukaryota sp." (under a clade above the genus): a placeholder; a genus' "Saccharomyces sp.": a species
+        class Tax(ncbi_mod.Ncbi):
+            def __init__(self):
+                self.name = {2759: "Eukaryota", 4930: "Saccharomyces", 1: "Eukaryota sp.", 2: "Saccharomyces sp.",
+                             3: "Saccharomyces sp. ABC", 4: "uncultured eukaryote"}
+                self.parent = {1: 2759, 2: 4930, 3: 4930, 4: 2759, 4930: 2759, 2759: 2759}
+                self.rank = {2759: "superkingdom", 4930: "genus", 1: "species", 2: "species", 3: "species", 4: "species"}
+                self.merged = {}
+        tax = Tax()
+        self.assertEqual([tax.is_placeholder(t) for t in (1, 2, 3, 4)], [True, False, False, True])
+
     def test_jobs(self):
         model = [dict(species="Saccharomyces cerevisiae", ncbi_taxid="4932", domain="Eukaryota", genbank=YEAST,
                       refseq="GCF_000146045.2", assembly_name="R64", level="Complete Genome", genome_bases="12100000",

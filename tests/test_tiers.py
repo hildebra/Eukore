@@ -38,8 +38,17 @@ class TiersTest(unittest.TestCase):
 
     def test_tiers(self):
         whole = {l: "Single" for l in LOCI}
-        self.assertEqual(tiers.tier_of(genome(flags="partial genome"), 1.0), "partial")
-        self.assertEqual(tiers.tier_of(genome(flags="small for its clade,derived from metagenome"), 1.0), "partial")
+        self.assertEqual(tiers.tier_of(genome(flags="partial genome"), 0.2), "partial")
+        self.assertEqual(tiers.tier_of(genome(flags="small for its clade,derived from metagenome"), 0.3), "partial")
+        self.assertEqual(tiers.tier_of(genome(flags="small for its clade"), None), "partial")
+        # a "small" genome holding its expected BUSCOs is a genome (Setaria italica, 2026-11: 138 of 138 loci)
+        self.assertEqual(tiers.tier_of(genome(flags="small for its clade"), 1.0), "genome")
+        # every assembly of its species excluded (genomes.ONLY_EXCLUDED), as genomes.tsv joins the flags
+        from eukore import genomes as genomes_mod  # noqa: PLC0415
+        excluded = ",".join(sorted({"contaminated", genomes_mod.ONLY_EXCLUDED}))
+        self.assertEqual(tiers.tier_of(genome(flags=excluded), 1.0), "contaminated")
+        self.assertFalse(tiers.is_reference(genome(flags=excluded)))
+        self.assertEqual(tiers.tier_of(genome(flags="contaminated," + tiers.OLD_EXCLUDED_FLAG), 1.0), "contaminated")
         self.assertEqual(tiers.tier_of(genome("Contig", size=3_000_000, contigs=2000), 0.9), "draft")
         self.assertEqual(tiers.tier_of(genome(level="transcriptome", source="tsa"), 0.9), "transcriptome")
         self.assertEqual(tiers.tier_of(genome(level="transcriptome", source="tsa"), 0.1), "poor")
@@ -89,6 +98,15 @@ class TiersTest(unittest.TestCase):
         self.assertEqual(benchmarks.region_span(r, "28S D1-D2"), (2400, 3300))
         self.assertIsNone(benchmarks.region_span(dict(regions="18S:0-1800,28S:1900-2500"), "28S D1-D2"))
         self.assertIsNone(benchmarks.region_span(dict(regions="-"), "ITS"))
+
+    def test_dropped_genome_searched_for_none(self):
+        # package.collect gives a dropped genome's `_searched` () (since 2026-11-15): copy_numbers.tsv.gz holds no
+        # zeros of it, busco/loci.tsv's call rates do not count it
+        g = dict(representative="t", source="ncbi", species_taxid=4932, _searched=())
+        kept = dict(representative="t", source="ncbi", species_taxid=4932, _searched=("L0",))
+        loci = [dict(locus="L0")]
+        self.assertEqual(package.copy_numbers({"D": g}, [], loci, {}), [])
+        self.assertEqual(len(package.copy_numbers({"K": kept}, [], loci, {})), 1)
 
     def test_copy_flags(self):
         self.assertEqual(package.copy_confidence(dict(genome_tier="poor", own_species="t"))[0], "low")

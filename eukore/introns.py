@@ -49,14 +49,16 @@ def class_of(donor, acceptor):
 
 def of_copy(copy, features, states=None):
     """A copy's introns ([(kind, start, end)] features on the copy; states: its residues' match states) -> rows
-    without accession, locus and site."""
+    without accession, locus and site. The space between two pieces of a joined copy (loci.join_split: a `join`
+    feature, its contigs' ends beside it) is no intron (until 2026-11-15 one of 100 N or more, sites NN-NN)."""
     shifted = sorted((int(s), int(e)) for k, s, e in features if k == "frameshift")
     exons = sorted((int(s), int(e)) for k, s, e in features if k == "exon")
+    joins = [(int(s), int(e)) for k, s, e in features if k == "join"]
     out, before = [], 0
     for i, ((s1, e1), (s2, _e2)) in enumerate(zip(exons, exons[1:])):
         before += e1 - s1 - sum(min(e, e1) - max(s, s1) for s, e in shifted if s < e1 and e > s1)
         a, b = e1, s2
-        if b <= a:
+        if b <= a or any(s < b and e > a for s, e in joins):
             continue
         seq = copy[a:b].upper()
         aa = before // 3

@@ -46,7 +46,8 @@ def read_assemblies(paths):
     """GenBank's assembly_summary.txt files -> [dict] of the latest assemblies (accession, taxid, species_taxid,
     organism, strain, isolate, level, asm_name, size, contigs, category, ftp, genes: its annotation's protein-coding
     genes, 0 for none, None where the table does not say), without those smaller than MIN_GENOME and,
-    of a species with 3 assemblies or more, those smaller than PARTIAL_SHARE of their median size."""
+    of a species with 3 assemblies or more, those smaller than PARTIAL_SHARE of their median size (its unflagged
+    assemblies' where 3 or more) but NCBI's reference or representative genome."""
     rows = []
     for path in paths:
         with open_text(path) as fh:
@@ -81,13 +82,23 @@ def read_assemblies(paths):
                                  group=re.sub(r"^(genbank|refseq|assembly_summary)_", "",
                                               os.path.basename(path)).rsplit(".", 1)[0]))
     rows = [r for r in rows if r["size"] is None or r["size"] >= MIN_GENOME]
-    sizes = collections.defaultdict(list)
+    # the median of a species' unflagged assemblies where it has 3 or more (since 2026-11-15: nine contig assemblies of
+    # Cygnus atratus of 8.8-12.4 Gb, NCBI's "genome length too large", set the median and dropped its 1.12 Gb
+    # chromosome-level reference), and never NCBI's reference or representative genome of the species
+    sizes, clean = collections.defaultdict(list), collections.defaultdict(list)
     for r in rows:
         if r["size"]:
             sizes[r["species_taxid"]].append(r["size"])
-    median = {t: sorted(s)[len(s) // 2] for t, s in sizes.items() if len(s) >= 3}
+            if not r["flags"]:
+                clean[r["species_taxid"]].append(r["size"])
+    median = {}
+    for t, s in sizes.items():
+        pool = clean[t] if len(clean[t]) >= 3 else s
+        if len(pool) >= 3:
+            median[t] = sorted(pool)[len(pool) // 2]
     return [r for r in rows if not r["size"] or r["species_taxid"] not in median
-            or r["size"] >= PARTIAL_SHARE * median[r["species_taxid"]]]
+            or r["size"] >= PARTIAL_SHARE * median[r["species_taxid"]]
+            or r["refseq_category"] in ("reference genome", "representative genome")]
 
 
 STATE = "source.json"
