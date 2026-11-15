@@ -343,7 +343,7 @@ def join_split(alignments, lengths, confirmed, sizes, odb, hmm_db, hmmsearch_bin
             continue
         locus = a["locus"]
         s, cov = got.get(locus, (0.0, 0.0))
-        cov = odb.relative(a["query"], cov)
+        cov = relative(odb, a["query"], cov)
         if max(got, key=lambda h: got[h][0]) == locus and s >= odb.cutoff[locus] \
                 and (locus not in out or (s, a["score"]) > (out[locus]["hmm_score"], out[locus]["score"])):
             out[locus] = dict(a, hmm_score=s, hmm_coverage=cov, region=(a["start"], a["end"]),
@@ -612,6 +612,12 @@ def align(target, queries, miniprot, threads, table, work, options=None, index_d
     return (best_of_each(whole_contigs(alignments), outs, outn) if len(parts) > 1 else alignments), None
 
 
+def relative(odb, query, coverage):
+    """odb.relative's coverage (since 2026-11-15), the coverage as it is for a dataset object without it."""
+    f = getattr(odb, "relative", None)
+    return f(query, coverage) if f else coverage
+
+
 def confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work):
     """The alignments' regions the HMMs confirm (steps 2-3) -> {locus: [each region's confirmed alignment of the best
     HMM score, with hmm_score and hmm_coverage, and its region's other confirmed alignments in `alts` (since
@@ -628,7 +634,7 @@ def confirm(alignments, lengths, odb, hmm_db, hmmsearch_bin, threads, work):
         best_hmm = max(got, key=lambda h: got[h][0])
         s, cov = got.get(r["locus"], (0.0, 0.0))
         if best_hmm == r["locus"] and s >= odb.cutoff[r["locus"]]:  # its coverage over its query's own (odb.relative)
-            by_region[key].append(dict(r, hmm_score=s, hmm_coverage=odb.relative(r["query"], cov)))
+            by_region[key].append(dict(r, hmm_score=s, hmm_coverage=relative(odb, r["query"], cov)))
     confirmed = collections.defaultdict(list)
     for (locus, _j), rs in sorted(by_region.items()):
         rs.sort(key=lambda a: (a["hmm_score"], a["score"]), reverse=True)  # stable: of equal ones, the first found
@@ -1032,7 +1038,7 @@ def annotated(chosen, contigs, annotation, odb, hmmsearch_bin, threads, work, hm
         if not got or max(got, key=lambda h: got[h][0]) != locus:
             continue
         a, p = chosen[locus], proteins[locus]
-        s, cov = got[locus][0], odb.relative(a.get("query"), got[locus][1])  # as miniprot's (confirm)
+        s, cov = got[locus][0], relative(odb, a.get("query"), got[locus][1])  # as miniprot's (confirm)
         # since 2026-11-09: not a model of a stop inside where miniprot's has none, nor a fusion (its protein over
         # ANNOTATION_LONGER times miniprot's and the profile's: the HMM's score does not see a second gene).
         # Since 2026-11-10 (the audit's B8) nor a fragment where miniprot's is complete, as cleanest and recover take
