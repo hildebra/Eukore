@@ -212,6 +212,40 @@ class CandidateTest(unittest.TestCase):
             got = organelle.candidate_molecules(path, "mitochondrion", False)
             self.assertEqual([(n, k, len(s)) for n, k, s in got], [("ctg_mito", "mitochondrion", 40_000)])
 
+    def test_a_candidates_genes_need_a_coding_gene(self):
+        # since 2026-11-15 (the audit's O1): of candidate contigs, only those holding a protein-coding gene of the
+        # organelle give genes (flagged candidate_contig); barrnap's bacterial models are not run on them; a contig the
+        # mitochondrion's genes are on is no plastid candidate
+        from unittest import mock  # noqa: PLC0415
+
+        def gene(name, kind, seqid):
+            return dict(gene=name, organelle=kind, seqid=seqid, start=1, end=90, strand="+", exons=1, copies=1,
+                        partial=False, sequence="ATG" * 30, parts="1-90", model="nhmmer")
+
+        def nhmmer(group, *_a, **_k):
+            names = {m[0] for m in group}
+            out = {}
+            if "ctgA" in names and group[0][1] == "mitochondrion":
+                out["COX1"] = gene("COX1", "mitochondrion", "ctgA")
+            if "ctgB" in names:
+                out["SSU"] = gene("SSU", group[0][1], "ctgB")  # an rRNA-like stretch on a nuclear contig
+            return out
+        with tempfile.TemporaryDirectory() as tmp:
+            path, out = os.path.join(tmp, "g.fna.gz"), os.path.join(tmp, "out", "a.tsv")
+            with gzip.open(path, "wt") as fh:
+                fh.write(f">c1 a nuclear contig\n{random_seq(500, 5)}\n")
+            candidates = lambda _g, kind, _a: [("ctgA", kind, "ACGT" * 10), ("ctgB", kind, "ACGT" * 10)]  # noqa: E731
+            with mock.patch.object(organelle, "candidate_molecules", side_effect=candidates), \
+                    mock.patch.object(organelle, "nhmmer_genes", side_effect=nhmmer), \
+                    mock.patch.object(organelle, "barrnap_genes", side_effect=AssertionError("barrnap on candidates")):
+                args = (YEAST, path, out, False, {"mitochondrion": [], "plastid": []}, "barrnap", "nhmmer", 1, {}, {},
+                        None, path)
+                self.assertIsNone(organelle.run_assembly(args)[2])
+            rows = organelle.assembly_rows(out)
+            self.assertEqual([(r["gene"], r["organelle"], r["seqid"], r["candidate"]) for r in rows],
+                             [("COX1", "mitochondrion", "ctgA", "t")])
+            self.assertIn("candidate_contig", organelle.confidence(dict(rows[0], own_species="t"))[1])
+
 
 class JoinTest(unittest.TestCase):
     def test_hits_joined_in_the_querys_order_alone(self):
@@ -430,6 +464,19 @@ class Format5Test(unittest.TestCase):
         self.assertTrue(organelle.trans_spliced([(5000, 5100, "-"), (200, 300, "+")]))
         self.assertFalse(organelle.trans_spliced([(1, 200, "-"), (2901, 3000, "-")]))  # across the origin
         self.assertTrue(organelle.trans_spliced([(500, 600, "+"), (100, 200, "+"), (900, 950, "+"), (10, 20, "+")]))
+
+    def test_a_long_intron_is_no_origin(self):
+        # since 2026-11-15 (the audit's O2): a hexacoral's nad5 of two exons 12 kb apart on an 18 kb circle (NC_022829.1:
+        # join(2434..3153,15087..16202)) spans 2434..16202; until then its intron was taken for the origin, the record
+        # exon 2, the molecule's end, its start and exon 1. One across the origin keeps its span across it.
+        seq = random_seq(18_342, 11)
+        for location, want in (("join(2434..3153,15087..16202)", (2434, 16202)),
+                               ("join(17001..18342,1..300)", (17001, 300))):
+            rec = dict(sequence=seq, length=len(seq), circular=True,
+                       features=[("CDS", [location], [("gene", "nad5"), ("codon_start", "1")])])
+            row = organelle.record_genes(rec, "mitochondrion", animal=True)["nad5"]
+            self.assertEqual((row["start"], row["end"]), want)
+            self.assertEqual(len(row["sequence"]), (want[1] - want[0] + 1) % len(seq) or len(seq))
         self.assertEqual(organelle.parts_read(organelle.parts_text([(1, 5, "+"), (9, 12, "-")])),
                          [(1, 5, "+"), (9, 12, "-")])
 
