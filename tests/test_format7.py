@@ -146,6 +146,155 @@ class TreeTest(unittest.TestCase):
         self.assertEqual(tree.stamp()["placed"]["genus"] >= 1, True)
 
 
+HARMONY_ROWS = [
+    HEADER,
+    ("Obazoa", "Metazoa", "", "Cnidaria", "", "Anthozoa", "Alcyonacea", "Alcyoniidae", "Alcyonium", ""),
+    ("Obazoa", "Metazoa", "", "Cnidaria", "", "Anthozoa", "Alcyonacea", "Nephtheidae", "Nephthea", ""),
+    ("Obazoa", "Metazoa", "", "Cnidaria", "", "Anthozoa", "Alcyonacea", "Alcyoniidae", "Zebra", ""),
+    # EUKARYOME 2.1's golden moles: Mammalia, but the corals' order
+    ("Obazoa", "Metazoa", "Bilateria", "Chordata", "", "Mammalia", "Alcyonacea", "Chrysochloridae", "Amblysomus", ""),
+    ("Obazoa", "Metazoa", "Bilateria", "Chordata", "", "Mammalia", "Primates", "Hominidae", "Homo", ""),
+    ("Obazoa", "Metazoa", "Bilateria", "Chordata", "", "Actinopteri", "Characiformes", "Chilodontidae", "Caenotropus",
+     ""),
+    ("Obazoa", "Metazoa", "Bilateria", "Mollusca", "", "Gastropoda", "Seguenziida", "Chilodontidae.Seguenziida",
+     "Turcica", ""),
+    ("Obazoa", "Metazoa", "Bilateria", "Arthropoda", "Crustacea", "Hexanauplia", "Calanoida", "Calanidae", "Calanus",
+     ""),
+    ("Obazoa", "Metazoa", "Bilateria", "Arthropoda", "Crustacea", "Ichthyostraca", "Siphonostomatoida", "Caligidae",
+     "Caligus", ""),
+    ("Obazoa", "Metazoa", "Bilateria", "Arthropoda", "Crustacea", "Hexanauplia", "Porocephalida", "Linguatulidae",
+     "Linguatula", ""),
+    ("Archaeplastida", "Rhodoplantae", "Rhodophyta", "Cyanidiophyta", "Cyanidiophytina", "Cyanidiophyceae",
+     "Cyanidiales", "Cyanidiaceae", "Galdieria", ""),
+    ("Archaeplastida", "Rhodoplantae", "Rhodophyta", "Rhodophyta", "Rhodophytina", "Bangiophyceae", "Bangiales",
+     "Bangiaceae", "Bangia", ""),
+    ("Obazoa", "Fungi", "Rozellomyceta", "Rozellomycota", "Microsporidia", "Microsporidea", "Amblyosporida",
+     "Amblyosporidae", "Amblyospora", ""),
+]
+HARMONY_NODES = [
+    (6073, 33208, "phylum", "Cnidaria"), (6101, 6073, "class", "Anthozoa"), (40674, 7711, "class", "Mammalia"),
+    (9347, 40674, "order", "Afrosoricida"), (9389, 9347, "family", "Chrysochloridae"),
+    (9390, 9389, "genus", "Amblysomus"), (9391, 9390, "species", "Amblysomus hottentotus"),
+    (9400, 9389, "genus", "Zebra"), (9401, 9400, "species", "Zebra striata"),
+    (6447, 33208, "phylum", "Mollusca"), (6448, 6447, "class", "Gastropoda"), (6449, 6448, "family", "Chilodontidae"),
+    (6450, 6449, "genus", "Clypeostoma"), (6451, 6450, "species", "Clypeostoma nortoni"),
+    (6656, 33208, "phylum", "Arthropoda"), (6657, 6656, "class", "Copepoda"), (6658, 6657, "order", "Calanoida"),
+    (6659, 6658, "family", "Calanidae"), (6660, 6659, "genus", "Calanus"),
+    (6661, 6660, "species", "Calanus finmarchicus"), (6662, 6657, "order", "Mormonilloida"),
+    (6663, 6662, "family", "Mormonillidae"), (6664, 6663, "genus", "Mormonilla"),
+    (6665, 6664, "species", "Mormonilla phasma"), (6666, 6657, "order", "Siphonostomatoida"),
+    (6667, 6666, "family", "Caligidae"), (6668, 6667, "genus", "Caligus"), (6669, 6668, "species", "Caligus elongatus"),
+    (6670, 6656, "class", "Ichthyostraca"), (6671, 6670, "order", "Cephalobaenida"),
+    (6672, 6671, "family", "Linguatulida"), (6673, 6672, "genus", "Linguatula"),
+    (6674, 6673, "species", "Linguatula serrata"), (2763, 2759, "phylum", "Rhodophyta"),
+    (2764, 2763, "class", "Galdieriophyceae"), (2765, 2764, "order", "Galdieriales"),
+    (2766, 2765, "family", "Galdieriaceae"), (2767, 2766, "genus", "Galdieria"),
+    (2768, 2767, "species", "Galdieria sulphuraria"), (6029, 4751, "phylum", "Microsporidia"),
+    (6030, 6029, "genus", "Amblyospora"), (6031, 6030, "species", "Amblyospora connecticus"),
+    (6032, 6029, "genus", "Nosema"), (6033, 6032, "species", "Nosema ceranae"),
+]
+
+
+class HarmonyTest(unittest.TestCase):
+    """One taxonomic framework (since 2026-11-15): a species' higher taxa those of its relatives, and of its NCBI
+    lineage where EUKARYOME holds a name in another lineage alone."""
+
+    def setUp(self):
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        with mock.patch.object(fx, "NODES", fx.NODES + MORE_NODES + HARMONY_NODES):
+            self.ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+
+    def lineage(self, tree, taxid):
+        node, how = tree.place(self.ncbi, taxid)
+        return how, tree.text(node)
+
+    def test_a_name_misfiled_under_another_phylum_is_its_own_taxon(self):
+        tree = eukaryome.Tree.from_classification(HARMONY_ROWS)
+        self.assertIn((6, "Alcyonacea(Mammalia)"), tree.parent)  # the corals' order keeps its name
+        how, text = self.lineage(tree, 9391)
+        self.assertEqual(how, "genus")
+        self.assertIn(";Chordata;", text)
+        self.assertNotIn("Anthozoa", text)
+
+    def test_a_genus_name_of_another_phylum_is_not_the_species(self):
+        # EUKARYOME holds Zebra as a coral's genus alone: the mammal goes under its NCBI family, Chrysochloridae, its
+        # genus written with its parent beside the coral's (the tree's homonyms)
+        how, text = self.lineage(eukaryome.Tree.from_classification(HARMONY_ROWS), 9401)
+        self.assertEqual(how, "upward")
+        self.assertTrue(text.endswith(";Mammalia;Alcyonacea(Mammalia);Chrysochloridae;Zebra(Chrysochloridae);"
+                                      "Zebra_striata"), text)
+
+    def test_a_genus_classified_otherwise_within_ncbis_taxon_is_eukaryomes(self):
+        # EUKARYOME's classification is Eukore's where NCBI's taxon holds it: Galdieria in Cyanidiophyta, under its
+        # subkingdom Rhodophyta (NCBI's phylum); Linguatula in Hexanauplia, a class of the subphylum of NCBI's
+        # Ichthyostraca, though no name below their class is shared
+        tree = eukaryome.Tree.from_classification(HARMONY_ROWS)
+        how, text = self.lineage(tree, 2768)
+        self.assertEqual(how, "genus")
+        self.assertIn(";Cyanidiophyta;", text)
+        how, text = self.lineage(tree, 6674)
+        self.assertEqual(how, "genus")
+        self.assertIn(";Hexanauplia;Porocephalida;", text)
+
+    def test_a_label_of_a_homonym_takes_its_own_lineage(self):
+        # EUKARYOME files Triadinium as a ciliate's and a dinoflagellate's genus: two taxa, and its reads' label of the
+        # dinoflagellate (g__Triadinium(Dinoflagellata)) goes to the dinoflagellates' by the label's higher names
+        tree = eukaryome.Tree.from_classification([
+            HEADER,
+            ("Harosa", "Alveolata", "", "Ciliophora", "Intramacronucleata", "Litostomatea", "Trichostomatia",
+             "Ditoxidae", "Triadinium", ""),
+            ("Harosa", "Alveolata", "", "Dinoflagellata", "Dinophytina", "Dinophyceae", "Gonyaulacales",
+             "Goniodomataceae", "Triadinium", "")])
+        node = tree.place_label("k__Alveolata;p__Dinoflagellata;c__Dinophyceae;o__Gonyaulacales;f__Goniodomataceae;"
+                                "g__Triadinium(Dinoflagellata);s__polyedricum")
+        self.assertIn(";Dinoflagellata;", tree.text(node))
+        self.assertTrue(tree.text(node).endswith(";Triadinium_polyedricum"), tree.text(node))
+        node = tree.place_label("k__Alveolata;p__Ciliophora;c__Litostomatea;o__Trichostomatia;f__Ditoxidae;"
+                                "g__Triadinium;s__caudatum")
+        self.assertIn(";Ciliophora;", tree.text(node))
+
+    def test_a_dotted_homonym_found_by_its_name(self):
+        # NCBI's gastropod Chilodontidae: EUKARYOME's Chilodontidae.Seguenziida, not the fish family
+        how, text = self.lineage(eukaryome.Tree.from_classification(HARMONY_ROWS), 6451)
+        self.assertEqual(how, "upward")
+        self.assertIn(";Mollusca;", text)
+        self.assertIn("Chilodontidae.Seguenziida;Clypeostoma", text)
+
+    def test_a_clade_named_otherwise_is_its_relatives_taxon(self):
+        # NCBI's Copepoda is EUKARYOME's Hexanauplia (its Calanus): a copepod EUKARYOME lacks goes there, not under a
+        # second class named Copepoda
+        plain = eukaryome.Tree.from_classification(HARMONY_ROWS)
+        self.assertIn(";Copepoda;", self.lineage(plain, 6665)[1])
+        tree = eukaryome.Tree.from_classification(HARMONY_ROWS)
+        learned = tree.learn(self.ncbi, [6661, 6665])
+        self.assertEqual(learned[6657], (5, "Hexanauplia"))
+        how, text = self.lineage(tree, 6665)
+        self.assertEqual(how, "upward")
+        self.assertIn(";Hexanauplia;Mormonilloida;Mormonillidae;Mormonilla;Mormonilla_phasma", text)
+        self.assertEqual(self.lineage(tree, 6661)[0], "genus")  # placed by its own name as before
+
+    def test_a_learned_clade_yields_to_a_deeper_taxon_of_its_name(self):
+        # NCBI's phylum Microsporidia is EUKARYOME's phylum Rozellomycota by its species, and EUKARYOME's subphylum
+        # Microsporidia below it: a microsporidian EUKARYOME lacks goes there, not under an empty subphylum
+        tree = eukaryome.Tree.from_classification(HARMONY_ROWS)
+        learned = tree.learn(self.ncbi, [6031, 6033])
+        self.assertEqual(learned[6029], (3, "Rozellomycota"))
+        how, text = self.lineage(tree, 6033)
+        self.assertEqual(how, "upward")
+        self.assertIn(";Rozellomycota;Microsporidia;", text)
+
+    def test_a_clade_split_across_taxa_is_not_learned(self):
+        # with Caligus EUKARYOME puts NCBI's copepods into two classes: a copepod it lacks goes neither under the class
+        # most of them stand in nor under their subphylum with its ranks empty, but by its names as before
+        tree = eukaryome.Tree.from_classification(HARMONY_ROWS)
+        learned = tree.learn(self.ncbi, [6661, 6665, 6669])
+        self.assertNotIn(6657, learned)
+        self.assertEqual(learned[6668], (8, "Caligus"))
+        how, text = self.lineage(tree, 6665)
+        self.assertEqual(how, "upward")
+        self.assertIn(";Arthropoda;Arthropoda.subphy.incertae.sedis;Copepoda;Mormonilloida;", text)
+
+
 class LoadTest(unittest.TestCase):
     def test_the_source_folders_tree_holds_its_reads_species(self):
         # the build's tree: the classification table's xlsx (a formula's saved value read, not its text) and the long
@@ -503,30 +652,109 @@ class Midori2Test(unittest.TestCase):
         with gzip.open(path, "wt") as fh:
             fh.write(head("A1.1", 4932, "Saccharomyces cerevisiae") + "ACGT" * 100 + "\n"
                      + head("A2.1", 4932, "Saccharomyces cerevisiae") + "ACGT" * 150 + "\n"   # longest, dropped
-                     + head("A3.1", 4932, "Saccharomyces cerevisiae") + "ACGA" * 120 + "\n"   # cut to 101-200
+                     + head("A3.1", 4932, "Saccharomyces cerevisiae") + "ACGA" * 120 + "\n"   # cut to 101-400
                      + head("B1.1", 27291, "Saccharomyces paradoxus") + "ACGT" * 90 + "\n"    # review alone
                      + head("C1.1", 9606, "Homo sapiens") + "ACGT" * 90 + "\n"                # RefSeq's genome
                      + head("D1.1", 2, "Bacteria") + "ACGT" * 90 + "\n")                      # no eukaryote
-        other = os.path.join(tmp, "MIDORI2_UNIQ_NUC_GB273_CO1_RAW.fasta.gz")  # another gene's file: not read
         calls = {("SSU", "A2.1"): {"action": "drop"},
-                 ("SSU", "A3.1"): {"action": "trim", "keep_start": "101", "keep_end": "200"},
+                 ("SSU", "A3.1"): {"action": "trim", "keep_start": "101", "keep_end": "400"},
                  ("SSU", "B1.1"): {"action": "review"}}
-        opts = argparse.Namespace(midori2=[path, other], inside=lambda t: True)
+        opts = argparse.Namespace(midori2=[path], inside=lambda t: True)
         with mock.patch.object(eukore_build, "say", lambda *_a, **_k: None):
             got = eukore_build.midori2_published(opts, ncbi, {(9606, "mitochondrion"): []}, calls)
         rows = {n: (s, r) for n, s, r in got}
-        self.assertEqual(set(rows), {"MIDORI2_A1.1", "MIDORI2_B1.1"})  # A1 (400) beats A3's kept part (100)
-        self.assertEqual((rows["MIDORI2_A1.1"][1]["source"], rows["MIDORI2_A1.1"][1]["via"],
-                          rows["MIDORI2_A1.1"][1]["label_from"], rows["MIDORI2_A1.1"][1]["organelle"]),
+        self.assertEqual(set(rows), {"MIDORI2_SSU_A1.1", "MIDORI2_SSU_B1.1"})  # A1 (400) beats A3's part (300)
+        self.assertEqual((rows["MIDORI2_SSU_A1.1"][1]["source"], rows["MIDORI2_SSU_A1.1"][1]["via"],
+                          rows["MIDORI2_SSU_A1.1"][1]["label_from"], rows["MIDORI2_SSU_A1.1"][1]["organelle"]),
                          ("MIDORI2", "MIDORI2_GB273", "midori2_taxid", "mitochondrion"))
-        self.assertEqual(rows["MIDORI2_B1.1"][1]["flags_extra"], ["screen_weak"])
-        row = dict(rows["MIDORI2_B1.1"][1], own_species="t", length_check="ok")
+        self.assertEqual(rows["MIDORI2_SSU_B1.1"][1]["flags_extra"], ["screen_weak"])
+        row = dict(rows["MIDORI2_SSU_B1.1"][1], own_species="t", length_check="ok")
         self.assertEqual(organelle.confidence(row), ("medium", "screen_weak"))
         calls[("SSU", "A1.1")] = {"action": "drop"}
         with mock.patch.object(eukore_build, "say", lambda *_a, **_k: None):
             got = {n: s for n, s, _r in eukore_build.midori2_published(opts, ncbi, {}, calls)}
-        self.assertEqual(got["MIDORI2_A3.1"], ("ACGA" * 120)[100:200])  # the screen's cut, its kept part
-        self.assertIn("MIDORI2_C1.1", got)  # no RefSeq genome given now
+        self.assertEqual(got["MIDORI2_SSU_A3.1"], ("ACGA" * 120)[100:400])  # the screen's cut, its kept part
+        self.assertIn("MIDORI2_SSU_C1.1", got)  # no RefSeq genome given now
+
+    def test_midori2_cox1_and_cytb(self):
+        # MIDORI2's COX1 and CYTB (since 2026-11-15): a record's reading frame found (its first codon not marked), a
+        # record with a stop in every frame of both strands (a NUMT, a pseudogene) not taken, nor one of the wrong
+        # length; the coding sequence the frame's, translated by the organelle check without stops
+        import argparse  # noqa: PLC0415
+        import random  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from eukore import gencode, organelle  # noqa: PLC0415
+        rng = random.Random(15)
+        sense = [c for c in (a + b + d for a in "ACGT" for b in "ACGT" for d in "ACGT")
+                 if c not in ("TAA", "TAG", "TGA")]
+
+        def orf(n):
+            return "".join(rng.choice(sense) for _ in range(n))
+
+        def head(acc, taxid, name):
+            return f">{acc}###root_1;Eukaryota_2759;X_1;Y_2;Z_3;W_4;V_5;{name}_{taxid}\n"
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        ncbi = ncbi_world(tmp)
+        cox1 = "A" + orf(200) + "GC"                                    # its frame one base in
+        numt = orf(60) + "TAAATAAAATAA" + orf(60) + "TTATTTATTTTA" + orf(60)  # stops in every frame, both strands
+        cytb = orf(130)
+        co1 = os.path.join(tmp, "MIDORI2_UNIQ_NUC_GB273_CO1_RAW.fasta.gz")
+        with gzip.open(co1, "wt") as fh:
+            fh.write(head("E1.1", 4932, "Saccharomyces cerevisiae") + cox1 + "\n"
+                     + head("E2.1", 27291, "Saccharomyces paradoxus") + numt + "\n"
+                     + head("E3.1", 27291, "Saccharomyces paradoxus") + orf(50) + "\n")  # 150 bases: too short
+        cyt = os.path.join(tmp, "MIDORI2_UNIQ_NUC_GB273_Cytb_RAW.fasta.gz")
+        with gzip.open(cyt, "wt") as fh:
+            fh.write(head("F1.1", 4932, "Saccharomyces cerevisiae") + cytb + "\n")
+        opts = argparse.Namespace(midori2=[co1, cyt], inside=lambda t: True)
+        with mock.patch.object(eukore_build, "say", lambda *_a, **_k: None):
+            got = eukore_build.midori2_published(opts, ncbi, {}, None)
+        rows = {n: (s, r) for n, s, r in got}
+        self.assertEqual(set(rows), {"MIDORI2_COX1_E1.1", "MIDORI2_CYTB_F1.1"})
+        seq, row = rows["MIDORI2_COX1_E1.1"]
+        self.assertEqual((row["gene"], row["organelle"], seq, row["cds"]), ("COX1", "mitochondrion", cox1, cox1[1:601]))
+        self.assertEqual(gencode.protein_of(row["cds"], 1)[1], 0)
+        self.assertEqual(organelle.reading_frame(numt)[1] > 0, True)
+        _out, counts = organelle.midori2_records([co1, cyt], ncbi)
+        self.assertEqual((counts["COX1: no reading frame (a NUMT, a pseudogene)"],
+                          counts["COX1: not the gene's length"]), (1, 1))
+        checked = organelle.check(got, ncbi)
+        self.assertEqual({r["record"]: r["internal_stops"] for _n, _s, r in checked},
+                         {"MIDORI2_COX1_E1.1": 0, "MIDORI2_CYTB_F1.1": 0})
+
+    def test_midori2_records_on_their_genes_strand(self):
+        # KSGP 5.1 turned 721 of MIDORI's mitochondrial SSU stored reversed: a coding record by its frame, an rRNA by
+        # the strand model of the records taken (most of them forward)
+        import random  # noqa: PLC0415
+        from eukore import organelle  # noqa: PLC0415
+        rng = random.Random(16)
+        sense = [c for c in (a + b + d for a in "ACGT" for b in "ACGT" for d in "ACGT")
+                 if c not in ("TAA", "TAG", "TGA")]
+
+        def head(acc, taxid, name):
+            return f">{acc}###root_1;Eukaryota_2759;X_1;Y_2;Z_3;W_4;V_5;{name}_{taxid}\n"
+
+        def mutated(s, share):
+            return "".join(c if rng.random() > share else rng.choice("ACGT") for c in s)
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        ncbi = ncbi_world(tmp)
+        cox1 = "".join(rng.choice(sense) for _ in range(200))
+        co1 = os.path.join(tmp, "MIDORI2_UNIQ_NUC_GB273_CO1_RAW.fasta.gz")
+        with gzip.open(co1, "wt") as fh:
+            fh.write(head("R1.1", 4932, "Saccharomyces cerevisiae") + rrna.revcomp(cox1) + "\n")
+        ssu = "".join(rng.choice("ACGT") for _ in range(900))
+        sr = os.path.join(tmp, "MIDORI2_UNIQ_NUC_GB273_srRNA_RAW.fasta.gz")
+        with gzip.open(sr, "wt") as fh:
+            for acc, taxid, name in (("S1.1", 4932, "Saccharomyces cerevisiae"), ("S2.1", 27291, "Saccharomyces "
+                                     "paradoxus"), ("S3.1", 9900001, "Saccharomyces novus")):
+                fh.write(head(acc, taxid, name) + mutated(ssu, 0.03) + "\n")
+            fh.write(head("S4.1", 9606, "Homo sapiens") + rrna.revcomp(mutated(ssu, 0.03)) + "\n")
+        got, counts = organelle.midori2_records([co1, sr], ncbi)
+        rows = {n: s for n, s, _r in got}
+        self.assertEqual(rows["MIDORI2_COX1_R1.1"], cox1)  # turned by its frame
+        self.assertEqual(counts["SSU: turned to its gene's strand"], 1)
+        self.assertEqual(counts["COX1: turned to its gene's strand"], 1)
+        self.assertGreater(organelle.strand_score(rows["MIDORI2_SSU_S4.1"], organelle.strand_model([ssu])), 0)
 
 
 class PackageTest(unittest.TestCase):

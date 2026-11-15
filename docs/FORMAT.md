@@ -140,18 +140,38 @@ added stands for, else `-`). The tree is EUKARYOME's classification table made o
 - every name is under one lineage: a name the table files under several parents takes the parent of most of its rows
   (Ascomycota under Dikarya); a name two kingdoms share (a homonym) is two taxa, the one of fewer rows written with its
   kingdom as EUKARYOME writes its own (`Lankesterella(Viridiplantae)`, which the table's kingdom-specific column gives
-  where it has one); a name of two lineages within one kingdom is written with its parent (`Insecta(Arthropoda)`);
+  where it has one); a name of two lineages within one kingdom is written with its parent (`Insecta(Arthropoda)`),
+  and since 2026-11-15 a name below the subphylum the table files under two phyla of one kingdom, each borne out by
+  the name's parent there (a taxon of that phylum by most of its rows), is two taxa, the one of fewer rows written
+  with its parent (EUKARYOME 2.1's golden moles under Mammalia's `Alcyonacea(Mammalia)`, not the corals' order; the
+  dinoflagellates' `Triadinium(Goniodomataceae)` beside the ciliates' `Triadinium(Alveolata)`; a name EUKARYOME
+  writes with a bracket tagged on its name without it), while a row whose phylum alone is another (a column off,
+  `Coniferophyta;Tracheophytina;Pinopsida`) is no taxon of its own; a family EUKARYOME writes with its order
+  (`Chilodontidae.Seguenziida`, the gastropods' beside the fishes' Chilodontidae) is found by its name too;
   a row of the table a column off (EUKARYOME 2.1's `Metazoa;Arthropoda;Insecta;...` with Arthropoda as its subkingdom)
   is put back where its names stand in most rows; a genus the table names as its family (`Solanaceae;Solanaceae`) is
   no genus;
-- EUKARYOME's reads' labels add their species (`Genus_epithet`) and the families and genera the table lacks;
+- EUKARYOME's reads' labels add their species (`Genus_epithet`) and the families and genera the table lacks; of
+  several taxa of a label's name, the one sharing the most of the label's names (since 2026-11-15: its
+  `Triadinium(Dinoflagellata)` the dinoflagellates');
 - every NCBI taxon of the package is placed by name: by its species (`species`), one of NCBI's synonyms (`synonym`),
   its genus (`genus`: added under it by its NCBI name), its own name above species (`name`), else the deepest of its
-  NCBI clades EUKARYOME names (`upward`: by NCBI's name, or by data/eukaryome_names.tsv's EUKARYOME name of a deep
-  lineage, Stramenopiles as Straminipila; the ranks below it filled with NCBI's names, an empty one with EUKARYOME's
+  NCBI clades EUKARYOME holds (`upward`: since 2026-11-15 first the one EUKARYOME taxon of its rank the clade's
+  species placed by their own name stand under, `Tree.learn`: NCBI's Copepoda is EUKARYOME's Hexanauplia, a taxon of
+  under 1% of them a stray; a taxon of the clade's name below it before it, NCBI's phylum Microsporidia EUKARYOME's
+  subphylum, not its Rozellomycota; a clade EUKARYOME splits, NCBI's Pinopsida into its Pinopsida and Cupressopsida,
+  is not learned; else by NCBI's name, or by data/eukaryome_names.tsv's EUKARYOME name of a deep lineage,
+  Stramenopiles as Straminipila; the ranks below it filled with NCBI's names, an empty one with EUKARYOME's
   placeholder), else under `Eukaryota.subdomain.incertae.sedis` (`none`). Of several taxa of a name, one whose kingdom
-  holds the NCBI taxon's group (data/eukaryome_names.tsv's groups: a homonym of another kingdom is never taken), then
-  the one sharing the most names with NCBI's lineage.
+  holds the NCBI taxon's group (data/eukaryome_names.tsv's groups: a homonym of another kingdom is never taken), since
+  2026-11-15 not one whose phylum, or class in NCBI's phylum but of another subphylum, is another than NCBI's where
+  the tree holds NCBI's, NCBI's taxon stands not above it, and none of its names down to the genus is one of NCBI's
+  lineage (a homonym within a kingdom, or a name EUKARYOME misfiles: the corals' genus Zebra is no golden mole's, an
+  insect's genus no barnacle's; `Tree.conflicts`), then the one sharing the most names with NCBI's lineage. A genus
+  EUKARYOME classifies otherwise within NCBI's taxon keeps EUKARYOME's place (Galdieria in Cyanidiophyta, under
+  EUKARYOME's subkingdom Rhodophyta; Neocystis in Trebouxiophyceae, NCBI's Chlorophyceae, both Chlorophytina). So
+  Eukore's lineages are EUKARYOME's: an NCBI taxon EUKARYOME splits stays split (NCBI's Streptophyta are EUKARYOME's
+  Tracheophyta, Bryophyta, Marchantiophyta, ...), and no name stands on two lineages.
 
 A EUKARYOME lineage, here and in `species.tsv`, `rrna/records.tsv` and `organelle/genes.tsv`, is the ten ranks
 superkingdom;kingdom;subkingdom;phylum;subphylum;class;order;family;genus;species, complete down to the taxon's rank,
@@ -182,7 +202,7 @@ its taxon is in `taxonomy/`; until then a published read's genus was a row):
 | `ncbi_lineage` | NCBI's names at domain;kingdom;phylum;class;order;family;genus;species (a rank NCBI does not name empty) |
 | `ncbi_lineage_filled` | the same, an empty rank filled (format 5): with the next unranked NCBI clade below the rank above it (a protist's `Sar`, `Stramenopiles`, ...), shallowest first; where none is left, the name above with `_X` (PR2's way: `Nematoda_X`, `Nematoda_XX`) |
 | `pr2`, `pr2_match` | its lineage in PR2 (domain;supergroup;division;subdivision;class;order;family;genus;species, as PR2 writes it: `Saccharomyces_cerevisiae`), and how it was found (below) |
-| `eukaryome`, `eukaryome_match` | its lineage in EUKARYOME (superkingdom;kingdom;subkingdom;phylum;subphylum;class;order;family;genus;species: its classification table to the genus, its long reads' species). Since format 7 every species', complete, in EUKARYOME's one tree (`taxonomy/eukaryome.tsv`): a species EUKARYOME does not name has EUKARYOME's lineage down to the deepest rank EUKARYOME names (its genus, else its family, ...) and NCBI's names below; `eukaryome_match` says how: `species`, `synonym`, `genus`, `upward` (a clade above its genus), `none` (none of its clades; under `Eukaryota.subdomain.incertae.sedis`). Until format 7 the name match below (`-` where none) |
+| `eukaryome`, `eukaryome_match` | its lineage in EUKARYOME (superkingdom;kingdom;subkingdom;phylum;subphylum;class;order;family;genus;species: its classification table to the genus, its long reads' species). Since format 7 every species', complete, in EUKARYOME's one tree (`taxonomy/eukaryome.tsv`): a species EUKARYOME does not name has EUKARYOME's lineage down to the deepest rank EUKARYOME names (its genus, else its family, ...) and NCBI's names below; `eukaryome_match` says how: `species`, `synonym`, `genus`, `upward` (a clade above its genus), `none` (none of its clades; under `Eukaryota.subdomain.incertae.sedis`); since 2026-11-15 a species whose genus name EUKARYOME holds only in another phylum than NCBI's, or a class of another subphylum of NCBI's phylum (a homonym), is placed upward, and upward under its NCBI clade's EUKARYOME taxon ([taxonomy/](#taxonomy)). Until format 7 the name match below (`-` where none) |
 | `ksgp`, `ksgp_match` | its lineage in KSGP (`k__` .. `s__`, as KSGP writes it; its eukaryote nuclear records) |
 | `silva`, `silva_match` | its lineage in SILVA's SSU Ref NR99 (138.2; format 5): its eukaryote records' path, of any depth, then the species (`Saccharomyces_cerevisiae`; the organism's first two words where they name one) |
 | `unite`, `unite_match` | its lineage in UNITE's general release of all eukaryotes (10.0, 2025-02-19; `k__` .. `s__`; format 5); its species hypotheses are in `crossrefs.tsv` |
@@ -562,11 +582,17 @@ EUKARYOME's organelle SSU (its SSU set's `k___mitochondrion`, `k___plastid` and 
 by their genus and species; `organelle` `nucleomorph` with `name` `18S`) are
 published organelle records (one of a RefSeq organelle genome whose genes the package holds not again), each gene
 `SSU`, `source` `EUKARYOME`, `seqid` its id, `start`, `end`, `strand`, `exons`, `copies` and `partial` `-`, checked as
-every gene. And MIDORI2's mitochondrial SSU (its srRNA file among `--midori2`'s; `eukore_build.midori2_published`): of
-each species whose mitochondrial genes no RefSeq genome gives, one record, its longest the reference screen keeps (a
-record it cuts as its kept part, one it drops never, one it leaves for review only where the species has no other,
-`medium`: `screen_weak`), `source` `MIDORI2`, `via` `MIDORI2_<GenBank release>`, `label_from` `midori2_taxid` (the
-NCBI taxid MIDORI2 gives), `record` `MIDORI2_<accession>`.
+every gene. And MIDORI2's mitochondrial SSU, COX1 and CYTB (its srRNA, CO1 and Cytb files among `--midori2`'s;
+`eukore_build.midori2_published`, `organelle.midori2_records`; COX1 and CYTB since 2026-11-15), by protal's rules for
+its mitochondrial layer: of each named species whose mitochondrial genes no RefSeq genome gives, one record of each
+gene, its longest the reference screen keeps (a record it cuts as its kept part, one it drops never, one it leaves for
+review only where the species has no other, `medium`: `screen_weak`) of the gene's length (SSU 250-3,000 bases, COX1
+300-2,400, CYTB 300-1,600) with at most 0.5% other bases than ACGT; a COX1 or CYTB with a stop in every frame of both
+strands by the species' mitochondrial code is left out (a nuclear copy, a NUMT, or a pseudogene), one on the minus
+strand is turned, and its coding sequence is the record from its open frame (`cds.fna.gz`, `proteins.faa.gz`); an SSU
+is turned where an 8-mer model of the species' SSU taken reads it on the minus strand (KSGP 5.1's strand check);
+`source` `MIDORI2`, `via` `MIDORI2_<GenBank release>`, `label_from` `midori2_taxid` (the NCBI taxid MIDORI2 gives),
+`record` `MIDORI2_<gene>_<accession>` (until 2026-11-15 `MIDORI2_<accession>`, the SSU alone).
 - `genes.fna.gz`: one record per gene, `>record`, the gene from its first base to its last on its strand, introns and
   all, upper case. A trans-spliced gene (a plant mitochondrion's nad1, nad5: exons on both strands or out of order;
   `trans_spliced` t) is its exons joined. The trnH-psbA record runs from trnH-GUG's first base, across the spacer, to
@@ -574,7 +600,8 @@ NCBI taxid MIDORI2 gives), `record` `MIDORI2_<accession>`.
 - `cds.fna.gz`, `proteins.faa.gz` (format 5): the protein-coding genes' coding sequences (their exons joined) and
   proteins (translated by the species' organelle code: `taxonomy/nodes.tsv`'s `mgcode`, `pgcode`; since 2026-11-10 a
   RefSeq gene by its own `/transl_table` and from its `/codon_start`; the stop that ends
-  them left out), where the exons are known: RefSeq's, miniprot's, or a gene of one exon. nhmmer's hits joined are not
+  them left out), where the exons are known: RefSeq's, miniprot's, or a gene of one exon (since 2026-11-15 a MIDORI2
+  record's: from its open frame). nhmmer's hits joined are not
   a gene's exons (`flags` `exons_approximate`).
 - `genes.tsv`:
 
@@ -830,6 +857,15 @@ them). `genomes.tsv`'s
   contigs where it titles no molecule an organelle; `species.tsv`'s `midori2` from MIDORI2's newest release, fetched
   (`--no_midori2`: none), whose srRNA file gives the mitochondrial SSU above; a BUSCO copy split across a skim's contigs
   joined into one (`genome_record` 3: a genome of an older record is run again).
+  Since 2026-11-15, the same format: `organelle/genes.tsv`'s MIDORI2 records of COX1 and CYTB too (one each a species
+  without a RefSeq mitochondrial genome, protal's rules, with their coding sequences and proteins), every MIDORI2
+  record `MIDORI2_<gene>_<accession>` (until then `MIDORI2_<accession>`), an SSU on the minus strand turned; in
+  EUKARYOME's tree a name filed under two phyla of one kingdom, each borne out by its parent, is two taxa (a second
+  taxon of a bracketed name tagged on its name without the bracket), a family written with its order is found
+  by its name, a genus name of another phylum, or a class of another subphylum of NCBI's phylum, sharing none of
+  NCBI's names (a homonym) is not a species' genus, and
+  a species placed upward goes under its NCBI clade's EUKARYOME taxon, learned from the clade's species, and a
+  label's name of several taxa is the one sharing the most of the label's names ([taxonomy/](#taxonomy)).
 - 2026-11-10, no new format (optional): `reference_screen.tsv` and the manifest's `inputs.references.MIDORI2.screen`
   (and `files`), where the build was given MIDORI2 files; `species.tsv`'s `midori2` no longer names a species by a
   record the screen drops. MIDORI2's later header layout (GB273's: a tab, every NCBI rank as `rank_Name_taxid`) is

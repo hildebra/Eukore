@@ -1230,21 +1230,161 @@ def collect(ncbi, job_map, species_set, chosen, work_folder):
 PUBLISHED_ORGANELLES = ("mitochondrion", "plastid", "nucleomorph")
 
 
-def published_record(r, taxid, species_taxid, how, label, ncbi, via="-"):
+def published_record(r, taxid, species_taxid, how, label, ncbi, via="-", gene="SSU", cds=None):
     """A published organelle record (r: name, sequence, kind (its organelle), source, id; since 2026-11-14:
-    EUKARYOME's mitochondrial SSU, eukore_build.organelle_published) -> (name, sequence, row of GENE_COLUMNS): its
-    gene SSU, its seqid its accession, where it lies in it not known."""
+    EUKARYOME's organelle SSU, eukore_build.organelle_published; MIDORI2's genes, midori2_records) -> (name, sequence,
+    row of GENE_COLUMNS): its gene (SSU, or since 2026-11-15 a protein-coding gene with its coding sequence `cds`),
+    its seqid its accession, where it lies in it not known."""
     seq = r["sequence"]
     organelle = r["kind"]
     animal, plant = is_animal(ncbi, species_taxid), EMBRYOPHYTA in ncbi.ancestors(ncbi.merged.get(species_taxid,
                                                                                                 species_taxid))
-    name = "18S" if organelle == "nucleomorph" else name_of(organelle, "SSU", animal, plant)
-    return (r["name"], seq, dict(record=r["name"], gene="SSU", organelle=organelle, taxid=taxid,
+    name = "18S" if organelle == "nucleomorph" else name_of(organelle, gene, animal, plant)
+    return (r["name"], seq, dict(record=r["name"], gene=gene, organelle=organelle, taxid=taxid,
                                  species_taxid=species_taxid, source=r["source"], seqid=r["id"], accession="-",
                                  start="-", end="-", strand="-", length=len(seq), exons="-", copies="-", partial="-",
                                  ambiguous=f"{rrna.ambiguous(seq):.4f}", name=name, model="-", parts="-",
-                                 trans_spliced="f", regions="-", cds=None, transl_table="-", transl_except="-",
-                                 via=via, source_label=label, label_from=how))
+                                 trans_spliced="f", regions="-", cds=cds if gene in CODING else None,
+                                 transl_table="-", transl_except="-", via=via, source_label=label, label_from=how))
+
+
+# MIDORI2's mitochondrial genes Eukore takes (since 2026-11-14 the SSU; since 2026-11-15 the barcodes COX1 and CYTB),
+# by protal's rules for its mitochondrial layer (protal's scripts/mini_db/mito_records.py): of each named species
+# without a RefSeq mitochondrial genome, one record a gene, the longest the reference screen keeps (refscreen.py) whose
+# length is the gene's (MIDORI2_LENGTHS), with few other bases than ACGT (MAX_AMBIGUOUS) and, a protein-coding gene's,
+# a reading frame (reading_frame: a stop in every frame of both strands is a nuclear copy, a NUMT, or a pseudogene)
+MIDORI2_GENES = ("SSU", "COX1", "CYTB")
+MIDORI2_LENGTHS = {"SSU": (250, 3000), "COX1": (300, 2400), "CYTB": (300, 1600), "LSU": (300, 3600)}
+
+
+def reading_frame(seq, table=1):
+    """A coding record's reading frame by its organelle's genetic code -> (its coding sequence: the record on that
+    strand from that frame, whole codons; the stops inside it; its strand, + or -): the frame of the fewest stops
+    inside (the last codon's not counted), its own strand's first frame before the others on a tie. MIDORI2 gives a
+    gene's span from GenBank, its first codon not marked (a partial CDS' /codon_start), and some records reversed."""
+    best = None
+    for strand, strand_seq in (("+", seq), ("-", rrna.revcomp(seq))):
+        for frame in range(3):
+            cds = strand_seq[frame:]
+            cds = cds[:len(cds) // 3 * 3]
+            _p, stops = gencode.protein_of(cds, table)
+            if not stops:  # the first frame without a stop is the best (a tie goes to the earlier)
+                return cds, 0, strand
+            key = (stops, strand != "+", frame)
+            if best is None or key < best[0]:
+                best = (key, cds, stops, strand)
+    return best[1], best[2], best[3]
+
+
+STRAND_K = 8  # the strand model's words (KSGP 4.1's 8-mer strand model)
+
+
+def strand_model(seqs, k=STRAND_K):
+    """A gene's strand model from its records (most of them on the gene's strand): its words' counts."""
+    counts = collections.Counter()
+    for s in seqs:
+        counts.update(s[i:i + k] for i in range(len(s) - k + 1))
+    return counts
+
+
+def strand_score(seq, model, k=STRAND_K):
+    """How much likelier a record is on its gene's strand than reversed (log-odds of its words against their reverse
+    complements' in the model): below 0 the record is reversed."""
+    import math  # noqa: PLC0415
+    score = 0.0
+    for i in range(len(seq) - k + 1):
+        w = seq[i:i + k]
+        score += math.log((model.get(w, 0) + 1) / (model.get(rrna.revcomp(w), 0) + 1))
+    return score
+
+
+def midori2_records(paths, ncbi, refseq_species=(), inside=None, calls=None, genes=MIDORI2_GENES, log=None):
+    """MIDORI2's gene files (paths; labels.midori2_gene tells a file's gene) -> (organelle records [(name, sequence,
+    row)] of GENE_COLUMNS, counts): of each NCBI species MIDORI2 names (a named eukaryote species:
+    labels.is_species_name of its NCBI name; a merged taxid by its new one) without a RefSeq mitochondrial genome
+    (refseq_species) and inside the build's clades (inside), one record a gene of `genes`, its longest that the
+    reference screen keeps (calls: refscreen's {(gene, accession): call}; one it cuts as the part it keeps, one it
+    drops never, one it leaves for review only where the species has no other, flagged `screen_weak`) whose length is
+    in MIDORI2_LENGTHS, whose share of other bases than ACGT is MAX_AMBIGUOUS at most and, of a protein-coding gene,
+    that has a reading frame by its species' mitochondrial code (reading_frame: its coding sequence the frame's). A
+    record is on its gene's strand: a coding one by its frame, an rRNA by the strand model of the records taken
+    (strand_model). Every haplotype of a species (MIDORI2's UNIQ files) is read; one is taken."""
+    from . import labels  # noqa: PLC0415
+    calls, refseq_species = calls or {}, set(refseq_species)
+    best, counts, named, turned = {}, collections.Counter(), {}, set()
+    for path in paths:
+        gene = labels.midori2_gene(path)
+        if gene not in genes:
+            continue
+        found = re.search(r"GB\d+", os.path.basename(path))
+        version = found.group(0) if found else "?"
+        low, high = MIDORI2_LENGTHS.get(gene, (0, 10 ** 9))
+        for accession, taxid, seq in labels.midori2_records(path):
+            t = ncbi.merged.get(taxid, taxid) if taxid else None
+            if t is None or t not in ncbi.parent:
+                counts[f"{gene}: no NCBI taxon"] += 1
+                continue
+            sp = ncbi.species_of(t)
+            if sp not in named:
+                named[sp] = ncbi.rank.get(sp) == "species" and rrna.is_eukaryote(ncbi, sp) and \
+                    labels.is_species_name(ncbi.name.get(sp, ""))
+            if not named[sp]:
+                counts[f"{gene}: no named species"] += 1
+                continue
+            if sp in refseq_species or (inside and not inside(sp)):
+                counts[f"{gene}: RefSeq's genome or outside the clades"] += 1
+                continue
+            c = calls.get((gene, accession))
+            action = c["action"] if c else "-"
+            if action == "drop":
+                counts[f"{gene}: dropped by the screen"] += 1
+                continue
+            if action == "trim":
+                seq = seq[int(c["keep_start"]) - 1:int(c["keep_end"])]
+            seq = seq.upper()
+            if not low <= len(seq) <= high:
+                counts[f"{gene}: not the gene's length"] += 1
+                continue
+            if rrna.ambiguous(seq) > MAX_AMBIGUOUS:
+                counts[f"{gene}: ambiguous bases"] += 1
+                continue
+            key = (action != "review", len(seq), accession)
+            if (sp, gene) in best and key <= best[(sp, gene)][0]:
+                continue
+            cds, strand = None, "+"
+            if gene in CODING:
+                cds, stops, strand = reading_frame(seq, ncbi.code_of(sp, COMPARTMENT["mitochondrion"]))
+                if stops:
+                    counts[f"{gene}: no reading frame (a NUMT, a pseudogene)"] += 1
+                    continue
+                if strand == "-":  # stored reversed: the record on its gene's strand, as its coding sequence
+                    seq = rrna.revcomp(seq)
+            best[(sp, gene)] = (key, accession, t, seq, cds, action, version)
+            (turned.add if strand == "-" else turned.discard)((sp, gene))
+    # an rRNA's records on its gene's strand: its strand model of the records taken (most of them on it; KSGP 5.1
+    # turned 721 of MIDORI's mitochondrial SSU so)
+    for gene in {g for _sp, g in best if g not in CODING}:
+        mine = [k for k in best if k[1] == gene]
+        model = strand_model(best[k][3] for k in mine)
+        for k in mine:
+            item = best[k]
+            if strand_score(item[3], model) < 0:
+                best[k] = item[:3] + (rrna.revcomp(item[3]),) + item[4:]
+                turned.add(k)
+    out = []
+    for (sp, gene), (_key, accession, t, seq, cds, action, version) in sorted(best.items()):
+        r = dict(name=f"MIDORI2_{gene}_{accession}", sequence=seq, kind="mitochondrion", source="MIDORI2",
+                 id=accession)
+        name, seq, row = published_record(r, t, sp, "midori2_taxid", "-", ncbi, f"MIDORI2_{version}", gene, cds)
+        row["flags_extra"] = ["screen_weak"] if action == "review" else []
+        out.append((name, seq, row))
+        counts[f"{gene}: taken" + (" (cut by the screen)" if action == "trim" else " (for review)"
+                                   if action == "review" else "")] += 1
+        if (sp, gene) in turned:
+            counts[f"{gene}: turned to its gene's strand"] += 1
+    if log:
+        log("MIDORI2: " + ", ".join(f"{k} {v:,}" for k, v in sorted(counts.items())))
+    return out, dict(counts)
 
 
 def coding_of(r, seq):

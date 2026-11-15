@@ -979,55 +979,16 @@ def organelle_published(opts, src_dir, ncbi, chosen):
 
 
 def midori2_published(opts, ncbi, chosen, calls=None):
-    """MIDORI2's mitochondrial SSU (since 2026-11-14: its srRNA file among --midori2's, screened by the reference screen,
-    refscreen.py) as organelle genes [(name, sequence, row)]: of each species inside the build's clades whose
-    mitochondrial genes no RefSeq genome gives (chosen's), one record, its longest the screen keeps (a record it cuts
-    as the part it keeps, one it drops never, one it leaves for review only where the species has no other, flagged
-    `screen_weak`), labelled by the NCBI taxid MIDORI2 gives (a merged one by its new taxid). A species' every
-    haplotype (MIDORI2's UNIQ files) would multiply the organelle checks' searches for no species more; KSGP took one
-    record a species too (58,806 MIDORI SSU in KSGP 5.2). Without the screen (--no_reference_screen) every record
-    counts as kept."""
-    files = [p for p in (opts.midori2 or ()) if labels.midori2_gene(p) == "SSU"]
-    if not files:
+    """MIDORI2's mitochondrial genes as organelle genes [(name, sequence, row)] (organelle.midori2_records; since
+    2026-11-14 its SSU, since 2026-11-15 also its COX1 and CYTB, the barcodes, by protal's rules): of each named species
+    inside the build's clades whose mitochondrial genes no RefSeq genome gives (chosen's), one record a gene, the
+    longest the reference screen keeps (calls: refscreen's; without the screen, --no_reference_screen, every record
+    counts as kept) whose length is the gene's, whose bases are ACGT nearly all and, of COX1 and CYTB, that has a
+    reading frame (a NUMT or a pseudogene has none)."""
+    if not opts.midori2:
         return []
     refseq = {sp for sp, o in chosen if o == "mitochondrion"}
-    calls = calls or {}
-    best, counts = {}, collections.Counter()
-    for path in files:
-        version = re.search(r"GB\d+", os.path.basename(path))
-        for accession, taxid, seq in labels.midori2_records(path):
-            t = ncbi.merged.get(taxid, taxid) if taxid else None
-            if t is None or t not in ncbi.parent:
-                counts["no NCBI taxon"] += 1
-                continue
-            sp = ncbi.species_of(t)
-            if ncbi.rank.get(sp) != "species" or not rrna.is_eukaryote(ncbi, sp):
-                counts["no species"] += 1
-                continue
-            if sp in refseq or not opts.inside(sp):
-                counts["RefSeq's genome or outside the clades"] += 1
-                continue
-            c = calls.get(("SSU", accession))
-            action = c["action"] if c else "-"
-            if action == "drop":
-                counts["dropped by the screen"] += 1
-                continue
-            if action == "trim":
-                seq = seq[int(c["keep_start"]) - 1:int(c["keep_end"])]
-            seq = seq.upper()
-            key = (action != "review", len(seq), accession)
-            if sp not in best or key > best[sp][0]:
-                best[sp] = (key, accession, t, seq, action, version.group(0) if version else "?")
-    out = []
-    for sp, (_key, accession, t, seq, action, version) in sorted(best.items()):
-        r = dict(name=f"MIDORI2_{accession}", sequence=seq, kind="mitochondrion", source="MIDORI2", id=accession)
-        name, seq, row = organelle_mod.published_record(r, t, sp, "midori2_taxid", "-", ncbi, f"MIDORI2_{version}")
-        row["flags_extra"] = ["screen_weak"] if action == "review" else []
-        out.append((name, seq, row))
-        counts["taken" + (" (cut by the screen)" if action == "trim" else " (for review)" if action == "review"
-                          else "")] += 1
-    say(f"MIDORI2: {len(out):,} mitochondrial SSU taken, one a species (" +
-        ", ".join(f"{k} {v:,}" for k, v in sorted(counts.items())) + ")")
+    out, _counts = organelle_mod.midori2_records(opts.midori2, ncbi, refseq, opts.inside, calls, log=say)
     return out
 
 
@@ -1984,9 +1945,9 @@ def _main(argv, held):
                         "minimap2 and vsearch): one that is another organism's gene or another gene names no species "
                         "(reference_screen.tsv). Default (since 2026-11-14): the newest release's UNIQ gene files, "
                         "which the fetch stage takes from Zenodo (WORK/sources/labels/midori2). Since 2026-11-14 "
-                        "(format 7) its srRNA file's records are organelle genes too: one mitochondrial SSU a species "
-                        "without a RefSeq mitochondrial genome, the screen's drops left out (organelle/genes.tsv, "
-                        "source MIDORI2)")
+                        "(format 7) its srRNA, CO1 and Cytb files' records are organelle genes too: one SSU, COX1 and "
+                        "CYTB a species without a RefSeq mitochondrial genome, the screen's drops left out "
+                        "(organelle/genes.tsv, source MIDORI2)")
     p.add_argument("--no_midori2", action="store_true",
                    help="no MIDORI2: neither fetched nor its lineages in species.tsv, nor its records screened, nor "
                         "its mitochondrial SSU taken")

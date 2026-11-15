@@ -584,7 +584,7 @@ Which other outside sequences go into the package, and what checks them (2026-11
 | sequences | used as | checked by |
 |---|---|---|
 | EUKARYOME 2.1's long reads, ROD v1.2's operons | `rrna/records`, by their own labels | the part screen (`screen`) and, since 2026-11-10, `own_species` against the genomes' 18S |
-| MIDORI2's files (`--midori2`) | names of species (`species.tsv`); since format 7 its srRNA file's mitochondrial SSU, one a species (`organelle/genes`) | the reference screen above, then as every organelle gene |
+| MIDORI2's files (`--midori2`) | names of species (`species.tsv`); since format 7 its srRNA file's mitochondrial SSU, one a species (`organelle/genes`), since 2026-11-15 its CO1 and Cytb files' COX1 and CYTB too | the reference screen above, protal's rules (length, ambiguous bases, a reading frame), then as every organelle gene |
 | NCBI's and Swiss-Prot's proteins of the marker loci | the markers' members, their HMMs | `markers.foreign()`: a member another phylum's at near identity is dropped |
 | the genomes, transcriptomes and `data/no_assembly.fna.gz`'s records | everything a genome gives | `own_species`, the part screen, FCS-GX, tiara, genetic code check |
 | RefSeq's organelle genomes | organelle models; the reference screen's trusted records | none: curated whole genomes |
@@ -649,7 +649,8 @@ labelled by a species or genus NCBI names.
   (`~/refscreen/all.v5`: SSU misnamed 75, chimera 19, other gene 173, weak 100): 60,710 records taken (73 cut by the
   screen, 93 for review), 131 dropped, 17,402 of species with a RefSeq mitochondrial genome not taken, 166 of no NCBI
   taxon. Species with mitochondrial genes 18,663 -> 78,611, with organelle genes alone 22,421 -> 68,128 (mitochondrion
-  57,033); of KSGP 5.2's mitochondrial SSU species 58,486 of 58,600 hold one.
+  57,033); of KSGP 5.2's mitochondrial SSU species 58,486 of 58,600 hold one. Since 2026-11-15 by protal's rules, with
+  COX1 and CYTB ([below](#midori2s-cox1-and-cytb-and-one-taxonomic-framework-since-2026-11-15)).
 - **The audit** (`eukore/audit.py`, `eukore/chimeras.py`; [FORMAT: rrna/](FORMAT.md#rrna)): KSGP 4.1-4.5's checks of
   their records (KSGP 5.2's and 4.5's READMEs) run on every published read at build time, calibrated on EUKARYOME
   2.1 (2026-11-14; WSL `~/euk-audit`):
@@ -710,3 +711,103 @@ labelled by a species or genus NCBI names.
 - **A telomere repeat** in an rRNA record (6 units or more of TTAGGG, TTAGG, TTTAGGG, TTGGGG or TTTTGGGG, in any phase,
   on either strand) is `low` (`telomere`): an rRNA joined to a chromosome's end (KSGP masked 133 bases of one in
   EUKARYOME's EUK1400052); one beside the rRNA is cut off by the audit (below).
+
+## MIDORI2's COX1 and CYTB, and one taxonomic framework (since 2026-11-15)
+
+protal's mitochondrial layer takes MIDORI2's COX1, CYTB and 12S (and 16S) of every species Eukore lacks
+(`ribotal/scripts/mini_db/mito_records.py`), and KSGP 4.4 took MIDORI's mitochondrial SSU after screening it. Eukore
+now ships MIDORI2's COX1 and CYTB beside its SSU, screened as both did, and every species, record and gene stands in
+EUKARYOME's one tree, whose higher taxa are one name each.
+
+- **MIDORI2's genes** (`organelle.midori2_records`, `eukore_build.midori2_published`). Of each named NCBI species
+  without a RefSeq mitochondrial genome, one record of each of SSU, COX1 and CYTB: its longest that
+  - the reference screen keeps (`refscreen.py`: another organism's gene, a chimera or another gene dropped; a foreign
+    end cut; a doubtful record only where the species has no other, `screen_weak`);
+  - passes protal's rules: the gene's length (SSU 250-3,000 bases, COX1 300-2,400, CYTB 300-1,600), at most 0.5%
+    other bases than ACGT, a named species;
+  - of a protein-coding gene, has a reading frame by the species' mitochondrial code (`organelle.reading_frame`): a
+    record with a stop in every frame of both strands is a nuclear copy (a NUMT) or a pseudogene, left out; one stored
+    reversed is turned; its coding sequence is its open frame, so the organelle check translates it without stops;
+  - of the SSU, reads on its gene's strand by an 8-mer model of the SSU taken (KSGP 5.1's check, which turned 721 of
+    MIDORI's mitochondrial SSU), else is turned.
+
+  On MIDORI2 GB273's LONGEST files with that release's screen (`~/refscreen/all.v5`), of the species of no RefSeq
+  mitochondrial genome:
+
+  | | COX1 | CYTB | SSU |
+  |---|---|---|---|
+  | species taken | 213,812 | 50,844 | 56,311 |
+  | of them cut by the screen, left for review | 8, 86 | 6, 29 | 72, 89 |
+  | turned to the gene's strand | 2 | 0 | 1,067 |
+  | left out: ambiguous bases | 8,792 | 1,901 | 1,706 |
+  | left out: not the gene's length | 1,750 | 921 | 2,695 |
+  | left out: no reading frame (NUMT, pseudogene) | 52 | 27 | - |
+  | left out: dropped by the screen | 115 | 28 | 131 |
+  | left out: no NCBI taxon, no named species | 806, 52 | 113, 3 | 166, 3 |
+
+  The SSU's length floor is protal's: 2,732 of the srRNA file's records are shorter, 1,776 of them 150-199 bases
+  (MiFish's 12S amplicon); until 2026-11-15 they were taken (60,710 SSU species then). Of the package's
+  291,060 species (this measurement's) 262,590 hold mitochondrial genes (17,849 a RefSeq genome's), 254,536 hold
+  organelle genes alone, 229,879 of them MIDORI2's alone. The organelle checks (`organelle.check`) then search
+  COX1 as one locus of some 230,000 records; their run time on the cluster is not yet measured.
+- **One taxonomic framework** (`eukore/eukaryome.py`; [FORMAT: taxonomy/](FORMAT.md#taxonomy)). EUKARYOME is
+  Eukore's primary taxonomy: every species', record's and organelle gene's lineage is its place in EUKARYOME's one
+  tree, NCBI's names only below the deepest taxon EUKARYOME holds. Measured on the package's 291,060 NCBI species
+  (EUKARYOME's, ROD's, the genomes', RefSeq's organelle genomes' and MIDORI2's SSU, COX1 and CYTB; no build, the
+  trial's taxdump and EUKARYOME 2.1; WSL `~/euk-audit/taxonomy.json`) as main placed them (0.2.6), a higher taxon
+  was at times another lineage's or two names. Four faults, each fixed:
+  - *A name EUKARYOME misfiles under another phylum.* EUKARYOME 2.1 files the golden moles as
+    `Mammalia;Alcyonacea;Chrysochloridae`, and the tree, one Alcyonacea under the parent of most rows, took them into
+    the soft corals' Anthozoa. A name below the subphylum filed under two phyla of a kingdom, each borne out by the
+    name's parent there, is now two taxa: `Alcyonacea(Mammalia)`, the homonyms `Triadinium(Alveolata)` (a ciliate)
+    and `Triadinium(Goniodomataceae)` (a dinoflagellate, which EUKARYOME's reads label `Triadinium(Dinoflagellata)`:
+    a label goes to the taxon sharing the most of its names), Caudospora (a fungus, a microsporidian) and
+    Bolidophyceae (under Bolidophyta for Bolidomonas, Bacillariophyta for Triparma): 4 of the table's 10 names under
+    two phyla. A row whose phylum alone is another (Pezizomycotina under Basidiomycota,
+    `Coniferophyta;Tracheophytina;...`: a column off) stays one taxon, its names under the parent of most rows.
+  - *A genus name of another phylum or class.* A species placed by its genus took any genus of the name its kingdom
+    allows: NCBI's golden mole Zebra under EUKARYOME's coral Zebra, insects under barnacle genera, bryozoans under a
+    bug's, a slug under an aphid's. A genus whose phylum, or class in NCBI's phylum but of another subphylum, is not
+    NCBI's, where EUKARYOME holds NCBI's, NCBI's taxon stands not above it and no name below it is NCBI's, is not
+    taken (`Tree.conflicts`); the species is placed upward. A genus EUKARYOME classifies otherwise within NCBI's
+    taxon keeps EUKARYOME's place: Galdieria in Cyanidiophyta (under EUKARYOME's subkingdom Rhodophyta; NCBI's
+    Bangiophyceae), Neocystis in Trebouxiophyceae (NCBI's Chlorophyceae, both Chlorophytina), Candida in
+    Saccharomycetes (NCBI's Pichiomycetes). A first rule without these exceptions moved 2,527 species, most of them
+    out of EUKARYOME's classification into NCBI's.
+  - *A family EUKARYOME writes with its order* (`Chilodontidae.Seguenziida`, the gastropods' beside the fishes'
+    Chilodontidae) was not found by its name: a gastropod went under the fishes.
+  - *An NCBI clade EUKARYOME names otherwise.* A species placed upward went under NCBI's own name where EUKARYOME
+    lacks it: NCBI's Copepoda became a second class beside EUKARYOME's Hexanauplia, which holds the copepods
+    EUKARYOME names. Each NCBI genus, family, order, class and phylum whose species placed by name stand under one
+    EUKARYOME taxon of its rank (a taxon of under 1% of them a stray) is now that taxon (`Tree.learn`; 64,946 NCBI
+    clades): Copepoda is Hexanauplia, NCBI's Thecostraca EUKARYOME's Hexanauplia too, which holds its barnacles. A
+    taxon of the clade's name below it is taken before it (NCBI's phylum Microsporidia is EUKARYOME's Rozellomycota,
+    its subphylum Microsporidia). A clade EUKARYOME splits (NCBI's Pinopsida into Pinopsida and Cupressopsida) is
+    not learned: a taxon above its parts left the ranks between empty (the Triphoridae lost their Gastropoda), so it
+    is found by its name as before.
+
+  | NCBI taxa whose species stand under two or more EUKARYOME taxa of their rank (species not in the largest) | main (0.2.6) | now |
+  |---|---|---|
+  | phylum (of 77) | 14 (670) | 10 (641) |
+  | class (of 288) | 48 (615) | 42 (574) |
+  | order (of 1,277) | 183 (1,883) | 173 (1,849) |
+  | family (of 7,456) | 556 (5,618) | 490 (5,305) |
+  | genus (of 67,198) | 315 (463) | 315 (463) |
+
+  391 species (0.13%) changed lineage, first at the subkingdom 18, phylum 26, subphylum 13, class 4, order 14,
+  family 315, genus 1: the golden moles out of the corals (18), insects out of barnacle genera (10), Triparma
+  under EUKARYOME's own row for it (10), bryozoans, a slug and molluscs out of arthropod genera, placeholders
+  that EUKARYOME names (`Placozoa.phy.incertae.sedis` its Placozoa, `Fornicata.phy.incertae.sedis` its
+  Fornicatia), and below the class species placed upward under their NCBI clade's EUKARYOME taxon.
+
+  Every name stands on one lineage (0 names under two parents, before and after), every species' EUKARYOME kingdom
+  holds its NCBI group, and of EUKARYOME's records labelled above species the taxon of their label and the one their
+  NCBI taxon is placed at differ for 6,467 of 367,166 (7,003 in main; a record's lineage is its label's). What stays
+  split is EUKARYOME's classification, which Eukore keeps: NCBI's Streptophyta are EUKARYOME's Tracheophyta, Bryophyta,
+  Marchantiophyta and Zygnematophyta, its Euglenozoa Kinetoplastia, Euglenida and Diplonemia, its Rhodophyta also
+  Cyanidiophyta, its Annelida also Myzostomida; NCBI's Pinopsida EUKARYOME's Pinopsida and Cupressopsida, its
+  Eurotatoria Monogononta and Bdelloidea, its Clitellata also Branchiobdellae; Rhabditida and Strongylida, Noctuidae
+  and Erebidae below. A few are EUKARYOME's own misfilings within a class, which Eukore cannot tell from a
+  reclassification and keeps as EUKARYOME has them: the geometrid Phigalia under Elachistidae, the scarab Heteronyx
+  under the wasps' Pompilidae, the skipper Psolos under Nymphalidae, the jumping spider Tasa under Anyphaenidae (one
+  to six species each).
