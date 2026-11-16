@@ -350,6 +350,59 @@ class ResumeTest(unittest.TestCase):
                 self.assertEqual(called["annotate_pass"].call_args.kwargs["may_fetch"], False)
                 self.assertEqual("left to a process run without it" in out.getvalue(), only)
 
+    def test_a_task_after_nothing_left_ends_at_once(self):
+        # since 2026-11-16: a --genomes_only task that found no genome left writes WORK/process.nothing_left; a later
+        # task with the same code, options, sources and genomes ends before it reads the taxonomy; a source changed (a
+        # fetch since) or another option, it runs
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "work", "sources")
+            os.makedirs(src)
+            with open(os.path.join(src, "taxdump.tar.gz"), "w") as fh:
+                fh.write("old")
+            args = ["--build_dir", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"), "--stage", "process",
+                    "--genomes_only"]
+
+            def task(extra=()):  # run_genomes is the caller's mock
+                ran = []
+                with contextlib.ExitStack() as stack:
+                    out = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                    stack.enter_context(mock.patch.object(eukore_build.ncbi_mod, "Ncbi",
+                                                          side_effect=lambda *_a: ran.append(1)))
+                    for name, value in (("inside_of", None), ("plan", ({}, {})), ("extras_of", {}),
+                                        ("settings_of", {})):
+                        stack.enter_context(mock.patch.object(eukore_build, name, return_value=value))
+                    stack.enter_context(mock.patch.object(eukore_build.shutil, "which", side_effect=lambda t: "/x/" + t))
+                    stack.enter_context(mock.patch.object(eukore_build.rrna, "check_itsx", return_value=None))
+                    for name in ("backfill_pass", "describe_pass", "organelle_genes", "annotate_pass", "pack_pass",
+                                 "published_pass", "donors_of", "query_reruns"):
+                        stack.enter_context(mock.patch.object(eukore_build, name))
+                    self.assertEqual(eukore_build.main(args + list(extra)), 0)
+                return bool(ran), out.getvalue()
+            with mock.patch.object(eukore_build, "run_genomes") as rg:
+                rg.side_effect = lambda opts, *_a, **_k: (setattr(opts, "genomes_left", 0), ([], []))[1]
+                ran, said = task()
+                self.assertTrue(ran)
+                self.assertIn("the array's later tasks with the same inputs end at once", said)
+                self.assertTrue(os.path.isfile(os.path.join(tmp, "work", eukore_build.NOTHING_LEFT)))
+                ran, said = task(["-t", "7"])  # another thread count: the same inputs
+                self.assertFalse(ran)
+                self.assertIn("nothing left to run", said)
+                ran, _said = task(["--no_tsa"])  # another option: runs
+                self.assertTrue(ran)
+                with open(os.path.join(src, "taxdump.tar.gz"), "w") as fh:  # a fetch since
+                    fh.write("newer")
+                ran, _said = task()
+                self.assertTrue(ran)
+                # genomes left to run: no note written
+                os.remove(os.path.join(tmp, "work", eukore_build.NOTHING_LEFT))
+                rg.side_effect = lambda opts, *_a, **_k: (setattr(opts, "genomes_left", 3), ([], []))[1]
+                task()
+                self.assertFalse(os.path.isfile(os.path.join(tmp, "work", eukore_build.NOTHING_LEFT)))
+
     def test_the_folders_old_flags_still_taken(self):
         # --build_dir and --local_tmp since 2026-11-09; a running build's scripts' --work and --scratch still mean what
         # they did (never --scratch the build's folder: a node's local disk, emptied after its job)

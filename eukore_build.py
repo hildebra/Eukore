@@ -618,6 +618,77 @@ def panel_settings(settings):
     return dict(settings, tiara=None, odb_own={})
 
 
+NOTHING_LEFT = "process.nothing_left"  # in WORK: a --genomes_only task found no genome left (process_fingerprint)
+# options that change no task's work: the threads, the node's disk, the reports, the helpers
+VOLATILE = {"-t", "--threads", "-j", "--jobs", "--memory_gb", "--local_tmp", "--scratch", "--report_minutes",
+            "--qc_helpers", "--qc_tasks", "--downloads"}
+
+
+def process_fingerprint(opts, src_dir, argv):
+    """What a --genomes_only task's work depends on, as a digest (since 2026-11-16): the build's code (every module),
+    its options (VOLATILE's left out), the VEuPathDB key's presence, the sources' files (their names, sizes and times:
+    a fetch that changes one, the taxdump, the tables, changes it), WORK's own queries and unavailable genomes, and the
+    genomes folder's files (a genome fetched since)."""
+    h = hashlib.sha1()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for path in sorted([os.path.abspath(__file__)] + glob.glob(os.path.join(here, "eukore", "*.py"))):
+        with open(path, "rb") as fh:
+            h.update(os.path.basename(path).encode() + b"\0" + fh.read())
+    args, skip = [], False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        name = a.split("=", 1)[0]
+        if name in VOLATILE:
+            skip = "=" not in a
+            continue
+        args.append(a)
+    h.update(repr(args).encode())
+    h.update(str(bool(os.environ.get("VEUPATHDB_API_KEY"))).encode())
+
+    def files(folder, deep=True):
+        for root, dirs, names in os.walk(folder):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            for n in sorted(names):
+                if n.startswith(".") or n.endswith((".part", ".lock", ".tmp")):
+                    continue
+                with contextlib.suppress(OSError):
+                    st = os.stat(os.path.join(root, n))
+                    yield f"{os.path.relpath(os.path.join(root, n), folder)}\t{st.st_size}\t{int(st.st_mtime)}\n"
+            if not deep:
+                break
+    for line in files(src_dir):
+        h.update(line.encode())
+    for name in ("eukore_queries.json", "eukore_queries.faa.gz", "unavailable.tsv"):
+        with contextlib.suppress(OSError):
+            st = os.stat(os.path.join(opts.work, name))
+            h.update(f"{name}\t{st.st_size}\t{int(st.st_mtime)}\n".encode())
+    for line in files(opts.genomes, deep=False):
+        h.update(line.encode())
+    return h.hexdigest()
+
+
+def nothing_left(work, fingerprint):
+    """WORK/NOTHING_LEFT's note (its host and time) where it holds this fingerprint, else None."""
+    try:
+        with open(os.path.join(work, NOTHING_LEFT)) as fh:
+            got, _tab, note = fh.read().strip().partition("\t")
+    except OSError:
+        return None
+    return note or "-" if got == fingerprint else None
+
+
+def write_nothing_left(work, fingerprint):
+    path = os.path.join(work, NOTHING_LEFT)
+    with open(util.part_of(path), "w", newline="\n") as fh:
+        fh.write(f"{fingerprint}\twritten by {socket.gethostname()} (pid {os.getpid()}) at "
+                 f"{datetime.datetime.now():%Y-%m-%d %H:%M}\n")
+    os.replace(util.part_of(path), path)
+    say(f"process stage: no genome left to run; the array's later tasks with the same inputs end at once "
+        f"(WORK/{NOTHING_LEFT})")
+
+
 def run_genomes(opts, job_map, settings, extras=None):
     """Every genome of job_map to run, and of extras (the intraspecific panel's further assemblies, panel_settings: in
     the same pool since 2026-11-08, until then a pool of their own after it, each pool's last genomes leaving the
@@ -645,6 +716,7 @@ def run_genomes(opts, job_map, settings, extras=None):
             with contextlib.suppress(OSError):
                 os.remove(leftover)
     todo += panel
+    opts.genomes_left = len(todo)  # none: a --genomes_only task may tell the array's later ones (NOTHING_LEFT)
     while todo:
         # largest first (since 2026-11-08; until then by accession, a 30 Gb genome begun last kept the other workers
         # idle for hours at the end)
@@ -2215,6 +2287,17 @@ def _main(argv, held):
         if not opts.midori2 and "package" in opts.stages:
             say("WARNING: no MIDORI2 files (--stage fetch fetches them; or --midori2): species.tsv without MIDORI2's "
                 "lineages, no reference screen")
+    # an array's task (--genomes_only) after one that found nothing left, with the same inputs: ends at once (since
+    # 2026-11-16: each of ~32 tasks of 40 cores read the taxonomy, made the plan and looked at every done genome for
+    # several minutes to do nothing)
+    fingerprint = None
+    if opts.stages == ("process",) and opts.genomes_only:
+        fingerprint = process_fingerprint(opts, src_dir, sys.argv[1:] if argv is None else argv)
+        stamp = nothing_left(opts.work, fingerprint)
+        if stamp:
+            say(f"process stage: nothing left to run (WORK/{NOTHING_LEFT}: {stamp}), the same code, options, sources "
+                "and genomes: this task ends")
+            return 0
     try:
         ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
     except FileNotFoundError:  # said so since 2026-11-11 (a new WORK's array crashed with a traceback in every task)
@@ -2433,6 +2516,9 @@ def _main(argv, held):
         say(f"process stage: took {util.duration(time.time() - began)}"
             + (" (--genomes_only: the passes over all genomes left to a process run without it)"
                if opts.genomes_only else "") + opts.usage.line())
+        if fingerprint and getattr(opts, "genomes_left", None) == 0 and not waiting and not failed:
+            # no genome left to run here and this task's passes made: the array's later tasks end at once
+            write_nothing_left(opts.work, fingerprint)
         # a rerun mends a genome not fetched yet or a download that may come; not one NCBI no longer serves, nor a
         # call that failed (it fails again): `all` packages without those (until 2026-11-06 it waited for them forever)
         retry = waiting + [(a, w) for a, w in failed if w.startswith("fetch failed: ") and not placement.given_up(
