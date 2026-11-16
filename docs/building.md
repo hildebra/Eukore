@@ -347,7 +347,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
     login): give it with `--bold_tsv`.
   - since 0.2, the inputs of Eukore's marker set (`WORK/sources/eukore_markers`, `eukore/markers.py`): KOfam's
     `ko_list` and its markers' and decoys' profiles (out of KOfam's 1.6 GB archive, fetched in 16 ranges at once and
-    deleted), Swiss-Prot's eukaryote proteins (~90 MB, EBI's FTP) and NCBI's proteins named as each marker
+    kept with `ko_list` since 2026-11-16), Swiss-Prot's eukaryote proteins (~90 MB, EBI's FTP) and NCBI's proteins named as each marker
     (`data/markers.tsv`'s Entrez query: RefSeq's of every eukaryote, GenBank's of the protists; 3 per organism, by
     E-utilities), and those of each decoy (`data/marker_decoys.tsv`). Most of an hour, NCBI's. The process stage
     builds the set of them (below; since 2026-11-11 the fetch stage did, its hmmsearch on the download node).
@@ -460,7 +460,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
 | `--species` | | a trial: only the species inside these NCBI taxids' clades (comma-separated, or a file of one per line) |
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
-| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.6, is in the manifest's `eukore`) |
+| `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.7, is in the manifest's `eukore`) |
 | `-V` | | print Eukore's own version and exit |
 | `--keep_gb` | none: no genome deleted | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept); with it, a superseded assembly's genome file is deleted once the new one is done too; the rRNA donors and the intraspecific panel's assemblies are pruned with the rest (since 2026-11-16) (until 2026-11-08 the default was 1000) |
 | `-t`, `--threads` | 8 | threads in all; since 2026-11-09 also those that compress every `.gz` file the build writes (BGZF: the package's and the release's at level 9, the work folder's at 6) |

@@ -210,14 +210,14 @@ def fetch_ranges(url, dest, parts=PARTS, log=print):
 
 
 def stream_profiles(url, wanted, folder, log=print, archive=None):
-    """KOfam's profiles archive (archive: a local copy; else fetched in ranges beside folder and deleted after), the
+    """KOfam's profiles archive (archive: a local copy; else fetched in ranges beside folder and kept there, like
+    ko_list.gz, for a later build's new KOs: until 2026-11-16 deleted, and its 1.6 GB fetched again for each), the
     wanted KOs' profiles written to folder/<KO>.hmm (the rest not kept)."""
     os.makedirs(folder, exist_ok=True)
     left = {k for k in wanted if not os.path.isfile(os.path.join(folder, f"{k}.hmm"))}
     if not left:
         return
-    fetched = archive is None or not os.path.isfile(archive)
-    if fetched:
+    if archive is None or not os.path.isfile(archive):
         archive = fetch_ranges(url, os.path.join(os.path.dirname(folder), "profiles.tar.gz"), log=log)
     log(f"markers: taking KOfam's profiles of {len(left)} KOs out of {archive}")
     with tarfile.open(archive, mode="r|gz") as tar:
@@ -232,8 +232,6 @@ def stream_profiles(url, wanted, folder, log=print, archive=None):
                 left.discard(ko)
                 if not left:
                     break
-    if fetched:
-        os.remove(archive)  # 1.6 GB; fetched again only where the table names a KO not taken yet
     if left:
         raise OSError(f"KOfam's archive holds no profile of {sorted(left)}")
 
