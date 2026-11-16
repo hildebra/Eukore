@@ -200,6 +200,16 @@ for n, length in seqs.items():
             # no barrnap: kept as they were, said
             self.assertEqual(rrna.resplit({"GCA_1": rows}, {}, None, log=said.append)["GCA_1"], rows)
             self.assertIn("no barrnap", said[-1])
+            # barrnap failing on a record (since 2026-11-16: the build stopped so): its rows kept as saved, said,
+            # nothing kept in the cache (the next run tries again)
+            failing = fx.tool(tmp, "barrnap_failing", "#!/bin/sh\necho '[barrnap] ERROR: nhmmer failed to run' >&2\n"
+                                                      "exit 2\n")
+            said.clear()
+            other = os.path.join(tmp, "elsewhere")
+            os.makedirs(other)
+            kept = rrna.resplit({"GCA_1": rows}, {"GCA_1": "X"}, failing, None, 1, other, said.append)["GCA_1"]
+            self.assertEqual(kept, rows)
+            self.assertTrue(any("not extracted again" in s and "nhmmer failed" in s for s in said), said)
 
     def test_saved_records_and_their_checks(self):
         with tempfile.TemporaryDirectory() as tmp:

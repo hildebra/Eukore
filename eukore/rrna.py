@@ -154,10 +154,23 @@ def alphabet_first(records):
     return [records[good]] + records[:good] + records[good + 1:]
 
 
+_NOT_BASE = re.compile(r"[^ACGTN]")
+
+
+def dna_text(seq):
+    """A sequence as nhmmer reads DNA: upper case, every letter but A, C, G, T and N an N (the same length: barrnap's
+    and nhmmer's places on it are its places). Since 2026-11-16: HMMER's Easel takes a sequence of other letters (IUPAC's
+    R, Y, K, M, S, W, ... beyond a share of it) for no alphabet, "Unable to guess alphabet", and barrnap failed: the
+    build of 2026-11-16 stopped so on one record of joined 18S pieces (resplit), and a batch of 250 published reads was
+    left out."""
+    return _NOT_BASE.sub("N", seq.upper())
+
+
 def barrnap_fasta(path, records):
-    """records [(name, sequence)] written as barrnap's input, nhmmer's alphabet guessable (alphabet_first)."""
+    """records [(name, sequence)] written as barrnap's input (and the audit's nhmmer's), their letters dna_text's,
+    nhmmer's alphabet guessable (alphabet_first)."""
     with open(path, "w", newline="\n") as fh:
-        fh.writelines(f">{n}\n{s}\n" for n, s in alphabet_first(records))
+        fh.writelines(f">{n}\n{s}\n" for n, s in alphabet_first((n, dna_text(s)) for n, s in records))
 
 
 # an organelle molecule's FASTA title (organelle.py's too, and metadata.py's), its word read as the organelle by
@@ -615,7 +628,10 @@ def _reextract(item):
     """A pool's task: (sequence, ITSx's sets, barrnap, ITSx) -> its rows extracted from it alone (window_rows), their
     coordinates on it (1-based, its strand +)."""
     seq, sets, barrnap, itsx = item
-    got = window_rows({"r": seq}, {"r": ("r", 0)}, {"r": len(seq)}, barrnap, itsx, RESPLIT_THREADS, sets)
+    try:
+        got = window_rows({"r": seq}, {"r": ("r", 0)}, {"r": len(seq)}, barrnap, itsx, RESPLIT_THREADS, sets)
+    except (BarrnapError, ItsxError) as e:  # since 2026-11-16: one record's failure stopped the build
+        return f"{type(e).__name__}: {e}"
     return [{k: r[k] for k in ("kind", "start", "end", "strand", "regions", "lsu_complete", "introns", "sequence")}
             for r in got]
 
@@ -662,12 +678,16 @@ def resplit(saved, sets_of, barrnap, itsx=None, threads=1, work=None, log=None):
             if key(seq, sets) not in cache:
                 todo[key(seq, sets)] = (seq, sets, barrnap, itsx)
     began = time.time()
+    failed = []  # (holder's digest, why): kept as saved, not cached (a rerun tries again)
     if todo:
         out = util.cache_open(stem) if stem else None
         try:
             items = list(todo.items())
             for (k, _item), rows in zip(items, util.ordered(_reextract, [i for _k, i in items],
                                                               workers=max(1, threads // RESPLIT_THREADS))):
+                if isinstance(rows, str):  # barrnap or ITSx failed on it (_reextract)
+                    failed.append((k, rows))
+                    continue
                 cache[k] = json.dumps(rows, separators=(",", ":"))
                 if out:
                     out.write(f"{k}\t{cache[k]}\n")
@@ -681,7 +701,11 @@ def resplit(saved, sets_of, barrnap, itsx=None, threads=1, work=None, log=None):
         new = []
         for i, r in enumerate(rows):
             if i in g:
-                got = [placed(x, r) for x in json.loads(cache[key(r["sequence"], sets_of.get(acc, "all"))])]
+                k = key(r["sequence"], sets_of.get(acc, "all"))
+                if k not in cache:  # its extraction failed: the holder and its pieces as saved
+                    new += [rows[j] for j in sorted(set(g[i]) | {i})]
+                    continue
+                got = [placed(x, r) for x in json.loads(cache[k])]
                 before += len(g[i])
                 after += len(got)
                 new += got
@@ -692,6 +716,9 @@ def resplit(saved, sets_of, barrnap, itsx=None, threads=1, work=None, log=None):
         log(f"  rRNA: {sum(map(len, groups.values())):,} saved records of joined 18S pieces in {len(groups):,} "
             f"genomes extracted again with joined's limits ({len(todo):,} by barrnap now, the rest kept from before): "
             f"{before:,} records now {after:,}; took {util.duration(time.time() - began)}")
+        if failed:
+            log(f"WARNING: rRNA: {len(failed):,} records of joined 18S pieces not extracted again (e.g. "
+                f"{failed[0][1][:200]}): kept as they were saved, tried again by the next run")
     return result
 
 

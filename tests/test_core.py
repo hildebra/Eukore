@@ -372,6 +372,13 @@ class ProgressTest(unittest.TestCase):
             self.assertIn(f"resident (peak {util.size_text(2000 * page)})", line)
             self.assertIn("; node: 256 MB of 1.0 GB free", line)
             self.assertIn("; disk free: WORK, OUT ", line)  # one file system: one figure
+            # a second report a moment later (two steps' reports at once; since 2026-11-16): the last measure, not
+            # 10 CPU seconds over a millisecond
+            stat(me, 1, 50 * tick, 1000)
+            now[0] = 10.001
+            self.assertIn("; 3.0 cores busy (of 8), ", u.line())
+            now[0] = 20.0  # USAGE_WINDOW on: measured again since the last measure (10 CPU seconds in 10 s)
+            self.assertIn("; 1.0 cores busy (of 8), ", u.line())
         self.assertEqual([util.size_text(n) for n in (5e8, 8.41e10, 2.1e12)], ["500 MB", "84.1 GB", "2.1 TB"])
         # no /proc: the disk alone
         self.assertEqual(util.Usage(proc="/no/such/proc").line(), "")

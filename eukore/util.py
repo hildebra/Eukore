@@ -982,6 +982,9 @@ def size_text(n):
     return f"{n / 1e6:,.0f} MB"
 
 
+USAGE_WINDOW = 5.0  # seconds a report's cores busy are measured over at least (Usage.line)
+
+
 class Usage:
     """The node's resources the build uses, for the progress reports (since 2026-11-08): the cores its processes kept
     busy since the last report (the CPU seconds of this process and every process under it, those ended included, over
@@ -993,6 +996,7 @@ class Usage:
         self.folders, self.cores, self.clock, self.proc = list(folders), cores, clock, proc
         self.peak = 0
         self.last = (clock(), self.tree()[0])
+        self._lock, self._busy = threading.Lock(), None
 
     def tree(self):
         """(CPU seconds, resident bytes) of this process and its descendants, or (None, None) without /proc."""
@@ -1045,10 +1049,16 @@ class Usage:
         cpu, rss = self.tree()
         parts = []
         if cpu is not None:
-            then, cpu_then = self.last
-            self.last = (now, cpu)
-            self.peak = max(self.peak, rss)
-            busy = max(0.0, cpu - (cpu_then or 0)) / max(1e-9, now - then)
+            # since 2026-11-16 under a lock, over USAGE_WINDOW seconds at least: two reports at once (the package
+            # stage's steps beside each other, their reports every 10 minutes from one start) measured the second over
+            # a millisecond, "880,000,000.0 cores busy (of 60)"; one sooner says the last measure
+            with self._lock:
+                then, cpu_then = self.last
+                if now - then >= USAGE_WINDOW or self._busy is None:
+                    self.last = (now, cpu)
+                    self._busy = max(0.0, cpu - (cpu_then or 0)) / max(1e-9, now - then)
+                busy = self._busy
+                self.peak = max(self.peak, rss)
             parts.append(f"{busy:,.1f} cores busy" + (f" (of {self.cores})" if self.cores else "")
                          + f", {size_text(rss)} resident (peak {size_text(self.peak)})")
         node = self.node()

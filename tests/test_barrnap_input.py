@@ -81,6 +81,20 @@ class AlphabetFirstTest(unittest.TestCase):
             self.assertNotIn(rrna.ALPHABET_GUARD, gff)
             self.assertEqual(sorted(rrna.parse_gff(gff)), ["w0"])
 
+    def test_other_letters_written_as_n(self):
+        # since 2026-11-16: IUPAC's letters (and any other) in a record made Easel guess no alphabet and barrnap fail;
+        # they are written as N, each record its length, lower case upper
+        records = [("r1", "acgt" * 300 + "RYKMSWBDHV" * 50 + "ACGT" * 300), ("r2", "NNNN" + "ACGTX*-" * 10)]
+        with tempfile.TemporaryDirectory() as tmp:
+            fasta = os.path.join(tmp, "w.fna")
+            rrna.barrnap_fasta(fasta, records)
+            with open(fasta) as fh:
+                lines = fh.read().split()
+        written = dict(zip([x[1:] for x in lines[0::2]], lines[1::2]))
+        self.assertEqual({n: len(s) for n, s in written.items()}, {n: len(s) for n, s in records})
+        self.assertTrue(all(set(s) <= set("ACGTN") for s in written.values()))
+        self.assertEqual(written["r1"][1200:1210], "N" * 10)
+
     def test_a_genome_whose_first_window_is_a_telomere(self):
         # chr1's 18S seed sits in its telomere's repeat: its window, the genome's first, begins with 4,000 bases of no G
         chr1 = TELOMERE * 600 + G_FREE_SEED + TELOMERE * 600 + dna(3000, 3)
