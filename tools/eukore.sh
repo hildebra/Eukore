@@ -46,7 +46,12 @@ submit() {  # submit NAME [sbatch's options] -- STEP: the job's ID; fails when s
     local name=$1 opts=() call jid
     shift
     while [[ $1 != -- ]]; do opts+=("$1"); shift; done
-    [[ -z $LOGS ]] || opts+=(-o "$LOGS/eukore.%j.otxt" -e "$LOGS/eukore.%j.etxt")
+    # the logs named by the job's step (since 2026-11-16; until then eukore.<job>.*txt for every step): fetch.<job>,
+    # final.<job>, and an array's process.<array>_<task>, qc.<array>_<task>
+    local step=${name#Eukore-} id=%j
+    step=${step,,}
+    [[ " ${opts[*]} " != *" --array="* ]] || id=%A_%a
+    [[ -z $LOGS ]] || opts+=(-o "$LOGS/$step.$id.otxt" -e "$LOGS/$step.$id.etxt")
     call=(sbatch --parsable -J "$name" ${SBATCH_ALL[@]+"${SBATCH_ALL[@]}"} "${opts[@]}" "$SELF" "$2")
     # checked here: submit runs inside $(...), where bash drops set -e (until 2026-11-10 a refused job gave an empty
     # ID, and `build` went on to a final job with a dependency on no job)
@@ -162,7 +167,7 @@ _final)
     helpers=()
     if (( ${QC_TASKS:-0} > 0 )); then helpers=(--qc_helpers "bash $(printf %q "$SELF") qc" --qc_tasks "$QC_TASKS"); fi
     # this job's own logs, in the evaluation bundle the package stage writes (OUT/Eukore_<version>_evaluation.tar.gz)
-    [[ -z $LOGS ]] || export EUKORE_LOGS="$LOGS/eukore.$SLURM_JOB_ID.otxt:$LOGS/eukore.$SLURM_JOB_ID.etxt"
+    [[ -z $LOGS ]] || export EUKORE_LOGS="$LOGS/final.$SLURM_JOB_ID.otxt:$LOGS/final.$SLURM_JOB_ID.etxt"
     run_stage process,package --local_tmp "$SCR" ${helpers[@]+"${helpers[@]}"} \
         ${FINAL_OPTS[@]+"${FINAL_OPTS[@]}"}
     ;;

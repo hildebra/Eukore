@@ -89,6 +89,20 @@ def say(text):
 
 # --- sources -----------------------------------------------------------------------------------------------------
 
+def taxdump_md5(src_dir):
+    """NCBI's MD5 of its taxdump now (TAXDUMP_URL.md5, a line `<md5>  taxdump.tar.gz`), or None where it is not
+    fetched (offline, NCBI down: the taxdump there is kept)."""
+    path = os.path.join(src_dir, "taxdump.tar.gz.md5")
+    try:
+        sources.download(TAXDUMP_URL + ".md5", path)
+        with open(path) as fh:
+            got = (fh.read().split() or [""])[0].lower()
+    except OSError as e:
+        say(f"WARNING: NCBI's taxdump MD5 not fetched ({e}): the taxdump there is kept unless older than the tables")
+        return None
+    return got if re.fullmatch(r"[0-9a-f]{32}", got) else None
+
+
 def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False, midori2=True):
     """Every source into src_dir (kept when there and whole), downloaded and unpacked, nothing computed (since
     2026-11-11 the marker set's inputs alone, the process stage builds it: its hmmsearch of ~230,000 candidates ran on
@@ -108,16 +122,21 @@ def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False, midori2=True):
                         raise
                     say(f"WARNING: {kind}'s {group} assembly table not fetched again ({e}): the old one kept")
     taxdump = os.path.join(src_dir, "taxdump.tar.gz")
-    # the taxdump fetched again with the assembly tables (--refresh), or where it is older than they are by TAXDUMP_AGE
-    # (since 2026-11-14: fetched once and kept, the 2026-11 build's taxdump lacked 39 of its tables' species)
+    # the taxdump fetched again where NCBI's is another (its taxdump.tar.gz.md5; since 2026-11-16 at every fetch stage:
+    # until then only with --refresh or older than the assembly tables by TAXDUMP_AGE, and the 2026-11 builds' lacked 39
+    # of their tables' species), else with the assembly tables (--refresh), or where it is older than they are
     tables_time = max((os.path.getmtime(p) for p in glob.glob(os.path.join(src_dir, "ncbi_assemblies", "*.txt"))),
                       default=0)
     stale = os.path.isfile(taxdump) and tables_time - os.path.getmtime(taxdump) > TAXDUMP_AGE
-    if not os.path.isfile(taxdump) or refresh or stale:
-        say("NCBI: fetching the taxdump" + (" again (older than the assembly tables)" if stale else
+    newest = taxdump_md5(src_dir)
+    newer = newest is not None and os.path.isfile(taxdump) and util.md5(taxdump) != newest
+    if not os.path.isfile(taxdump) or refresh or stale or newer:
+        say("NCBI: fetching the taxdump" + (" again (NCBI's is newer)" if newer else
+                                            " again (older than the assembly tables)" if stale else
                                             " again (--refresh)" if refresh and os.path.isfile(taxdump) else ""))
         try:
-            sources.download(TAXDUMP_URL, taxdump)  # fetch_file: renamed into place once whole, the old one till then
+            # fetch_file: renamed into place once whole, the old one till then; checked against NCBI's MD5
+            sources.download(TAXDUMP_URL, taxdump, newest)
         except OSError as e:
             if not os.path.isfile(taxdump):
                 raise
@@ -599,6 +618,77 @@ def panel_settings(settings):
     return dict(settings, tiara=None, odb_own={})
 
 
+NOTHING_LEFT = "process.nothing_left"  # in WORK: a --genomes_only task found no genome left (process_fingerprint)
+# options that change no task's work: the threads, the node's disk, the reports, the helpers
+VOLATILE = {"-t", "--threads", "-j", "--jobs", "--memory_gb", "--local_tmp", "--scratch", "--report_minutes",
+            "--qc_helpers", "--qc_tasks", "--downloads"}
+
+
+def process_fingerprint(opts, src_dir, argv):
+    """What a --genomes_only task's work depends on, as a digest (since 2026-11-16): the build's code (every module),
+    its options (VOLATILE's left out), the VEuPathDB key's presence, the sources' files (their names, sizes and times:
+    a fetch that changes one, the taxdump, the tables, changes it), WORK's own queries and unavailable genomes, and the
+    genomes folder's files (a genome fetched since)."""
+    h = hashlib.sha1()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for path in sorted([os.path.abspath(__file__)] + glob.glob(os.path.join(here, "eukore", "*.py"))):
+        with open(path, "rb") as fh:
+            h.update(os.path.basename(path).encode() + b"\0" + fh.read())
+    args, skip = [], False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        name = a.split("=", 1)[0]
+        if name in VOLATILE:
+            skip = "=" not in a
+            continue
+        args.append(a)
+    h.update(repr(args).encode())
+    h.update(str(bool(os.environ.get("VEUPATHDB_API_KEY"))).encode())
+
+    def files(folder, deep=True):
+        for root, dirs, names in os.walk(folder):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            for n in sorted(names):
+                if n.startswith(".") or n.endswith((".part", ".lock", ".tmp")):
+                    continue
+                with contextlib.suppress(OSError):
+                    st = os.stat(os.path.join(root, n))
+                    yield f"{os.path.relpath(os.path.join(root, n), folder)}\t{st.st_size}\t{int(st.st_mtime)}\n"
+            if not deep:
+                break
+    for line in files(src_dir):
+        h.update(line.encode())
+    for name in ("eukore_queries.json", "eukore_queries.faa.gz", "unavailable.tsv"):
+        with contextlib.suppress(OSError):
+            st = os.stat(os.path.join(opts.work, name))
+            h.update(f"{name}\t{st.st_size}\t{int(st.st_mtime)}\n".encode())
+    for line in files(opts.genomes, deep=False):
+        h.update(line.encode())
+    return h.hexdigest()
+
+
+def nothing_left(work, fingerprint):
+    """WORK/NOTHING_LEFT's note (its host and time) where it holds this fingerprint, else None."""
+    try:
+        with open(os.path.join(work, NOTHING_LEFT)) as fh:
+            got, _tab, note = fh.read().strip().partition("\t")
+    except OSError:
+        return None
+    return note or "-" if got == fingerprint else None
+
+
+def write_nothing_left(work, fingerprint):
+    path = os.path.join(work, NOTHING_LEFT)
+    with open(util.part_of(path), "w", newline="\n") as fh:
+        fh.write(f"{fingerprint}\twritten by {socket.gethostname()} (pid {os.getpid()}) at "
+                 f"{datetime.datetime.now():%Y-%m-%d %H:%M}\n")
+    os.replace(util.part_of(path), path)
+    say(f"process stage: no genome left to run; the array's later tasks with the same inputs end at once "
+        f"(WORK/{NOTHING_LEFT})")
+
+
 def run_genomes(opts, job_map, settings, extras=None):
     """Every genome of job_map to run, and of extras (the intraspecific panel's further assemblies, panel_settings: in
     the same pool since 2026-11-08, until then a pool of their own after it, each pool's last genomes leaving the
@@ -626,6 +716,7 @@ def run_genomes(opts, job_map, settings, extras=None):
             with contextlib.suppress(OSError):
                 os.remove(leftover)
     todo += panel
+    opts.genomes_left = len(todo)  # none: a --genomes_only task may tell the array's later ones (NOTHING_LEFT)
     while todo:
         # largest first (since 2026-11-08; until then by accession, a 30 Gb genome begun last kept the other workers
         # idle for hours at the end)
@@ -1315,6 +1406,21 @@ def genome_rrna_records(opts, job_map, ncbi, collected=None):
     return out
 
 
+def annotations_to_fetch(work, genomes_folder, job_map, loci):
+    """The fetch stage's genomes to fetch the annotation of -> jobs: those with one to try, not beside them and not
+    noted as none, that the process stage runs (not done for loci, or of an older genome record), or done without
+    its comparison (annotation.tsv), or done with gene models worse than one now there (genomes.better_annotation).
+    Since 2026-11-16 a genome to be run has its own whatever its done folder holds: a done genome of an older genome
+    record kept its annotation.tsv until its rerun, so none was fetched, and it was run again without its gene
+    models (8,361 genomes of the 2026-11-15 build)."""
+    def runs(a):
+        return not genomes.is_done(work, a, loci) or genomes.record_stale(work, a)
+    return [j for a, j in sorted(job_map.items()) if annotation.wanted(j)
+            and not annotation.found(genomes_folder, a)[0] and not annotation.none_noted(genomes_folder, j)
+            and (runs(a) or not store.has(genomes.done_dir(work, a), annotation.TABLE)
+                 or genomes.better_annotation(work, j))]
+
+
 def annotate_one(work, genomes_folder, may_fetch, veupathdb_key, job):
     """annotation.annotate_genome in a worker, under the genome's claim (since 2026-11-11: a SLURM array's tasks run the
     pass too) -> (accession, copies compared or None, why it failed or None); compared organelle_mod.ELSEWHERE where
@@ -1356,7 +1462,8 @@ def annotate_pass(opts, job_map, may_fetch):
             else:
                 compared, left = compared + (n is not None), left + (n is None)
             progress.step(1)
-    say(f"  {compared} genomes compared, {left} without their annotation fetched yet (--stage fetch), "
+    say(f"  {compared} genomes compared, {left} without their annotation beside them (fetched by the next "
+        "--stage fetch; a genome run without it is run again with it, genomes.better_annotation), "
         + (f"{elsewhere} by another build, " if elsewhere else "")
         + f"{len(failed)} failed{' (e.g. ' + str(failed[:2]) + ')' if failed else ''}")
 
@@ -2196,6 +2303,17 @@ def _main(argv, held):
         if not opts.midori2 and "package" in opts.stages:
             say("WARNING: no MIDORI2 files (--stage fetch fetches them; or --midori2): species.tsv without MIDORI2's "
                 "lineages, no reference screen")
+    # an array's task (--genomes_only) after one that found nothing left, with the same inputs: ends at once (since
+    # 2026-11-16: each of ~32 tasks of 40 cores read the taxonomy, made the plan and looked at every done genome for
+    # several minutes to do nothing)
+    fingerprint = None
+    if opts.stages == ("process",) and opts.genomes_only:
+        fingerprint = process_fingerprint(opts, src_dir, sys.argv[1:] if argv is None else argv)
+        stamp = nothing_left(opts.work, fingerprint)
+        if stamp:
+            say(f"process stage: nothing left to run (WORK/{NOTHING_LEFT}: {stamp}), the same code, options, sources "
+                "and genomes: this task ends")
+            return 0
     try:
         ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
     except FileNotFoundError:  # said so since 2026-11-11 (a new WORK's array crashed with a traceback in every task)
@@ -2314,11 +2432,7 @@ def _main(argv, held):
         # the genomes' own gene models beside them, for the process stage's copies' models and their comparison
         # (annotation.py): NCBI's (RefSeq's, a GenBank submitter's; not where the assembly summary gives no
         # protein-coding genes), else Ensembl's, else TOGA2's
-        # (and a done genome's better one than its run took: genomes.better_annotation)
-        todo = [j for a, j in sorted(job_map.items()) if annotation.wanted(j)
-                and not annotation.found(opts.genomes, a)[0] and not annotation.none_noted(opts.genomes, j)
-                and (not store.has(genomes.done_dir(opts.work, a), annotation.TABLE)
-                     or genomes.better_annotation(opts.work, j))]
+        todo = annotations_to_fetch(opts.work, opts.genomes, job_map, loci)
         say(f"fetching {len(todo):,} genomes' annotations (the first of {', '.join(annotation.SOURCES)} that has one) "
             f"into {opts.genomes}")
         progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1,
@@ -2414,6 +2528,9 @@ def _main(argv, held):
         say(f"process stage: took {util.duration(time.time() - began)}"
             + (" (--genomes_only: the passes over all genomes left to a process run without it)"
                if opts.genomes_only else "") + opts.usage.line())
+        if fingerprint and getattr(opts, "genomes_left", None) == 0 and not waiting and not failed:
+            # no genome left to run here and this task's passes made: the array's later tasks end at once
+            write_nothing_left(opts.work, fingerprint)
         # a rerun mends a genome not fetched yet or a download that may come; not one NCBI no longer serves, nor a
         # call that failed (it fails again): `all` packages without those (until 2026-11-06 it waited for them forever)
         retry = waiting + [(a, w) for a, w in failed if w.startswith("fetch failed: ") and not placement.given_up(

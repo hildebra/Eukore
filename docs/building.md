@@ -329,7 +329,8 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 
 - **fetch** gets the sources into `WORK/sources` (or the folder `--sources` names), each kept once there and whole:
   - NCBI's GenBank and RefSeq assembly tables of the `--groups`;
-  - NCBI's taxdump;
+  - NCBI's taxdump, fetched again at every fetch stage where NCBI's is newer (its `taxdump.tar.gz.md5`; since
+    2026-11-16), the old one kept where NCBI cannot be reached;
   - NCBI's FCS-GX summaries of its assemblies and its Saccharomycotina ANI report (~70 MB);
   - BUSCO's eukaryota_odb12;
   - EUKARYOME 2.1 (its long reads and, since 0.2.6, its SSU set, 29 MB) and ROD v1.2;
@@ -449,7 +450,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--genomes DIR` | `OUT/genomes` | the genomes' folder: the fetch stage downloads each species' genome, its gene models and NCBI's assembly report into it, the process stage reads them from it, the package stage cuts it back to `--keep_gb`; the same for every stage (since 2026-11-09) |
 | `--sources DIR` | `WORK/sources` | the sources' folder: the fetch stage downloads into it what every other stage reads (NCBI's taxonomy and assembly tables, BUSCO's dataset, the marker set, the references' files); a folder of its own keeps them on a file system that keeps its files while WORK is elsewhere, e.g. on scratch. Builds may share it: a fetch takes its lock there too, one at a time. A moved folder serves as it was. A stage other than fetch stops at once without it (its `taxdump.tar.gz`); the same for every stage (since 2026-11-11) |
 | `--stage` | `all` | `fetch`, `process`, `package` or `all` (the three in turn); stages that follow one another, with commas: `process,package`, `fetch,process` (one run, one plan; since 2026-11-10); `release`: `OUT/release/` again of a finished `OUT/Eukore_<version>/` (since 2026-11-09) |
-| `--genomes_only` | | with `--stage process`: run the genomes, then the passes that take one genome at a time under its claim (since 2026-11-10: the backfill, the assembly metadata, the done folders' packing; since 2026-11-11 the organelle genes and the gene models' comparison, without fetching), and stop; the passes over all genomes (intraspecific panel, gene models to fetch) and what the runs left to a run without it after them all (`--stage process,package`: it waits for the genomes other runs still hold, runs what they left, then makes the passes and the package); for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages), `tools/eukore.sh`; since 2026-11-09) |
+| `--genomes_only` | | with `--stage process`: run the genomes, then the passes that take one genome at a time under its claim (since 2026-11-10: the backfill, the assembly metadata, the done folders' packing; since 2026-11-11 the organelle genes and the gene models' comparison, without fetching), and stop; the passes over all genomes (intraspecific panel, gene models to fetch) and what the runs left to a run without it after them all (`--stage process,package`: it waits for the genomes other runs still hold, runs what they left, then makes the passes and the package); for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages), `tools/eukore.sh`; since 2026-11-09). Since 2026-11-16 a run that found no genome left to run writes `WORK/process.nothing_left` with a digest of the code, options (but threads and the like), sources and genomes folder; a later run with the same digest ends within seconds, before reading the taxonomy (an array's tasks started after the work was done) |
 | `--done_folders` | | keep each genome's results as a folder of 8-14 small files (`WORK/done/<accession>/`, as every build before 2026-11-10) rather than one file (`WORK/done/<accession>.zip`, the default: for all eukaryotes some 30,000 files in place of 300,000 in 30,000 folders on the shared file system). Either way a WORK holding the other form is read as it is; without this flag the process stage packs the folders it finds |
 | `--no_release` | | the package stage writes no `OUT/release/` (the website's data and the downloads, a second copy of the package: since 2026-11-09 written last by default) |
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
@@ -508,6 +509,10 @@ Every stage is resumable: a rerun does only what is not done.
   before 2026-11-07 took NCBI's or none). The fetch stage fetches that annotation (and the genome again, where the
   prune deleted it); the process stage runs the genome again with it, its metadata, rRNA and held-out calls kept. This catches a genome run
   before an index named its assembly, before `--veupathdb_key` was given, or before its annotation was fetched.
+  The fetch stage also fetches the annotation of every genome the process stage will run, whatever its done folder
+  holds (since 2026-11-16: a done genome of an older genome record, still on disk, kept its old `annotation.tsv`
+  until its rerun, so none was fetched and it was run again without its gene models; the next fetch and process
+  runs mend such a genome by the rule above).
 - A species whose genome changed since the last plan (`WORK/genome_set.tsv`: TOGA2's assembly in its place; NCBI's
   newer assembly or version, after `--refresh`) gets the new one fetched and run; the old file (and its annotation)
   is deleted once the new one is done (`WORK/superseded.tsv`), its done folder kept.
@@ -533,7 +538,8 @@ python3 eukore_build.py --build_dir WORK --out OUT --stage process --reversion -
 `--refresh` (with the fetch stage, or `all`) fetches again what chooses the genomes and their gene models: NCBI's
 assembly tables, its FCS-GX and ANI reports, and Ensembl's, VEuPathDB's and TOGA2's indexes (each old one kept where
 its download fails). The next plan then takes NCBI's newer assemblies, and the rules above fetch and run what changed.
-Without it, these sources stay as first fetched. For a newer taxonomy, delete `WORK/sources/taxdump.tar.gz` too.
+Without it, these sources stay as first fetched; the taxdump is fetched again whenever NCBI's is newer (since
+2026-11-16), with or without `--refresh`.
 
 ### What a build leaves
 

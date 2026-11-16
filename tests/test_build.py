@@ -22,6 +22,61 @@ tool = fx.tool
 
 
 class UnitTest(unittest.TestCase):
+    def test_the_fetch_fetches_the_annotation_of_a_genome_to_be_run(self):
+        # since 2026-11-16: a done genome of an older genome record kept its annotation.tsv until its rerun, so the
+        # fetch stage fetched no annotation of it, and the process stage ran it again without its gene models
+        import json  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from eukore import annotation, genomes  # noqa: PLC0415
+        loci = ["1at2759"]
+        with tempfile.TemporaryDirectory() as tmp:
+            work, gdir = os.path.join(tmp, "work"), os.path.join(tmp, "genomes")
+            os.makedirs(gdir)
+
+            def done(acc, table=True, **summary):
+                folder = genomes.done_dir(work, acc)
+                os.makedirs(folder)
+                with open(os.path.join(folder, "done.json"), "w") as fh:
+                    json.dump(dict(dict(searched=loci, annotation="ncbi", annotation_none=[],
+                                        genome_record=genomes.GENOME_RECORD), **summary), fh)
+                if table:
+                    with open(os.path.join(folder, annotation.TABLE), "w") as fh:
+                        fh.write("\t".join(annotation.ANNOTATION_COLUMNS) + "\n")
+            jobs = {a: dict(accession=a, fetch=a, url=f"https://ftp.example/{a}_x_genomic.fna.gz", annotated=True,
+                            annotations=[]) for a in ("new", "compared", "old_record", "short", "uncompared",
+                                                      "unannotated", "here", "none")}
+            jobs["unannotated"]["annotated"] = False  # none to try
+            done("compared")
+            done("old_record", genome_record=genomes.GENOME_RECORD - 1)  # run again: its annotation.tsv is the old run's
+            done("short", searched=[])  # searched for fewer loci than called now: run again
+            done("uncompared", table=False)
+            done("unannotated")
+            open(annotation.gff_file(gdir, "here"), "w").close()  # beside it already
+            annotation.note_none(gdir, "none", annotation.none_before(jobs["none"], None))
+            got = [j["accession"] for j in eukore_build.annotations_to_fetch(work, gdir, jobs, loci)]
+            self.assertEqual(got, ["new", "old_record", "short", "uncompared"])
+
+    def test_ncbis_taxdump_md5(self):
+        # since 2026-11-16 the fetch stage fetches NCBI's taxdump again where its MD5 (taxdump.tar.gz.md5) is another;
+        # without it (offline) the taxdump there is kept
+        from unittest import mock  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+
+        def served(text):
+            def download(url, dest, md5=None):
+                self.assertTrue(url.endswith("taxdump.tar.gz.md5"))
+                with open(dest, "w") as fh:
+                    fh.write(text)
+            return download
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(eukore_build, "say"):
+            with mock.patch.object(eukore_build.sources, "download", served("0123456789ABCDEF0123456789abcdef  "
+                                                                            "taxdump.tar.gz\n")):
+                self.assertEqual(eukore_build.taxdump_md5(tmp), "0123456789abcdef0123456789abcdef")
+            with mock.patch.object(eukore_build.sources, "download", served("<html>not found</html>")):
+                self.assertIsNone(eukore_build.taxdump_md5(tmp))
+            with mock.patch.object(eukore_build.sources, "download", side_effect=OSError("offline")):
+                self.assertIsNone(eukore_build.taxdump_md5(tmp))
+
     def test_a_unit_whole_with_its_inline_5s(self):
         rng = random.Random(1)
         seq = "".join(rng.choice("ACGT") for _ in range(30000))
@@ -328,6 +383,59 @@ class ResumeTest(unittest.TestCase):
                                  else set(passes))
                 self.assertEqual(called["annotate_pass"].call_args.kwargs["may_fetch"], False)
                 self.assertEqual("left to a process run without it" in out.getvalue(), only)
+
+    def test_a_task_after_nothing_left_ends_at_once(self):
+        # since 2026-11-16: a --genomes_only task that found no genome left writes WORK/process.nothing_left; a later
+        # task with the same code, options, sources and genomes ends before it reads the taxonomy; a source changed (a
+        # fetch since) or another option, it runs
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "work", "sources")
+            os.makedirs(src)
+            with open(os.path.join(src, "taxdump.tar.gz"), "w") as fh:
+                fh.write("old")
+            args = ["--build_dir", os.path.join(tmp, "work"), "--out", os.path.join(tmp, "out"), "--stage", "process",
+                    "--genomes_only"]
+
+            def task(extra=()):  # run_genomes is the caller's mock
+                ran = []
+                with contextlib.ExitStack() as stack:
+                    out = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                    stack.enter_context(mock.patch.object(eukore_build.ncbi_mod, "Ncbi",
+                                                          side_effect=lambda *_a: ran.append(1)))
+                    for name, value in (("inside_of", None), ("plan", ({}, {})), ("extras_of", {}),
+                                        ("settings_of", {})):
+                        stack.enter_context(mock.patch.object(eukore_build, name, return_value=value))
+                    stack.enter_context(mock.patch.object(eukore_build.shutil, "which", side_effect=lambda t: "/x/" + t))
+                    stack.enter_context(mock.patch.object(eukore_build.rrna, "check_itsx", return_value=None))
+                    for name in ("backfill_pass", "describe_pass", "organelle_genes", "annotate_pass", "pack_pass",
+                                 "published_pass", "donors_of", "query_reruns"):
+                        stack.enter_context(mock.patch.object(eukore_build, name))
+                    self.assertEqual(eukore_build.main(args + list(extra)), 0)
+                return bool(ran), out.getvalue()
+            with mock.patch.object(eukore_build, "run_genomes") as rg:
+                rg.side_effect = lambda opts, *_a, **_k: (setattr(opts, "genomes_left", 0), ([], []))[1]
+                ran, said = task()
+                self.assertTrue(ran)
+                self.assertIn("the array's later tasks with the same inputs end at once", said)
+                self.assertTrue(os.path.isfile(os.path.join(tmp, "work", eukore_build.NOTHING_LEFT)))
+                ran, said = task(["-t", "7"])  # another thread count: the same inputs
+                self.assertFalse(ran)
+                self.assertIn("nothing left to run", said)
+                ran, _said = task(["--no_tsa"])  # another option: runs
+                self.assertTrue(ran)
+                with open(os.path.join(src, "taxdump.tar.gz"), "w") as fh:  # a fetch since
+                    fh.write("newer")
+                ran, _said = task()
+                self.assertTrue(ran)
+                # genomes left to run: no note written
+                os.remove(os.path.join(tmp, "work", eukore_build.NOTHING_LEFT))
+                rg.side_effect = lambda opts, *_a, **_k: (setattr(opts, "genomes_left", 3), ([], []))[1]
+                task()
+                self.assertFalse(os.path.isfile(os.path.join(tmp, "work", eukore_build.NOTHING_LEFT)))
 
     def test_the_folders_old_flags_still_taken(self):
         # --build_dir and --local_tmp since 2026-11-09; a running build's scripts' --work and --scratch still mean what
@@ -1059,11 +1167,13 @@ class ChainTest(unittest.TestCase):
             got, calls = run("build")
             self.assertEqual(got.returncode, 0, got.stderr)
             self.assertEqual(len(calls), 2)
+            # the logs named by the step (since 2026-11-16): an array's process.<array>_<task>, the final job's final.<job>
             for said in ("-J Eukore-process", "--time=1:00:00", "--mem=200G", "--array=1-3", f"{script} _process",
-                         f"-o {tmp}/runs/eukore.%j.otxt"):
+                         f"-o {tmp}/runs/process.%A_%a.otxt", f"-e {tmp}/runs/process.%A_%a.etxt"):
                 self.assertIn(said, calls[0])
             self.assertNotIn("--dependency", calls[0])
-            for said in ("-J Eukore-final", "--mem=800G", "--dependency=afterany:101 ", f"{script} _final"):
+            for said in ("-J Eukore-final", "--mem=800G", "--dependency=afterany:101 ", f"{script} _final",
+                         f"-o {tmp}/runs/final.%j.otxt"):
                 self.assertIn(said, calls[1])
             self.assertIn("array job 101, 3 tasks", got.stdout)
             self.assertIn("job 102", got.stdout)
