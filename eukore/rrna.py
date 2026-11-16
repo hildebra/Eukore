@@ -478,9 +478,13 @@ def _itsx(stretches, itsx, threads, sets):
                 if s not in names:
                     names[s] = f"u{len(names)}"
                     fh.write(f">{names[s]}\n{s}\n")
+        # run inside tmp (since 2026-11-16): ITSx makes its own folder, ITSx_temp_directory__<-o, its slashes "-">,
+        # in its working directory (its --temp's default "."), which was the build's: the job's submission folder,
+        # where a killed run's folder stayed; here it goes with tmp
         run = subprocess.run([itsx, "-i", fasta, "-o", prefix, "-t", sets, "--cpu", str(max(1, threads)),
                               "--save_regions", "none", "--preserve", "T", "--complement", "F", "--graphical", "F",
-                              "--summary", "F"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                              "--summary", "F"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                             cwd=tmp)
         # ITSx with --cpu over 1 exits 0 when HMMER fails on a profile set (a damaged ITSx_db): its stderr tells
         if run.returncode or "ERROR" in run.stderr:
             lines = [x for x in run.stderr.splitlines() if "rror" in x or "not found" in x]
