@@ -55,6 +55,37 @@ class MarkerTest(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "marker set's inputs not fetched: AttributeError"):
                 markers.fetch(tmp)
 
+    def test_kofams_archive_kept_for_a_new_ko(self):
+        # since 2026-11-16 the 1.6 GB archive fetched stays beside ko_list.gz: a later table's new KO is taken out of
+        # it, not fetched again
+        import io  # noqa: PLC0415
+        import tarfile  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            served = os.path.join(tmp, "served.tar.gz")
+            with tarfile.open(served, "w:gz") as tar:
+                for ko in ("K1", "K2"):
+                    data = f"HMMER3/f\nNAME  {ko}\n//\n".encode()
+                    info = tarfile.TarInfo(f"profiles/{ko}.hmm")
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
+            folder, fetches = os.path.join(tmp, "eukore_markers"), []
+
+            def fetch_ranges(url, dest, log=print):
+                fetches.append(url)
+                with open(served, "rb") as src, open(dest, "wb") as out:
+                    out.write(src.read())
+                return dest
+            archive = os.path.join(folder, "profiles.tar.gz")
+            with mock.patch.object(markers, "fetch_ranges", side_effect=fetch_ranges):
+                markers.stream_profiles("https://k/profiles.tar.gz", ["K1"], os.path.join(folder, "kofam"),
+                                        lambda *a: None, archive)
+                self.assertTrue(os.path.isfile(archive))
+                markers.stream_profiles("https://k/profiles.tar.gz", ["K1", "K2"], os.path.join(folder, "kofam"),
+                                        lambda *a: None, archive)
+            self.assertEqual(len(fetches), 1)
+            self.assertEqual(sorted(os.listdir(os.path.join(folder, "kofam"))), ["K1.hmm", "K2.hmm"])
+
     def test_kofam_rule_and_members(self):
         kos = {"K1": (100.0, "full", "target"), "K2": (100.0, "domain", "paralog")}
         self.assertEqual(markers.classify({"K1": (300.0, 290.0), "K2": (200.0, 190.0)}, kos, {"K1", "K2"}), "K1")
