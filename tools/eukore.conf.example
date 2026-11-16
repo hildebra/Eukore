@@ -44,3 +44,6 @@ SBATCH_FETCH=(-p download --cpus-per-task=2 --mem=8G)
 SBATCH_PROCESS=(-p medium --cpus-per-task=64 --mem=200G --localscratch=ssd:500)
 SBATCH_FINAL=(-p largemem --cpus-per-task=92 --mem=839000 --localscratch=ssd:500)
 SBATCH_QC=(-p medium --cpus-per-task=64 --mem=64G --time=24:00:00)   # a locus' search: ~10 GB at 30,000 copies
+# (a helper searches on its --cpus-per-task threads, whatever their number: 16 or 32 with 32G are enough where 64-core
+# jobs wait long or are refused; its --time must cover the final job's searches, QC_IDLE apart. Try a setting from
+# the login node with `bash tools/eukore.sh qc 1`: sbatch says why it refuses one.)

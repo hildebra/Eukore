@@ -22,6 +22,27 @@ tool = fx.tool
 
 
 class UnitTest(unittest.TestCase):
+    def test_ncbis_taxdump_md5(self):
+        # since 2026-11-16 the fetch stage fetches NCBI's taxdump again where its MD5 (taxdump.tar.gz.md5) is another;
+        # without it (offline) the taxdump there is kept
+        from unittest import mock  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+
+        def served(text):
+            def download(url, dest, md5=None):
+                self.assertTrue(url.endswith("taxdump.tar.gz.md5"))
+                with open(dest, "w") as fh:
+                    fh.write(text)
+            return download
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(eukore_build, "say"):
+            with mock.patch.object(eukore_build.sources, "download", served("0123456789ABCDEF0123456789abcdef  "
+                                                                            "taxdump.tar.gz\n")):
+                self.assertEqual(eukore_build.taxdump_md5(tmp), "0123456789abcdef0123456789abcdef")
+            with mock.patch.object(eukore_build.sources, "download", served("<html>not found</html>")):
+                self.assertIsNone(eukore_build.taxdump_md5(tmp))
+            with mock.patch.object(eukore_build.sources, "download", side_effect=OSError("offline")):
+                self.assertIsNone(eukore_build.taxdump_md5(tmp))
+
     def test_a_unit_whole_with_its_inline_5s(self):
         rng = random.Random(1)
         seq = "".join(rng.choice("ACGT") for _ in range(30000))

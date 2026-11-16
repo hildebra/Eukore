@@ -89,6 +89,20 @@ def say(text):
 
 # --- sources -----------------------------------------------------------------------------------------------------
 
+def taxdump_md5(src_dir):
+    """NCBI's MD5 of its taxdump now (TAXDUMP_URL.md5, a line `<md5>  taxdump.tar.gz`), or None where it is not
+    fetched (offline, NCBI down: the taxdump there is kept)."""
+    path = os.path.join(src_dir, "taxdump.tar.gz.md5")
+    try:
+        sources.download(TAXDUMP_URL + ".md5", path)
+        with open(path) as fh:
+            got = (fh.read().split() or [""])[0].lower()
+    except OSError as e:
+        say(f"WARNING: NCBI's taxdump MD5 not fetched ({e}): the taxdump there is kept unless older than the tables")
+        return None
+    return got if re.fullmatch(r"[0-9a-f]{32}", got) else None
+
+
 def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False, midori2=True):
     """Every source into src_dir (kept when there and whole), downloaded and unpacked, nothing computed (since
     2026-11-11 the marker set's inputs alone, the process stage builds it: its hmmsearch of ~230,000 candidates ran on
@@ -108,16 +122,21 @@ def fetch_sources(src_dir, groups, ksgp_tax=None, refresh=False, midori2=True):
                         raise
                     say(f"WARNING: {kind}'s {group} assembly table not fetched again ({e}): the old one kept")
     taxdump = os.path.join(src_dir, "taxdump.tar.gz")
-    # the taxdump fetched again with the assembly tables (--refresh), or where it is older than they are by TAXDUMP_AGE
-    # (since 2026-11-14: fetched once and kept, the 2026-11 build's taxdump lacked 39 of its tables' species)
+    # the taxdump fetched again where NCBI's is another (its taxdump.tar.gz.md5; since 2026-11-16 at every fetch stage:
+    # until then only with --refresh or older than the assembly tables by TAXDUMP_AGE, and the 2026-11 builds' lacked 39
+    # of their tables' species), else with the assembly tables (--refresh), or where it is older than they are
     tables_time = max((os.path.getmtime(p) for p in glob.glob(os.path.join(src_dir, "ncbi_assemblies", "*.txt"))),
                       default=0)
     stale = os.path.isfile(taxdump) and tables_time - os.path.getmtime(taxdump) > TAXDUMP_AGE
-    if not os.path.isfile(taxdump) or refresh or stale:
-        say("NCBI: fetching the taxdump" + (" again (older than the assembly tables)" if stale else
+    newest = taxdump_md5(src_dir)
+    newer = newest is not None and os.path.isfile(taxdump) and util.md5(taxdump) != newest
+    if not os.path.isfile(taxdump) or refresh or stale or newer:
+        say("NCBI: fetching the taxdump" + (" again (NCBI's is newer)" if newer else
+                                            " again (older than the assembly tables)" if stale else
                                             " again (--refresh)" if refresh and os.path.isfile(taxdump) else ""))
         try:
-            sources.download(TAXDUMP_URL, taxdump)  # fetch_file: renamed into place once whole, the old one till then
+            # fetch_file: renamed into place once whole, the old one till then; checked against NCBI's MD5
+            sources.download(TAXDUMP_URL, taxdump, newest)
         except OSError as e:
             if not os.path.isfile(taxdump):
                 raise

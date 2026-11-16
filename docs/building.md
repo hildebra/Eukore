@@ -329,7 +329,8 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 
 - **fetch** gets the sources into `WORK/sources` (or the folder `--sources` names), each kept once there and whole:
   - NCBI's GenBank and RefSeq assembly tables of the `--groups`;
-  - NCBI's taxdump;
+  - NCBI's taxdump, fetched again at every fetch stage where NCBI's is newer (its `taxdump.tar.gz.md5`; since
+    2026-11-16), the old one kept where NCBI cannot be reached;
   - NCBI's FCS-GX summaries of its assemblies and its Saccharomycotina ANI report (~70 MB);
   - BUSCO's eukaryota_odb12;
   - EUKARYOME 2.1 (its long reads and, since 0.2.6, its SSU set, 29 MB) and ROD v1.2;
@@ -533,7 +534,8 @@ python3 eukore_build.py --build_dir WORK --out OUT --stage process --reversion -
 `--refresh` (with the fetch stage, or `all`) fetches again what chooses the genomes and their gene models: NCBI's
 assembly tables, its FCS-GX and ANI reports, and Ensembl's, VEuPathDB's and TOGA2's indexes (each old one kept where
 its download fails). The next plan then takes NCBI's newer assemblies, and the rules above fetch and run what changed.
-Without it, these sources stay as first fetched. For a newer taxonomy, delete `WORK/sources/taxdump.tar.gz` too.
+Without it, these sources stay as first fetched; the taxdump is fetched again whenever NCBI's is newer (since
+2026-11-16), with or without `--refresh`.
 
 ### What a build leaves
 
