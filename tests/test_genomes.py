@@ -12,6 +12,7 @@ confidence, features, busco/loci.tsv's call rates, species with their PR2 lineag
 import gzip
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -371,8 +372,18 @@ class RunTest(unittest.TestCase):
             self.assertEqual((counts["busco_loci"], counts["marker_loci"]), (2, 1))
             # the prune: the model species' genome kept first
             size = os.path.getsize(genomes.genome_file(genomes_dir, YEAST))
+            # an rRNA donor extracted is done too: deleted past the room (since 2026-11-16: deleted at once), not
+            # kept as pending; a genome's annotation stays
+            donor = "GCA_9.1"
+            shutil.copy(genomes.genome_file(genomes_dir, other), genomes.genome_file(genomes_dir, donor))
+            os.makedirs(genomes.donor_dir(work, donor))
+            open(os.path.join(genomes.donor_dir(work, donor), "rrna.tsv"), "w").close()
+            gff = annotation.gff_file(genomes_dir, other, "ensembl")
+            open(gff, "w").close()
             kept = genomes.prune(genomes_dir, work, size, set(), {YEAST})
-            self.assertEqual(sorted(kept), sorted([(YEAST, size, "kept"), (other, size, "deleted")]))
+            self.assertEqual(sorted(kept), sorted([(YEAST, size, "kept"), (other, size, "deleted"),
+                                                   (donor, size, "deleted")]))
+            self.assertTrue(os.path.isfile(gff))
 
 
     def test_the_package_read_by_a_pool_is_the_same(self):
@@ -477,7 +488,8 @@ class RunTest(unittest.TestCase):
             compared = {r["locus"]: r for r in fx.read_tsv(os.path.join(done, annotation.TABLE))}
             self.assertEqual((compared["1at2759"]["exact_introns"], compared["2at2759"]["transcript"],
                               compared["1at2759"]["source"]), ("1", "-", "ncbi"))
-            self.assertFalse(os.path.isfile(ann))  # taken and compared: deleted
+            self.assertTrue(os.path.isfile(ann))  # taken and compared: kept for its runs again (since 2026-11-16)
+            os.remove(ann)  # below, as if NCBI had none
             self.assertEqual(summary["annotation_none"], [])
             self.assertIsNone(genomes.better_annotation(work, job))  # NCBI's taken: none better
             self.assertIsNone(annotation.gff_url(dict(job, annotated=False)))
@@ -506,7 +518,8 @@ class RunTest(unittest.TestCase):
             self.assertEqual(models["1at2759"], "ensembl")
             compared = {r["locus"]: r for r in fx.read_tsv(os.path.join(done, annotation.TABLE))}
             self.assertEqual((compared["1at2759"]["source"], compared["1at2759"]["transcript"]), ("ensembl", "t1"))
-            self.assertFalse(os.path.isfile(ann))
+            self.assertTrue(os.path.isfile(ann))  # kept: a run again takes it, not run again for it
+            self.assertFalse(genomes.rerun_for_annotation(work, other, genomes_dir, False))
 
 
 class FcsTest(unittest.TestCase):

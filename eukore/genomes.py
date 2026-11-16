@@ -1182,10 +1182,8 @@ def run(args):
             shutil.rmtree(aside, ignore_errors=True)
         else:
             os.replace(tmp, folder)
-        gff, report = got[3]
-        for used in (gff, report):  # annotation.none_file stays: a run again knows none has one
-            if used and os.path.isfile(used):  # compared and taken: annotation.tsv holds what the benchmark needs
-                os.remove(used)
+        # the GFF and the assembly report stay beside the genome for its runs again (since 2026-11-16: deleted, and a
+        # rerun's fetch stage, which chose before the rerun, fetched none: the rerun went without its gene models)
         return got[:3]
 
 
@@ -1516,8 +1514,8 @@ def annotation_of(job, settings):
     gff, source = annotation_mod.found(settings["genomes"], job["accession"])
     report = annotation_mod.report_file(settings["genomes"], job["accession"])
     if not gff:
-        if settings.get("staged_only"):  # the fetch stage found none (its note), or it is still to come
-            none = annotation_mod.none_noted(settings["genomes"], job)
+        if settings.get("staged_only"):  # the fetch stage found none (its notes), or it is still to come
+            none = not annotation_mod.untried(settings["genomes"], job, settings.get("veupathdb_key"))
             return (None, report if os.path.isfile(report) else None, "-") if none else (False, None, "-")
         try:
             gff, source = annotation_mod.fetch(job, settings["genomes"], settings.get("veupathdb_key"))
@@ -1824,7 +1822,8 @@ def clade_held_out(path, job, settings, odb, folder, scratch, rank, earlier=None
 def prune(genomes_folder, work, keep_bytes, protected=(), first=()):
     """The kept genomes cut back to keep_bytes once done (since 2026-11-05): `protected` accessions (a host's) kept
     whatever their size, then `first` (the model species'), then the smallest; a genome not done yet kept (pending);
-    the rest deleted -> [(accession, bytes, status)], written as genomes_folder/manifest.tsv."""
+    the rest deleted -> [(accession, bytes, status)], written as genomes_folder/manifest.tsv. A genome's annotation,
+    assembly report and notes stay: small, and its rerun needs them."""
     files = [f for f in os.listdir(genomes_folder) if f.endswith(".fna.gz")] if os.path.isdir(genomes_folder) else []
     order = []
     for f in files:
@@ -1833,9 +1832,12 @@ def prune(genomes_folder, work, keep_bytes, protected=(), first=()):
         order.append((rank_, os.path.getsize(os.path.join(genomes_folder, f)), acc))
     kept, rows = 0, []
     for rank_, size, acc in sorted(order):
-        if rank_ == 0 or not is_done(work, acc) or kept + size <= keep_bytes:
+        # an rRNA donor extracted is done too (since 2026-11-16: deleted at once, whatever the room, and fetched again
+        # by its rerun)
+        done = is_done(work, acc) or donor_done(work, acc)
+        if rank_ == 0 or not done or kept + size <= keep_bytes:
             kept += size
-            rows.append((acc, size, "kept" if is_done(work, acc) or rank_ == 0 else "pending"))
+            rows.append((acc, size, "kept" if done or rank_ == 0 else "pending"))
         else:
             os.remove(genome_file(genomes_folder, acc))
             rows.append((acc, size, "deleted"))

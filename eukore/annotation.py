@@ -151,30 +151,66 @@ def gff_file(genomes_folder, accession, source="ncbi"):
 
 
 def none_file(genomes_folder, accession):
-    """The fetch stage's note beside a genome that none of its sources has an annotation of it (since 2026-11-08), so
-    that its run (genomes.annotation_of) knows the annotation was asked for, not still to come."""
+    """The note beside a genome of the sources fetch found to have no annotation of it (since 2026-11-08; until
+    2026-11-16 written only where none had one), so that its run (genomes.annotation_of) knows the annotation was asked
+    for, not still to come, and a later fetch does not ask them again."""
     return os.path.join(genomes_folder, f"{accession}.annotation_none")
+
+
+def noted_none(genomes_folder, accession):
+    """The sources noted beside a genome to have no annotation of it (none_file) -> set."""
+    path = none_file(genomes_folder, accession)
+    if not os.path.isfile(path):
+        return set()
+    with open(path) as fh:
+        return {line.strip() for line in fh if line.strip()}
 
 
 def none_noted(genomes_folder, job):
     """Whether the fetch stage noted that none of a job's sources (candidates; one added since, e.g. a VEuPathDB key
     given, is not noted) has its annotation."""
-    path = none_file(genomes_folder, job["accession"])
-    if not os.path.isfile(path):
-        return False
-    with open(path) as fh:
-        noted = {line.strip() for line in fh}
-    return {s for s, _url in candidates(job)} <= noted
+    return {s for s, _url in candidates(job)} <= noted_none(genomes_folder, job["accession"])
 
 
 def note_none(genomes_folder, accession, sources):
+    """Sources added to those noted beside a genome to have no annotation of it (since 2026-11-16 added, not in place
+    of those noted before)."""
+    noted = noted_none(genomes_folder, accession) | set(sources)
     with open(util.part_of(none_file(genomes_folder, accession)), "w", newline="\n") as fh:
-        fh.write("".join(f"{s}\n" for s in sources))
+        fh.write("".join(f"{s}\n" for s in sorted(noted)))
     os.replace(util.part_of(none_file(genomes_folder, accession)), none_file(genomes_folder, accession))
 
 
+def askable(source, url, veupathdb_key=None):
+    """Whether fetch may ask a source: VEuPathDB's own only with a key, over https."""
+    return source != "veupathdb" or bool(veupathdb_key and veupathdb_host(url))
+
+
+def untried(genomes_folder, job, veupathdb_key=None):
+    """Whether fetch would ask a source of a job's annotation: one it may ask (askable), not noted to have none, that
+    comes before the annotation kept beside the genome (any where none is kept). Since 2026-11-16 a genome's
+    annotation stays beside it after its run, for its runs again, and a better one fetched later takes its place."""
+    _path, kept = found(genomes_folder, job["accession"])
+    noted = noted_none(genomes_folder, job["accession"])
+    for source, url in candidates(job):
+        if kept and SOURCES.index(source) >= SOURCES.index(kept):
+            return False
+        if source not in noted and askable(source, url, veupathdb_key):
+            return True
+    return False
+
+
+def drop_worse(genomes_folder, accession, source):
+    """The annotations kept beside a genome of the sources after source deleted: a better one took their place."""
+    for other in SOURCES[SOURCES.index(source) + 1:]:
+        path = gff_file(genomes_folder, accession, other)
+        for p in (path, genark_alias_file(path)):
+            if p and os.path.isfile(p):
+                os.remove(p)
+
+
 def found(genomes_folder, accession):
-    """The annotation beside a genome (the fetch stage's) -> (path, source), or (None, None)."""
+    """The best annotation beside a genome (the fetch stage's; SOURCES' order) -> (path, source), or (None, None)."""
     for source in SOURCES:
         path = gff_file(genomes_folder, accession, source)
         if os.path.isfile(path):
@@ -635,42 +671,57 @@ def annotate(folder, gff, report=None, calls=None, source="ncbi"):
 
 
 def fetch(job, genomes_folder, veupathdb_key=None, **how):
-    """A job's annotation into genomes_folder (kept where there), from the first of its candidates() that has one
-    (a 404, or a GFF without coding sequences, is none), with NCBI's assembly report -> (path, source), (None, None)
-    where none has one, or raises OSError where one did not arrive (a later run asks again). veupathdb_key: a
-    VEuPathDB user's API key (without, its annotation is not asked for); how: util.fetch_file's scratch and checker."""
-    path, source = found(genomes_folder, job["accession"])
-    if path:
+    """A job's annotation into genomes_folder, from the first of its candidates() that has one (a 404, or a GFF
+    without coding sequences, is none), with NCBI's assembly report -> (path, source), (None, None) where none has
+    one, or raises OSError where one did not arrive (a later run asks again). One kept beside the genome is taken,
+    unless a source before it was not asked yet (untried): a better one fetched deletes it (drop_worse). The sources
+    found to have none are noted beside the genome (note_none) and not asked again. veupathdb_key: a VEuPathDB user's
+    API key (without, its annotation is not asked for); how: util.fetch_file's scratch and checker."""
+    acc = job["accession"]
+    path, source = found(genomes_folder, acc)
+    if path and not untried(genomes_folder, job, veupathdb_key):
         return path, source
-    report = report_file(genomes_folder, job["accession"])
+    report = report_file(genomes_folder, acc)
     if report_url(job) and not os.path.isfile(report):
         util.fetch_file(report_url(job), report, gzip_check=False,  # without it, the names may not meet
                         **{k: v for k, v in how.items() if k == "scratch"})
-    for source, url in candidates(job):
-        path = gff_file(genomes_folder, job["accession"], source)
-        if source == "veupathdb":
-            if not veupathdb_key or not veupathdb_host(url):  # the key to VEuPathDB alone, over https
+    noted, none = noted_none(genomes_folder, acc), []
+    try:
+        for source, url in candidates(job):
+            path = gff_file(genomes_folder, acc, source)
+            if os.path.isfile(path):  # kept: the best there is
+                return path, source
+            if source in noted or not askable(source, url, veupathdb_key):  # the key to VEuPathDB alone, over https
                 continue
-            why = util.fetch_file(url, path, gzip_check=False, headers={"Authorization": f"Bearer {veupathdb_key}"},
-                                  **{k: v for k, v in how.items() if k == "scratch"})
-        else:
-            why = util.fetch_file(url, path, **how)
-        if why == "not found":
-            continue
-        if why:
-            raise OSError(f"{url}: {why}")
-        if source == "genark":  # its sequences' names: GenArk's map of VEuPathDB's to GenBank's (since 2026-11-14)
-            util.fetch_file(genark_alias_url(url), genark_alias_file(path), gzip_check=False,
-                            **{k: v for k, v in how.items() if k == "scratch"})
-        if has_cds(path):
-            return path, source
-        os.remove(path)  # NCBI's GFF of an unannotated assembly: its regions alone
-    return None, None
+            if source == "veupathdb":
+                why = util.fetch_file(url, path, gzip_check=False,
+                                      headers={"Authorization": f"Bearer {veupathdb_key}"},
+                                      **{k: v for k, v in how.items() if k == "scratch"})
+            else:
+                why = util.fetch_file(url, path, **how)
+            if why == "not found":
+                none.append(source)
+                continue
+            if why:
+                raise OSError(f"{url}: {why}")
+            if source == "genark":  # its sequences' names: GenArk's map of VEuPathDB's to GenBank's (since 2026-11-14)
+                util.fetch_file(genark_alias_url(url), genark_alias_file(path), gzip_check=False,
+                                **{k: v for k, v in how.items() if k == "scratch"})
+            if has_cds(path):
+                drop_worse(genomes_folder, acc, source)
+                return path, source
+            os.remove(path)  # NCBI's GFF of an unannotated assembly: its regions alone
+            none.append(source)
+        return None, None
+    finally:
+        if none:
+            note_none(genomes_folder, acc, none)
 
 
 def annotate_genome(work, job, genomes_folder, may_fetch=True, veupathdb_key=None):
-    """A done genome compared with its annotation (fetched where may_fetch and not beside the genome), the GFF
-    deleted after -> copies compared, or None where its GFF is not there (left for a stage that may fetch)."""
+    """A done genome compared with its annotation (fetched where may_fetch and not beside the genome) -> copies
+    compared, or None where its GFF is not there (left for a stage that may fetch). The GFF and the assembly report
+    stay beside the genome for its runs again (since 2026-11-16: deleted, and fetched again by each rerun)."""
     from .genomes import done_dir, note_annotation_none  # noqa: PLC0415
     path, source = found(genomes_folder, job["accession"])
     if not path:
@@ -679,8 +730,4 @@ def annotate_genome(work, job, genomes_folder, may_fetch=True, veupathdb_key=Non
         path, source = fetch(job, genomes_folder, veupathdb_key)
     note_annotation_none(work, job, none_before(job, source))  # not asked again (genomes.better_annotation)
     report = report_file(genomes_folder, job["accession"])
-    n = annotate(done_dir(work, job["accession"]), path, report, source=source or "-")
-    for done in (path, report, genark_alias_file(path) if path else None):
-        if done and os.path.isfile(done):
-            os.remove(done)
-    return n
+    return annotate(done_dir(work, job["accession"]), path, report, source=source or "-")
