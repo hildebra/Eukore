@@ -232,7 +232,9 @@ Each species' ids in other taxonomies and databases, one row per id: `taxid` (th
 ## reference_screen.tsv (optional)
 Since 2026-11-10, where the build was given MIDORI2 files (`--midori2`) and has minimap2 and vsearch: the records of
 those files the reference screen calls (`eukore/refscreen.py`; [methods.md](methods.md#the-reference-screen-since-2026-11-10)),
-one row per record and gene file. A record with `action` `drop` names no species in `species.tsv`; the others do. A
+one row per record and gene file. A record with `action` `drop` names no species in `species.tsv`; the others do.
+Since 2026-11-16 the screen screens one record of each species and gene (its longest of the gene's length, ACGT and,
+of a coding gene, with a reading frame: [methods.md](methods.md)), so the table lists calls of those alone. A
 reader takes a package with or without the table. `tools/screen_reference.py` writes the same calls as KSGP's lists
 (`drop.tsv`, `trim.tsv`, `review.tsv`) and the files without the dropped records, for a user of MIDORI2 itself.
 

@@ -768,6 +768,20 @@ EUKARYOME's one tree, whose higher taxa are one name each.
   - of the SSU, reads on its gene's strand by an 8-mer model of the SSU taken (KSGP 5.1's check, which turned 721 of
     MIDORI's mitochondrial SSU), else is turned.
 
+  **One record a species screened** (since 2026-11-16, `organelle.midori2_choice`). The reference screen screened
+  every record of MIDORI2's 15 UNIQ files: 4.0 million in the build of 2026-11-16 (it was measured on GB273's
+  LONGEST files, 0.5 million), on the final node for hours. Now it screens, of each named NCBI species and gene, one
+  record: the longest whose length is the gene's (SSU, COX1, CYTB, LSU as above; MIDORI2's other genes from about a
+  third of their usual length in animals' mitochondria to about 1.6 times it: atp6 200-1,100 bases, atp8 100-400, COX2
+  200-1,200, COX3 250-1,300, nad1 300-1,600, nad2 300-1,700, nad3 150-600, nad4 400-2,200, nad4L 150-500, nad5
+  500-2,900, nad6 200-850: longer is several genes' span or an annotation's artifact), with at most 0.5% other bases
+  than ACGT and, of a protein-coding gene, a reading frame by the species' mitochondrial code. A species' gene taken
+  above is that record or none: where the screen drops it, the species has none of that gene (until then its next
+  longest), and a species with no record of the gene's length has no record screened. The other records of a species
+  name it in `species.tsv`'s `midori2` lineage as before, unscreened. The choice is kept beside the screen's calls
+  (`WORK/reference_screen/<key>/chosen.tsv`). The length windows of the genes other than SSU, COX1, CYTB and LSU are
+  set from animals' genes and not measured on MIDORI2's files.
+
   On MIDORI2 GB273's LONGEST files with that release's screen (`~/refscreen/all.v5`), of the species of no RefSeq
   mitochondrial genome:
 

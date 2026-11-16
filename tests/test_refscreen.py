@@ -395,7 +395,7 @@ class BuildTest(unittest.TestCase):
             src, work = os.path.join(tmp, "sources"), os.path.join(tmp, "work")
             os.makedirs(src)
             ncbi = ncbi_mod.Ncbi(taxdump(os.path.join(src, "taxdump.tar.gz")))
-            path = os.path.join(tmp, "MIDORI2_LONGEST_NUC_GB273_CO1_RAW.fasta")
+            path = os.path.join(tmp, "MIDORI2_UNIQ_NUC_GB273_srRNA_RAW.fasta")
             with open(path, "w") as fh:
                 for r in records:
                     genus = next(t for t in ncbi.ancestors(r.taxid) if ncbi.rank[t] == "genus")
@@ -409,19 +409,28 @@ class BuildTest(unittest.TestCase):
             eukore_build.say, say = said.append, eukore_build.say
             os.environ["PATH"] = tmp + os.pathsep + before
             try:
-                calls, counts = eukore_build.reference_screen(opts, src, ncbi)
-                again, counts_again = eukore_build.reference_screen(opts, src, ncbi)
+                # since 2026-11-16 made in a spawned process of its own (the stand-in tools found on its PATH), the
+                # result read back from WORK; the same as made here
+                calls, counts, choice = eukore_build.reference_screen_apart(opts, src, ncbi)
+                self.assertFalse(any("own process failed" in line for line in said), said)
+                self.assertTrue(any("is there" in line for line in said), said)  # read back, not made here
+                said.clear()
+                again, counts_again, choice_again = eukore_build.reference_screen(opts, src, ncbi)
                 self.assertIsNone(eukore_build.reference_screen(
                     argparse.Namespace(**dict(vars(opts), no_reference_screen=True)), src, ncbi))
             finally:
                 os.environ["PATH"], eukore_build.say = before, say
-            self.assertEqual(refscreen.dropped(calls), {("COX1", "FISH.1.<1.>900")})
+            self.assertEqual(refscreen.dropped(calls), {("SSU", "FISH.1.<1.>900")})
             self.assertEqual(refscreen.dropped(again), refscreen.dropped(calls))
             self.assertEqual(counts_again["action_drop"], counts["action_drop"])
             self.assertTrue(any("is there" in line for line in said), said)
             folder = os.path.join(work, "reference_screen", os.listdir(os.path.join(work, "reference_screen"))[0])
-            self.assertEqual(sorted(os.listdir(folder)), ["calls.tsv", "counts.json", "drop.tsv", "review.tsv",
-                                                          "trim.tsv"])
+            self.assertEqual(sorted(os.listdir(folder)), ["calls.tsv", "chosen.tsv", "counts.json", "drop.tsv",
+                                                          "review.tsv", "trim.tsv"])
+            # each species' one record (since 2026-11-16: organelle.midori2_choice), the same read back
+            self.assertEqual(choice, choice_again)
+            self.assertEqual(choice[("SSU", 402)], "FISH.1.<1.>900")
+            self.assertEqual(len(choice), len(records))
             rows = refscreen.table_rows("MIDORI2", again)
             self.assertEqual([(r["reference"], r["record"], r["call"], r["clade"]) for r in rows],
                              [("MIDORI2", "FISH.1.<1.>900", "misnamed", "phylum Arthropoda")])
@@ -473,6 +482,42 @@ class Midori2Test(unittest.TestCase):
             self.assertEqual(ref.label(ncbi, 102)[0][-1], "Nystalea_secunda")
             ref = labels.read_midori2(path, dropped={("COX1", "MG559732.1.<1.>690")})
             self.assertEqual((ref.label(ncbi, 101)[1], ref.label(ncbi, 102)[1]), ("taxid", "genus"))
+
+    def test_one_realistic_record_a_species(self):
+        # since 2026-11-16 (organelle.midori2_choice): the screen screens each species' longest record of a gene whose
+        # length is the gene's, nearly all ACGT and, of a coding gene, with a reading frame; the organelle genes take
+        # that record or none
+        from eukore import organelle  # noqa: PLC0415
+        rng = random.Random(5)
+        safe = [a + b + c for a in "ACGT" for b in "ACGT" for c in "ACGT"
+                if a + b + c not in ("TAA", "TAG", "TGA", "AGA", "AGG")]
+
+        def orf(codons):
+            return "ATG" + "".join(rng.choice(safe) for _ in range(codons - 1))
+
+        def head(acc, taxid, genus, species):
+            return f">{acc}\troot_1;domain_Eukaryota_2759;genus_{genus}_7090;species_{species}_{taxid}\n"
+        prima, secunda = (101, "Nystalea prima"), (102, "Nystalea secunda")
+        records = [("A.1", prima, orf(500)),            # 1,500 bases with a frame: the one
+                   ("B.1", prima, orf(900)),            # 2,700: over COX1's 2,400, several genes' span
+                   ("C.1", prima, "".join(rng.choice("ACGT") for _ in range(1700))),  # no frame: a NUMT
+                   ("D.1", prima, orf(520)[:1500] + "N" * 60),  # longer, but ambiguous bases
+                   ("E.1", prima, orf(200)),            # shorter: not the longest
+                   ("F.1", secunda, orf(60)),           # 180 bases: under COX1's 300, none for the species
+                   ("G.1", (99999, "Ignota species"), orf(500))]  # no NCBI taxon
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            path = os.path.join(tmp, "MIDORI2_UNIQ_NUC_GB273_CO1_RAW.fasta")
+            with open(path, "w") as fh:
+                fh.writelines(head(a, t, "Nystalea", n) + s + "\n" for a, (t, n), s in records)
+            choice, counts = organelle.midori2_choice([path], ncbi)
+            self.assertEqual(choice, {("COX1", 101): "A.1"})
+            self.assertEqual((counts["COX1: not the gene's length"], counts["COX1: no NCBI taxon"]), (2, 1))
+            # the organelle genes: the chosen record alone, though a longer valid one were there unscreened
+            got, _counts = organelle.midori2_records([path], ncbi, choice={("COX1", 101): "E.1"})
+            self.assertEqual([n for n, _s, _row in got], ["MIDORI2_COX1_E.1"])
+            got, _counts = organelle.midori2_records([path], ncbi, choice=choice)
+            self.assertEqual([n for n, _s, _row in got], ["MIDORI2_COX1_A.1"])
 
 
 if __name__ == "__main__":
