@@ -193,5 +193,58 @@ class PartNameTest(unittest.TestCase):
             self.assertEqual([n for n in os.listdir(folder) if n.endswith(".partial")], [])
 
 
+class KeptTest(unittest.TestCase):
+    """Since 2026-11-16 a genome's annotation stays beside it for its runs again: taken from there, not fetched
+    again, unless a better source was not asked yet; one fetched deletes the worse; the sources found to have none
+    noted, those noted before kept."""
+
+    def test_kept_taken_better_fetched_none_noted(self):
+        with tempfile.TemporaryDirectory() as gdir:
+            asked = []
+            served = {"https://e": "c1\tx\tCDS\t1\t9\t.\t+\t0\tID=c\n"}
+
+            def fetch_file(url, dest, **_how):
+                asked.append(url)
+                if url not in served:
+                    return "not found"
+                with gzip.open(dest, "wt") as fh:
+                    fh.write(served[url])
+                return ""
+            job = dict(accession="GCA_5.1", url="https://n/GCA_5.1_a_genomic.fna.gz",
+                       annotations=[("ensembl", "https://e"), ("toga2", "https://t")])
+            ncbi_gff = "https://n/GCA_5.1_a_genomic.gff.gz"
+            toga2 = annotation.gff_file(gdir, "GCA_5.1", "toga2")
+            with gzip.open(toga2, "wt") as fh:  # a run's, kept
+                fh.write("c1\tx\tCDS\t1\t9\t.\t+\t0\tID=t\n")
+            annotation.note_none(gdir, "GCA_5.1", ["ncbi", "ensembl"])
+            self.assertFalse(annotation.untried(gdir, job))
+            with mock.patch.object(annotation.util, "fetch_file", side_effect=fetch_file):
+                self.assertEqual(annotation.fetch(job, gdir), (toga2, "toga2"))  # kept: nothing asked
+                self.assertEqual(asked, [])
+                # Ensembl's newly there (its note gone, as for a source an index names since): fetched, TOGA2's dropped
+                os.remove(annotation.none_file(gdir, "GCA_5.1"))
+                self.assertTrue(annotation.untried(gdir, job))
+                path, source = annotation.fetch(job, gdir)
+                self.assertEqual((path, source), (annotation.gff_file(gdir, "GCA_5.1", "ensembl"), "ensembl"))
+                self.assertIn(ncbi_gff, asked)
+                self.assertFalse(os.path.isfile(toga2))
+                self.assertEqual(annotation.noted_none(gdir, "GCA_5.1"), {"ncbi"})  # NCBI's 404 noted
+                asked.clear()
+                self.assertEqual(annotation.fetch(job, gdir), (path, "ensembl"))  # kept, NCBI not asked again
+                self.assertEqual((asked, annotation.untried(gdir, job)), ([], False))
+            # notes added to, not replaced
+            annotation.note_none(gdir, "GCA_5.1", ["toga2"])
+            self.assertEqual(annotation.noted_none(gdir, "GCA_5.1"), {"ncbi", "toga2"})
+
+    def test_veupathdb_untried_with_a_key_alone(self):
+        with tempfile.TemporaryDirectory() as gdir:
+            job = dict(accession="GCA_6.1", url="https://n/GCA_6.1_a_genomic.fna.gz", annotated=False,
+                       annotations=[("veupathdb", "https://plasmodb.org/a/P.gff"), ("ensembl", "https://e")])
+            with gzip.open(annotation.gff_file(gdir, "GCA_6.1", "ensembl"), "wt") as fh:
+                fh.write("x")
+            self.assertFalse(annotation.untried(gdir, job))  # no key: VEuPathDB is not asked
+            self.assertTrue(annotation.untried(gdir, job, "KEY"))
+
+
 if __name__ == "__main__":
     unittest.main()

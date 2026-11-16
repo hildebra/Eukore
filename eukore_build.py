@@ -1406,17 +1406,17 @@ def genome_rrna_records(opts, job_map, ncbi, collected=None):
     return out
 
 
-def annotations_to_fetch(work, genomes_folder, job_map, loci):
-    """The fetch stage's genomes to fetch the annotation of -> jobs: those with one to try, not beside them and not
-    noted as none, that the process stage runs (not done for loci, or of an older genome record), or done without
-    its comparison (annotation.tsv), or done with gene models worse than one now there (genomes.better_annotation).
-    Since 2026-11-16 a genome to be run has its own whatever its done folder holds: a done genome of an older genome
-    record kept its annotation.tsv until its rerun, so none was fetched, and it was run again without its gene
-    models (8,361 genomes of the 2026-11-15 build)."""
+def annotations_to_fetch(work, genomes_folder, job_map, loci, veupathdb_key=None):
+    """The fetch stage's genomes to fetch the annotation of -> jobs: those with a source still to ask
+    (annotation.untried: none kept beside them, or a better one not asked yet) that the process stage runs (not done
+    for loci, or of an older genome record), or done without its comparison (annotation.tsv), or done with gene models
+    worse than one now there (genomes.better_annotation). Since 2026-11-16 a genome to be run has its own whatever
+    its done folder holds: a done genome of an older genome record kept its annotation.tsv until its rerun, so none
+    was fetched, and it was run again without its gene models (8,361 genomes of the 2026-11-15 build)."""
     def runs(a):
         return not genomes.is_done(work, a, loci) or genomes.record_stale(work, a)
     return [j for a, j in sorted(job_map.items()) if annotation.wanted(j)
-            and not annotation.found(genomes_folder, a)[0] and not annotation.none_noted(genomes_folder, j)
+            and annotation.untried(genomes_folder, j, veupathdb_key)
             and (runs(a) or not store.has(genomes.done_dir(work, a), annotation.TABLE)
                  or genomes.better_annotation(work, j))]
 
@@ -1439,7 +1439,7 @@ def annotate_one(work, genomes_folder, may_fetch, veupathdb_key, job):
 
 def annotate_pass(opts, job_map, may_fetch):
     """The done genomes with an annotation (NCBI's, Ensembl's or TOGA2's) compared with it (annotation.py: its GFF
-    beside the genome, from the fetch stage, or fetched here where may_fetch), the GFF deleted after."""
+    beside the genome, from the fetch stage, or fetched here where may_fetch), the GFF kept for its runs again."""
     # the done genomes read READ_THREADS at once (genomes.prefetch; since 2026-11-11: one after another)
     with genomes.cached_summaries():
         genomes.prefetch(opts.work, [a for a, j in job_map.items() if annotation.wanted(j)])
@@ -1564,8 +1564,9 @@ def donor_one(args):
 
 
 def donor_pass(opts, donors):
-    """The rRNA donors fetched and not extracted yet: barrnap and ITSx on each (donor_one), -j at once; with --keep_gb
-    its genome file deleted after (only its rRNA is kept)."""
+    """The rRNA donors fetched and not extracted yet: barrnap and ITSx on each (donor_one), -j at once; their genome
+    files kept within --keep_gb, like the plan's genomes (genomes.prune; since 2026-11-16: with --keep_gb deleted
+    here, whatever the room)."""
     barrnap, itsx = shutil.which("barrnap"), shutil.which("ITSx")
     todo = [(j, genomes.genome_file(opts.genomes, a), opts.work, barrnap, itsx, opts.threads_per_genome)
             for a, j in sorted(donors.items()) if not genomes.donor_done(opts.work, a)
@@ -1580,17 +1581,14 @@ def donor_pass(opts, donors):
             if why:
                 failed.append((acc, why))
             progress.step(donors[acc].get("size") or 0, failed=bool(why))
-            if not why and opts.keep_gb is not None:
-                with contextlib.suppress(OSError):
-                    os.remove(genomes.genome_file(opts.genomes, acc))
     if failed:
         say(f"  {len(failed)} donors failed (e.g. {failed[:2]})")
 
 
 def intraspecific_pass(opts, src_dir, ncbi, extras):
     """The panel's further assemblies, run (their BUSCOs and rRNA; no tiara, no held-out calls: panel_settings) with
-    the plan's genomes by run_genomes: their organelle molecules searched for every organelle gene, then their genome
-    files deleted: only their results are kept."""
+    the plan's genomes by run_genomes: their organelle molecules searched for every organelle gene; their genome files
+    kept within --keep_gb, like the plan's genomes (genomes.prune)."""
     if not extras:
         return
     folder = os.path.join(opts.work, "organelle")
@@ -1605,11 +1603,8 @@ def intraspecific_pass(opts, src_dir, ncbi, extras):
                                         shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
                                         every=True, saved_of=functools.partial(saved_molecules, opts, tmp),
                                         progress=functools.partial(progress_of, opts, unit="", scale=1))
-    for acc in extras if opts.keep_gb is not None else ():  # without --keep_gb, kept
-        path = genomes.genome_file(opts.genomes, acc)
-        if genomes.is_done(opts.work, acc) and os.path.isfile(organelle_mod.assembly_file(folder, acc)) \
-                and os.path.isfile(path):
-            os.remove(path)
+    # their genome files kept for a run again, within --keep_gb (genomes.prune; since 2026-11-16: with --keep_gb
+    # deleted here, whatever the room, and fetched again by each rerun)
 
 
 def intraspecific_writer(opts, ncbi, extras, collected, records, organelle, vsearch):
@@ -2394,15 +2389,12 @@ def _main(argv, held):
             (annotation.note_none) and, for a done genome, the sources in its done.json. Raises OSError where one
             did not arrive (a later run asks again)."""
             acc = j["accession"]
-            if not annotation.wanted(j) or annotation.found(opts.genomes, acc)[0] \
-                    or annotation.none_noted(opts.genomes, j):
+            if not annotation.wanted(j) or not annotation.untried(opts.genomes, j, opts.veupathdb_key):
                 return annotation.found(opts.genomes, acc)
             try:
                 path, source = annotation.fetch(j, opts.genomes, opts.veupathdb_key, **how)
             except OSError:
                 return None, None
-            if path is None:
-                annotation.note_none(opts.genomes, acc, annotation.none_before(j, None))
             # the sources asked before the one found (all where none had one): a done genome's not asked again
             genomes.note_annotation_none(opts.work, j, annotation.none_before(j, source))
             return path, source
@@ -2432,7 +2424,7 @@ def _main(argv, held):
         # the genomes' own gene models beside them, for the process stage's copies' models and their comparison
         # (annotation.py): NCBI's (RefSeq's, a GenBank submitter's; not where the assembly summary gives no
         # protein-coding genes), else Ensembl's, else TOGA2's
-        todo = annotations_to_fetch(opts.work, opts.genomes, job_map, loci)
+        todo = annotations_to_fetch(opts.work, opts.genomes, job_map, loci, opts.veupathdb_key)
         say(f"fetching {len(todo):,} genomes' annotations (the first of {', '.join(annotation.SOURCES)} that has one) "
             f"into {opts.genomes}")
         progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1,
@@ -2441,9 +2433,7 @@ def _main(argv, held):
             return j, annotation.fetch(j, opts.genomes, opts.veupathdb_key, **how)
         for done in at_a_time(get, todo, downloads):
             try:
-                j, (path, source) = done.result()
-                if path is None:  # none has one: noted beside the genome for its run (annotation.none_noted)
-                    annotation.note_none(opts.genomes, j["accession"], annotation.none_before(j, None))
+                j, (_path, source) = done.result()  # those with none noted beside the genome by annotation.fetch
                 # the sources asked before the one found (all where none had one): a done genome's not asked again
                 genomes.note_annotation_none(opts.work, j, annotation.none_before(j, source))
                 progress.step(1)

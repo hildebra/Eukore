@@ -366,7 +366,9 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   assembly summary gives no protein-coding genes; a 404 or a GFF without coding sequences is none), else VEuPathDB's (with
   `--veupathdb_key`), else Ensembl's, else TOGA2's (their indexes fetched once into `SRC/annotation_sources`); the process stage takes a BUSCO copy's
   model from it where the HMM confirms it ([methods.md](methods.md)), compares miniprot's models with it
-  (`annotation.tsv`) and deletes it.
+  (`annotation.tsv`). The GFF and the report stay beside the genome for its runs again (since 2026-11-16: deleted
+  after the run); a better source found later is fetched in its place, the worse deleted, and the sources found to
+  have none are noted beside the genome (`<accession>.annotation_none`) and not asked again.
 - **process** first builds Eukore's marker set where it is not built from this code's tables, rules and inputs:
   the candidates scored with the KOfam profiles (hmmsearch, on `-t` threads) into the markers' query proteins, one
   per species, and the decoys' profiles (hmmalign, hmmbuild); the scores are kept for a rebuild; what it was made of is the package manifest's `inputs.markers`. One process run builds it at a time (a
@@ -438,7 +440,9 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   - describes each done genome still on disk that lacks its metadata (`eukore/metadata.py`: a genome done before
     2026-11-07), as the process stage does after its runs;
   - prunes `OUT/genomes` to `--keep_gb` where given (the model species first, then the smallest); without it, no
-    genome file is deleted (since 2026-11-08);
+    genome file is deleted (since 2026-11-08). The rRNA donors and the intraspecific panel's assemblies are pruned
+    with them (since 2026-11-16: with `--keep_gb` deleted once done, whatever the room); annotations, assembly
+    reports and notes stay;
   - writes `OUT/Eukore_<version>/`, with its benchmarks ([benchmarks.md](benchmarks.md)).
 
 ### Options
@@ -458,7 +462,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--loci FILE` | every BUSCO | call only these BUSCOs (one per line, or a loci table's first column): a quicker trial |
 | `--version` | `YYYY.MM` of today | the package's version, in its folder's name (Eukore's own version, 0.2.6, is in the manifest's `eukore`) |
 | `-V` | | print Eukore's own version and exit |
-| `--keep_gb` | none: no genome deleted | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept); with it, a superseded assembly's and the intraspecific panel's genome files are deleted once done too (until 2026-11-08 the default was 1000) |
+| `--keep_gb` | none: no genome deleted | the genomes kept in `OUT/genomes`, GB: cut back to it before the package is written (its `genomes.tsv` says which are kept); with it, a superseded assembly's genome file is deleted once the new one is done too; the rRNA donors and the intraspecific panel's assemblies are pruned with the rest (since 2026-11-16) (until 2026-11-08 the default was 1000) |
 | `-t`, `--threads` | 8 | threads in all; since 2026-11-09 also those that compress every `.gz` file the build writes (BGZF: the package's and the release's at level 9, the work folder's at 6) |
 | `-j`, `--jobs` | threads / 4 | genomes at a time at most, `-t / -j` threads each; fewer where `--memory_gb` holds fewer, each then with more threads (since 0.2.1) |
 | `--memory_gb` | SLURM's allocation, else the cgroup's limit, else the node's memory available; 85% of it | the process stage's memory: a genome is begun where its run's estimate (~7.5 bytes a base, of 4 Gb at most, and 3 GB) fits in what the running ones leave, the largest first, a smaller one in the room a larger one does not fit (since 0.2.1; until then `-j` at once whatever their sizes) |
