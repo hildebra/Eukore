@@ -781,6 +781,16 @@ def progress_of(opts, what, weights, unit="Gb", scale=1e9):
 
 
 HELPER_STATES = ("PENDING", "RUNNING", "CONFIGURING", "REQUEUED", "RESIZING", "SUSPENDED")
+SUBMIT_ERROR = re.compile(r"error|refused|invalid|denied|not available|limit", re.IGNORECASE)
+
+
+def submit_error(stderr):
+    """A helper command's stderr told in a line: sbatch's own words first (its `sbatch: error: ...` lines, tools/
+    eukore.sh's `sbatch refused`), not the stderr's tail (since 2026-11-16: the 2026-11-16 build said only the end of
+    eukore.sh's advice, "...ame / call with --test-only, ...", not why sbatch refused the helpers)."""
+    lines = [x.strip() for x in stderr.splitlines() if x.strip()]
+    told = [x for x in lines if SUBMIT_ERROR.search(x) and not x.startswith(("SLURM gives", "call with", "The limits"))]
+    return " | ".join(told[:3])[:500] if told else " | ".join(lines)[-300:]
 
 
 class HelperPool:
@@ -825,7 +835,7 @@ class HelperPool:
                 run = None
                 why = f"{type(e).__name__}: {e}"
             else:
-                why = f"exit {run.returncode}: {run.stderr.strip()[-300:]}"
+                why = f"exit {run.returncode}: {submit_error(run.stderr)}"
             if run is None or run.returncode:
                 say(f"WARNING: the helpers were not started ({why}): this node searches every locus; another node "
                     f"can help all the same: python3 -m eukore.qc helper {os.path.dirname(folder)} -t <threads>")

@@ -414,6 +414,21 @@ class ResumeTest(unittest.TestCase):
             with self.assertRaises(rrna.ItsxError):
                 rrna.run_itsx(["ACGT" * 50], broken)
 
+    def test_itsx_leaves_no_folder_where_the_build_runs(self):
+        # since 2026-11-16: ITSx makes ITSx_temp_directory__<-o> in its working directory (left there where a run is
+        # killed); it runs in the run's own temporary folder, not the build's (the job's submission folder)
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as here:
+            itsx = tool(tmp, "ITSx_temp", "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && o=$2; shift; done\n"
+                                          "mkdir -p ITSx_temp_directory__x && touch ITSx_temp_directory__x/main.1.fasta"
+                                          "\n: > $o.positions.txt\nexit 0\n")
+            before = os.getcwd()
+            os.chdir(here)
+            try:
+                rrna.run_itsx(["ACGT" * 50], itsx)
+            finally:
+                os.chdir(before)
+            self.assertEqual(os.listdir(here), [])
+
     def test_itsx_guessed_borders_are_not_taken(self):
         # ITSx without the 5.8S's end still writes an ITS2, 45 bases after the 5.8S start (Arabidopsis with set T,
         # 2026-11-06): ITS1 and the 28S start are ITSx's, the 5.8S's end barrnap's
