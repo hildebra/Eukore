@@ -1133,11 +1133,13 @@ class ChainTest(unittest.TestCase):
             got, calls = run("build")
             self.assertEqual(got.returncode, 0, got.stderr)
             self.assertEqual(len(calls), 2)
+            # the logs named by the step (since 2026-11-16): an array's process.<array>_<task>, the final job's final.<job>
             for said in ("-J Eukore-process", "--time=1:00:00", "--mem=200G", "--array=1-3", f"{script} _process",
-                         f"-o {tmp}/runs/eukore.%j.otxt"):
+                         f"-o {tmp}/runs/process.%A_%a.otxt", f"-e {tmp}/runs/process.%A_%a.etxt"):
                 self.assertIn(said, calls[0])
             self.assertNotIn("--dependency", calls[0])
-            for said in ("-J Eukore-final", "--mem=800G", "--dependency=afterany:101 ", f"{script} _final"):
+            for said in ("-J Eukore-final", "--mem=800G", "--dependency=afterany:101 ", f"{script} _final",
+                         f"-o {tmp}/runs/final.%j.otxt"):
                 self.assertIn(said, calls[1])
             self.assertIn("array job 101, 3 tasks", got.stdout)
             self.assertIn("job 102", got.stdout)

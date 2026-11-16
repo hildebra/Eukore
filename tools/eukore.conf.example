@@ -7,7 +7,9 @@ OUT=/path/to/DB/Eukore                # --out: the package and its release
 GEN=/path/to/DB/genomes               # --genomes: the genomes' folder (empty: OUT/genomes)
 SOURCES=/path/to/DB/Eukore/sources    # --sources: what the fetch stage downloads (NCBI's taxonomy, BUSCO's dataset,
                                       # ...), kept between builds (empty: WORK/sources)
-LOGS=$PDIR/runs                       # the jobs' STDOUT and STDERR (empty: sbatch's own, the folder of the call)
+LOGS=$PDIR/runs                       # the jobs' STDOUT and STDERR (empty: sbatch's own, the folder of the call),
+                                      # named by their step: fetch.<job>, process.<array>_<task>, final.<job>,
+                                      # qc.<array>_<task> (.otxt, .etxt)
 VERSION=2026.11                       # --version, fixed: its default is the month of each run's day, and a build
                                       # that crosses a month's end would write a second Eukore_<version>
 MAMBA_ENV=eukore                      # the micromamba environment with Eukore's tools
