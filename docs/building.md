@@ -302,6 +302,16 @@ removed. A batch cmalign fails on is aligned in halves as before; the 18S that f
 gives each part's time and the step's (`18S variable regions: <n> 18S aligned (cmalign, <parts> parts): took
 <time>`).
 
+**The organelle search and the reference screen, quicker** (since 2026-11-16). The final job of the build of
+2026-11-16 spent 3 h 28 m on its last 79 assemblies' organelle genes, the last hour one assembly (its candidate
+contigs, nhmmer on one core) at 1 core of 60. Each assembly's search now has up to 8 threads (`organelle.TASK_THREADS`;
+the node's cores are shared while many run, the last ones have them to themselves), the largest genomes first. The
+reference screen of MIDORI2 runs in a process of its own (spawned; its result kept in `WORK/reference_screen/` and
+read back), not as a thread of the package stage's process, where its Python slowed the copies' collection beside it
+(27 minutes, 6 in the build of 2026-11-14); and it screens one record of each species and gene, not all 4.0 million
+of MIDORI2's UNIQ files ([methods.md](methods.md)). Where the screen's process fails, the screen is made in the
+package stage's process as before.
+
 **The node's disk and the WORK.** The final job's scratch files go to `--local_tmp`: Python's and the tools'
 temporary files (TMPDIR), hmmalign's, cmalign's and the SSU models' cmsearch files (since 2026-11-13; until then in
 the WORK), and the inputs of a kept search no helper shares. The WORK holds what is kept or shared: the caches, the

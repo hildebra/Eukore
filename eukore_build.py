@@ -53,6 +53,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -1052,7 +1053,7 @@ def organelle_published(opts, src_dir, ncbi, chosen):
     return out
 
 
-def midori2_published(opts, ncbi, chosen, calls=None):
+def midori2_published(opts, ncbi, chosen, calls=None, choice=None):
     """MIDORI2's mitochondrial genes as organelle genes [(name, sequence, row)] (organelle.midori2_records; since
     2026-11-14 its SSU, since 2026-11-15 also its COX1 and CYTB, the barcodes, by protal's rules): of each named species
     inside the build's clades whose mitochondrial genes no RefSeq genome gives (chosen's), one record a gene, the
@@ -1062,7 +1063,9 @@ def midori2_published(opts, ncbi, chosen, calls=None):
     if not opts.midori2:
         return []
     refseq = {sp for sp, o in chosen if o == "mitochondrion"}
-    out, _counts = organelle_mod.midori2_records(opts.midori2, ncbi, refseq, opts.inside, calls, log=say)
+    # choice: the records the screen screened (since 2026-11-16: each species' longest realistic one of a gene)
+    out, _counts = organelle_mod.midori2_records(opts.midori2, ncbi, refseq, opts.inside, calls, log=say,
+                                                 choice=choice)
     return out
 
 
@@ -1380,11 +1383,12 @@ def organelle_genes(opts, src_dir, job_map, ncbi):
             "alone, and no COX1 among them")
     barrnap, nhmmer = shutil.which("barrnap"), shutil.which("nhmmer")
     if barrnap and nhmmer:
-        # an assembly a task on one core (its organelle molecules, small: barrnap, nhmmer and miniprot on them), -t at
-        # once (until 2026-11-08 -j at once, -t / -j threads each, mostly idle)
+        # an assembly a task, -t at once, each of up to organelle.TASK_THREADS threads (since 2026-11-16; until then
+        # one: the 2026-11-16 build's final job waited an hour on one assembly's candidate contigs, at 1 core of 60),
+        # the largest first (assembly_pass)
         with tempfile.TemporaryDirectory() as tmp:  # the packed genomes' molecules, as files for the tools
             organelle_mod.assembly_pass(folder, job_map, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
-                                        barrnap, nhmmer, opts.threads, 1, say,
+                                        barrnap, nhmmer, opts.threads, organelle_mod.task_threads(opts.threads), say,
                                         shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
                                         saved_of=functools.partial(saved_molecules, opts, tmp),
                                         progress=functools.partial(progress_of, opts, unit="", scale=1),
@@ -1480,7 +1484,7 @@ def intraspecific_pass(opts, src_dir, ncbi, extras):
         # packed extra still to search stopped the build with a TypeError)
         with tempfile.TemporaryDirectory() as tmp:
             organelle_mod.assembly_pass(folder, extras, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
-                                        barrnap, nhmmer, opts.threads, 1, say,
+                                        barrnap, nhmmer, opts.threads, organelle_mod.task_threads(opts.threads), say,
                                         shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
                                         every=True, saved_of=functools.partial(saved_molecules, opts, tmp),
                                         progress=functools.partial(progress_of, opts, unit="", scale=1))
@@ -1582,31 +1586,76 @@ def reference_screen(opts, src_dir, ncbi):
             "(eukore/refscreen.py), every one names its species")
         return None
     release = os.path.join(organelle_mod.folder_of(src_dir), "release.txt")
+    # since 2026-11-16 each species' longest realistic record of each gene alone (organelle.midori2_choice)
     stamp = [refscreen.VERSION, util.md5(os.path.join(src_dir, "taxdump.tar.gz")),
-             util.md5(release) if os.path.isfile(release) else "-"] + [util.md5(p) for p in opts.midori2]
+             util.md5(release) if os.path.isfile(release) else "-"] + [util.md5(p) for p in opts.midori2] + \
+        [f"choice{organelle_mod.CHOICE_RECORD}:{sorted(organelle_mod.MIDORI2_LENGTHS.items())}"]
     folder = os.path.join(opts.work, "reference_screen", hashlib.md5(",".join(stamp).encode()).hexdigest()[:10])
-    kept = os.path.join(folder, "counts.json")
-    if os.path.isfile(kept):
+    kept, chosen_file = os.path.join(folder, "counts.json"), os.path.join(folder, "chosen.tsv")
+    if os.path.isfile(kept) and os.path.isfile(chosen_file):
         with open(kept) as fh:
             counts = json.load(fh)
         calls = refscreen.read_calls(os.path.join(folder, "calls.tsv"))
         say(f"reference screen: {folder} is there ({counts.get('action_drop', 0):,} records dropped)")
-        return calls, counts
+        return calls, counts, read_choice(chosen_file)
     rows = organelle_mod.refseq_genes(src_dir, os.path.join(opts.work, "organelle"), ncbi, say)
     if not rows:
         say("WARNING: no RefSeq organelle release (--stage fetch fetches it): MIDORI2's records are screened against "
             "one another alone")
     os.makedirs(folder, exist_ok=True)
-    calls, counts = refscreen.screen([refscreen.midori2_source(p) for p in opts.midori2],
+    choice, choice_counts = organelle_mod.midori2_choice(opts.midori2, ncbi, log=say)
+    keep = collections.defaultdict(set)
+    for (gene, _sp), accession in choice.items():
+        keep[gene].add(accession)
+    calls, counts = refscreen.screen([refscreen.midori2_source(p, keep[labels.midori2_gene(p)])
+                                      for p in opts.midori2],
                                      list(refscreen.trusted_records(rows)), ncbi, minimap2, vsearch, opts.threads,
                                      tmp=folder, log=say)
+    counts.update({f"choice {k}": v for k, v in choice_counts.items()})
     refscreen.write_lists(folder, calls)
     for line in refscreen.summary(calls, counts, opts.midori2).splitlines():
         say(line)
-    with open(util.part_of(kept), "w", newline="\n") as fh:
+    with open(util.part_of(chosen_file), "w", newline="\n") as fh:
+        fh.write("gene\tspecies_taxid\taccession\n")
+        fh.writelines(f"{g}\t{sp}\t{a}\n" for (g, sp), a in sorted(choice.items()))
+    os.replace(util.part_of(chosen_file), chosen_file)
+    with open(util.part_of(kept), "w", newline="\n") as fh:  # last: what tells a later run the screen is there
         json.dump(dict(counts), fh, indent=1)
     os.replace(util.part_of(kept), kept)
-    return calls, dict(counts)
+    return calls, dict(counts), choice
+
+
+def read_choice(path):
+    """The reference screen's chosen.tsv -> {(gene, species taxid): accession} (organelle.midori2_choice's)."""
+    with open(path) as fh:
+        next(fh)
+        return {(g, int(sp)): a for g, sp, a in (line.rstrip("\n").split("\t") for line in fh if line.strip())}
+
+
+SCREEN_OPTS = ("midori2", "no_reference_screen", "minimap2", "work", "threads")
+
+
+def screen_alone(fields, src_dir):
+    """reference_screen in a process of its own (a spawned one's task; since 2026-11-16): its result kept in WORK, for
+    the package stage to read (reference_screen again). The screen's own Python (4 million MIDORI2 records' windows
+    written and their hits read) ran as a thread of the package stage's process beside the copies' collection, and
+    each slowed the other (the 2026-11-16 build's collection: 27 minutes, 6 in the 2026-11-14 one). fields: the
+    options it reads (SCREEN_OPTS)."""
+    opts = types.SimpleNamespace(**fields)
+    ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
+    return reference_screen(opts, src_dir, ncbi) is not None
+
+
+def reference_screen_apart(opts, src_dir, ncbi):
+    """reference_screen made in a spawned process (screen_alone), then read here from WORK -> its (calls, counts), or
+    None; where the process fails, made here as before."""
+    fields = {k: getattr(opts, k, None) for k in SCREEN_OPTS}
+    try:
+        with concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as apart:
+            apart.submit(screen_alone, fields, src_dir).result()
+    except Exception as e:  # noqa: BLE001  made here instead: the screen is the same
+        say(f"WARNING: the reference screen's own process failed ({type(e).__name__}: {e}): made in this one")
+    return reference_screen(opts, src_dir, ncbi)
 
 
 def databases_of(src_dir, ncbi, references, inside=None):
@@ -2452,7 +2501,7 @@ def _main(argv, held):
         if opts.midori2 and not opts.no_reference_screen:  # since 2026-11-10: MIDORI2's misnamed, chimeric records
             def screen_references():
                 with timed(stages, "reference screen", opts):
-                    return reference_screen(opts, src_dir, ncbi)
+                    return reference_screen_apart(opts, src_dir, ncbi)  # its own process (since 2026-11-16)
             screen_step = steps.submit(screen_references)
         with timed(stages, "BUSCO copies and their checks", opts):
             # the marker copies checked again by the set's profiles, decoys too (since 2026-11-09: markers.recheck)
@@ -2591,7 +2640,8 @@ def _main(argv, held):
                 organelle = organelle_mod.collect(ncbi, job_map, held | records_species["species"] | refseq_species,
                                                   chosen, os.path.join(opts.work, "organelle"))
                 organelle += organelle_published(opts, src_dir, ncbi, chosen)
-                organelle += midori2_published(opts, ncbi, chosen, screened[0] if screened else None)
+                organelle += midori2_published(opts, ncbi, chosen, screened[0] if screened else None,
+                                               screened[2] if screened and len(screened) > 2 else None)
                 organelle = organelle_mod.check(organelle, ncbi, vsearch, opts.threads,
                                                 progress=functools.partial(progress_of, opts, unit=""),
                                                 searches=qc_searches(opts, "organelle"))

@@ -695,6 +695,18 @@ CANDIDATE_GC_DROP = 0.08
 CANDIDATES = 30
 CANDIDATE_RECORD = "candidates1"  # in the search's models key: raised when the rules above change
 
+# An assembly's search on several threads (since 2026-11-16). The pass runs -t assemblies at once, each on one thread
+# until then: the 2026-11-16 build's final job searched its last 79 assemblies in 3 h 28 m, the last hour one
+# assembly's candidate contigs (up to CANDIDATES of each organelle, nhmmer on one core) at 1 core of 60. Each
+# assembly's nhmmer, miniprot and barrnap now have TASK_THREADS threads, the largest genomes first: while many run,
+# the node's cores are shared among them; the last ones have the cores to themselves.
+TASK_THREADS = 8
+
+
+def task_threads(cores):
+    """The threads of one assembly's search in a pass of `cores`."""
+    return max(1, min(TASK_THREADS, cores))
+
 
 def contig_stats(path):
     """A FASTA's [(name, length, GC share of its ACGT)]."""
@@ -1158,6 +1170,14 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
             in zip(asked, util.threaded(look, asked)) if path]
     if not todo:
         return 0, 0
+
+    def size(item):  # the genome whose contigs a candidate search reads, else the molecules' file
+        for path in (item[11], item[1]):
+            if path and os.path.isfile(path):
+                return os.path.getsize(path)
+        return 0
+    sizes = dict(zip((item[0] for item in todo), util.threaded(size, todo)))  # asked at once: the shared file system
+    todo.sort(key=lambda item: (-sizes[item[0]], item[0]))  # the largest first (since 2026-11-16): none left last
     log(f"organelle genes: {len(todo)} assemblies to search" + (", each under its genome's claim" if claim else ""))
     failed, elsewhere = 0, 0
     # under its genome's claim (since 2026-11-11), where several builds on a WORK (a SLURM array's tasks) share them
@@ -1273,7 +1293,65 @@ def published_record(r, taxid, species_taxid, how, label, ncbi, via="-", gene="S
 # length is the gene's (MIDORI2_LENGTHS), with few other bases than ACGT (MAX_AMBIGUOUS) and, a protein-coding gene's,
 # a reading frame (reading_frame: a stop in every frame of both strands is a nuclear copy, a NUMT, or a pseudogene)
 MIDORI2_GENES = ("SSU", "COX1", "CYTB")
-MIDORI2_LENGTHS = {"SSU": (250, 3000), "COX1": (300, 2400), "CYTB": (300, 1600), "LSU": (300, 3600)}
+MIDORI2_LENGTHS = {"SSU": (250, 3000), "COX1": (300, 2400), "CYTB": (300, 1600), "LSU": (300, 3600),
+                   # MIDORI2's other genes (since 2026-11-16, midori2_choice's alone): from about a third of the
+                   # gene's usual length in animals' mitochondria (atp6 ~680, atp8 ~165-210, COX2 ~690, COX3 ~785,
+                   # nad1 ~960, nad2 ~1,040, nad3 ~350, nad4 ~1,380, nad4L ~300, nad5 ~1,820, nad6 ~520 bases) to about
+                   # 1.6 times it: longer is several genes' span or an annotation's artifact, not the gene
+                   "atp6": (200, 1100), "atp8": (100, 400), "COX2": (200, 1200), "COX3": (250, 1300),
+                   "nad1": (300, 1600), "nad2": (300, 1700), "nad3": (150, 600), "nad4": (400, 2200),
+                   "nad4L": (150, 500), "nad5": (500, 2900), "nad6": (200, 850)}
+CHOICE_RECORD = 1  # what makes the screen's choice (midori2_choice): raised when its rules change
+
+
+def midori2_choice(paths, ncbi, log=None):
+    """The MIDORI2 records the reference screen screens (since 2026-11-16; until then every record of the 15 UNIQ
+    files, 4.0 million in the 2026-11-16 build against 0.5 million measured, on the final node for hours): of each
+    named NCBI species and gene, its longest record whose length is the gene's (MIDORI2_LENGTHS: not a fragment, not
+    several genes' span or an artifact), whose share of other bases than ACGT is MAX_AMBIGUOUS at most and, of a
+    protein-coding gene, that has a reading frame by its species' mitochondrial code (reading_frame: a NUMT or a
+    pseudogene has none) -> ({(gene, species taxid): accession}, counts). midori2_records takes a gene's record of a
+    species among these alone, so that every record Eukore ships is screened."""
+    from . import labels  # noqa: PLC0415
+    best, counts, named = {}, collections.Counter(), {}
+    for path in paths:
+        gene = labels.midori2_gene(path)
+        low, high = MIDORI2_LENGTHS.get(gene, (0, 10 ** 9))
+        for accession, taxid, seq in labels.midori2_records(path):
+            counts[f"{gene}: records"] += 1
+            t = ncbi.merged.get(taxid, taxid) if taxid else None
+            if t is None or t not in ncbi.parent:
+                counts[f"{gene}: no NCBI taxon"] += 1
+                continue
+            sp = ncbi.species_of(t)
+            if sp not in named:
+                named[sp] = ncbi.rank.get(sp) == "species" and rrna.is_eukaryote(ncbi, sp) and \
+                    labels.is_species_name(ncbi.name.get(sp, ""))
+            if not named[sp]:
+                counts[f"{gene}: no named species"] += 1
+                continue
+            if not low <= len(seq) <= high:
+                counts[f"{gene}: not the gene's length"] += 1
+                continue
+            key = (len(seq), accession)
+            if (gene, sp) in best and key <= best[(gene, sp)][0]:
+                continue  # shorter than the species' best: whatever its bases, not the longest (no frame read)
+            seq = seq.upper()
+            if rrna.ambiguous(seq) > MAX_AMBIGUOUS:
+                counts[f"{gene}: ambiguous bases"] += 1
+                continue
+            if gene not in RRNA_GENES and reading_frame(seq, ncbi.code_of(sp, COMPARTMENT["mitochondrion"]))[1]:
+                counts[f"{gene}: no reading frame (a NUMT, a pseudogene)"] += 1
+                continue
+            best[(gene, sp)] = (key, accession)
+    chosen = {k: acc for k, (_key, acc) in best.items()}
+    for gene, _sp in chosen:
+        counts[f"{gene}: chosen"] += 1
+    if log:
+        log(f"reference screen: of MIDORI2's {sum(v for k, v in counts.items() if k.endswith(': records')):,} "
+            f"records, {len(chosen):,} screened (each species' longest of each gene, of the gene's length, ACGT "
+            "and, of a coding gene, with a reading frame)")
+    return chosen, counts
 
 
 def reading_frame(seq, table=1):
@@ -1317,7 +1395,8 @@ def strand_score(seq, model, k=STRAND_K):
     return score
 
 
-def midori2_records(paths, ncbi, refseq_species=(), inside=None, calls=None, genes=MIDORI2_GENES, log=None):
+def midori2_records(paths, ncbi, refseq_species=(), inside=None, calls=None, genes=MIDORI2_GENES, log=None,
+                    choice=None):
     """MIDORI2's gene files (paths; labels.midori2_gene tells a file's gene) -> (organelle records [(name, sequence,
     row)] of GENE_COLUMNS, counts): of each NCBI species MIDORI2 names (a named eukaryote species:
     labels.is_species_name of its NCBI name; a merged taxid by its new one) without a RefSeq mitochondrial genome
@@ -1327,7 +1406,9 @@ def midori2_records(paths, ncbi, refseq_species=(), inside=None, calls=None, gen
     in MIDORI2_LENGTHS, whose share of other bases than ACGT is MAX_AMBIGUOUS at most and, of a protein-coding gene,
     that has a reading frame by its species' mitochondrial code (reading_frame: its coding sequence the frame's). A
     record is on its gene's strand: a coding one by its frame, an rRNA by the strand model of the records taken
-    (strand_model). Every haplotype of a species (MIDORI2's UNIQ files) is read; one is taken."""
+    (strand_model). Every haplotype of a species (MIDORI2's UNIQ files) is read; one is taken. choice: the reference
+    screen's (midori2_choice's {(gene, species): accession}; since 2026-11-16 the screen screens these alone): a
+    species' gene is its chosen record or none, so that every record taken was screened."""
     from . import labels  # noqa: PLC0415
     calls, refseq_species = calls or {}, set(refseq_species)
     best, counts, named, turned = {}, collections.Counter(), {}, set()
@@ -1352,6 +1433,9 @@ def midori2_records(paths, ncbi, refseq_species=(), inside=None, calls=None, gen
                 continue
             if sp in refseq_species or (inside and not inside(sp)):
                 counts[f"{gene}: RefSeq's genome or outside the clades"] += 1
+                continue
+            if choice is not None and choice.get((gene, sp)) != accession:
+                counts[f"{gene}: not the record the screen screened"] += 1
                 continue
             c = calls.get((gene, accession))
             action = c["action"] if c else "-"

@@ -596,14 +596,17 @@ def trusted_records(rows, organelle="mitochondrion"):
             yield Record(f"{r['seqid']}_{r['gene']}", int(r["taxid"]), r["gene"], r.get("spliced") or r["sequence"])
 
 
-def midori2_source(path):
-    """A MIDORI2 RAW FASTA as a source of screen(): a function yielding its Records, its gene by the file's name."""
+def midori2_source(path, keep=None):
+    """A MIDORI2 RAW FASTA as a source of screen(): a function yielding its Records, its gene by the file's name.
+    keep: the accessions of the file's gene to screen alone (organelle.midori2_choice's; since 2026-11-16), else
+    every record."""
     from . import labels  # noqa: PLC0415
     gene = labels.midori2_gene(path)
 
     def read():
         for accession, taxid, seq in labels.midori2_records(path):
-            yield Record(accession, taxid, gene, seq)
+            if keep is None or accession in keep:
+                yield Record(accession, taxid, gene, seq)
     return read
 
 
