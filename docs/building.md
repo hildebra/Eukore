@@ -509,6 +509,10 @@ Every stage is resumable: a rerun does only what is not done.
   before 2026-11-07 took NCBI's or none). The fetch stage fetches that annotation (and the genome again, where the
   prune deleted it); the process stage runs the genome again with it, its metadata, rRNA and held-out calls kept. This catches a genome run
   before an index named its assembly, before `--veupathdb_key` was given, or before its annotation was fetched.
+  The fetch stage also fetches the annotation of every genome the process stage will run, whatever its done folder
+  holds (since 2026-11-16: a done genome of an older genome record, still on disk, kept its old `annotation.tsv`
+  until its rerun, so none was fetched and it was run again without its gene models; the next fetch and process
+  runs mend such a genome by the rule above).
 - A species whose genome changed since the last plan (`WORK/genome_set.tsv`: TOGA2's assembly in its place; NCBI's
   newer assembly or version, after `--refresh`) gets the new one fetched and run; the old file (and its annotation)
   is deleted once the new one is done (`WORK/superseded.tsv`), its done folder kept.

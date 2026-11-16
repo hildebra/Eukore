@@ -1406,6 +1406,21 @@ def genome_rrna_records(opts, job_map, ncbi, collected=None):
     return out
 
 
+def annotations_to_fetch(work, genomes_folder, job_map, loci):
+    """The fetch stage's genomes to fetch the annotation of -> jobs: those with one to try, not beside them and not
+    noted as none, that the process stage runs (not done for loci, or of an older genome record), or done without
+    its comparison (annotation.tsv), or done with gene models worse than one now there (genomes.better_annotation).
+    Since 2026-11-16 a genome to be run has its own whatever its done folder holds: a done genome of an older genome
+    record kept its annotation.tsv until its rerun, so none was fetched, and it was run again without its gene
+    models (8,361 genomes of the 2026-11-15 build)."""
+    def runs(a):
+        return not genomes.is_done(work, a, loci) or genomes.record_stale(work, a)
+    return [j for a, j in sorted(job_map.items()) if annotation.wanted(j)
+            and not annotation.found(genomes_folder, a)[0] and not annotation.none_noted(genomes_folder, j)
+            and (runs(a) or not store.has(genomes.done_dir(work, a), annotation.TABLE)
+                 or genomes.better_annotation(work, j))]
+
+
 def annotate_one(work, genomes_folder, may_fetch, veupathdb_key, job):
     """annotation.annotate_genome in a worker, under the genome's claim (since 2026-11-11: a SLURM array's tasks run the
     pass too) -> (accession, copies compared or None, why it failed or None); compared organelle_mod.ELSEWHERE where
@@ -1447,7 +1462,8 @@ def annotate_pass(opts, job_map, may_fetch):
             else:
                 compared, left = compared + (n is not None), left + (n is None)
             progress.step(1)
-    say(f"  {compared} genomes compared, {left} without their annotation fetched yet (--stage fetch), "
+    say(f"  {compared} genomes compared, {left} without their annotation beside them (fetched by the next "
+        "--stage fetch; a genome run without it is run again with it, genomes.better_annotation), "
         + (f"{elsewhere} by another build, " if elsewhere else "")
         + f"{len(failed)} failed{' (e.g. ' + str(failed[:2]) + ')' if failed else ''}")
 
@@ -2416,11 +2432,7 @@ def _main(argv, held):
         # the genomes' own gene models beside them, for the process stage's copies' models and their comparison
         # (annotation.py): NCBI's (RefSeq's, a GenBank submitter's; not where the assembly summary gives no
         # protein-coding genes), else Ensembl's, else TOGA2's
-        # (and a done genome's better one than its run took: genomes.better_annotation)
-        todo = [j for a, j in sorted(job_map.items()) if annotation.wanted(j)
-                and not annotation.found(opts.genomes, a)[0] and not annotation.none_noted(opts.genomes, j)
-                and (not store.has(genomes.done_dir(opts.work, a), annotation.TABLE)
-                     or genomes.better_annotation(opts.work, j))]
+        todo = annotations_to_fetch(opts.work, opts.genomes, job_map, loci)
         say(f"fetching {len(todo):,} genomes' annotations (the first of {', '.join(annotation.SOURCES)} that has one) "
             f"into {opts.genomes}")
         progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1,

@@ -22,6 +22,40 @@ tool = fx.tool
 
 
 class UnitTest(unittest.TestCase):
+    def test_the_fetch_fetches_the_annotation_of_a_genome_to_be_run(self):
+        # since 2026-11-16: a done genome of an older genome record kept its annotation.tsv until its rerun, so the
+        # fetch stage fetched no annotation of it, and the process stage ran it again without its gene models
+        import json  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from eukore import annotation, genomes  # noqa: PLC0415
+        loci = ["1at2759"]
+        with tempfile.TemporaryDirectory() as tmp:
+            work, gdir = os.path.join(tmp, "work"), os.path.join(tmp, "genomes")
+            os.makedirs(gdir)
+
+            def done(acc, table=True, **summary):
+                folder = genomes.done_dir(work, acc)
+                os.makedirs(folder)
+                with open(os.path.join(folder, "done.json"), "w") as fh:
+                    json.dump(dict(dict(searched=loci, annotation="ncbi", annotation_none=[],
+                                        genome_record=genomes.GENOME_RECORD), **summary), fh)
+                if table:
+                    with open(os.path.join(folder, annotation.TABLE), "w") as fh:
+                        fh.write("\t".join(annotation.ANNOTATION_COLUMNS) + "\n")
+            jobs = {a: dict(accession=a, fetch=a, url=f"https://ftp.example/{a}_x_genomic.fna.gz", annotated=True,
+                            annotations=[]) for a in ("new", "compared", "old_record", "short", "uncompared",
+                                                      "unannotated", "here", "none")}
+            jobs["unannotated"]["annotated"] = False  # none to try
+            done("compared")
+            done("old_record", genome_record=genomes.GENOME_RECORD - 1)  # run again: its annotation.tsv is the old run's
+            done("short", searched=[])  # searched for fewer loci than called now: run again
+            done("uncompared", table=False)
+            done("unannotated")
+            open(annotation.gff_file(gdir, "here"), "w").close()  # beside it already
+            annotation.note_none(gdir, "none", annotation.none_before(jobs["none"], None))
+            got = [j["accession"] for j in eukore_build.annotations_to_fetch(work, gdir, jobs, loci)]
+            self.assertEqual(got, ["new", "old_record", "short", "uncompared"])
+
     def test_ncbis_taxdump_md5(self):
         # since 2026-11-16 the fetch stage fetches NCBI's taxdump again where its MD5 (taxdump.tar.gz.md5) is another;
         # without it (offline) the taxdump there is kept
