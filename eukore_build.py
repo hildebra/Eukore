@@ -920,8 +920,11 @@ class HelperPool:
                 return lambda: None
             say(f"  {n:,} loci to search: their inputs in {folder}; helpers started by: {self.opts.qc_helpers}")
             try:
+                # not this node's TMPDIR (--local_tmp's folder, which sbatch --export=ALL would hand to the helpers'
+                # nodes, where it is not; since 2026-11-17): a helper takes its own node's (tools/eukore.sh _qc)
+                env = {k: v for k, v in os.environ.items() if k != "TMPDIR"}
                 run = subprocess.run(shlex.split(self.opts.qc_helpers), capture_output=True, text=True, timeout=300,
-                                     check=False)
+                                     check=False, env=env)
             except (OSError, subprocess.SubprocessError) as e:
                 run = None
                 why = f"{type(e).__name__}: {e}"

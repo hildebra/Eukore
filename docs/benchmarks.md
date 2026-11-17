@@ -28,7 +28,7 @@ can also be given alone (`--odb`, `--taxdump`). `--out` writes the tables elsewh
 manifest does not list them).
 
 The figures, Figure 1 among them, are drawn by `benchmarks/eukore-figures.sh` ([benchmarks/](../benchmarks/README.md));
-the ones below are a trial package's.
+the ones below are the first full build's (2026-11-14; [below](#the-figures-here)).
 
 ## What is measured
 
@@ -135,9 +135,8 @@ sum of the checks that set them ([FORMAT.md](FORMAT.md#confidence-tiers-format-6
 (`own_species`, FCS-GX, tiara, a bacterium's SSU as an 18S), a duplicated or fragmented call, a length off its
 relatives', a contig end, an assembly gap, a stop inside the protein; for rRNA, ambiguous bases, homopolymers, the
 part screen, a partial 28S, a read labelled by its genus. A sequence its own-species check could not decide is
-`unverified` (until format 6 `medium`): a trial's species with no relative of their family in it, and (until
-2026-11-10, when their check was not made) the published reads. The figure below is of a format-5 trial: its `medium` holds what
-format 6 calls `unverified`.
+`unverified` (until format 6 `medium`): a species with no relative of its family in the package, and (until
+2026-11-10, when their check was not made) the published reads.
 
 ![Confidence tiers](benchmarks/figures/confidence.png)
 
@@ -175,51 +174,53 @@ the share resolved (every assembly of the species nearer to each other than to a
 
 ## The figures here
 
-The figures above are those of a trial build, not of Eukore: the seven clades of the 2026-11-05 trial (*Saccharomyces*,
-*Candida albicans*, *Blastocystis*, *Drosophila melanogaster*, *C. elegans*, *Arabidopsis*, *Trichuris trichiura*;
-33 genomes, 1 Gb), all 129 BUSCOs, built again on 2026-11-06 with the rescue pass (`Eukore_2026.11-rescue`; the
-published rRNA reads annotated in an earlier run). Its genomes ran while other jobs loaded the machine, so the run
-time (`runtime.png`, the table's last row) is that of the same trial built before the rescue pass, on 6 threads (26
-minutes for the genomes, 6 for the package stage). The rescue pass itself, measured alone on *Drosophila*'s 144 Mb
-genome (one BUSCO missed): 8 seconds for its six-frame ORFs, 2.5 seconds per missed BUSCO's HMM search. They show
-what the benchmarks look like; a release's own tables are in its `benchmarks/`, and `benchmarks/eukore-figures.sh`
-draws its figures.
+The figures above are those of the first full build, drawn on 2026-11-15 from its evaluation bundle
+(`Eukore_2026.11` of 2026-11-14: Eukore 0.2.4, format 6; 33,664 genomes, 47,479 species; `python3 -m
+eukore_bench.figures PACKAGE`). That build is no release: it predates the fixes its evaluation led to (genome tiers,
+split copies joined, transcriptomes' rRNA) and format 7 (EUKARYOME's SSU set, the audit, MIDORI2's genes), and it was
+built without MIDORI2, VEuPathDB's annotations and KSGP 5.2. A release's own tables are in its `benchmarks/`, and
+`benchmarks/eukore-figures.sh` draws its figures. Until 2026-11-15 the figures here were a seven-clade trial's
+(33 genomes).
 
-What the trial shows:
-- **Completeness** follows BUSCO's dataset: the plant 100%, the fungi 85%, the animals 90%, *Blastocystis* (SAR, 16
-  genomes) 60%. The rescue pass added 289 copies (Single or Duplicated: 3,002 to 3,149), 11-30 in each *Blastocystis*,
-  13 and 14 in *C. elegans* and *Trichuris*, none in the yeasts, *Drosophila* or *Arabidopsis*; before it, the
-  animals were at 81% and *Blastocystis* at 54%.
-- **OrthoDB**: of the 321 BUSCOs OrthoDB annotates in four of the trial's species, Eukore called 96%, 84% of them
-  OrthoDB's own gene model; in *S. mikatae* and *S. paradoxus* 93-94%. *Blastocystis hominis*' calls are more often
-  `similar` (25 of 98) or `discordant` (16): where OrthoDB's gene model is of another assembly or isolate, such
-  differences are expected, and these are the calls to look at first. BUSCO's dataset holds only 3 *S. cerevisiae*
-  proteins; one (10249111at2759, 84 residues in OrthoDB, 386 in Eukore's call) shares nothing with the call.
-- **OrthoDB, own proteins left out** (the held-out calls): the yeasts hardly change (*S. mikatae* 105 concordant of
-  114, *S. paradoxus* 97 of 106: another *Saccharomyces* is in the dataset), but *Blastocystis hominis*, with no
-  close relative in BUSCO's dataset, falls from 52 concordant and 3 missed of 98 to 22 and 12 (32 missed before the
-  rescue pass, which made 20 of its held-out calls). Yet each of its 86 BUSCOs called both ways is on the same gene,
-  and over the four species 91% of the held-out calls share 90% or more of the span of the call made with the
-  species' own proteins: what the held-out calls lose is the exon ends (`similar` 38, `discordant` 26), not the gene.
-  The held-out figures (94% called, 75% of them concordant) are the ones to quote.
-- **Resolution**: 65% of the BUSCO copies are under 99% identical to every other species, against 37% of the species'
-  18S: among congeners the BUSCOs tell species apart where the 18S cannot.
+What the build shows:
+- **Completeness** follows BUSCO's dataset: a median of 96.9% of the 129 BUSCOs per genome, 99.2% in Viridiplantae,
+  97.7% in Fungi, 96.1% in Metazoa and 94.6% in Vertebrata, but 85.3% in Stramenopiles, 56.6% in Alveolata, 55.8% in
+  Discoba and 36.8% in Metamonada. Chromosome-level assemblies of those lineages are no more complete: the limit is
+  the locus set and its query proteins (lost or far diverged genes), not the assemblies. Of the 2,664 NCBI genomes
+  under half complete, 2,333 are skims of a mean contig under 5 kb.
+- **OrthoDB**: of the 87,927 BUSCOs OrthoDB annotates in 836 of the build's species, Eukore called 99.1%, 92.0% of
+  them OrthoDB's own gene model.
+- **OrthoDB, own proteins left out** (the held-out calls): 99.0% called, 82.9% of them concordant, 99.6% on the same
+  gene. With whole clades left out, the gene model holds while the nearest dataset species kept shares the class
+  (81-87% concordant) and falls beyond it (phylum 62%, none 34%): what is lost is the exon ends, not the gene. The
+  held-out figures are the ones to quote.
+- **Annotation**: laid on 7,541 genomes' own annotation, 91.5% of the calls' introns are exact; coding bases' recall
+  94.0%, precision 96.6%.
+- **Resolution**: 62.0% of the BUSCO copies are under 99% identical to their nearest congener, against 26.5% of the
+  species' 18S: among congeners the BUSCOs tell species apart where the 18S cannot.
 
 | benchmark | figure |
 |---|---|
-| package | Eukore_2026.11-rescue (a trial: 7 clades), 33 species' genomes, 129 BUSCOs |
-| median complete BUSCOs per genome | 79.8% (6.1% of genomes at 90% or more) |
-| BUSCOs OrthoDB has a gene model of, called | 96.6% of 321 (4 species) |
-| of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | 83.5% |
-| the same, called without the species' own proteins | 93.8% called, 74.8% of them OrthoDB's gene model (4 species) |
-| of those also called with its own proteins, on the same gene | 100.0% of 301, 91.4% of them sharing 90% of the span; 20 called by the rescue pass |
-| BUSCO copies under 99% identical to any other species | 65.6% of 3,676 |
-| 18S copies under 99% identical to any other species | 36.6% of 41 |
-| rRNA records; operons with a whole 28S | 2,719; 99.6% of 2,551 |
-| species named in EUKARYOME by name or synonym | 30.2% |
-| species named in KSGP by name or synonym | 34.9% |
-| species named in PR2 by name or synonym | 30.2% |
-| genome run (BUSCOs, rRNA, tiara; before the rescue pass), median | 2.3 min on 2 threads, 93 min per Gb of genome |
+| package | Eukore_2026.11, 33,664 species' genomes, 129 BUSCOs |
+| species; with a genome; with rRNA records alone | 47,479; 33,664; 13,815 |
+| median complete BUSCOs per genome | 96.9% (65.2% of genomes at 90% or more) |
+| BUSCOs OrthoDB has a gene model of, called | 99.1% of 87,927 (836 species) |
+| of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | 92.0% |
+| the same, called without the species' own proteins | 99.0% called, 82.9% of them OrthoDB's gene model (836 species) |
+| of those also called with its own proteins, on the same gene | 99.6% of 87,011, 89.7% of them sharing 90% of the span; 517 called by the rescue pass |
+| calls laid on their genome's annotation (7,541 genomes): introns exact; coding bases' recall, precision | 91.5%; 94.0%, 96.6% |
+| BUSCO copies under 99% identical to any other species | 71.9% of 4,041,655 |
+| BUSCO copies under 99% identical to their nearest congener | 62.0% of 2,549,280 |
+| 18S copies under 99% identical to any other species | 40.1% of 32,163 |
+| 18S copies under 99% identical to their nearest congener | 26.5% of 18,777 |
+| rRNA records; operons with a whole 28S | 4,657,420; 95.1% of 2,390,529 |
+| species named in EUKARYOME by name or synonym | 31.3% |
+| species named in KSGP by name or synonym | 35.2% |
+| species named in PR2 by name or synonym | 19.5% |
+| genome run (BUSCOs, rRNA, tiara), median | 1.3 min, 3 min per Gb of genome |
+
+The whole table, with the clade hold-outs, the barcode gap per marker and the primer pairs:
+[benchmarks/figures/summary.md](benchmarks/figures/summary.md).
 
 ## The methods review's changes against the code before them (2026-11-09)
 

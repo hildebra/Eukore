@@ -337,13 +337,13 @@ def place_summary(rows):
 
 
 def resolution_rows(by_marker):
-    """resolution.tsv's rows: by_marker {marker: [(identity or None, depth or None)]} (None: no copy of another
-    species 70% identical) -> per marker and shared rank (and `all`, and `unmatched`)."""
+    """resolution.tsv's rows: by_marker {marker: [(identity or None, depth or None[, group])]} (None: no copy of
+    another species 70% identical) -> per marker and shared rank (and `all`, and `unmatched`)."""
     out = []
     for marker, found in by_marker.items():
         groups = collections.defaultdict(list)
         unmatched = 0
-        for ident, depth in found:
+        for ident, depth, *_group in found:
             if ident is None:
                 unmatched += 1
             else:
@@ -365,23 +365,28 @@ def resolution_rows(by_marker):
     return out
 
 
-HIST_COLUMNS = ("marker", "shared_rank", "identity", "copies")
+HIST_COLUMNS = ("marker", "supergroup", "shared_rank", "identity", "copies")
 HIST_STEP = 0.5
 
 
 def resolution_hist(by_marker):
     """resolution_hist.tsv's rows (since 2026-11-12): resolution.tsv's identities themselves, counted per marker,
-    shared rank and step of HIST_STEP points (`identity`: the step's lower bound; `unmatched`: `-`), so that the
-    identity that parts two ranks' copies can be worked out (benchmarks/eukore_bench/guidance.py's thresholds.tsv)."""
+    the copy's species' group (`supergroup`, since 2026-11-15; `-` where not told: until then the table had no such
+    column, and the 18S of mammals, 99% alike or more, could not be told from the ciliates'), shared rank and step of
+    HIST_STEP points (`identity`: the step's lower bound; `unmatched`: `-`), so that the identity that parts two ranks'
+    copies can be worked out, of all species and of each group's (benchmarks/eukore_bench/guidance.py's
+    thresholds.tsv). A copy is counted once, in its group's rows: the groups' rows add up to the package's."""
     counts = collections.Counter()
     for marker, found in by_marker.items():
-        for ident, depth in found:
+        for ident, depth, *group in found:
+            group = group[0] if group and group[0] else "-"
             if ident is None:
-                counts[(marker, "unmatched", "-")] += 1
+                counts[(marker, group, "unmatched", "-")] += 1
             else:
                 step = min(100.0, int(float(ident) / HIST_STEP) * HIST_STEP)
-                counts[(marker, DEPTHS[depth], f"{step:.1f}")] += 1
-    return [dict(marker=m, shared_rank=r, identity=i, copies=n) for (m, r, i), n in sorted(counts.items())]
+                counts[(marker, group, DEPTHS[depth], f"{step:.1f}")] += 1
+    return [dict(marker=m, supergroup=g, shared_rank=r, identity=i, copies=n)
+            for (m, g, r, i), n in sorted(counts.items())]
 
 
 # An 18S longer than SSU_TYPICAL bases holds introns or insertions (most eukaryotes' are 1,750-2,100): a species' such
@@ -416,10 +421,10 @@ def best_ssu(records):
     return {rec: (int(sp), a, b) for sp, (_k, rec, (a, b)) in best.items()}
 
 
-def ssu_nearest(folder, ncbi, vsearch, threads, progress=None, searches=None, log=None):
-    """[(identity, depth)] of each species' best 18S against the other species' (qc.check's search). progress,
+def ssu_nearest(folder, ncbi, vsearch, threads, progress=None, searches=None, log=None, groups=None):
+    """[(identity, depth, group)] of each species' best 18S against the other species' (qc.check's search). progress,
     searches: qc.check's (since 2026-11-14: the search reported, kept in the WORK and shared with the helpers); log:
-    each step's time."""
+    each step's time; groups: {species taxid: its group} (since 2026-11-15, resolution_hist's; `-` without)."""
     began = time.time()
     chosen = best_ssu(rows_of(os.path.join(folder, "rrna", "records.tsv")))
     if len(chosen) < 2:
@@ -439,7 +444,8 @@ def ssu_nearest(folder, ncbi, vsearch, threads, progress=None, searches=None, lo
                       searches=searches)
     if log:
         log(f"benchmarks: 18S resolution: searched and judged in {util.duration(time.time() - began)}")
-    return [(c["nearest_id"], c["nearest_depth"]) for c in checks.values()]
+    return [(c["nearest_id"], c["nearest_depth"], (groups or {}).get(chosen[name][0], "-"))
+            for (name, _what), c in checks.items()]
 
 
 # Further markers' resolution (since 2026-11-14: the 2026-11 build's resolution.tsv held the BUSCOs, Eukore's nine loci
@@ -462,8 +468,9 @@ def region_span(r, region):
     return None
 
 
-def region_nearest(folder, ncbi, vsearch, threads, region, progress=None, searches=None, log=None):
-    """[(identity, depth)] of each species' best record of a region (region_span) against the other species'."""
+def region_nearest(folder, ncbi, vsearch, threads, region, progress=None, searches=None, log=None, groups=None):
+    """[(identity, depth, group)] of each species' best record of a region (region_span) against the other
+    species'."""
     best = {}
     for r in rows_of(os.path.join(folder, "rrna", "records.tsv")):
         if r.get("label_from") == "eukaryome_genus" or r["kind"] != "rDNA":
@@ -481,12 +488,12 @@ def region_nearest(folder, ncbi, vsearch, threads, region, progress=None, search
     seqs = {(name, region): seq[a:b] for name, seq in odb_mod.read_fasta(os.path.join(folder, "rrna", "records.fna.gz"))
             if name in chosen for _sp, a, b in [chosen[name]]}
     return nearest_of(seqs, {name: chosen[name][0] for name, _l in seqs}, ncbi, vsearch, threads, region, progress,
-                      searches, log)
+                      searches, log, groups)
 
 
-def organelle_nearest(folder, ncbi, vsearch, threads, gene, progress=None, searches=None, log=None):
-    """[(identity, depth)] of each species' organelle gene's coding sequence (organelle/cds.fna.gz; the longest whole
-    one) against the other species'."""
+def organelle_nearest(folder, ncbi, vsearch, threads, gene, progress=None, searches=None, log=None, groups=None):
+    """[(identity, depth, group)] of each species' organelle gene's coding sequence (organelle/cds.fna.gz; the longest
+    whole one) against the other species'."""
     best = {}
     for r in rows_of(os.path.join(folder, "organelle", "genes.tsv")):
         if r["gene"] != gene or r.get("partial") == "t":
@@ -499,11 +506,12 @@ def organelle_nearest(folder, ncbi, vsearch, threads, gene, progress=None, searc
     seqs = {(name, gene): seq for name, seq in (odb_mod.read_fasta(path) if os.path.isfile(path) else ())
             if name in chosen and len(seq) >= ORGANELLE_MIN}
     return nearest_of(seqs, {name: chosen[name] for name, _g in seqs}, ncbi, vsearch, threads, gene, progress,
-                      searches, log)
+                      searches, log, groups)
 
 
-def nearest_of(seqs, species_of, ncbi, vsearch, threads, what, progress=None, searches=None, log=None):
-    """qc.check's nearest other species of each sequence -> [(identity, depth)]; [] for fewer than two."""
+def nearest_of(seqs, species_of, ncbi, vsearch, threads, what, progress=None, searches=None, log=None, groups=None):
+    """qc.check's nearest other species of each sequence -> [(identity, depth, group)] (groups: {species taxid: its
+    group}; `-` without); [] for fewer than two."""
     if len(seqs) < 2:
         return []
     began = time.time()
@@ -511,7 +519,8 @@ def nearest_of(seqs, species_of, ncbi, vsearch, threads, what, progress=None, se
     if log:
         log(f"benchmarks: {what} resolution: {len(seqs):,} species' sequences searched and judged in "
             f"{util.duration(time.time() - began)}")
-    return [(c["nearest_id"], c["nearest_depth"]) for c in checks.values()]
+    return [(c["nearest_id"], c["nearest_depth"], (groups or {}).get(int(species_of[name]), "-"))
+            for (name, _what), c in checks.items()]
 
 
 def rrna_rows(folder):
@@ -1079,10 +1088,12 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
         if f["kind"] in ("exon", "frameshift") and wanted:  # qc.spliced leaves the frameshifts' bases out
             exons[(f["accession"], f["locus"])].append((f["kind"], int(f["start"]), int(f["end"])))
     odb_rows, busco_nearest = [], collections.defaultdict(list)
+    # each species' group, by which resolution_hist.tsv splits the nearest identities (since 2026-11-15)
+    groups = {int(t): r["supergroup"] for t, r in species.items() if str(t).isdigit()}
     if vsearch and nearest is not None:
         for (acc, locus), found in nearest.items():
             if acc in genomes:
-                busco_nearest[locus].append(found)
+                busco_nearest[locus].append((found[0], found[1], groups.get(species_of[acc], "-")))
     need = compared | (set(genomes) if search else set())
     held = {a: held_out_calls(work, a) for a in compared}
     # the clade hold-out (since 2026-11-09): each level's held-out calls against OrthoDB's gene models
@@ -1114,7 +1125,8 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
                         t["span_90"] += float(span) >= 0.9
         if search:
             got = qc.check({(a, locus): s for a, s in cds.items()}, species_of, ncbi, vsearch, threads)
-            busco_nearest[locus] = [(c["nearest_id"], c["nearest_depth"]) for c in got.values()]
+            busco_nearest[locus] = [(c["nearest_id"], c["nearest_depth"], groups.get(species_of[a], "-"))
+                                    for (a, _locus), c in got.items()]
     if odb:
         for r in odb_rows:
             sp = species.get(str(r["species_taxid"]), {})
@@ -1145,15 +1157,15 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
     if vsearch:
         markers = dict(busco_nearest)
         markers[ALL_BUSCOS] = [v for locus, vs in busco_nearest.items() if locus in set(loci) for v in vs]  # BUSCOs alone
-        ssu = ssu_nearest(folder, ncbi, vsearch, threads, progress, searches, log)
+        ssu = ssu_nearest(folder, ncbi, vsearch, threads, progress, searches, log, groups)
         if ssu:
             markers["18S"] = ssu
         for region in REGION_MIN:  # since 2026-11-14: the ITS, the 28S' D1-D2, the organelle barcodes
-            got = region_nearest(folder, ncbi, vsearch, threads, region, progress, searches, log)
+            got = region_nearest(folder, ncbi, vsearch, threads, region, progress, searches, log, groups)
             if got:
                 markers[region] = got
         for gene in ORGANELLE_MARKERS:
-            got = organelle_nearest(folder, ncbi, vsearch, threads, gene, progress, searches, log)
+            got = organelle_nearest(folder, ncbi, vsearch, threads, gene, progress, searches, log, groups)
             if got:
                 markers[gene] = got
         rows = resolution_rows({m: v for m, v in markers.items() if v})

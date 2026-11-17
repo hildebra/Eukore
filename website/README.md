@@ -49,8 +49,13 @@ PYTHONPATH=benchmarks python3 -m eukore_bench.site RESULTS --release OUT/release
 ```
 
 The downloads can live elsewhere (another disk, a file server): copy `OUT/release/downloads/` there and set
-`DOWNLOAD_URL` in `config.php` to its URL. `data/` holds the JSON of a trial package (7 clades, 43 species) until a
-release replaces it; `downloads/` holds nothing in the repository.
+`DOWNLOAD_URL` in `config.php` to its URL. `data/` holds the JSON of the first full build (Eukore_2026.11
+of 2026-11-14: Eukore 0.2.4, format 6; 47,479 species) until a release replaces it. It was made from that build's
+evaluation bundle, which holds no sequence or copy table (`release.write(BUNDLE/package, website)`: since 2026-11-15
+the marker categories are then the manifest's and the benchmarks' counts, the BUSCOs and Eukore's loci together, and
+no download is listed; the pages say that the build is no published release), with `benchmarks.json` and
+`figures/` of the steps that need the build's own tables alone (the breadth at every rank, the named lists, the
+genomes' checks, the genetic codes, the identity that parts taxa). `downloads/` holds nothing in the repository.
 
 Every download is BGZF at gzip's level 9: any gzip reader takes it, `bgzip -d -@ N` decompresses it on N threads. The
 server should send the `.gz` files as they are (no `Content-Encoding: gzip` of its own): Apache's and nginx's

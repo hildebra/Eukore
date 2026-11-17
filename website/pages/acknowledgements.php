@@ -34,9 +34,13 @@
         INSDC's transcriptome shotgun assemblies (via ENA)</li>
       <li>BUSCO's eukaryota_odb12 (OrthoDB 12.1); KOfam's profiles, Swiss-Prot's and NCBI's proteins (Eukore's own
         marker loci)</li>
-      <li>EUKARYOME 2.1; the rRNA Operon Database (ROD) 1.2; Rfam's eukaryote SSU model</li>
-      <li>PR2 5.1.1, KSGP, SILVA, UNITE, MIDORI2; Open Tree of Life, GBIF, WoRMS, IRMNG, BOLD</li>
-      <li>TOGA2's vertebrate assemblies and gene models; Ensembl's and VEuPathDB's gene models</li>
+      <li>EUKARYOME 2.1 (its long reads, its SSU set and its classification); the rRNA Operon Database (ROD) 1.2;
+        Rfam's eukaryote and prokaryote SSU models; NCBI's UniVec</li>
+      <li>MIDORI2's mitochondrial SSU, COX1 and CYTB records</li>
+      <li>PR2 5.1.1, KSGP, SILVA and UNITE (their names and record ids, no sequence); Open Tree of Life, GBIF, WoRMS,
+        IRMNG, BOLD</li>
+      <li>TOGA2's vertebrate assemblies and gene models; Ensembl's and VEuPathDB's gene models (VEuPathDB's also
+        as UCSC GenArk serves them)</li>
       <li>the records of species without an assembly from EukDetect2 (CC BY 4.0; Shih, Zhao, Pollard &amp; Lind
         2026), of EukProt's genomes and transcriptomes</li>
     </ul>
@@ -46,7 +50,7 @@
 <div class="split">
   <h2 class="split-title">Tools</h2>
   <div class="split-body">
-    <p>Eukore runs miniprot, HMMER, barrnap, ITSx, vsearch, Infernal, sourmash, and optionally tiara and NCBI's
+    <p>Eukore runs miniprot, HMMER, barrnap, ITSx, vsearch, Infernal, minimap2, sourmash, and optionally tiara and NCBI's
       FCS-GX: please cite them with Eukore.</p>
     <p>Eukore began inside protal's repository and keeps that history.
       Its code is licensed under the GNU General Public License, version 2.0.</p>

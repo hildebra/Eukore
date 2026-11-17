@@ -371,6 +371,11 @@ def boxes(ax, groups, color, width, marker="o"):
                     zorder=3)
 
 
+def foot_count(n):
+    """A count at a panel's foot, where a column is a few characters wide: 3,069 as 3.1k."""
+    return f"{n / 1000:.1f}k" if n >= 1000 else f"{n:,}"
+
+
 def panel_reach(left, right, bench):
     panel_title(left, "b", "Calls by distance to BUSCO's dataset")
     pooled, _per = reach_points(bench)
@@ -387,7 +392,7 @@ def panel_reach(left, right, bench):
             left.plot(xs, ys, color=color, marker="o", label=label, zorder=3)
     for i, r in enumerate(NEAREST):
         if r != "own" and pooled.get(r, {}).get("genomes"):
-            left.text(i, 0.01, f"{pooled[r]['genomes']:,}", ha="center", va="bottom", fontsize=5.5, color=MUTED)
+            left.text(i, 0.01, foot_count(pooled[r]['genomes']), ha="center", va="bottom", fontsize=5.5, color=MUTED)
     nearest_axis(left)
     left.set_title("the dataset's genomes,\nrelatives left out", fontsize=6.5, color=INK2)
     left.set_ylabel("share of OrthoDB's genes (left);\nof a genome's introns (right)", fontsize=6.3)
@@ -403,7 +408,8 @@ def panel_reach(left, right, bench):
     for i, r in enumerate(NEAREST):
         n = sum(1 for d, *_x in points if d == r)
         if n:
-            right.text(i, 0.01, f"{n:,}", ha="center", va="bottom", fontsize=5.5, color=MUTED)
+            # on two heights by turns: a full build's counts (1.4k, 1.8k) are wider than their columns
+            right.text(i, 0.01 + 0.045 * (i % 2), foot_count(n), ha="center", va="bottom", fontsize=5.5, color=MUTED)
     nearest_axis(right)
     right.tick_params(axis="y", labelleft=False)
     right.set_title("each genome against its\nannotation: introns exact", fontsize=6.5, color=INK2)
@@ -414,10 +420,12 @@ def panel_reach(left, right, bench):
     for k, source in enumerate(sources):
         handles.append(Line2D([], [], linestyle="", marker=("o", "s", "D", "^")[k % 4],
                               color=CATEGORICAL[1 + k % (len(CATEGORICAL) - 1)], markersize=3.5))
-        labels.append(f"{source}'s annotation (box: median, quartiles)")
-    left.legend(handles, labels, loc="upper left", bbox_to_anchor=(-0.02, -0.33), ncol=1, handlelength=1.6)
-    left.annotate("rank shared with the nearest dataset species (genomes at the foot)", xy=(1.06, -0.26),
-                  xycoords="axes fraction", ha="center", va="top", fontsize=6.3, color=INK2)
+        labels.append(f"{source}'s annotation")
+    # two columns (the lines, the annotations): five rows ran into panel d's title on a full build's figure
+    left.legend(handles, labels, loc="upper left", bbox_to_anchor=(-0.02, -0.39), ncol=2, handlelength=1.6,
+                columnspacing=1.2)
+    left.annotate("rank shared with the nearest dataset species\n(genomes at the foot; boxes: median and quartiles)",
+                  xy=(1.06, -0.26), xycoords="axes fraction", ha="center", va="top", fontsize=6.3, color=INK2)
     return True
 
 
@@ -1858,8 +1866,13 @@ def tree(bench, package, out, fmt):
 
 # --- guidance (guidance.py; since 2026-11-12) --------------------------------------------------------------------------
 
+USABLE_ACCURACY = 0.65  # guidance.USABLE: under it a marker does not part a rank's taxa (tests keep the two alike)
+
+
 def thresholds(bench, package, out, fmt):
-    rows = read(os.path.join(bench, "thresholds.tsv"))
+    # all species' rows with a threshold (since 2026-11-15 the table also holds each group's, and rows without one)
+    rows = [r for r in read(os.path.join(bench, "thresholds.tsv"))
+            if r.get("supergroup", "all") == "all" and r["threshold"] != "-"]
     if not rows:
         return None
     ranks = [r for r in ("species", "genus", "family", "order") if any(x["rank"] == r for x in rows)]
@@ -1878,7 +1891,9 @@ def thresholds(bench, package, out, fmt):
                        linewidths=0, zorder=2)
         for k, m in enumerate(series):
             r = at.get((m, rank))
-            if not r:
+            # no mark where the cutoff parts nothing (guidance.USABLE; since 2026-11-15: the 18S' species row, 97% at
+            # an accuracy of 0.56, was drawn as a cutoff)
+            if not r or (num(r.get("accuracy")) or 1.0) < USABLE_ACCURACY:
                 continue
             color, marker = styles[m]
             x = num(r["threshold"])

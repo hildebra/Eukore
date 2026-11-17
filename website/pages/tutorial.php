@@ -26,14 +26,14 @@ tar -xzf <?= $pkg ?>.tar.gz          # or: tar -I "bgzip -@ 8" -xf <?= $pkg ?>.t
 <p>A package is a folder of plain TSV tables and gzipped FASTA files:</p>
 <pre><code><?= $pkg ?>/
 ├── manifest.json     versions, inputs, counts, every file's size and MD5 (written last)
-├── species.tsv       one row per species: supergroup, group, NCBI and six references' lineages
-├── genomes.tsv       the species' genomes: accession, quality flags, rRNA copies, genetic code
+├── species.tsv       one row per species: its source, supergroup, group, NCBI and six references' lineages
+├── genomes.tsv       the species' genomes: accession, tier, quality flags, rRNA copies, genetic code
 ├── busco/            loci.tsv, copies.tsv, introns.tsv; copies/, cds/, proteins/&lt;locus&gt;.*.gz
 ├── markers/          Eukore's own loci (RPB1, RPB2, EF-2, TEF1, ...), as busco/
-├── rrna/             records.tsv, records.fna.gz, regions.tsv (18S V1-V9), amplicons.tsv
+├── rrna/             records.tsv, records.fna.gz, audit.tsv, regions.tsv (18S V1-V9), amplicons.tsv
 ├── organelle/        genes.tsv, genes.fna.gz, cds.fna.gz, proteins.faa.gz, molecules.fna.gz
 ├── metadata/         assembly.tsv.gz, ncbi.tsv.gz, codons.tsv.gz, sketches.zip
-├── taxonomy/         NCBI's taxonomy, cut to the package
+├── taxonomy/         NCBI's taxonomy, cut to the package; EUKARYOME's as one tree; PR2's and KSGP's records linked
 └── benchmarks/       the build's measures of the package</code></pre>
 
 <h2 id="use">2. Use it</h2>
@@ -56,7 +56,11 @@ copies = package.read_table(pkg, "busco/copies.tsv")       # each copy's call, c
 seqs = package.read_copies(pkg, "10248812at2759")          # {accession: the copy, introns and all}
 cds = package.read_copies(pkg, "10248812at2759", "cds")    # {accession: its coding sequence}; "proteins" too
 tax = ncbi.Ncbi(f"{pkg}/taxonomy")                         # the NCBI taxonomy the package was built on</code></pre>
-<p>A typical use keeps the <code>high</code> and <code>medium</code> copies of the BUSCOs it chooses (by
+<p>Every copy, record and organelle gene has a tier in its table's <code>confidence</code> column, with the reasons
+  in <code>flags</code>: <code>high</code> (its relatives confirm it), <code>unverified</code> (nothing against it,
+  no relative near enough to check it by), <code>medium</code> (something may be wrong: a fragment, a contig's end)
+  and <code>low</code> (another organism's, or not the gene).
+  A typical use keeps the <code>high</code> and <code>medium</code> copies of the BUSCOs it chooses (by
   <code>busco/loci.tsv</code>'s call rates in the groups it cares about, <code>call_&lt;group&gt;</code>;
   <a href="<?= h(DOCS_URL) ?>/loci.md">loci.md</a>) and masks, cuts or renames them to its own needs. protal builds
   its eukaryote database this way (<code>download_ref_data.py --eukdb <?= $pkg ?></code>).</p>
@@ -64,7 +68,7 @@ tax = ncbi.Ncbi(f"{pkg}/taxonomy")                         # the NCBI taxonomy t
 <h2 id="install">3. Install the build</h2>
 <hr>
 <p>Eukore runs on Linux (or WSL) with a conda-style package manager; its tools (miniprot, HMMER, barrnap, ITSx,
-  vsearch, Infernal) are bioconda's.</p>
+  vsearch, Infernal, minimap2, sourmash) are bioconda's.</p>
 <pre><code>git clone <?= h(GITHUB_URL) ?>.git && cd Eukore
 micromamba create -f envs/eukore.yaml && micromamba activate eukore
 python3 -m unittest discover -s tests -t tests            # the tests, with stand-in tools: seconds</code></pre>

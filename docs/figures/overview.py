@@ -1,28 +1,30 @@
 #!/usr/bin/env python3
 """The Eukore overview figure: (a) the build, from its sources to the package, and (b) the package, what each of its
-parts makes available. Drawn with the paper's palette (docs/benchmarks/plot_benchmarks.py).
+parts makes available. Drawn with the paper's palette (benchmarks/eukore_bench/figures.py).
 
     python3 docs/figures/overview.py                              # docs/figures/overview.png, the numbers below
     python3 docs/figures/overview.py --package OUT/Eukore_2026.11 # the package's counts (its manifest) head panel b
     python3 docs/figures/overview.py --format svg --no_marks      # without the "added in 0.2" marks
     python3 docs/figures/overview.py --slide                      # overview_slide.png: fewer items, 16:9, the logo
 
-The numbers are NUMBERS below (NCBI's tables and the sources' releases of 2026-11); an item that starts with "*" is a
-part added in Eukore 0.2 (format 5) and gets a mark. After the first full build, run it with --package so that panel b
-carries the package's own counts, and update NUMBERS where the sources moved.
+The numbers are NUMBERS below: the genomes' those of the first full build (Eukore_2026.11 of 2026-11-14), the
+references' those of 2026-11; the text is format 7's (Eukore 0.2.6). An item that starts with "*" is a part added
+since Eukore 0.2 (format 5) and gets a mark (--no_marks: none; the figures in docs/ and on the website are drawn so).
+With --package panel b carries the package's own counts; update NUMBERS where the sources moved.
 """
 
 import argparse
-import importlib.util
 import json
 import os
+import sys
 import textwrap
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-spec = importlib.util.spec_from_file_location("plot_benchmarks", os.path.join(HERE, "..", "benchmarks",
-                                                                              "plot_benchmarks.py"))
-pb = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(pb)
+ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
+# the palette and save() are the benchmarks' figures' (until 2026-11-12 docs/benchmarks/plot_benchmarks.py, which
+# moved there: this script did not run since)
+sys.path[:0] = [ROOT, os.path.join(ROOT, "benchmarks")]
+from eukore_bench import figures as pb  # noqa: E402
 plt = pb.plt
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch  # noqa: E402 (after plot_benchmarks' rcParams)
 
@@ -32,10 +34,11 @@ SOURCE_FILL = "#f3f7fd"       # the sources' and the package's boxes
 STAGE_FILL = SURFACE
 
 NUMBERS = {
-    "ncbi_species": "~29,000", "ncbi_tb": "~6.5 TB", "toga2_species": "72", "tsa_species": "5,025",
-    "eukprot_species": "75", "veupathdb_species": "71", "ensembl_species": "2,037", "toga2_models": "907",
+    "ncbi_species": "28,506", "ncbi_tb": "~6.5 TB", "toga2_species": "79", "tsa_species": "5,028",
+    "eukprot_species": "51", "veupathdb_species": "71", "ensembl_species": "2,037", "toga2_models": "907",
     "buscos": "129", "primer_pairs": "18", "refseq_organelle": "~2.2 GB", "fcs_gx_db": "~470 GB",
-    "sources": "21", "panel_species": "40", "panel_assemblies": "3", "benchmark_tables": "20",
+    "sources": "25", "panel_species": "133", "panel_assemblies": "3", "benchmark_tables": "23",
+    "midori2_species": "~230,000",
     "rrna_primer_pairs": "10", "organelle_primer_pairs": "8", "tetranucleotides": "136", "references": "6",
     "id_systems": "7", "ncbi_date": "2026-11",
 }
@@ -133,24 +136,27 @@ def panel_a_content(n):
     sources = [Box(t, items, ws) for t, items in [
         ("genomes", [
             fmt("NCBI assemblies (GenBank, RefSeq): {ncbi_species} species, {ncbi_tb}", n),
-            fmt("TOGA2 assemblies: {toga2_species} vertebrates with no NCBI genome", n),
+            fmt("TOGA2 assemblies: {toga2_species} vertebrates", n),
             fmt("* INSDC transcriptomes: {tsa_species} species with no genome", n),
             fmt("EukProt records: {eukprot_species} protists with no assembly", n)]),
         ("the genomes' own gene models", [
-            fmt("NCBI · VEuPathDB ({veupathdb_species} sp.) · Ensembl ({ensembl_species} sp.) · "
-                "TOGA2 ({toga2_models} sp.)", n)]),
+            fmt("NCBI · VEuPathDB ({veupathdb_species} sp.; UCSC GenArk's copies) · Ensembl "
+                "({ensembl_species} sp.) · TOGA2 ({toga2_models} sp.)", n)]),
         ("marker models", [
             fmt("BUSCO eukaryota_odb12: {buscos} HMMs and their proteins", n),
             fmt("RefSeq organelle genomes ({refseq_organelle})", n),
-            fmt("* Rfam RF01960, the eukaryote SSU  ·  {primer_pairs} primer pairs", n)]),
-        ("published rDNA", [
-            "EUKARYOME 2.1 long reads  ·  ROD 1.2 operons"]),
+            "* KEGG KOfam, Swiss-Prot, NCBI proteins: 9 classic markers",
+            fmt("* Rfam's SSU models  ·  {primer_pairs} primer pairs", n)]),
+        ("published rDNA and barcodes", [
+            "EUKARYOME 2.1 long reads and SSU set  ·  ROD 1.2 operons",
+            "* MIDORI2: mitochondrial SSU, COX1, CYTB"]),
         ("taxonomy and names", [
             "* NCBI taxdump, its nuclear and organelle codes",
-            "PR2 5.1.1 · EUKARYOME 2.1 · KSGP 4.0 · SILVA 138.2* · UNITE 10.0* · MIDORI2*",
+            "* EUKARYOME 2.1's classification, made one tree",
+            "PR2 5.1.1 · KSGP · SILVA 138.2* · UNITE 10.0* · MIDORI2*: names and record ids",
             "* Open Tree 3.7.3 (with GBIF, WoRMS, IRMNG, Index Fungorum ids) · BOLD BINs"]),
         ("quality screens", [
-            fmt("NCBI's FCS-GX and ANI reports · FCS-GX database ({fcs_gx_db}) · tiara", n)]),
+            fmt("NCBI's FCS-GX and ANI reports · FCS-GX database ({fcs_gx_db}) · tiara · UniVec", n)]),
     ]]
     fetch = [Box("genome set", [
         "one best assembly per species: NCBI's flags, FCS-GX and ANI exclude; then RefSeq reference, "
@@ -161,14 +167,15 @@ def panel_a_content(n):
     process = [Box(t, items, wp) for t, items in [
         ("BUSCO calls", [
             "miniprot aligns the 30 nearest proteins with the genome's genetic code; hmmsearch confirms",
-            "rescue pass: each Missing HMM in the genome's ORFs",
-            "the genome's own gene model where its HMM confirms it",
+            "rescue pass: each Missing HMM in the genome's ORFs; a gene split across a skim's contigs joined",
+            "the genome's own gene model where its HMM confirms it; the coding sequence checked",
             "the gene kept whole: exons, introns, frameshifts"]),
         ("rDNA", [
-            "barrnap, ITSx: 18S spans and whole units, 18S–ITS1–5.8S–ITS2–28S (an inline 5S)"]),
+            "barrnap, ITSx: 18S spans and whole units, 18S–ITS1–5.8S–ITS2–28S (an inline 5S)",
+            "* the published reads annotated alike and audited: vectors, flanks, chimeras"]),
         ("organelle genes", [
             "RefSeq's record, else the assembly's organelle molecules: nhmmer, barrnap",
-            "* miniprot for exact exons (an option)"]),
+            "* miniprot for the exons of a gene with introns"]),
         ("assembly metadata", [
             "one pass over the genome while it is on disk; sourmash sketch; organelle molecules kept"]),
         ("contamination windows", [
@@ -176,8 +183,10 @@ def panel_a_content(n):
     ]]
     package = [Box(t, items, wk) for t, items in [
         ("checks across species", [
-            "own-species agreement, 99% collapses, length outliers, rDNA chimera screen",
-            "* a tier high / medium / low, with its reasons, on every copy, record and organelle gene"]),
+            "own-species agreement, 99% collapses, length outliers, rDNA chimera screen, each 18S a nucleus'",
+            "* MIDORI2's records screened: misnamed, chimeric, nuclear copies",
+            "* a tier high / unverified / medium / low, with its reasons, on every copy, record and organelle "
+            "gene; a tier on every genome"]),
         ("* genetics", [
             "hmmalign: intron phase, splice sites, U12, sites shared across species",
             "coding sequences and proteins; genetic-code check; duplication: haplotypes or a WGD"]),
@@ -185,7 +194,8 @@ def panel_a_content(n):
             "cmalign on RF01960: the 18S's V1–V9",
             fmt("in-silico PCR of {primer_pairs} primer pairs", n)]),
         ("names and ids", [
-            fmt("lineage in {references} references, ids in {id_systems} systems", n),
+            "NCBI's and EUKARYOME's lineage on every species, record and gene",
+            fmt("names in 5 more references, ids in {id_systems} systems", n),
             "* supergroup and group; empty ranks filled"]),
         ("* barcode gap", [
             "each marker's variation within a species beside its nearest other species"]),
@@ -227,7 +237,7 @@ def panel_a(ax, n, marks):
     arrow(ax, (xp + wp, p_mid), (xk - 0.3, p_mid))
     if marks:
         dot(ax, WIDTH - 46, H - 2.6)
-        ax.text(WIDTH - 44, H - 2.6, "and *: added in Eukore 0.2 (package format 5)", fontsize=FS_BODY,
+        ax.text(WIDTH - 44, H - 2.6, "and *: added since Eukore 0.2 (package format 5)", fontsize=FS_BODY,
                 color=INK2, va="center", ha="left")
     return H
 
@@ -236,14 +246,15 @@ def panel_b_content(n):
     w = 42.6
     row1 = [Box(t, items, w) for t, items in [
         ("taxonomy and names", [
-            "species.tsv: NCBI lineage, its empty ranks filled; lineage in PR2, EUKARYOME, KSGP, SILVA*, "
+            "species.tsv: NCBI lineage, its empty ranks filled; EUKARYOME lineage; names in PR2, KSGP, SILVA*, "
             "UNITE*, MIDORI2*",
             "* supergroup and group of every species",
             "* crossrefs.tsv: Open Tree, GBIF, WoRMS, IRMNG, Index Fungorum, UNITE SH, BOLD BIN",
             "genomes.tsv: accession, flags, rRNA copies, genetic code*, duplication*, type material*",
-            "* taxonomy/: NCBI's, cut to the package, 3 codes per node"]),
-        ("busco/", [
-            fmt("{buscos} BUSCOs × every species", n),
+            "* taxonomy/: NCBI's, cut to the package, 3 codes per node; EUKARYOME's as one tree; PR2's and "
+            "KSGP's records linked"]),
+        ("busco/, markers/", [
+            fmt("{buscos} BUSCOs and 9 classic markers* × every species with a genome", n),
             "copies/: each gene whole, introns and all",
             "* cds/, proteins/: by the genome's code",
             "features.tsv: exons, introns, frameshifts, masked runs, assembly gaps",
@@ -251,9 +262,10 @@ def panel_b_content(n):
             "copies.tsv: each copy's call, checks, confidence",
             "loci.tsv: each BUSCO's call rate per group, to choose loci by"]),
         ("rrna/", [
-            "records: 18S spans and whole units (18S, ITS1, 5.8S, ITS2, 28S, 5S) of genomes, EUKARYOME and "
-            "ROD, labelled by NCBI taxid",
+            "records: 18S spans and whole units (18S, ITS1, 5.8S, ITS2, 28S, 5S) of genomes, EUKARYOME (long "
+            "reads, SSU set) and ROD, labelled down to the rank their label reaches",
             "checks, chimera screen, confidence",
+            "* audit.tsv: what was cut off a published read",
             "* regions.tsv: V1–V9 of every 18S",
             fmt("* amplicons.tsv: in-silico PCR of {rrna_primer_pairs} primer pairs", n)]),
         ("organelle/", [
@@ -261,6 +273,7 @@ def panel_b_content(n):
             "plastid: SSU, LSU, 5S; rbcL, matK, tufA, psbA*, ycf1*, the trnH–psbA spacer*",
             "* cds, proteins by the organelle's code; checks and confidence per gene",
             fmt("* amplicons.tsv: {organelle_primer_pairs} primer pairs", n),
+            fmt("* MIDORI2's SSU, COX1, CYTB: {midori2_species} species without a RefSeq mitochondrion", n),
             "molecules.fna.gz: the organelles, whole"]),
     ]]
     row2 = [Box(t, items, w) for t, items in [
@@ -275,11 +288,11 @@ def panel_b_content(n):
             "barcode_gap.tsv: per marker, identity within the species beside its nearest other species"]),
         ("benchmarks/", [
             fmt("{benchmark_tables} tables: completeness, agreement with OrthoDB and the genomes' annotation, "
-                "resolution, rDNA, names, primers*, reads and detection, overlap with other databases, "
+                "resolution, rDNA, organelle genes, names, primers*, overlap with other databases, "
                 "run time", n),
             "summary.json: the headline figures"]),
         ("manifest.json", [
-            "format 5; the version of every input; the package's counts; every file's size and MD5; "
+            "format 7; the version of every input; the package's counts; every file's size and MD5; "
             "written last",
             "read by protal (its 30 BUSCOs), phylogenetics, primer design, contamination screens: plain TSV, "
             "by column header"]),
@@ -322,7 +335,7 @@ def manifest_counts(package):
     c = m["counts"]
     organelle = sum(sum(v.values()) for v in c.get("organelle_genes", {}).values())
     return [("species with a genome", f"{c['species']:,}"), ("with rDNA alone", f"{c.get('species_rrna_only', 0):,}"),
-            ("BUSCO copies", f"{c['copies']:,}"), ("rDNA records", f"{c['rrna_records']:,}"),
+            ("BUSCO and marker copies", f"{c['copies']:,}"), ("rDNA records", f"{c['rrna_records']:,}"),
             ("organelle genes", f"{organelle:,}"), ("taxa", f"{c['taxa']:,}")]
 
 
@@ -345,7 +358,7 @@ def slide(n, counts):
     ax.imshow(logo, extent=[4, 4 + lw, H - 3 - lh, H - 3], zorder=3, interpolation="lanczos")
     ax.text(4 + lw + 10, H - 13, "Every eukaryote genome at NCBI, to one checked package of marker genes",
             fontsize=18, fontweight="bold", color=INK, va="center", ha="left")
-    ax.text(4 + lw + 10, H - 24, fmt("Eukore 0.2  ·  package format 5  ·  NCBI's tables and the references of "
+    ax.text(4 + lw + 10, H - 24, fmt("Eukore 0.2.6  ·  package format 7  ·  NCBI's tables and the references of "
                                     "{ncbi_date}", n),
             fontsize=FS_BODY, color=INK2, va="center", ha="left")
     top = H - 48
@@ -361,11 +374,11 @@ def slide(n, counts):
         ("models", [
             fmt("BUSCO eukaryota_odb12: {buscos} genes", n),
             "RefSeq organelle genomes",
-            fmt("Rfam 18S model, {primer_pairs} primer pairs", n),
+            fmt("KOfam: 9 classic markers; Rfam's SSU models; {primer_pairs} primer pairs", n),
             "gene models: NCBI, Ensembl, VEuPathDB, TOGA2",
-            "published rDNA: EUKARYOME, ROD"]),
+            "published records: EUKARYOME, ROD, MIDORI2"]),
         ("names and ids", [
-            "NCBI taxonomy; PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2",
+            "NCBI's and EUKARYOME's taxonomy; PR2, KSGP, SILVA, UNITE, MIDORI2",
             "Open Tree, GBIF, WoRMS, IRMNG, BOLD"]),
         ("quality", ["NCBI's FCS-GX and ANI reports, tiara"]),
     ]]
@@ -373,24 +386,27 @@ def slide(n, counts):
         ("fetch: the genome set", ["one best assembly per species; contaminated and misidentified ones excluded"]),
         ("process: each genome once", [
             "BUSCO genes: miniprot, then BUSCO's HMMs; the genome's own gene model where it agrees",
-            "rDNA operons: barrnap, ITSx",
+            "rDNA operons: barrnap, ITSx; the published reads audited",
             "organelle genes; assembly metadata; 50 kb windows for contamination screens"]),
         ("package: all species together", [
-            "own-species, 99% and chimera checks; a confidence tier on every copy, record and gene",
+            "own-species, 99% and chimera checks; MIDORI2 screened; a confidence tier on every copy, "
+            "record and gene",
             "introns, proteins, genetic code; 18S V1–V9; in-silico PCR; names and ids; barcode gap",
             fmt("{benchmark_tables} benchmarks; manifest with checksums", n)]),
     ]]
     package = [Box(t, items, wk) for t, items in [
         ("BUSCO genes", [
-            fmt("{buscos} per species, each whole with its introns; coding sequences, proteins, intron sites", n)]),
-        ("rDNA", [fmt("18S spans and whole operons; V1–V9; {rrna_primer_pairs} primer pairs", n)]),
+            fmt("{buscos} per species and 9 classic markers, each whole with its introns; CDS, proteins, "
+                "intron sites", n)]),
+        ("rDNA", [fmt("18S and whole operons of genomes, EUKARYOME and ROD, audited; V1–V9; "
+                      "{rrna_primer_pairs} primer pairs", n)]),
         ("organelle genes", [
-            fmt("mitochondrial and plastid rRNA, COX1, CYTB, rbcL, matK, ...; proteins; "
-                "{organelle_primer_pairs} primer pairs", n)]),
-        ("taxonomy", [fmt("NCBI lineage and supergroup; lineages in {references} references; ids in {id_systems} "
-                          "systems", n)]),
-        ("also", [fmt("assembly metadata, sketches; barcode gap of {panel_species} species; benchmarks", n),
-                  "plain TSV and FASTA: protal, phylogenetics, primer design, contamination screens"]),
+            fmt("rRNA, COX1, CYTB, rbcL, matK, ...; {organelle_primer_pairs} primer pairs; MIDORI2's barcodes "
+                "of {midori2_species} more species", n)]),
+        ("taxonomy", [fmt("NCBI and EUKARYOME lineage on every record; names in 5 more references; ids in "
+                          "{id_systems} systems", n)]),
+        ("also", [fmt("assembly metadata, sketches; barcode gap of {panel_species} species; benchmarks; "
+                      "plain TSV and FASTA", n)]),
     ]]
     heads = [(xs, fmt("{sources} sources", n)), (xb, "the build"), (xk, "the package: one row per species")]
     for x, title in heads:

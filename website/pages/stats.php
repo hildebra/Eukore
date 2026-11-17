@@ -38,6 +38,11 @@ $categories = $stats['markers'] ?? [];
 <?php if (!empty($stats['partial'])): ?>
   This is a <b>trial package</b>: it holds the species of a few clades only, not every eukaryote.
 <?php endif; ?>
+<?php if (!empty($stats['bundle'])): ?>
+  This build is <b>not a published release</b>: its numbers are those of its evaluation bundle (its manifest, species
+  and genome tables and benchmarks), so the BUSCO genes and Eukore's marker loci are counted together and the organelle
+  genes' confidence tiers are not given.
+<?php endif; ?>
   Every number here is written by the build itself (<code>OUT/release/data/</code>).</p>
 
 <section class="tiles" aria-label="Totals">
@@ -146,7 +151,9 @@ $categories = $stats['markers'] ?? [];
 </ul>
 <div class="cards">
 <?php foreach ($categories as $c):
-    $conf = $c['confidence'] + ['unverified' => 0];  // a format-5 release's has none
+    // a format-5 release's has no `unverified`; an evaluation bundle's organelle genes have no tiers at all (null)
+    $conf = ($c['confidence'] ?? []) + ['high' => 0, 'unverified' => 0, 'medium' => 0, 'low' => 0];
+    $tiered = array_sum($conf) > 0;
     $all = max(1, array_sum($conf));
     $max = 1;
     foreach ($c['items'] as $i) {
@@ -161,12 +168,16 @@ $categories = $stats['markers'] ?? [];
       <div><dt><?= $c['key'] === 'busco' || $c['key'] === 'markers' ? 'Copies' : 'Records' ?></dt><dd><?= num($c['sequences']) ?></dd></div>
       <div><dt>Species</dt><dd><?= num($c['species']) ?></dd></div>
     </dl>
+<?php if (!$tiered): ?>
+    <p class="card-conf">confidence tiers: not in this build's summary</p>
+<?php else: ?>
     <div class="stack stack-thin" role="img" aria-label="confidence: high <?= num($conf['high']) ?>, unverified <?= num($conf['unverified']) ?>, medium <?= num($conf['medium']) ?>, low <?= num($conf['low']) ?>">
 <?php foreach (['high', 'unverified', 'medium', 'low'] as $tier): if ($conf[$tier] > 0): ?>
       <span class="seg c-<?= $tier ?>" style="width:<?= number_format(100 * $conf[$tier] / $all, 3, '.', '') ?>%" data-tip="<?= h($c['title'] . ' · ' . $tier . ': ' . num($conf[$tier]) . ' (' . pct($conf[$tier] / $all) . ')') ?>"></span>
 <?php endif; endforeach; ?>
     </div>
     <p class="card-conf"><?= pct($conf['high'] / $all, 0) ?> high · <?= pct($conf['unverified'] / $all, 0) ?> unverified · <?= pct($conf['medium'] / $all, 0) ?> medium · <?= pct($conf['low'] / $all, 0) ?> low</p>
+<?php endif; ?>
     <h4><?= h(ucfirst($c['items_title'])) ?></h4>
     <ul class="items">
 <?php foreach ($c['items'] as $i): ?>

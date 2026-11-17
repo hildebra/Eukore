@@ -25,6 +25,15 @@ class GuidanceTest(unittest.TestCase):
         rows = benchmarks.resolution_hist({"m": [(99.26, 5), ("99.4", 5), (87.0, 4), (None, None), (100.0, 5)]})
         self.assertEqual([(r["shared_rank"], r["identity"], r["copies"]) for r in rows],
                          [("family", "87.0", 1), ("genus", "100.0", 1), ("genus", "99.0", 2), ("unmatched", "-", 1)])
+        self.assertEqual({r["supergroup"] for r in rows}, {"-"})  # no group told
+        # since 2026-11-15 a copy's species' group too: each copy counted once, in its group's rows
+        rows = benchmarks.resolution_hist({"m": [(99.9, 5, "Vertebrata"), (99.6, 5, "Vertebrata"), (93.0, 5, "Fungi"),
+                                                 (None, None, "Fungi")]})
+        self.assertEqual([(r["supergroup"], r["shared_rank"], r["identity"], r["copies"]) for r in rows],
+                         [("Fungi", "genus", "93.0", 1), ("Fungi", "unmatched", "-", 1),
+                          ("Vertebrata", "genus", "99.5", 2)])
+        self.assertEqual([(r["shared_rank"], r["copies"]) for r in benchmarks.resolution_rows(
+            {"m": [(99.9, 5, "Vertebrata"), (93.0, 5, "Fungi")]})], [("genus", 2), ("all", 2)])
 
     def test_the_identity_that_parts_two_sets(self):
         # the highest identity that keeps all of within and none of between
@@ -54,8 +63,12 @@ class GuidanceTest(unittest.TestCase):
             rows = {(r["marker"], r["rank"]): r for r in fx.read_tsv(os.path.join(out, "thresholds.tsv"))}
             buscos = benchmarks.ALL_BUSCOS
             # a species: the panel's own assemblies (99.5 or more alike) against every copy's nearest other species
-            self.assertEqual([rows[(buscos, "species")][k] for k in guidance.COLUMNS[2:]],
-                             ["99.5", "6", "1.000", "25", "1.000", "1.000", "package"])
+            self.assertEqual([rows[(buscos, "species")][k] for k in guidance.COLUMNS],
+                             ["all", buscos, "species", "99.5", "6", "1.000", "25", "1.000", "1.000",
+                              # every copy's nearest other species: their median's step, the share under 99%
+                              "25", "90.0", "0.760", "package"])
+            self.assertEqual([rows[(buscos, "genus")][k] for k in ("nearest", "nearest_median", "nearest_under_99")],
+                             ["8", "99.0", "0.250"])  # the copies whose nearest other species is a congener
             # a genus: the copies whose nearest is a congener against those whose nearest is not
             self.assertEqual([rows[(buscos, "genus")][k] for k in ("threshold", "within", "between")],
                              ["98.5", "8", "17"])
@@ -69,6 +82,7 @@ class GuidanceTest(unittest.TestCase):
                           benchmarks.summary_md(summary, "Eukore_x"))
             if importlib.util.find_spec("matplotlib") is not None:
                 from eukore_bench import figures  # noqa: PLC0415
+                self.assertEqual(figures.USABLE_ACCURACY, guidance.USABLE)
                 self.assertTrue(os.path.isfile(figures.thresholds(out, package, out, "png")))
             # a package without the histogram: said, nothing written
             other = os.path.join(tmp, "none")
@@ -76,6 +90,53 @@ class GuidanceTest(unittest.TestCase):
             left = guidance.run(package, other, {"left_out": {}}, log=lambda t: None)["left_out"]
             self.assertIn("no resolution_hist.tsv", left["thresholds"])
             self.assertFalse(os.listdir(other))
+
+    def test_thresholds_per_group(self):
+        # since 2026-11-15: the identities split by the species' group, so that a marker alike across one group's
+        # species (mammals' 18S) is told from one that parts another's
+        with tempfile.TemporaryDirectory() as tmp:
+            out, package = os.path.join(tmp, "results"), os.path.join(tmp, "Eukore_x")
+            os.makedirs(out)
+            os.makedirs(os.path.join(package, "intraspecific"))
+            hist = [("Vertebrata", "genus", "99.5", 8), ("Vertebrata", "genus", "100.0", 4),
+                    ("Fungi", "genus", "97.0", 6), ("Fungi", "family", "95.0", 5), ("Metazoa", "genus", "98.0", 6)]
+            benchmarks.write(out, "resolution_hist.tsv", benchmarks.HIST_COLUMNS,
+                             [dict(marker="18S", supergroup=g, shared_rank=r, identity=i, copies=n)
+                              for g, r, i, n in hist]
+                             + [dict(marker="1at2759", supergroup="Fungi", shared_rank="genus", identity="90.0",
+                                     copies=9)])
+            with open(os.path.join(package, "intraspecific", "barcode_gap.tsv"), "w") as fh:
+                fh.write("marker\tspecies_taxid\tgroup\tintra_min\n"
+                         + "".join(f"18S\t{i}\tFungi\t99.5\n" for i in range(5))
+                         + "".join(f"18S\t{i}\tVertebrata\t99.5\n" for i in range(5, 10))
+                         + "18S\t11\tMetazoa\t99.0\n")
+            summary = {"left_out": {}}
+            guidance.run(package, out, summary, log=lambda t: None)
+            rows = {(r["supergroup"], r["marker"], r["rank"]): r for r in fx.read_tsv(os.path.join(out, "thresholds.tsv"))
+                    if r["source"] == "package"}
+            keys = ("threshold", "within", "between", "accuracy", "nearest", "nearest_median", "nearest_under_99")
+            # all species pooled: a cutoff is found, which says nothing of any one group
+            self.assertEqual([rows[("all", "18S", "species")][k] for k in keys],
+                             ["99.0", "11", "29", "0.793", "29", "98.0", "0.586"])
+            # the fungi's 18S part their species
+            self.assertEqual([rows[("Fungi", "18S", "species")][k] for k in keys],
+                             ["99.5", "5", "11", "1.000", "11", "97.0", "1.000"])
+            # the vertebrates', all 99.5% or more like another species', do not: the accuracy is a coin's
+            self.assertEqual([rows[("Vertebrata", "18S", "species")][k] for k in keys],
+                             ["99.5", "5", "12", "0.500", "12", "99.5", "0.000"])
+            # too few panel species for a threshold: how alike the nearest other species is stays
+            self.assertEqual([rows[("Metazoa", "18S", "species")][k] for k in keys],
+                             ["-", "1", "6", "-", "6", "98.0", "1.000"])
+            self.assertEqual([rows[("Fungi", "18S", "genus")][k] for k in keys],
+                             ["97.0", "6", "5", "1.000", "6", "97.0", "1.000"])
+            self.assertNotIn(("Vertebrata", "18S", "genus"), rows)  # nothing to part its congeners from
+            self.assertFalse([k for k in rows if k[0] != "all" and k[1].endswith("at2759")])  # no BUSCO's own per group
+            self.assertEqual(summary["thresholds"]["18S"]["species"], {"threshold": 99.0, "accuracy": 0.793})
+            from eukore_bench import site  # noqa: PLC0415
+            shown = {(r["supergroup"], r["rank"]): r["usable"] for r in site.rows_of(out, "thresholds")
+                     if r["marker"] == "18S"}
+            self.assertEqual([shown[(g, "species")] for g in ("all", "Fungi", "Vertebrata", "Metazoa")],
+                             ["t", "t", "f", "-"])
 
 
 if __name__ == "__main__":
