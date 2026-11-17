@@ -187,6 +187,8 @@ _qc)
     activate
     echo "SLURM job ${SLURM_JOB_ID:--} (array ${SLURM_ARRAY_JOB_ID:--} task ${SLURM_ARRAY_TASK_ID:--}) on $HOSTNAME: qc"
     cd "$PDIR"
+    # the searches' temporary files on this node's local disk (SCR), where it has one (since 2026-11-17)
+    if [[ -n $SCR ]] && mkdir -p "$SCR/qc"; then export TMPDIR=$SCR/qc; fi
     # waits QC_IDLE seconds for the final job's next search once none is left (since 2026-11-15: one helper array
     # serves the final job's every search), till the final job ends (WORK/qc/helpers.stop)
     python3 -m eukore.qc helper "$WORK/qc" -t "${SLURM_CPUS_PER_TASK:-2}" --idle "${QC_IDLE:-1800}"

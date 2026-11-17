@@ -74,6 +74,7 @@ OWN_ID = 85.0         # a window this identical to a record of its own clade, no
 MIN_KEEP = 300        # a chimera cut to its own part keeps this many bases at least
 MISNAMED_SHARE = 0.5  # foreign windows this share of a record's windows, none its own: misnamed
 COPIES = 200         # the check: minimap2's secondary hits a window (its copies)
+OPEN_AT_ONCE = 200   # the check's own-clade references written this many clades at a time (a node's ulimit -n: 1024)
 ACCEPTS, REJECTS = 100, 400  # the check: vsearch's hits a window (its relatives), and the rejects it tries
 RANKS = ("phylum", "class", "order")
 VERSION = "1"         # raised where the screen's rules change: a build's kept screen of another version is run again
@@ -548,17 +549,22 @@ def check(sources, flagged, meta, ref, taxa, reference, minimap2, vsearch, threa
                     windows[int(line[1:])] = seq
         folder = os.path.join(work, "own_clades")
         os.makedirs(folder, exist_ok=True)
-        files = {key: open(os.path.join(folder, f"{n}.fna"), "w") for n, key in enumerate(sorted(groups))}
-        with open(reference) as fh:
-            for line in fh:
-                seq, t = next(fh), int(line[1:])
-                for rank, taxon in enumerate(ref.lineage[t]):
-                    fh_out = files.get((ref.gene[t], rank, taxon))
-                    if fh_out is not None:
-                        fh_out.write(line + seq)
-        for fh in files.values():
-            fh.close()
-        for n, key in enumerate(sorted(groups)):
+        keys = sorted(groups)
+        for start in range(0, len(keys), OPEN_AT_ONCE):  # the reference read once per batch of clades (ulimit -n)
+            files = {key: open(os.path.join(folder, f"{n}.fna"), "w")
+                     for n, key in enumerate(keys[start:start + OPEN_AT_ONCE], start)}
+            try:
+                with open(reference) as fh:
+                    for line in fh:
+                        seq, t = next(fh), int(line[1:])
+                        for rank, taxon in enumerate(ref.lineage[t]):
+                            fh_out = files.get((ref.gene[t], rank, taxon))
+                            if fh_out is not None:
+                                fh_out.write(line + seq)
+            finally:
+                for fh in files.values():
+                    fh.close()
+        for n, key in enumerate(keys):
             own_queries = os.path.join(folder, f"{n}.q.fna")
             with open(own_queries, "w") as fh:
                 fh.writelines(f">{i}\n{windows[i]}" for i in groups[key])

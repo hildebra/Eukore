@@ -17,6 +17,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -334,6 +335,11 @@ class ScreenTest(unittest.TestCase):
             self.assertIn(">chimera\tlineage screen:1-600\n", text)
             cut = "".join(text.split(">chimera")[1].split(">")[0].split("\n")[1:])
             self.assertEqual(cut, records[[r.name for r in records].index("chimera")].sequence[:600])
+
+    def test_own_clades_written_a_few_at_a_time(self):
+        # a build's thousands of own clades outran the node's open files (2026-11-16): one clade's file at a time
+        with mock.patch.object(refscreen, "OPEN_AT_ONCE", 1):
+            self.test_the_screen()
 
     def test_a_batch_of_copies_does_not_take_their_source(self):
         # two mite species whose only records are copies of a moth's gene (a batch of contaminated specimens): the
