@@ -173,12 +173,12 @@ class DatabasesTest(unittest.TestCase):
         fasta, table = self.reference()
         work = os.path.join(self.tmp.name, "work")
         os.makedirs(work, exist_ok=True)
-        taxa = databases.eukore_ssu(self.package, self.species, os.path.join(work, "ref.fna"))
+        taxa = databases.eukore_marker(self.package, self.species, os.path.join(work, "ref.fna"))
         self.assertEqual(taxa, {"y1": 4932, "p1": 27291})  # one of a species' type, none of confidence low
         with open(os.path.join(work, "ref.fna")) as fh:
             self.assertIn(f">y1\n{self.ssu}\n", fh.read())  # the unit's 18S alone
-        row, records = databases.ssu_agreement(self.package, self.species, "PR2", fasta, table, self.ncbi,
-                                               fx.tool(self.tmp.name, "minimap2", MINIMAP2), 1, work)
+        row, records = databases.marker_agreement(self.package, self.species, "PR2", fasta, table, self.ncbi,
+                                                  fx.tool(self.tmp.name, "minimap2", MINIMAP2), 1, work)
         # agree a; disagree b; unlike u; c aligned to nothing; the yeast agrees by one record, S. paradoxus is
         # undecided: no species differs
         self.assertEqual([row[k] for k in databases.AGREEMENT_COLUMNS[2:10]], [4, 1, 1, 1, 1, 2, 1, 0])
@@ -189,6 +189,30 @@ class DatabasesTest(unittest.TestCase):
         self.assertEqual([(r["record"], r["verdict"], r["own_identity"], r["other_identity"]) for r in records[1:]],
                          [("u", "unlike", "95.0", "85.0")])
         self.assertEqual(databases.differing({1: {"unlike"}, 2: {"agree", "disagree"}, 3: {"undecided"}}), 1)
+
+    def test_an_its_reference_aligned(self):
+        # UNITE's ITS (since 2026-11-17) against the genomes' own: an operon's ITS1 to ITS2, the 5.8S between
+        unit = dict(kind="rDNA", regions="18S:0-600,ITS1:600-700,5.8S:700-800,ITS2:800-900,28S:900-1500")
+        seq = "C" * 600 + "G" * 300 + "T" * 600
+        self.assertEqual(databases.marker_part(unit, seq, "ITS"), "G" * 300)
+        self.assertEqual(databases.marker_part(unit, seq, "18S"), "C" * 600)
+        self.assertEqual(databases.marker_part(dict(kind="18S", regions="-"), seq, "ITS"), "")
+        self.assertEqual(databases.marker_part(dict(kind="rDNA", regions="18S:0-600,ITS1:600-700"), seq, "ITS"), "")
+        work = os.path.join(self.tmp.name, "its")
+        os.makedirs(work)
+        # the yeast's ITS agrees, one 95% like it is unlike; S. paradoxus' genomes hold no ITS: its record not asked
+        fasta, table = os.path.join(work, "UNITE.fna.gz"), os.path.join(work, "UNITE_taxids.tsv")
+        with gzip.open(fasta, "wt") as fh:
+            fh.write(f">i1\n{'A' * 300}\n>i2\n{'A' * 285}{'C' * 15}\n>i3\n{'A' * 300}\n>short\n{'A' * 200}\n")
+        with open(table, "w") as fh:
+            fh.write("i1\t4932\ni2\t4932\ni3\t27291\nshort\t4932\n")
+        self.assertEqual(databases.MARKER_REFERENCES["UNITE"], "ITS")
+        row, records = databases.marker_agreement(self.package, self.species, "UNITE", fasta, table, self.ncbi,
+                                                  fx.tool(self.tmp.name, "minimap2", MINIMAP2), 1, work, "ITS")
+        self.assertEqual((row["marker"], [row[k] for k in databases.AGREEMENT_COLUMNS[2:10]]),
+                         ("ITS", [2, 1, 0, 1, 0, 1, 1, 0]))
+        self.assertIn("genomes' ITS", row["how"])
+        self.assertEqual([(r["record"], r["verdict"], r["own_identity"]) for r in records], [("i2", "unlike", "95.0")])
 
     def test_run_table_and_figures(self):
         fasta, table = self.reference()

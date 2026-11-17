@@ -63,9 +63,10 @@ RANKS = ("genus", "family", "order", "class", "phylum", "none")
 BUSCOS = benchmarks.ALL_BUSCOS
 EUKORE_REFS = ("Eukore", "Eukore exons", "Eukore 18S")  # the read benchmark's references of Eukore's own (reads.py)
 SSU_REFERENCES = ("PR2", "EUKARYOME", "KSGP", "SILVA")  # 18S references; the others' markers are genomes' genes
+RRNA_MARKER = dict({r: "18S" for r in SSU_REFERENCES}, UNITE="ITS")  # an rRNA reference's marker (UNITE: 2026-11-17)
 NOT_IN_BREADTH = ("ROD", benchmarks.ODB_NAME)  # ROD's operons are Eukore's records, BUSCO's dataset its queries
 TICK_LABELS = {"Eukore exons": "Eukore\nexons", "Eukore 18S": "Eukore\n18S", "EukDetect2": "Euk-\nDetect2",
-               "MetaPhlAn4": "MetaPhlAn\n4", "PR2": "PR2\n(18S)"}
+               "MetaPhlAn4": "MetaPhlAn\n4", "PR2": "PR2\n(18S)", "SILVA": "SILVA\n(18S)", "UNITE": "UNITE\n(ITS)"}
 FATES = (("chosen", BLUE[550]), ("chosen, flagged", BLUE[400]), ("model species", BLUE[700]),
          ("no assembly (records)", BLUE[250]), ("every assembly excluded", "#b9b8b2"), ("placeholder", NONE),
          ("hybrid", NONE), ("not a species", NONE), ("not in the taxdump", NONE), ("no download", NONE))
@@ -241,11 +242,11 @@ def breadth_refs(bench, overlap):
 
 
 def breadth_marks(refs):
-    """{reference: (color, marker)}: a genome-marker reference orange, an 18S reference green (three slots at most:
-    dots meet in every pairing), each its own marker within its kind."""
+    """{reference: (color, marker)}: a genome-marker reference orange, an rRNA reference (18S, ITS) green (three slots
+    at most: dots meet in every pairing), each its own marker within its kind."""
     out, kinds = {}, collections.Counter()
     for ref in refs:
-        kind = "ssu" if ref in SSU_REFERENCES else "genes"
+        kind = "ssu" if ref in RRNA_MARKER else "genes"
         out[ref] = (SERIES[2] if kind == "ssu" else SERIES[1], ("s", "D", "^")[kinds[kind] % 3])
         kinds[kind] += 1
     return out
@@ -300,7 +301,7 @@ def panel_breadth(ax, bench):
     for ref in refs:
         color, marker = marks[ref]
         handles.append(Line2D([], [], linestyle="", marker=marker, color=color, markersize=4))
-        labels.append(f"{ref}{' (18S)' if ref in SSU_REFERENCES else ''}")
+        labels.append(f"{ref} ({RRNA_MARKER[ref]})" if ref in RRNA_MARKER else ref)
     ax.legend(handles, labels, loc="upper left", bbox_to_anchor=(-0.02, -0.17), ncol=2, handlelength=1.3,
               columnspacing=1.0, handletextpad=0.4)
     return True
@@ -2065,8 +2066,9 @@ FIGURES = (
     ("agreement", agreement,
      "Where Eukore and another database hold the same species' marker: the records that agree with Eukore's genomes' "
      "sequence, those that are another species' gene (one of the two is misnamed) and those unlike the species' "
-     "own genome's (agreement_records.tsv lists both). EUKARYOME's and ROD's reads by the build's own-species check, MIDORI2's by its reference screen, another "
-     "18S reference's by alignment to the genomes' 18S.", "agreement, agreement_records"),
+     "own genome's (agreement_records.tsv lists both). EUKARYOME's and ROD's reads by the build's own-species check, MIDORI2's by its reference screen, PR2's and "
+     "SILVA's 18S and UNITE's ITS by alignment to the genomes' own 18S and ITS (97% or more alike to the species' "
+     "own genome's agree).", "agreement, agreement_records"),
     ("quality", quality,
      "The records each check flags, per group: the genomes (NCBI's and its FCS-GX and ANI reports' flags, copies "
      "another clade's, a duplicated genome, a genetic code that differs), the BUSCO copies, the rRNA records and the "

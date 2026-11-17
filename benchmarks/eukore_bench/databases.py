@@ -11,7 +11,8 @@ benchmarks/README.md):
   genome is the first sequence of that marker for (by name: an upper bound, a reference may name it otherwise);
 - agreement.tsv: where Eukore and another database hold the same species' marker, whether the two sequences agree:
   the published reads' own-species check (the package's rrna/records.tsv), the reference screen's calls (the
-  package's manifest) and another 18S reference's records aligned to Eukore's genomes' 18S (minimap2);
+  package's manifest) and the other rRNA references' records aligned to Eukore's genomes' own (minimap2): PR2's and
+  SILVA's 18S, UNITE's ITS (ITS1, 5.8S and ITS2; SILVA and UNITE since 2026-11-17);
   agreement_records.tsv lists that reference's records that are another species' gene (`disagree`) or unlike the
   species' own genome's (`unlike`): one of the two databases holds another organism's sequence, or a divergent copy.
 
@@ -47,11 +48,15 @@ AGREEMENT_COLUMNS = ("database", "marker", "records", "agree", "disagree", "unli
                      "species_agree", "species_differ", "how")
 RECORD_COLUMNS = ("database", "record", "verdict", "species_taxid", "name", "own_identity", "other_taxid",
                   "other_name", "other_identity", "shared_rank")
-SSU_REFERENCES = ("PR2", "SILVA")  # another reference of BENCH/compare whose records are 18S: aligned to Eukore's
-AGREE = 0.97        # a reference's 18S this alike to the species' own genome's: the same species' gene
+# the references of BENCH/compare whose records are one rRNA marker: aligned to Eukore's genomes' own (UNITE's ITS and
+# SILVA's 18S since 2026-11-17; PR2's 18S since 2026-11-12)
+MARKER_REFERENCES = {"PR2": "18S", "SILVA": "18S", "UNITE": "ITS"}
+SSU_REFERENCES = tuple(n for n, m in MARKER_REFERENCES.items() if m == "18S")
+AGREE = 0.97        # a reference's record this alike to the species' own genome's: the same species' gene (UNITE's
+                    # species hypotheses of 97% at their widest, 98.5% the default)
 MARGIN = 0.02       # this alike to another species' genome's, and nearer to it by this: that species' gene
-MIN_COVER = 0.8     # of the record, or of Eukore's 18S (a record longer than it: the operon's other parts)
-MIN_LENGTH = 500
+MIN_COVER = 0.8     # of the record, or of Eukore's (a record longer than it: the operon's other parts)
+MIN_LENGTH = {"18S": 500, "ITS": 300}  # an ITS of 300 bases or more: ITS1, 5.8S and ITS2 of most fungi, 450-700
 RANKS = ("genus", "family", "order", "class", "phylum")
 
 
@@ -156,9 +161,19 @@ def published_agreement(package):
     return rows
 
 
-def eukore_ssu(package, species, fasta):
-    """The package's genomes' 18S (rrna/records of source genome, none of confidence low; one per species' 99% type)
-    written to fasta -> {record: species taxid}."""
+def marker_part(r, seq, marker):
+    """A genome's rRNA record's marker: its 18S (an 18S record whole, an operon's 18S region), or its ITS (an operon's
+    ITS1 to ITS2, the 5.8S between: since 2026-11-17), "" where it has none."""
+    regions = rrna.parse_regions(r["regions"]) or ()
+    if marker == "18S":
+        return seq if r["kind"] == "18S" else next((seq[a:b] for n, a, b in regions if n == "18S"), "")
+    its = {n: (a, b) for n, a, b in regions if n in ("ITS1", "ITS2")}
+    return seq[its["ITS1"][0]:its["ITS2"][1]] if len(its) == 2 and its["ITS1"][0] < its["ITS2"][1] else ""
+
+
+def eukore_marker(package, species, fasta, marker="18S"):
+    """The package's genomes' 18S or ITS (rrna/records of source genome, none of confidence low; one per species' 99%
+    type) written to fasta -> {record: species taxid}."""
     rows = {}
     for r in benchmarks.rows_of(os.path.join(package, "rrna", "records.tsv")):
         if r["source"] in ("genome", "curated_unit") and r.get("confidence") != "low" and r["species_taxid"] in species:
@@ -170,13 +185,13 @@ def eukore_ssu(package, species, fasta):
             r = rows.get(name)
             if not r:
                 continue
-            if r.get("type", "-") != "-":
-                if (r["species_taxid"], r["type"]) in typed:
-                    continue
-                typed.add((r["species_taxid"], r["type"]))
-            part = seq if r["kind"] == "18S" else next(
-                (seq[a:b] for n, a, b in rrna.parse_regions(r["regions"]) or () if n == "18S"), "")
-            if len(part) >= MIN_LENGTH:
+            typ = (r["species_taxid"], r["type"]) if r.get("type", "-") != "-" else None
+            if typ in typed:
+                continue
+            part = marker_part(r, seq, marker)
+            if len(part) >= MIN_LENGTH[marker]:  # the type's first record that holds the marker
+                if typ:
+                    typed.add(typ)
                 fh.write(f">{name}\n{part}\n")
                 taxa[name] = int(r["species_taxid"])
     return taxa
@@ -224,12 +239,13 @@ def shared_rank(ncbi, a, b):
     return next((r for r in RANKS if mine.get(r) and mine.get(r) == theirs.get(r)), "none")
 
 
-def ssu_agreement(package, species, name, fasta, table, ncbi, minimap2, threads, work):
-    """Another 18S reference's records (fasta, its record<TAB>taxid table) of the species Eukore holds a genome's 18S
-    of, aligned to Eukore's genomes' 18S -> (agreement.tsv's row or None, agreement_records.tsv's rows)."""
+def marker_agreement(package, species, name, fasta, table, ncbi, minimap2, threads, work, marker="18S"):
+    """Another reference's records of one rRNA marker (fasta, its record<TAB>taxid table; marker 18S or ITS) of the
+    species Eukore holds a genome's of, aligned to Eukore's genomes' -> (agreement.tsv's row or None,
+    agreement_records.tsv's rows)."""
     os.makedirs(work, exist_ok=True)
-    ref = os.path.join(work, "eukore_18S.fna")
-    taxa = eukore_ssu(package, species, ref)
+    ref = os.path.join(work, f"eukore_{marker}.fna")
+    taxa = eukore_marker(package, species, ref, marker)
     held = set(taxa.values())
     wanted = {}
     with util.open_text(table) as fh:
@@ -244,7 +260,7 @@ def ssu_agreement(package, species, name, fasta, table, ncbi, minimap2, threads,
     queries = os.path.join(work, "queries.fna")
     with open(queries, "w") as fh:
         for rec, seq in odb_mod.read_fasta(fasta):
-            if rec in wanted and len(seq) >= MIN_LENGTH:
+            if rec in wanted and len(seq) >= MIN_LENGTH[marker]:
                 fh.write(f">{rec}\n{seq}\n")
             else:
                 wanted.pop(rec, None)
@@ -278,11 +294,11 @@ def ssu_agreement(package, species, name, fasta, table, ncbi, minimap2, threads,
         if rec not in seen:
             counts["undecided"] += 1
             by_species[sp].add("undecided")
-    row = dict(database=name, marker="18S", records=sum(counts.values()), agree=counts["agree"],
+    row = dict(database=name, marker=marker, records=sum(counts.values()), agree=counts["agree"],
                disagree=counts["disagree"], unlike=counts["unlike"], undecided=counts["undecided"],
                species=len(by_species), species_agree=sum("agree" in v for v in by_species.values()),
                species_differ=differing(by_species),
-               how=f"its records aligned to Eukore's genomes' 18S (minimap2): {AGREE:.0%} or more alike to the "
+               how=f"its records aligned to Eukore's genomes' {marker} (minimap2): {AGREE:.0%} or more alike to the "
                    f"species' own agree; as alike to another species' and nearer by {MARGIN:.0%} disagree; the "
                    "other aligned ones are unlike")
     return row, sorted(records, key=lambda r: (r["verdict"], r["name"], r["record"]))
@@ -404,14 +420,15 @@ def run(package, bench, out, ncbi, species, summary, theirs=None, compare=(), mi
     rows, records = published_agreement(package), []
     minimap2 = minimap2 or shutil.which("minimap2")
     for name, fasta, table in compare:
-        if name not in SSU_REFERENCES:
+        if name not in MARKER_REFERENCES:
             continue
         if not minimap2:
             summary.setdefault("left_out", {})["agreement"] = "no minimap2 (the benchmarks' environment)"
             break
         work = tempfile.mkdtemp(prefix="agreement.", dir=tmp or out)
         try:
-            row, found = ssu_agreement(package, species, name, fasta, table, ncbi, minimap2, threads, work)
+            row, found = marker_agreement(package, species, name, fasta, table, ncbi, minimap2, threads, work,
+                                          MARKER_REFERENCES[name])
         finally:
             shutil.rmtree(work, ignore_errors=True)
         if row:

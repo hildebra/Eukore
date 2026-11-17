@@ -1287,7 +1287,8 @@ class ChainTest(unittest.TestCase):
                 fh.write(f"PDIR={pdir}\nWORK={work}\nOUT={out}\nGEN=/g\nSOURCES={src}\nVERSION=2026.11\n"
                          "SCR=${SLURM_LOCAL_SCRATCH:+$SLURM_LOCAL_SCRATCH/Eukore}\n"
                          f"BENCH=${{TEST_BENCH-{bench}}}\n"
-                         "BENCH_OPTS=(--no_tree)\nSBATCH_FETCH=(-p download)\nSBATCH_PROCESS=(--mem=200G)\n")
+                         "BENCH_OPTS=(--no_tree)\nFIGURE_OPTS=(${TEST_FIGURES-})\nSBATCH_FETCH=(-p download)\n"
+                         "SBATCH_PROCESS=(--mem=200G)\n")
             env = {k: v for k, v in os.environ.items()
                    if not k.startswith(("SLURM_", "EUKORE_", "BENCH")) and k != "AFTER"}
             env.update(PATH=bin_dir + os.pathsep + env["PATH"], CALLS=log, EUKORE_CONF=conf)
@@ -1327,19 +1328,32 @@ class ChainTest(unittest.TestCase):
             job = dict(SLURM_JOB_ID="101", SLURM_CPUS_PER_TASK="32", SLURM_LOCAL_SCRATCH="/ssd", EUKORE_SH=script)
             got, calls = run("_bench_downloads", **job)
             self.assertEqual(calls, [f"python3 -m eukore_bench.prep {bench} --package {package} --genomes /g "
-                                     f"--taxdump {src}/taxdump.tar.gz --odb {src}/eukaryota_odb12 BENCH_ENV=active"],
-                             got.stderr)
+                                     f"--sources {src} --taxdump {src}/taxdump.tar.gz --odb {src}/eukaryota_odb12 "
+                                     "BENCH_ENV=active"], got.stderr)
             got, calls = run("_benchmark", **dict(job, SLURM_LOCAL_SCRATCH=tmp))  # the final job left no package
             self.assertEqual((got.returncode, calls), (1, []))
             os.makedirs(package)
             with open(os.path.join(package, "manifest.json"), "w") as fh:
                 fh.write("{}")
             got, calls = run("_benchmark", **dict(job, SLURM_LOCAL_SCRATCH=tmp))
+            # every figure (since 2026-11-17): the paper's, the overview whole and as a slide; the website's where the
+            # build wrote its release
+            figures = f"python3 -m eukore_bench.figures {package} --benchmarks {results}"
+            overview = f"python3 {pdir}/docs/figures/overview.py --package {package} --out {results}/figures --no_marks"
             self.assertEqual(calls, [
                 f"python3 -m eukore_bench.compare --package {package} --bench {bench} --out {results} -t 32 "
                 f"--taxdump {src}/taxdump.tar.gz --align_cache {work}/align --tmp {tmp}/Eukore/bench --no_tree "
                 "BENCH_ENV=active",
-                f"python3 -m eukore_bench.figures {package} --benchmarks {results} BENCH_ENV=active"], got.stderr)
+                f"{figures} BENCH_ENV=active", f"{overview} BENCH_ENV=active", f"{overview} --slide BENCH_ENV=active"],
+                got.stderr)
+            self.assertIn("the website's benchmarks not written", got.stderr)
+            os.makedirs(os.path.join(out, "release", "data"))
+            got, calls = run("_benchmark", TEST_FIGURES="--format pdf", **dict(job, SLURM_LOCAL_SCRATCH=tmp))
+            self.assertEqual(calls[1:], [  # PNG too for the website
+                f"{figures} --format pdf BENCH_ENV=active", f"{figures} BENCH_ENV=active",
+                f"{overview} BENCH_ENV=active", f"{overview} --slide BENCH_ENV=active",
+                f"python3 -m eukore_bench.site {results} --release {out}/release --package {package} BENCH_ENV=active"],
+                got.stderr)
 
 
 if __name__ == "__main__":

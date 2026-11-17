@@ -244,7 +244,7 @@ _bench_downloads)  # every download once in BENCH (kept: a rerun fetches only wh
     activate
     export BENCH_ENV=active  # Eukore's environment (envs/eukore.yaml): no benchmarks' environment made in BENCH
     src=${SOURCES:-$WORK/sources}
-    opts=(--genomes "${GEN:-$OUT/genomes}")
+    opts=(--genomes "${GEN:-$OUT/genomes}" --sources "$src")  # SILVA's and UNITE's files of its labels linked
     # the build's own NCBI taxonomy and BUSCO dataset, the package's versions, rather than downloads of other ones
     [[ ! -s $src/taxdump.tar.gz ]] || opts+=(--taxdump "$src/taxdump.tar.gz")
     [[ ! -d $src/eukaryota_odb12/hmms ]] || opts+=(--odb "$src/eukaryota_odb12")
@@ -266,8 +266,24 @@ _benchmark)
     if [[ -n $SCR ]] && mkdir -p "$SCR/bench"; then opts+=(--tmp "$SCR/bench"); fi
     bash "$PDIR/benchmarks/eukore-benchmark.sh" "$BENCH" "$PACKAGE" "$BENCH_RESULTS" ${opts[@]+"${opts[@]}"} \
         ${BENCH_OPTS[@]+"${BENCH_OPTS[@]}"}
+    # every figure (since 2026-11-17; until then the paper's alone): Figure 1 and the supplementary ones
+    # (RESULTS/figures), as PNG too where FIGURE_OPTS asks another format (the website takes PNG) ...
     bash "$PDIR/benchmarks/eukore-figures.sh" "$BENCH" "$PACKAGE" "$BENCH_RESULTS" \
         ${FIGURE_OPTS[@]+"${FIGURE_OPTS[@]}"}
+    if [[ " ${FIGURE_OPTS[*]-} " == *" --format "* ]]; then
+        bash "$PDIR/benchmarks/eukore-figures.sh" "$BENCH" "$PACKAGE" "$BENCH_RESULTS"
+    fi
+    # ... the overview with the package's counts, whole and as a slide (docs/figures/overview.py; the website's Home
+    # shows website/images/ copies of them) ...
+    for slide in "" --slide; do
+        python3 "$PDIR/docs/figures/overview.py" --package "$PACKAGE" --out "$BENCH_RESULTS/figures" --no_marks $slide
+    done
+    # ... and the website's Benchmarks page: its tables and figures into the build's release (OUT/release/data)
+    if [[ -d $OUT/release/data ]]; then
+        PYTHONPATH=$PDIR/benchmarks${PYTHONPATH:+:$PYTHONPATH} python3 -m eukore_bench.site "$BENCH_RESULTS" --release "$OUT/release" --package "$PACKAGE"
+    else
+        echo "no $OUT/release/data (the build's release step): the website's benchmarks not written" >&2
+    fi
     ;;
 *)
     echo "unknown step: $STEP (fetch, build, final, qc, bench_downloads or benchmark)" >&2
