@@ -1287,12 +1287,15 @@ def published_record(r, taxid, species_taxid, how, label, ncbi, via="-", gene="S
                                  transl_table="-", transl_except="-", via=via, source_label=label, label_from=how))
 
 
-# MIDORI2's mitochondrial genes Eukore takes (since 2026-11-14 the SSU; since 2026-11-15 the barcodes COX1 and CYTB),
-# by protal's rules for its mitochondrial layer (protal's scripts/mini_db/mito_records.py): of each named species
-# without a RefSeq mitochondrial genome, one record a gene, the longest the reference screen keeps (refscreen.py) whose
-# length is the gene's (MIDORI2_LENGTHS), with few other bases than ACGT (MAX_AMBIGUOUS) and, a protein-coding gene's,
-# a reading frame (reading_frame: a stop in every frame of both strands is a nuclear copy, a NUMT, or a pseudogene)
-MIDORI2_GENES = ("SSU", "COX1", "CYTB")
+# MIDORI2's mitochondrial genes Eukore takes (since 2026-11-14 the SSU; since 2026-11-15 the barcodes COX1 and CYTB;
+# since 2026-11-16 the LSU, protal's fourth gene, so that protal takes MIDORI2 from the package alone), by protal's
+# rules for its mitochondrial layer (protal's scripts/mini_db/mito_records.py): of each named species without a RefSeq
+# mitochondrial genome, one record a gene, the longest the reference screen keeps (refscreen.py) whose length is the
+# gene's (MIDORI2_LENGTHS), with few other bases than ACGT (MAX_AMBIGUOUS) and, a protein-coding gene's, a reading
+# frame (reading_frame: a stop in every frame of both strands is a nuclear copy, a NUMT, or a pseudogene). In this
+# order: a stretch MIDORI2 files under two genes of a species (a fungus' SSU and LSU in one GenBank record) is taken
+# once, as the first gene's.
+MIDORI2_GENES = ("SSU", "COX1", "CYTB", "LSU")
 MIDORI2_LENGTHS = {"SSU": (250, 3000), "COX1": (300, 2400), "CYTB": (300, 1600), "LSU": (300, 3600),
                    # MIDORI2's other genes (since 2026-11-16, midori2_choice's alone): from about a third of the
                    # gene's usual length in animals' mitochondria (atp6 ~680, atp8 ~165-210, COX2 ~690, COX3 ~785,
@@ -1474,6 +1477,17 @@ def midori2_records(paths, ncbi, refseq_species=(), inside=None, calls=None, gen
             if strand_score(item[3], model) < 0:
                 best[k] = item[:3] + (rrna.revcomp(item[3]),) + item[4:]
                 turned.add(k)
+    # one stretch filed under two genes of a species (MIDORI2 files 9,189 of GB273's under both the srRNA and the
+    # lrRNA): taken once, as the first gene's of `genes` (the SSU before the LSU), as protal's mito_records.py took it
+    order = {g: i for i, g in enumerate(genes)}
+    first = {}
+    for sp, gene in sorted(best, key=lambda k: (k[0], order.get(k[1], len(order)))):
+        first.setdefault((sp, best[(sp, gene)][1]), gene)
+    for sp, gene in list(best):
+        if first[(sp, best[(sp, gene)][1])] != gene:
+            del best[(sp, gene)]
+            turned.discard((sp, gene))
+            counts[f"{gene}: the species' record of another gene too (taken as that one)"] += 1
     out = []
     for (sp, gene), (_key, accession, t, seq, cds, action, version) in sorted(best.items()):
         r = dict(name=f"MIDORI2_{gene}_{accession}", sequence=seq, kind="mitochondrion", source="MIDORI2",

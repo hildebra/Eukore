@@ -586,15 +586,19 @@ EUKARYOME's organelle SSU (its SSU set's `k___mitochondrion`, `k___plastid` and 
 by their genus and species; `organelle` `nucleomorph` with `name` `18S`) are
 published organelle records (one of a RefSeq organelle genome whose genes the package holds not again), each gene
 `SSU`, `source` `EUKARYOME`, `seqid` its id, `start`, `end`, `strand`, `exons`, `copies` and `partial` `-`, checked as
-every gene. And MIDORI2's mitochondrial SSU, COX1 and CYTB (its srRNA, CO1 and Cytb files among `--midori2`'s;
-`eukore_build.midori2_published`, `organelle.midori2_records`; COX1 and CYTB since 2026-11-15), by protal's rules for
+every gene. And MIDORI2's mitochondrial SSU, COX1, CYTB and LSU (its srRNA, CO1, Cytb and lrRNA files among
+`--midori2`'s; `eukore_build.midori2_published`, `organelle.midori2_records`; COX1 and CYTB since 2026-11-15, the LSU
+since 2026-11-16: protal takes MIDORI2 from the package alone), by protal's rules for
 its mitochondrial layer: of each named species whose mitochondrial genes no RefSeq genome gives, one record of each
 gene, its longest the reference screen keeps (a record it cuts as its kept part, one it drops never, one it leaves for
 review only where the species has no other, `medium`: `screen_weak`) of the gene's length (SSU 250-3,000 bases, COX1
-300-2,400, CYTB 300-1,600) with at most 0.5% other bases than ACGT; a COX1 or CYTB with a stop in every frame of both
+300-2,400, CYTB 300-1,600, LSU 300-3,600) with at most 0.5% other bases than ACGT; a stretch MIDORI2 files under two
+genes of a species (its srRNA and lrRNA) is taken once, as the first of SSU, COX1, CYTB, LSU; a COX1 or CYTB with a
+stop in every frame of both
 strands by the species' mitochondrial code is left out (a nuclear copy, a NUMT, or a pseudogene), one on the minus
 strand is turned, and its coding sequence is the record from its open frame (`cds.fna.gz`, `proteins.faa.gz`); an SSU
-is turned where an 8-mer model of the species' SSU taken reads it on the minus strand (KSGP 5.1's strand check);
+or LSU is turned where an 8-mer model of the species' records of the gene taken reads it on the minus strand (KSGP
+5.1's strand check);
 `source` `MIDORI2`, `via` `MIDORI2_<GenBank release>`, `label_from` `midori2_taxid` (the NCBI taxid MIDORI2 gives),
 `record` `MIDORI2_<gene>_<accession>` (until 2026-11-15 `MIDORI2_<accession>`, the SSU alone).
 - `genes.fna.gz`: one record per gene, `>record`, the gene from its first base to its last on its strand, introns and
@@ -863,7 +867,9 @@ them). `genomes.tsv`'s
   joined into one (`genome_record` 3: a genome of an older record is run again).
   Since 2026-11-15, the same format: `organelle/genes.tsv`'s MIDORI2 records of COX1 and CYTB too (one each a species
   without a RefSeq mitochondrial genome, protal's rules, with their coding sequences and proteins), every MIDORI2
-  record `MIDORI2_<gene>_<accession>` (until then `MIDORI2_<accession>`), an SSU on the minus strand turned; in
+  record `MIDORI2_<gene>_<accession>` (until then `MIDORI2_<accession>`), an SSU on the minus strand turned (since
+  2026-11-16, the same format: MIDORI2's LSU too, protal's fourth mitochondrial gene, and a stretch filed under two
+  genes of a species taken once); in
   EUKARYOME's tree a name filed under two phyla of one kingdom, each borne out by its parent, is two taxa (a second
   taxon of a bracketed name tagged on its name without the bracket), a family written with its order is found
   by its name, a genus name of another phylum, or a class of another subphylum of NCBI's phylum, sharing none of
