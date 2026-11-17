@@ -19,10 +19,11 @@ $pkg = h($listing['package'] ?? 'Eukore_2026.11');
 
 <h2 id="get">1. Get a release</h2>
 <hr>
-<p>Take the complete package, or only the part you need, from the <a href="main.php?site=downloads">downloads</a>
-  (the marker genes with or without introns, the rRNA and organelle markers, the sketches, the metadata tables):</p>
+<p>Take the package's core and the parts you need from the <a href="main.php?site=downloads">downloads</a>
+  (the marker genes with or without introns, the rRNA and organelle markers; the sketches and the metadata tables
+  alone): the core and every part unpacked side by side are the whole package.</p>
 <pre><code>md5sum -c MD5SUMS
-tar -xzf <?= $pkg ?>.tar.gz          # or: tar -I "bgzip -@ 8" -xf <?= $pkg ?>.tar.gz</code></pre>
+for f in <?= $pkg ?>_*.tar.gz; do tar -I "bgzip -@ 8" -xf "$f"; done   # or: tar -xzf, one at a time</code></pre>
 <p>A package is a folder of plain TSV tables and gzipped FASTA files:</p>
 <pre><code><?= $pkg ?>/
 ├── manifest.json     versions, inputs, counts, every file's size and MD5 (written last)

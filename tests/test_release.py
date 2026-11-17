@@ -306,11 +306,12 @@ class Release(unittest.TestCase):
             folder = os.path.join(out, "downloads", "Eukore_2026.11")
             self.assertEqual(listed["folder"], "downloads/Eukore_2026.11/")
             files = {e["key"]: e for e in listed["files"]}
-            self.assertEqual(list(files), ["complete", "marker_genes", "marker_cds", "rrna_organelle", "sketches",
+            self.assertEqual(list(files), ["core", "marker_genes", "marker_cds", "rrna_organelle", "sketches",
                                            "species", "genomes", "assembly"])
             for e in listed["files"]:
                 path = os.path.join(folder, e["file"])
-                blocks(path)
+                if e["key"] != "sketches":  # a zip
+                    blocks(path)
                 self.assertEqual((e["bytes"], e["md5"]), (os.path.getsize(path), util.md5(path)))
             with open(os.path.join(folder, "MD5SUMS")) as fh:
                 self.assertEqual(len(fh.read().splitlines()), len(files))
@@ -318,13 +319,22 @@ class Release(unittest.TestCase):
             def members(key):
                 with tarfile.open(os.path.join(folder, files[key]["file"]), "r:gz") as tar:
                     return tar.getnames()
-            complete = members("complete")
-            self.assertEqual(complete[0], "Eukore_2026.11/manifest.json")
-            self.assertEqual(len(complete), files["complete"]["files"])
+            core = members("core")
+            self.assertEqual(core[0], "Eukore_2026.11/manifest.json")
+            self.assertEqual(len(core), files["core"]["files"])
+            self.assertIn("Eukore_2026.11/species.tsv", core)
+            self.assertIn("Eukore_2026.11/organelle/molecules.fna.gz", core)
+            # each package file in one download alone (since 2026-11-17): the core and the parts are the package, its
+            # sketches apart
+            every = [m for key in ("core", "marker_genes", "marker_cds", "rrna_organelle") for m in members(key)]
+            self.assertEqual(len(every), len(set(every)))
+            self.assertEqual(sorted(every), sorted(f"Eukore_2026.11/{r}" for r in release.package_files(pkg)
+                                                   if r != release.SKETCHES))
             genes = members("marker_genes")
             self.assertIn("Eukore_2026.11/busco/copies/1at2759.fna.gz", genes)
             self.assertIn("Eukore_2026.11/markers/copies/RPB1.fna.gz", genes)
-            self.assertIn("Eukore_2026.11/species.tsv", genes)
+            self.assertIn("Eukore_2026.11/busco/copies.tsv", genes)
+            self.assertNotIn("Eukore_2026.11/species.tsv", genes)
             self.assertFalse([m for m in genes if "/cds/" in m or "/proteins/" in m or "rrna" in m])
             cds = members("marker_cds")
             self.assertIn("Eukore_2026.11/busco/proteins/2at2759.faa.gz", cds)
@@ -339,19 +349,21 @@ class Release(unittest.TestCase):
                 tar.extractall(unpacked, filter="data")
             self.assertEqual(package.read_copies(os.path.join(unpacked, "Eukore_2026.11"), "2at2759", "proteins"),
                              {"GCA_000146045.2": "MKV"})
-            with gzip.open(os.path.join(folder, files["sketches"]["file"]), "rt") as fh:
-                self.assertEqual([s["name"] for s in json.load(fh)], ["GCA_000146045.2", "GCA_002079055.1"])
+            # the sketches: the package's zip itself, a hard link (no second copy)
+            self.assertEqual(files["sketches"]["file"], "Eukore_2026.11_sketches.zip")
+            self.assertTrue(os.path.samefile(os.path.join(folder, files["sketches"]["file"]),
+                                             os.path.join(pkg, "metadata", "sketches.zip")))
             self.assertEqual(files["sketches"]["files"], 2)
             with gzip.open(os.path.join(folder, "Eukore_2026.11_assembly.tsv.gz"), "rt") as fh:  # gzip made BGZF
                 self.assertEqual(fh.readline(), "accession\tgenome_source\n")
             with gzip.open(os.path.join(folder, "Eukore_2026.11_species.tsv.gz"), "rt") as fh:
                 self.assertEqual(fh.read(), content(os.path.join(pkg, "species.tsv")).decode())
-            self.assertTrue(any("Eukore_2026.11.tar.gz" in s for s in said))
+            self.assertTrue(any("Eukore_2026.11_core.tar.gz" in s for s in said))
             # a rerun keeps the downloads of the same package; another package's are made again
-            stamp = os.path.getmtime(os.path.join(folder, "Eukore_2026.11.tar.gz"))
+            stamp = os.path.getmtime(os.path.join(folder, "Eukore_2026.11_core.tar.gz"))
             said.clear()
             release.write(pkg, out, log=said.append)
-            self.assertEqual(os.path.getmtime(os.path.join(folder, "Eukore_2026.11.tar.gz")), stamp)
+            self.assertEqual(os.path.getmtime(os.path.join(folder, "Eukore_2026.11_core.tar.gz")), stamp)
             self.assertEqual(len(said), 1)  # the release's own line alone
             with open(os.path.join(pkg, package.MANIFEST), "a") as fh:
                 fh.write(" ")
@@ -359,7 +371,7 @@ class Release(unittest.TestCase):
             release.write(pkg, out, log=said.append)
             with open(os.path.join(out, "data", "downloads.json")) as fh:
                 self.assertNotIn("sketches", [e["key"] for e in json.load(fh)["files"]])
-            self.assertFalse(os.path.exists(os.path.join(folder, "Eukore_2026.11_sketches.sig.gz")))
+            self.assertFalse(os.path.exists(os.path.join(folder, "Eukore_2026.11_sketches.zip")))
 
     def test_an_evaluation_bundle_gives_the_website_data(self):
         # a build's evaluation bundle (since 2026-11-15): no copy or record table, so the marker categories are the
@@ -455,7 +467,7 @@ class Release(unittest.TestCase):
                                                     "--version", "2026.11", "-t", "2"]), 0)
             self.assertIn("OUT/release/ of OUT/Eukore_2026.11/", printed.getvalue())  # the banner
             self.assertTrue(os.path.isfile(os.path.join(tmp, "out", "release", "downloads", "Eukore_2026.11",
-                                                        "Eukore_2026.11.tar.gz")))
+                                                        "Eukore_2026.11_core.tar.gz")))
             self.assertFalse(os.path.exists(os.path.join(tmp, "work")))  # nothing of the build's own made
 
 
@@ -499,7 +511,7 @@ class Downloads(unittest.TestCase):
                                      name)
             for e in listed(many):
                 self.assertEqual(e["md5"], util.md5(os.path.join(folders[1], e["file"])))
-            with tarfile.open(os.path.join(folders[1], "Eukore_2026.11.tar.gz"), "r:gz") as tar:
+            with tarfile.open(os.path.join(folders[1], "Eukore_2026.11_core.tar.gz"), "r:gz") as tar:
                 self.assertEqual({(m.mtime, m.uid, m.gid, m.uname, m.gname) for m in tar.getmembers()},
                                  {(built, 0, 0, "", "")})
             # no build time in the manifest: one fixed time
@@ -522,7 +534,7 @@ class Downloads(unittest.TestCase):
                              sorted([e["file"] for e in first] + ["MD5SUMS", "stats.json", "taxonomy.json",
                                                                   "downloads.json"] + 2 * [release.STATE]))
             # a node that went down: a bundle cut in a block, a table without its end block
-            cut = {"Eukore_2026.11.tar.gz": lambda data: data[:len(data) // 2],
+            cut = {"Eukore_2026.11_core.tar.gz": lambda data: data[:len(data) // 2],
                    "Eukore_2026.11_species.tsv.gz": lambda data: data[:-len(util.BGZF_EOF)]}
             for name, short in cut.items():
                 data = content(os.path.join(folder, name))
@@ -537,13 +549,14 @@ class Downloads(unittest.TestCase):
             self.assertEqual(len(said), 5)  # each said and made, and the release's own line
             self.assertEqual(listed(out), first)  # the same bytes again
             for e in first:
-                blocks(os.path.join(folder, e["file"]))
+                if e["key"] != "sketches":
+                    blocks(os.path.join(folder, e["file"]))
                 self.assertEqual(e["md5"], util.md5(os.path.join(folder, e["file"])))
             self.assertEqual(os.path.getmtime(os.path.join(folder, "Eukore_2026.11_marker_cds.tar.gz")), kept)
-            # a rerun: no download read again for its MD5, the sketches not loaded to count them
-            sketches = os.path.join(folder, "Eukore_2026.11_sketches.sig.gz")
+            # a rerun: no download read again for its MD5, the sketches not opened to count them
+            sketches = os.path.join(folder, "Eukore_2026.11_sketches.zip")
             with mock.patch.object(util, "md5", wraps=util.md5) as md5, \
-                    mock.patch.object(gzip, "open", wraps=gzip.open) as opened:
+                    mock.patch.object(release.zipfile, "ZipFile", wraps=zipfile.ZipFile) as opened:
                 release.write(pkg, out, log=said.append)
             self.assertEqual([c.args[0] for c in md5.call_args_list], [os.path.join(pkg, package.MANIFEST)])
             self.assertNotIn(sketches, [c.args[0] for c in opened.call_args_list])
@@ -551,7 +564,7 @@ class Downloads(unittest.TestCase):
             # but a file changed since (its mtime) is: its state is not its own any more
             os.utime(sketches, (1_000_000_000, 1_000_000_000))
             with mock.patch.object(util, "md5", wraps=util.md5) as md5, \
-                    mock.patch.object(gzip, "open", wraps=gzip.open) as opened:
+                    mock.patch.object(release.zipfile, "ZipFile", wraps=zipfile.ZipFile) as opened:
                 release.write(pkg, out, log=said.append)
             self.assertEqual([c.args[0] for c in md5.call_args_list], [os.path.join(pkg, package.MANIFEST), sketches])
             self.assertIn(sketches, [c.args[0] for c in opened.call_args_list])
@@ -601,13 +614,13 @@ class Downloads(unittest.TestCase):
             gone = subprocess.Popen(["true"])
             gone.wait()
             dead, live = f".{socket.gethostname()}-{gone.pid}", ".elsewhere-7"  # a killed run's; another host's, now
-            for where, name in ((folder, "Eukore_2026.11.tar.gz"), (folder, "MD5SUMS"), (data, "stats.json")):
+            for where, name in ((folder, "Eukore_2026.11_core.tar.gz"), (folder, "MD5SUMS"), (data, "stats.json")):
                 for whose in (dead, live):
                     with open(os.path.join(where, f"{whose}.{name}.partial"), "w") as fh:
                         fh.write("half")
             release.write(pkg, out, log=lambda line: None)
             self.assertEqual(sorted(os.listdir(folder)), sorted(
-                before[0] + [f"{live}.Eukore_2026.11.tar.gz.partial", f"{live}.MD5SUMS.partial"]))
+                before[0] + [f"{live}.Eukore_2026.11_core.tar.gz.partial", f"{live}.MD5SUMS.partial"]))
             self.assertEqual(sorted(os.listdir(data)), sorted(before[1] + [f"{live}.stats.json.partial"]))
 
 

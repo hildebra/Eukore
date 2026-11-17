@@ -1259,6 +1259,74 @@ class ChainTest(unittest.TestCase):
             self.assertEqual((got.returncode, calls), (1, []))
             self.assertIn("no settings at", got.stderr)
 
+    def test_the_benchmark_jobs(self):
+        # tools/eukore.sh benchmark (since 2026-11-17): benchmarks/ on the package with the settings' folders, in
+        # Eukore's own environment (BENCH_ENV=active: none made in BENCH)
+        import stat  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415
+        pdir = os.path.dirname(HERE)
+        script = os.path.join(pdir, "tools", "eukore.sh")
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir, log = os.path.join(tmp, "bin"), os.path.join(tmp, "calls")
+            os.makedirs(bin_dir)
+            sbatch = 'echo "sbatch $*" >> "$CALLS"; n=$(grep -c ^sbatch "$CALLS"); echo "$((100 + n));cluster"'
+            python3 = 'echo "python3 $* BENCH_ENV=$BENCH_ENV" >> "$CALLS"'
+            for name, body in (("sbatch", sbatch), ("micromamba", "true"), ("python3", python3),
+                               ("scancel", 'echo "scancel $*" >> "$CALLS"')):
+                with open(os.path.join(bin_dir, name), "w", newline="\n") as fh:
+                    fh.write("#!/bin/bash\n" + body + "\n")
+                os.chmod(os.path.join(bin_dir, name), stat.S_IRWXU)
+            out, src, work = os.path.join(tmp, "o"), os.path.join(tmp, "s"), os.path.join(tmp, "w")
+            bench = os.path.join(tmp, "bench")
+            for folder in (os.path.join(src, "eukaryota_odb12", "hmms"), os.path.join(work, "align")):
+                os.makedirs(folder)
+            with open(os.path.join(src, "taxdump.tar.gz"), "w") as fh:
+                fh.write("its taxonomy")
+            conf = os.path.join(tmp, "eukore.conf")
+            with open(conf, "w", newline="\n") as fh:
+                fh.write(f"PDIR={pdir}\nWORK={work}\nOUT={out}\nGEN=/g\nSOURCES={src}\nVERSION=2026.11\n"
+                         "SCR=${SLURM_LOCAL_SCRATCH:+$SLURM_LOCAL_SCRATCH/Eukore}\n"
+                         f"BENCH=${{TEST_BENCH-{bench}}}\n"
+                         "BENCH_OPTS=(--no_tree)\nSBATCH_FETCH=(-p download)\nSBATCH_PROCESS=(--mem=200G)\n")
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(("SLURM_", "EUKORE_", "BENCH")) and k != "AFTER"}
+            env.update(PATH=bin_dir + os.pathsep + env["PATH"], CALLS=log, EUKORE_CONF=conf)
+
+            def run(*args, **more):
+                got = subprocess.run(["bash", script, *args], env=dict(env, **more), capture_output=True, text=True)
+                calls = []
+                if os.path.isfile(log):
+                    with open(log) as fh:
+                        calls = fh.read().splitlines()
+                    os.remove(log)
+                return got, calls
+            got, calls = run("benchmark")  # no package yet
+            self.assertEqual((got.returncode, calls), (1, []))
+            self.assertIn("no finished package", got.stderr)
+            got, calls = run("benchmark", AFTER="77")  # after the final job: the downloads, then the benchmarks
+            self.assertEqual(got.returncode, 0, got.stderr)
+            self.assertEqual(len(calls), 2)
+            for said in ("-J Eukore-bench-prep", "-p download", "--dependency=afterok:77", f"{script} _bench_prep"):
+                self.assertIn(said, calls[0])
+            for said in ("-J Eukore-bench", "--mem=200G", "--dependency=afterany:101,afterok:77", f"{script} _bench"):
+                self.assertIn(said, calls[1])
+            got, calls = run("benchmark", TEST_BENCH="")
+            self.assertEqual((got.returncode, calls), (1, []))
+            self.assertIn("BENCH, the benchmarks' folder", got.stderr)
+            # inside the jobs: the build's own taxonomy, BUSCO dataset and alignments; the results beside the package
+            package, results = f"{out}/Eukore_2026.11", f"{out}/Eukore_2026.11_benchmarks"
+            job = dict(SLURM_JOB_ID="101", SLURM_CPUS_PER_TASK="32", SLURM_LOCAL_SCRATCH="/ssd", EUKORE_SH=script)
+            got, calls = run("_bench_prep", **job)
+            self.assertEqual(calls, [f"python3 -m eukore_bench.prep {bench} --package {package} --genomes /g "
+                                     f"--taxdump {src}/taxdump.tar.gz --odb {src}/eukaryota_odb12 BENCH_ENV=active"],
+                             got.stderr)
+            got, calls = run("_bench", **dict(job, SLURM_LOCAL_SCRATCH=tmp))
+            self.assertEqual(calls, [
+                f"python3 -m eukore_bench.compare --package {package} --bench {bench} --out {results} -t 32 "
+                f"--taxdump {src}/taxdump.tar.gz --align_cache {work}/align --tmp {tmp}/Eukore/bench --no_tree "
+                "BENCH_ENV=active",
+                f"python3 -m eukore_bench.figures {package} --benchmarks {results} BENCH_ENV=active"], got.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
