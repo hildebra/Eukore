@@ -429,6 +429,27 @@ class PlanTest(unittest.TestCase):
                 self.assertTrue(genomes.is_done(work, "G1") and genomes.is_done(work, "G1"))
                 self.assertEqual(len(read), 2)
 
+    def test_the_genomes_folder_listed_once(self):
+        # the fetch stage's choice (since 2026-11-17): a genome's file and its annotations found in one listing
+        from eukore import annotation, util  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as folder:
+            for name in ("G1.fna.gz", "G1.ensembl.gff.gz", "G2.annotation_none"):
+                with open(os.path.join(folder, name), "w") as fh:
+                    fh.write("ncbi\n")
+            with mock.patch.object(os.path, "isfile", side_effect=AssertionError("looked for one by one")):
+                with util.listed(folder):
+                    self.assertTrue(util.exists(genomes.genome_file(folder, "G1")))
+                    self.assertFalse(util.exists(genomes.genome_file(folder, "G2")))
+                    self.assertEqual(annotation.found(folder, "G1")[1], "ensembl")
+                    self.assertEqual(annotation.found(folder, "G2"), (None, None))
+                    self.assertEqual(annotation.noted_none(folder, "G2"), {"ncbi"})
+                    self.assertEqual(annotation.noted_none(folder, "G1"), set())
+            # outside the block: the file system's answer, a file made since seen
+            open(os.path.join(folder, "G2.fna.gz"), "w").close()
+            self.assertTrue(util.exists(genomes.genome_file(folder, "G2")))
+            with util.listed(os.path.join(folder, "none")):  # no folder: nothing in it
+                self.assertFalse(util.exists(os.path.join(folder, "none", "G1.fna.gz")))
+
     def test_a_plan_reads_the_done_genomes_at_once_and_alone(self):
         # prefetch (since 2026-11-11): each done genome read once by threads, outside store's lock and its open zips;
         # a genome WORK/done does not list read no further; the plan's questions after it answered from what it read

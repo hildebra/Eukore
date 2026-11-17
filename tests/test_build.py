@@ -288,6 +288,49 @@ class ResumeTest(unittest.TestCase):
         self.assertNotIn("memory ", text)  # the process stage's alone
         self.assertNotIn("downloads", text)  # the fetch stage's alone
 
+    def test_the_genomes_to_fetch(self):
+        # since 2026-11-17 chosen with each done.json read once and the genomes folder listed once (genomes_to_fetch)
+        import json  # noqa: PLC0415
+        import eukore_build  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        from eukore import genomes, store, util  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            opts = mock.Mock(work=os.path.join(tmp, "work"), genomes=os.path.join(tmp, "genomes"))
+            os.makedirs(opts.genomes)
+            loci = ["1at2759"]
+
+            def done(acc, **summary):
+                os.makedirs(genomes.done_dir(opts.work, acc))
+                with open(os.path.join(genomes.done_dir(opts.work, acc), "done.json"), "w") as fh:
+                    json.dump(dict(dict(searched=loci, annotation="-", annotation_none=[],
+                                        genome_record=genomes.GENOME_RECORD), **summary), fh)
+            url = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/x/GCA_6.1_asm_genomic.fna.gz"
+            jobs = {a: dict(accession=a, species_taxid=1, url="u") for a in (
+                "here", "new", "pruned", "old_record", "short", "better", "local", "no_url")}
+            jobs["local"]["path"] = "/elsewhere/local.fna"
+            jobs["no_url"]["url"] = ""
+            jobs["better"]["url"] = url  # NCBI's gene models now named: fetched again for them
+            open(genomes.genome_file(opts.genomes, "here"), "w").close()
+            done("here")
+            done("pruned")
+            done("old_record", genome_record=1)
+            done("short", searched=[])
+            done("better")
+            store.pack(genomes.done_dir(opts.work, "pruned"))
+            extras = {"panel_new": dict(accession="panel_new", url="u"), "panel_done": dict(accession="panel_done", url="u")}
+            done("panel_done")
+            donors = {"donor": dict(accession="donor", url="u"), "here": dict(accession="here", url="u")}
+            with mock.patch.object(os.path, "isfile", wraps=os.path.isfile) as isfile:
+                todo, again, stale, counts = eukore_build.genomes_to_fetch(opts, jobs, extras, donors, loci)
+            self.assertEqual([j["accession"] for j in todo],
+                             ["better", "new", "old_record", "panel_new", "short", "donor"])
+            self.assertEqual((again, stale), ({"better"}, {"old_record"}))
+            self.assertEqual(counts, dict(genomes=10, here=3, pruned=2))
+            # no genome's file looked for one by one (the folder's listing), only the donor's rrna.tsv
+            self.assertEqual([c.args[0] for c in isfile.call_args_list if opts.genomes in c.args[0]], [])
+            store.close()
+            self.assertFalse(util._LISTED)  # the listing let go
+
     def test_a_scratch_that_cannot_be_made(self):
         # a SLURM job's $SLURM_LOCAL_SCRATCH named, its folder not made (no local disk asked for): the fetch stage
         # puts its .part files beside the genomes, the process stage stops at once (not after the planning's minutes)

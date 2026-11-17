@@ -875,6 +875,30 @@ def ordered(task, items, workers=1, ahead=None, pool=None):
 
 READ_THREADS = 16  # reads of done genomes at once (genomes.prefetch, threaded): each waits on the file system
 
+_LISTED = {}  # {folder: its entries' names}, while listed() runs
+
+
+@contextlib.contextmanager
+def listed(folder):
+    """While the block runs, exists() of a file in folder answered by one listing of it (since 2026-11-17: the fetch
+    stage looked for each of ~33,000 genomes' files and their annotations one after another on the shared file
+    system). For a pass that reads alone: a file made in the folder meanwhile is not seen, nor one deleted gone."""
+    key = os.path.abspath(folder)
+    try:
+        _LISTED[key] = set(os.listdir(folder))
+    except OSError:  # no folder: nothing in it
+        _LISTED[key] = set()
+    try:
+        yield
+    finally:
+        _LISTED.pop(key, None)
+
+
+def exists(path):
+    """os.path.isfile, from the listing of its folder where listed() holds one (a name listed is taken as a file)."""
+    names = _LISTED.get(os.path.dirname(os.path.abspath(path))) if _LISTED else None
+    return os.path.basename(path) in names if names is not None else os.path.isfile(path)
+
 
 def threaded(task, items, threads=READ_THREADS):
     """ordered's results, task(item) run by a pool of threads (since 2026-11-11): reads that wait on a shared file
