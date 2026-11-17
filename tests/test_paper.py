@@ -503,6 +503,29 @@ class CompareReferencesTest(unittest.TestCase):
                 ("plastid", "Saccharomyces|Saccharomyces_cerevisiae")))]      # an organelle's
         self.assertEqual(got, [("R0", 4932), ("R1", 4930), ("R2", 4930), None, None])
 
+    def test_silva_and_unite_labelled_by_ncbi(self):
+        # since 2026-11-17: SILVA's 18S (its RNA as DNA) and UNITE's ITS, for their agreement with the genomes'
+        from eukore_bench import references as cr  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            index = cr.rrna.name_index(ncbi)
+            lineage = "Eukaryota;Amorphea;Obazoa;Opisthokonta;Nucletmycea;Fungi;Dikarya;Ascomycota;"
+            silva = [f">S1.1.1800 {lineage}Saccharomyces cerevisiae (baker's yeast)\n", "ACGU\n", "UUAA\n",
+                     f">S2.1.1800 {lineage}Saccharomyces sp. ABC\n", "ACGU\n",       # its genus
+                     ">S3.1.1500 Bacteria;Cyanobacteria;Chloroplast;Saccharomyces cerevisiae\n", "ACGU\n",  # not
+                     f">S4.1.1800 {lineage}Novus ignotus\n", "ACGU\n"]               # neither named
+            self.assertEqual(list(cr.silva_records(silva, index, ncbi)),
+                             [("S1.1.1800", "ACGTTTAA", 4932), ("S2.1.1800", "ACGT", 4930)])
+            unite = [">Saccharomyces_cerevisiae|KY123|SH1.10FU|refs|k__Fungi;p__Ascomycota;c__Saccharomycetes;"
+                     "o__Saccharomycetales;f__Saccharomycetaceae;g__Saccharomyces;s__Saccharomyces_cerevisiae\n",
+                     "acgt\n",
+                     ">Saccharomyces_sp|KY124|SH2.10FU|reps|k__Fungi;p__Ascomycota;c__Saccharomycetes;"
+                     "o__Saccharomycetales;f__Saccharomycetaceae;g__Saccharomyces;s__Saccharomyces_sp\n", "GGCC\n",
+                     ">Novus_ignotus|KY125|SH3.10FU|refs|k__Fungi;g__Novus;s__Novus_ignotus\n", "TTTT\n",
+                     ">a header of too few fields\n", "AAAA\n"]
+            self.assertEqual(list(cr.unite_records(unite, index, ncbi)),
+                             [("KY123_SH1.10FU", "ACGT", 4932), ("KY124_SH2.10FU", "GGCC", 4930)])
+
     def test_detection_f1_and_misses(self):
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))

@@ -6,6 +6,9 @@ gzip read through, an MD5 where the source gives one):
                                 package's taxonomy/ holds its own lineages alone, and a species another reference holds
                                 alone would be unknown to it
     BENCH/downloads/pr2/        PR2's 18S (GitHub's release; ~60 MB)
+    BENCH/downloads/silva/      SILVA's SSU Ref NR99 (since 2026-11-17; the build's SOURCES/labels file linked with
+                                --sources, else downloaded: ~200 MB), its eukaryotes' 18S
+    BENCH/downloads/unite/      UNITE's general release of all eukaryotes (likewise; its ITS)
     BENCH/downloads/metaphlan/  MetaPhlAn 4's database archive, its MD5 and marker info (~6 GB)
     BENCH/downloads/eukdetect2/ EukDetect2's database: its marker FASTA and record-to-taxid table alone (Zenodo; ~2 GB
                                 of its ~7 GB, the rest bowtie2's indexes, which the comparison does not use)
@@ -30,7 +33,7 @@ import urllib.request
 
 from . import ROOT
 from . import reads, references
-from eukore import genomes as genomes_mod, ncbi as ncbi_mod, odb as odb_mod, package as package_mod, sources, util
+from eukore import genomes as genomes_mod, labels, ncbi as ncbi_mod, odb as odb_mod, package as package_mod, sources, util
 
 PR2_VERSION = "5.1.1"
 PR2_URL = "https://github.com/pr2database/pr2database/releases/download/v{v}/pr2_version_{v}_SSU_taxo_long.fasta.gz"
@@ -41,7 +44,9 @@ EUKDETECT_FILES = ("eukdb.fasta", "busco_taxid_genome_link.txt")
 READ_BACKGROUND = os.path.join(ROOT, "benchmarks", "read_background.tsv")  # data/ until 2026-11-12
 REFERENCES = "references.tsv"
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
-STEPS = ("taxdump", "pr2", "metaphlan", "eukdetect2", "odb", "background", "tests", "convert")
+STEPS = ("taxdump", "pr2", "silva", "unite", "metaphlan", "eukdetect2", "odb", "background", "tests", "convert")
+# the files the build's labels read (eukore/labels.py), for the agreement of their 18S and ITS (since 2026-11-17)
+LABEL_FILES = {"silva": (labels.SILVA_FILE, labels.SILVA_URL), "unite": (labels.UNITE_FILE, labels.UNITE_URL)}
 
 
 def taxdump_of(bench, given=None):
@@ -88,6 +93,24 @@ def metaphlan(bench, version=None, log=print):
     info = fetch(f"{MPA_URL}/{version}_marker_info.txt.bz2", os.path.join(folder, f"{version}_marker_info.txt.bz2"),
                  log=log)
     return archive, info
+
+
+def label_file(bench, kind, sources_dir=None, log=print):
+    """SILVA's or UNITE's file (LABEL_FILES: the build's labels read them) in BENCH/downloads/<kind>/: linked from the
+    build's sources (SOURCES/labels, the version its species.tsv named) where there, else downloaded -> its path."""
+    name, url = LABEL_FILES[kind]
+    dest = os.path.join(bench, "downloads", kind, name)
+    if os.path.islink(dest) and not os.path.exists(dest):
+        os.remove(dest)
+    if os.path.isfile(dest):
+        return dest
+    there = os.path.join(labels.folder_of(sources_dir), name) if sources_dir else None
+    if there and os.path.isfile(there):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        os.symlink(os.path.abspath(there), dest)
+        log(f"  {name}: the build's ({there})")
+        return dest
+    return fetch(url, dest, log=log)
 
 
 def eukdetect2(bench, record=EUKDETECT_RECORD, log=print):
@@ -156,8 +179,12 @@ def convert(bench, taxdump, log=print):
         version = tars[-1][:-len(".tar")]
         references.main(["metaphlan", "--archive", os.path.join(mpa, tars[-1]), "--marker_info",
                          os.path.join(mpa, f"{version}_marker_info.txt.bz2"), "--out", out])
+    for kind, name in (("silva", "SILVA"), ("unite", "UNITE")):  # since 2026-11-17: their 18S and ITS' agreement
+        got = os.path.join(down, kind, LABEL_FILES[kind][0])
+        if os.path.isfile(got) and not os.path.isfile(os.path.join(out, f"{name}.fna.gz")):
+            references.main([kind, "--fasta", got, "--taxdump", taxdump, "--out", out])
     listed = []
-    for name in ("EukDetect2", "MetaPhlAn4", "PR2"):  # the first: breadth.tsv's compared reference
+    for name in ("EukDetect2", "MetaPhlAn4", "PR2", "SILVA", "UNITE"):  # the first: breadth.tsv's compared one
         if name == "EukDetect2":
             pair = tuple(os.path.join(down, "eukdetect2", f) for f in EUKDETECT_FILES)
         else:
@@ -203,6 +230,9 @@ def versions(bench):
         out["MetaPhlAn4"] = tars[-1][:-len(".tar")]
     if os.path.isfile(os.path.join(down, "eukdetect2", EUKDETECT_FILES[0])):
         out["EukDetect2"] = f"Zenodo record {EUKDETECT_RECORD}"
+    for kind, name, version in (("silva", "SILVA", labels.SILVA_VERSION), ("unite", "UNITE", labels.UNITE_VERSION)):
+        if os.path.isfile(os.path.join(down, kind, LABEL_FILES[kind][0])):
+            out[name] = version
     return out
 
 
@@ -227,6 +257,8 @@ def main(argv=None):
                                      "downloaded into BENCH/downloads)")
     p.add_argument("--odb", help="BUSCO's dataset of the build (SOURCES/eukaryota_odb12: the package's own version), "
                                  "linked for the tree's profiles (default: BUSCO's newest, downloaded)")
+    p.add_argument("--sources", help="the build's sources (SOURCES): SILVA's and UNITE's files of its labels/ linked, "
+                                     "not downloaded")
     p.add_argument("--only", help=f"some of {','.join(STEPS)} (default: all)")
     p.add_argument("--read_genomes", type=int, default=reads.PER_GROUP, help="test genomes per supergroup")
     p.add_argument("--mpa_version", help="MetaPhlAn's database (default: the server's mpa_latest)")
@@ -243,6 +275,8 @@ def main(argv=None):
                           TAXDUMP_URL, os.path.join(a.bench, "downloads", "taxdump.tar.gz"), log=log)),
                       ("pr2", lambda: pr2(a.bench, log)),
                       ("metaphlan", lambda: metaphlan(a.bench, a.mpa_version, log)),
+                      ("silva", lambda: label_file(a.bench, "silva", a.sources, log)),
+                      ("unite", lambda: label_file(a.bench, "unite", a.sources, log)),
                       ("eukdetect2", lambda: eukdetect2(a.bench, log=log)),
                       ("odb", lambda: odb(a.bench, a.odb, log)),
                       ("background", lambda: background(a.bench, log)),

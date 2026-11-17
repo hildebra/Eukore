@@ -46,7 +46,12 @@ AFTER=<its job id> bash tools/eukore.sh benchmark   # eukore-benchmark.sh and eu
 
 runs the three steps in the build's environment (envs/eukore.yaml holds every tool here; `BENCH_ENV=active`: no
 `BENCH/env` made), with the build's NCBI taxonomy and BUSCO dataset (`SOURCES`), its genomes folder and its
-alignments (`WORK/align`). `AFTER=<final job>` makes `bench_downloads` wait for the build; `benchmark` refuses a
+alignments (`WORK/align`), SILVA's and UNITE's files (`SOURCES/labels`). `benchmark` draws every figure (since
+2026-11-17): Figure 1 and the supplementary ones (`RESULTS/figures`, PNG too where `FIGURE_OPTS` asks another
+format), the overview with the package's counts (`docs/figures/overview.py`: `overview.png`, `overview_slide.png`
+into `RESULTS/figures`; the website's Home shows copies in `website/images/`), and the website's Benchmarks page
+(`eukore_bench.site` into `OUT/release/data`, where the build wrote its release). `AFTER=<final job>` makes
+`bench_downloads` wait for the build; `benchmark` refuses a
 `BENCH` no downloads job filled unless it waits for one. Options: `BENCH_DOWNLOADS_OPTS`, `BENCH_OPTS`,
 `FIGURE_OPTS`; each job's partition and size: `SBATCH_BENCH_DOWNLOADS` (default `SBATCH_FETCH`'s) and `SBATCH_BENCH`
 (default `SBATCH_PROCESS`'s).
@@ -71,20 +76,23 @@ folder's conda directories, and nothing needs activating: the scripts put `BENCH
 |---|---|---|---|
 | `downloads/taxdump.tar.gz` | NCBI's whole taxonomy. A package's `taxonomy/` holds only its own lineages, so species that another reference alone holds would be unknown to it. `--taxdump` gives the build's own instead (`SOURCES/taxdump.tar.gz`: the same version as the package) | 65 MB | NCBI |
 | `downloads/pr2/` | PR2 5.1.1's 18S (`taxo_long`) | 60 MB | PR2's GitHub release |
+| `downloads/silva/`, `downloads/unite/` | (since 2026-11-17) SILVA 138.2's SSU Ref NR99 (its eukaryotes' 18S) and UNITE 10.0's general release of all eukaryotes (ITS): the files the build's labels read, linked from `--sources SOURCES` (`SOURCES/labels/`) where there | ~300 MB; nothing where linked | SILVA, UNITE |
 | `downloads/metaphlan/` | MetaPhlAn 4's database archive, its MD5 (checked) and marker info; the server's `mpa_latest` (2026-11: `mpa_vJan26_CHOCOPhlAnSGB_202605`) unless `--mpa_version` | 6 GB | the bioBakery server |
 | `downloads/eukdetect2/` | EukDetect2's database v1.1: `eukdb.fasta` and `busco_taxid_genome_link.txt` alone, MD5s checked. The rest of its 7 GB is bowtie2 indexes, which the comparison does not use | 2 GB | Zenodo record 23479662 |
 | `downloads/eukaryota_odb12/` | BUSCO's dataset, for the tree's profiles (`hmms/`): the build's own linked (`--odb SOURCES/eukaryota_odb12`: the package's version), else BUSCO's newest downloaded | 60 MB; nothing where linked | BUSCO's server |
 | `read_background/` | The read benchmark's 7 bacteria, an archaeon and human chromosome 21 ([`read_background.tsv`](read_background.tsv)) | 40 MB | NCBI |
 | `read_genomes/` | The read benchmark's test genomes (`tests.tsv`): up to `--read_genomes` (default 3) per supergroup, those with the most congeners in the package first. Linked from `--genomes` (the build's folder) where they are there, else downloaded | Depends on the genomes chosen (a vertebrate's is ~1 GB); nothing where linked | NCBI |
-| `compare/` | The other references made comparable (`eukore_bench/references.py`): `<name>.fna.gz` and `<name>_taxids.tsv` (PR2, MetaPhlAn 4's eukaryote markers), and `references.tsv` listing every reference with its FASTA and record-to-taxid table. EukDetect2's pair is used as it is | Smaller than the downloads | |
+| `compare/` | The other references made comparable (`eukore_bench/references.py`): `<name>.fna.gz` and `<name>_taxids.tsv` (PR2, MetaPhlAn 4's eukaryote markers, SILVA's eukaryote 18S as DNA, UNITE's ITS: each record's species where NCBI names it, else its genus), and `references.tsv` listing every reference with its FASTA and record-to-taxid table. EukDetect2's pair is used as it is | Smaller than the downloads | |
 
-`--only taxdump,pr2,metaphlan,eukdetect2,odb,background,tests,convert` runs some of the steps.
+`--only taxdump,pr2,silva,unite,metaphlan,eukdetect2,odb,background,tests,convert` runs some of the steps. Every
+reference of `compare/references.tsv` is compared as a collection and in the read benchmark; SILVA and UNITE (since
+2026-11-17) also in `agreement.tsv`, beside PR2.
 
 ## What is compared
 
 `eukore-benchmark.sh` copies the package's own `benchmarks/` tables into `RESULTS`, then adds:
 - **`breadth.tsv`**: the build's counts per supergroup (NCBI's species with an assembly, Eukore's), with the first
-  other reference's columns. The order is EukDetect2, MetaPhlAn 4, PR2: the first that is there.
+  other reference's columns. The order is EukDetect2, MetaPhlAn 4, PR2, SILVA, UNITE: the first that is there.
 - **`overlap.tsv`**: the build's rows (PR2's names, EUKARYOME, KSGP, ROD, BUSCO's dataset) and one per other reference,
   each against every Eukore species (genome or rRNA), per supergroup.
 - **`breadth_ranks.tsv`, `content.tsv`, `panels.tsv`**: the package as a resource (`eukore_bench/resource.py`; below).
@@ -150,11 +158,15 @@ The other databases are compared as collections of records, not as tools (since 
   with none that agrees and one that disagrees or is unlike (`species_differ`); `how`. Three sources:
   - EUKARYOME's and ROD's reads: the build's own-species check against the genomes' records (`rrna/records.tsv`).
   - MIDORI2's records: the build's reference screen (the manifest's counts; `reference_screen.tsv` lists them).
-  - Another 18S reference of `BENCH` (PR2): its records of the species Eukore holds a genome's 18S of, aligned to
-    those 18S by minimap2 (`-x asm20`; an alignment counts where it covers 80% of the record or of Eukore's 18S). A
-    record 97% or more alike to its species' own genome agrees. One as alike to another species' genome, and nearer to
-    it by 2 points, disagrees. The other aligned ones are unlike.
-- **`agreement_records.tsv`**: that reference's records that disagree or are unlike, each with its identity to its
+  - The rRNA references of `BENCH`, one row each: PR2's and SILVA's 18S, UNITE's ITS (SILVA and UNITE since
+    2026-11-17). Their records of the species Eukore holds a genome's marker of, aligned to the genomes' own by
+    minimap2 (`-x asm20`; an alignment counts where it covers 80% of the record or of Eukore's): the 18S (an 18S
+    record whole, an operon's 18S region; 500 bases at least), or the ITS (an operon's ITS1 to ITS2, the 5.8S
+    between; 300 bases at least: UNITE's records are ITSx's ITS1-5.8S-ITS2). A record 97% or more alike to its
+    species' own genome agrees (UNITE's species hypotheses are clustered at 97% to 99%; an ITS that varies within a
+    species more is unlike, not wrong). One as alike to another species' genome, and nearer to it by 2 points,
+    disagrees. The other aligned ones are unlike.
+- **`agreement_records.tsv`**: those references' records that disagree or are unlike, each with its identity to its
   own species' genome, the nearest other species and the rank the two share. A disagreement does not say which side is
   wrong: the reference's record may be misnamed, or the genome may be another organism's (a contaminant's rDNA, a
   misidentified strain). These are the records, and the genomes, to look at first.
