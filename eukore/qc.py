@@ -774,10 +774,36 @@ def searched_line(base, timing):
 
 
 STOP = "helpers.stop"  # in WORK/qc: the final job's end (since 2026-11-15): its helpers waiting for work stop
+REFRESH = 15  # seconds a helper's look at the folders (waiting) serves it, before it looks at them again
+
+
+def waiting(root, tool_of):
+    """The searches under root not searched yet, by folder (its todo.tsv) -> [(folder, free, held)] in the folders'
+    names' order: free, those no node holds, in the listing's order (the largest first); held, those a node has
+    claimed (a dead node's is taken over by search_one). A search whose inputs are not there, or whose program this
+    node lacks (tool_of(its settings) is None), is left out. Each folder is listed once, not each search's files
+    looked for: a helper asks every REFRESH seconds."""
+    out = []
+    for listing in sorted(glob.glob(os.path.join(root, "*", "todo.tsv"))):
+        folder = os.path.dirname(listing)
+        try:
+            with open(listing) as fh:
+                entries = [todo_entry(line) for line in fh if line.strip()]
+            names = set(os.listdir(folder))
+        except OSError:
+            continue
+        free, held = [], []
+        for entry in entries:
+            q, _d, hits, claim = (os.path.basename(p) for p in search_files(folder, entry[0]))
+            if hits in names or q not in names or not tool_of(entry[1]):
+                continue
+            (held if claim in names else free).append(entry)
+        out.append((folder, free, held))
+    return out
 
 
 def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, minimap2=None, idle_for=0,
-                poll=SEARCH_POLL):
+                poll=SEARCH_POLL, refresh=REFRESH):
     """A helper node's part (tools/eukore.sh qc): the loci of every folder under root (its todo.tsv) whose inputs are
     there and hits not yet, each claimed and searched, until none is left that no other node holds -> loci searched.
     A cmsearch part (CmParams; since 2026-11-13) by cmsearch, a cmalign part (CmalignParams) by cmalign, a window
@@ -785,7 +811,28 @@ def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, 
     other nodes where its tool is None. idle_for (since 2026-11-15): with nothing left, the folders looked at again
     every `poll` seconds for the final job's next searches, up to idle_for seconds after the last one searched here
     or till root/STOP is there (the final job's end): one helper array serves the job's every search, not a new
-    array (and its wait in the queue) for each."""
+    array (and its wait in the queue) for each.
+
+    Since 2026-11-17 the folder with the fewest searches left that no node holds is searched first (of several the
+    first by name), the folders looked at again every `refresh` seconds (waiting). Until then a helper went through a
+    folder's whole listing before it looked at the next, the folders in their names' order: the 2026-11-16 build's
+    eight helpers were at the SSU models' and then the 18S alignments' 97 parts each (22:24 to 00:56) while the
+    final job searched the rRNA checks' three large searches alone (41 m, 45 m and 1 h 38 m; the same checks' later
+    searches, with the helpers, 5 minutes each). The final job's next step waits for a short search's end; a long
+    one's is needed at the stage's end alone."""
+    def tool_of(params):
+        return (cmsearch if isinstance(params, CmParams) else cmalign if isinstance(params, CmalignParams)
+                else minimap2 if isinstance(params, MapParams) else vsearch)
+
+    def searched(folder, entry):
+        """Whether the search was made here (False: another node holds it, or has made it meanwhile)."""
+        base, params, shared = entry
+        timing = {}
+        if not search_one(folder, base, tool_of(params), threads, params=params, shared=shared, timing=timing) \
+                or "all" not in timing:
+            return False
+        log(searched_line(base, timing))
+        return True
     done, idle, last = 0, False, time.time()
     stop = os.path.join(root, STOP)
     while True:
@@ -794,25 +841,20 @@ def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, 
                 break
             time.sleep(poll)
         idle = True
-        for listing in sorted(glob.glob(os.path.join(root, "*", "todo.tsv"))):
-            folder = os.path.dirname(listing)
-            try:
-                with open(listing) as fh:
-                    entries = [todo_entry(line) for line in fh if line.strip()]
-            except OSError:
-                continue
-            for base, params, shared in entries:
-                q, _d, hits, _claim = search_files(folder, base)
-                tool = (cmsearch if isinstance(params, CmParams) else cmalign if isinstance(params, CmalignParams)
-                        else minimap2 if isinstance(params, MapParams) else vsearch)
-                if os.path.isfile(hits) or not os.path.isfile(q) or not tool:
-                    continue
-                timing = {}
-                if search_one(folder, base, tool, threads, params=params, shared=shared, timing=timing):
-                    done += 1
-                    idle, last = False, time.time()
-                    if timing:
-                        log(searched_line(base, timing))
+        folders, seen = waiting(root, tool_of), time.time()
+        free = [(folder, entries) for folder, entries, _held in folders if entries]
+        while free:
+            folder, entries = min(free, key=lambda f: len(f[1]))  # the fewest left: of several the first by name
+            if searched(folder, entries.pop(0)):
+                done, idle, last = done + 1, False, time.time()
+                if last - seen >= refresh:  # another search's parts may wait since: the folders looked at again
+                    break
+            free = [f for f in free if f[1]]
+        if idle:  # none made here: those other nodes hold tried, a dead node's taken over (search_one)
+            for folder, _free, held in folders:
+                for entry in held:
+                    if searched(folder, entry):
+                        done, idle, last = done + 1, False, time.time()
     log(f"{done:,} loci searched here; none left" + (" (the final job ended)" if os.path.exists(stop) else ""))
     return done
 

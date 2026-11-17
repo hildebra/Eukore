@@ -17,6 +17,7 @@ The record's `screen` column names the parts and ranks (`28S 3':family`); `-` fo
 """
 
 import collections
+import concurrent.futures
 import re
 import tempfile
 import time
@@ -190,7 +191,6 @@ class Searcher:
         each with its share of the threads."""
         if not items:
             return []
-        import concurrent.futures  # noqa: PLC0415
         began = time.time()
         workers = min(len(items), self.threads)
         each = max(1, self.threads // workers)
@@ -273,81 +273,99 @@ def screen(records, ncbi, vsearch, threads=1, searcher=None, log=None):
     """records [(name, sequence, row)] (row: regions_list, accession, taxid or species_taxid) -> ({name: screen text},
     counts). A genome's copies of a part are screened as one per 99% type (representatives), its verdict theirs.
     searcher: a Searcher (rrna.finish's: kept and shared searches; since 2026-11-13), else one of this function's
-    own; log: each part's steps and times."""
+    own; log: each part's steps and times.
+
+    The four parts need none of each other's results and are screened at once (since 2026-11-17), each one's typing
+    with its share of the threads, their flags joined in PARTS' order as before. Until then one after another, each
+    part's typing and search waiting for the part before: 3 h 31 m in the 2026-11-16 build, 72 minutes of them one
+    genome's 99% types (30,000 copies, 16,000 types: one core), typed for each part in turn."""
     if not vsearch or not records:
         return {}, collections.Counter()
     lineage = {n: lineage_of(ncbi, r.get("taxid") or r["species_taxid"]) for n, _s, r in records}
     genome = {n: genome_of(n, r) for n, _s, r in records}
     parts = {n: parts_of(s, r.get("regions_list")) for n, s, r in records}
-    flags = collections.defaultdict(list)
-    n = collections.Counter()
+
+    def screened(part):
+        """A part's flags {name: [its text]} and counts."""
+        flags, n = collections.defaultdict(list), collections.Counter()
+        began = time.time()
+        every = {k: p[part] for k, p in parts.items() if part in p}
+        # the typing's workers shared among the parts (two at least, where there are threads for them: a part's
+        # largest genome takes one core for as long as it takes, the others' are done in seconds)
+        workers = max(min(2, searcher.threads), searcher.threads // len(PARTS))
+        reps = representatives(every, genome, workers, log)
+        seqs = {k: every[k] for k in reps}
+        if log:
+            log(f"  rRNA screen {part}: {len(every):,} parts, {len(seqs):,} 99% types: took "
+                f"{util.duration(time.time() - began)}")
+        if len(seqs) < 2:
+            return flags, n
+        members = [collections.defaultdict(set) for _ in RANKS]
+        for k in seqs:
+            for rank in range(len(RANKS)):
+                key = clade(lineage[k], rank)
+                if key is not None:
+                    members[rank][key].add(k)
+        genomes_of = [{key: {genome[k] for k in names} for key, names in m.items()} for m in members]
+        hits = searcher.one(f"screen {part}", seqs, seqs, SCREEN_ID, SCREEN_ACCEPTS, SCREEN_REJECTS)
+
+        def tested_rank(k):
+            for rank in range(len(RANKS) - 1, -1, -1):
+                key = clade(lineage[k], rank)
+                if key is not None and genomes_of[rank].get(key, set()) - {genome[k]}:
+                    return rank, key
+            return None, None
+
+        def own_best(k, rank, key, found, skip=()):
+            return max((i for i, t in found if clade(lineage[t], rank) == key
+                        and genome[t] not in (genome[k], *skip)), default=0.0)
+
+        suspects = {}
+        for k in seqs:
+            found = [(i, t) for i, t in hits.get(k, []) if genome[t] != genome[k]]
+            if not found:
+                continue
+            top = max(i for i, _t in found)
+            near = [t for i, t in found if i >= top - NEAR]
+            depth = max(agrees_to(lineage[k], lineage[t]) for t in near)
+            rank, key = tested_rank(k)
+            if rank is None or depth >= rank:
+                continue
+            matched = max((it for it in found if it[1] in near), key=lambda it: (it[0], it[1]))[1]
+            suspects[k] = (rank, key, top, matched, depth, own_best(k, rank, key, found))
+        again = collections.defaultdict(set)
+        for k, (rank, key, _top, matched, _d, _own) in suspects.items():
+            again[(rank, key)].add(k)
+            mkey = clade(lineage[matched], rank)
+            if mkey is not None:
+                again[(rank, mkey)].add(matched)
+        more = collections.defaultdict(list)
+        asked = sorted(again.items())
+        found = searcher.many(f"screen {part}: suspects among their clades", [
+            ({t: seqs[t] for t in sorted(names)}, {t: seqs[t] for t in sorted(members[rank][key])})
+            for (rank, key), names in asked], SCREEN_ID, SCREEN_ACCEPTS, SCREEN_REJECTS)
+        for ((rank, _key), _names), got in zip(asked, found):
+            for k, v in got.items():
+                more[(rank, k)] += v
+        for k, (rank, key, top, matched, depth, own) in sorted(suspects.items()):
+            own = max(own, own_best(k, rank, key, more[(rank, k)]))
+            mkey = clade(lineage[matched], rank)
+            theirs = own_best(matched, rank, mkey, hits.get(matched, []) + more[(rank, matched)],
+                              (genome[k],)) if mkey is not None else 0.0
+            verdict = verdict_of(depth, top, own, theirs)
+            n[f"{part}: {verdict.split(':')[0]}"] += len(reps[k])
+            if verdict == "flagged":
+                for member in reps[k]:
+                    flags[member].append(f"{part}:{RANKS[rank]}")
+        return flags, n
+
     with tempfile.TemporaryDirectory() as tmp:
         searcher = searcher or Searcher(vsearch, threads, tmp, log=log)
-        for part in PARTS:
-            began = time.time()
-            every = {k: p[part] for k, p in parts.items() if part in p}
-            reps = representatives(every, genome, searcher.threads, log)
-            seqs = {k: every[k] for k in reps}
-            if log:
-                log(f"  rRNA screen {part}: {len(every):,} parts, {len(seqs):,} 99% types: took "
-                    f"{util.duration(time.time() - began)}")
-            if len(seqs) < 2:
-                continue
-            members = [collections.defaultdict(set) for _ in RANKS]
-            for k in seqs:
-                for rank in range(len(RANKS)):
-                    key = clade(lineage[k], rank)
-                    if key is not None:
-                        members[rank][key].add(k)
-            genomes_of = [{key: {genome[k] for k in names} for key, names in m.items()} for m in members]
-            hits = searcher.one(f"screen {part}", seqs, seqs, SCREEN_ID, SCREEN_ACCEPTS, SCREEN_REJECTS)
-
-            def tested_rank(k):
-                for rank in range(len(RANKS) - 1, -1, -1):
-                    key = clade(lineage[k], rank)
-                    if key is not None and genomes_of[rank].get(key, set()) - {genome[k]}:
-                        return rank, key
-                return None, None
-
-            def own_best(k, rank, key, found, skip=()):
-                return max((i for i, t in found if clade(lineage[t], rank) == key
-                            and genome[t] not in (genome[k], *skip)), default=0.0)
-
-            suspects = {}
-            for k in seqs:
-                found = [(i, t) for i, t in hits.get(k, []) if genome[t] != genome[k]]
-                if not found:
-                    continue
-                top = max(i for i, _t in found)
-                near = [t for i, t in found if i >= top - NEAR]
-                depth = max(agrees_to(lineage[k], lineage[t]) for t in near)
-                rank, key = tested_rank(k)
-                if rank is None or depth >= rank:
-                    continue
-                matched = max((it for it in found if it[1] in near), key=lambda it: (it[0], it[1]))[1]
-                suspects[k] = (rank, key, top, matched, depth, own_best(k, rank, key, found))
-            again = collections.defaultdict(set)
-            for k, (rank, key, _top, matched, _d, _own) in suspects.items():
-                again[(rank, key)].add(k)
-                mkey = clade(lineage[matched], rank)
-                if mkey is not None:
-                    again[(rank, mkey)].add(matched)
-            more = collections.defaultdict(list)
-            asked = sorted(again.items())
-            found = searcher.many(f"screen {part}: suspects among their clades", [
-                ({t: seqs[t] for t in sorted(names)}, {t: seqs[t] for t in sorted(members[rank][key])})
-                for (rank, key), names in asked], SCREEN_ID, SCREEN_ACCEPTS, SCREEN_REJECTS)
-            for ((rank, _key), _names), got in zip(asked, found):
-                for k, v in got.items():
-                    more[(rank, k)] += v
-            for k, (rank, key, top, matched, depth, own) in sorted(suspects.items()):
-                own = max(own, own_best(k, rank, key, more[(rank, k)]))
-                mkey = clade(lineage[matched], rank)
-                theirs = own_best(matched, rank, mkey, hits.get(matched, []) + more[(rank, matched)],
-                                  (genome[k],)) if mkey is not None else 0.0
-                verdict = verdict_of(depth, top, own, theirs)
-                n[f"{part}: {verdict.split(':')[0]}"] += len(reps[k])
-                if verdict == "flagged":
-                    for member in reps[k]:
-                        flags[member].append(f"{part}:{RANKS[rank]}")
+        with concurrent.futures.ThreadPoolExecutor(len(PARTS), thread_name_prefix="screen") as pool:
+            screens = list(pool.map(screened, PARTS))
+    flags, n = collections.defaultdict(list), collections.Counter()
+    for part_flags, part_n in screens:  # in PARTS' order: a record's flags as the parts in turn gave them
+        for k, texts in part_flags.items():
+            flags[k] += texts
+        n.update(part_n)
     return {k: ",".join(v) for k, v in flags.items()}, n

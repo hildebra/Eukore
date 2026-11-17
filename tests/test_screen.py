@@ -11,7 +11,9 @@ import os
 import random
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -76,27 +78,50 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(list(screen.parts_of("A" * 1000, None)), ["18S"])
         self.assertEqual(screen.parts_of("A" * 100, None), {})
 
+    def mosaic_records(self, rng):
+        """Genomes of three groups (two of one family), each its 18S and 28S, and last a S. cerevisiae genome whose
+        28S is Candida's."""
+        ssu = {"sacch": "".join(rng.choice("ACGT") for _ in range(1000)),
+               "kluy": None, "cand": "".join(rng.choice("ACGT") for _ in range(1000))}
+        ssu["kluy"] = mutate(ssu["sacch"], 0.03, rng)  # same family: 97%
+        lsu = {"sacch": "".join(rng.choice("ACGT") for _ in range(1600)),
+               "cand": "".join(rng.choice("ACGT") for _ in range(1600))}
+        lsu["kluy"] = mutate(lsu["sacch"], 0.03, rng)
+        regions = [("18S", 0, 1000), ("28S", 1000, 2600)]
+        records = []
+        taxa = {"sacch": [4932, 27291], "kluy": [28985], "cand": [5476]}
+        for group, taxids in taxa.items():
+            for i, taxid in enumerate(taxids * 2):
+                s = mutate(ssu[group], 0.002, rng) + mutate(lsu[group], 0.002, rng)
+                records.append((f"{group}{i}", s, dict(accession=f"G_{group}{i}", taxid=taxid,
+                                                       species_taxid=taxid, regions_list=regions)))
+        # a S. cerevisiae genome whose 28S is Candida's (another family's), its 18S its own
+        records.append(("mosaic", mutate(ssu["sacch"], 0.002, rng) + mutate(lsu["cand"], 0.002, rng),
+                        dict(accession="G_mosaic", taxid=4932, species_taxid=4932, regions_list=regions)))
+        return records
+
+    def test_the_parts_screened_at_once(self):
+        # since 2026-11-17: until then one after another, each part's typing and search waiting for the part before
+        # (the 2026-11-16 build: 3 h 31 m, one genome's 99% types typed four times in a row)
+        together = threading.Barrier(len(screen.PARTS), timeout=60)
+        typed = screen.representatives
+
+        def representatives(*args, **kwargs):
+            together.wait()  # every part's typing begun before any goes on: one after another, never
+            return typed(*args, **kwargs)
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            records = self.mosaic_records(random.Random(7))
+            alone = screen.screen(records, ncbi, fx.vsearch(tmp))
+            with mock.patch.object(screen, "representatives", representatives):
+                self.assertEqual(screen.screen(records, ncbi, fx.vsearch(tmp), 8), alone)
+        self.assertEqual(alone[0], {"mosaic": "28S 5':family,28S 3':family"})  # a record's flags in PARTS' order
+
     def test_a_mosaic_flagged(self):
         rng = random.Random(7)
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
-            ssu = {"sacch": "".join(rng.choice("ACGT") for _ in range(1000)),
-                   "kluy": None, "cand": "".join(rng.choice("ACGT") for _ in range(1000))}
-            ssu["kluy"] = mutate(ssu["sacch"], 0.03, rng)  # same family: 97%
-            lsu = {"sacch": "".join(rng.choice("ACGT") for _ in range(1600)),
-                   "cand": "".join(rng.choice("ACGT") for _ in range(1600))}
-            lsu["kluy"] = mutate(lsu["sacch"], 0.03, rng)
-            regions = [("18S", 0, 1000), ("28S", 1000, 2600)]
-            records = []
-            taxa = {"sacch": [4932, 27291], "kluy": [28985], "cand": [5476]}
-            for group, taxids in taxa.items():
-                for i, taxid in enumerate(taxids * 2):
-                    s = mutate(ssu[group], 0.002, rng) + mutate(lsu[group], 0.002, rng)
-                    records.append((f"{group}{i}", s, dict(accession=f"G_{group}{i}", taxid=taxid,
-                                                           species_taxid=taxid, regions_list=regions)))
-            # a S. cerevisiae genome whose 28S is Candida's (another family's), its 18S its own
-            records.append(("mosaic", mutate(ssu["sacch"], 0.002, rng) + mutate(lsu["cand"], 0.002, rng),
-                            dict(accession="G_mosaic", taxid=4932, species_taxid=4932, regions_list=regions)))
+            records = self.mosaic_records(rng)
             flags, counts = screen.screen(records, ncbi, fx.vsearch(tmp))
             self.assertEqual(flags.get("mosaic"), "28S 5':family,28S 3':family")
             self.assertEqual(set(flags), {"mosaic"})

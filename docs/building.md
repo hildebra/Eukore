@@ -222,12 +222,23 @@ at 0 cores for one BUSCO locus a helper held, and 3 h 36 m for the benchmarks' o
 loci's kept searches are made again once, in parts. The benchmarks' searches share `WORK/qc/benchmarks/` without
 removing each other's (until then each removed the one before, and a rerun searched every marker again).
 
+**The helpers at the search with the fewest parts left** (since 2026-11-17). A helper takes its next part from the
+folder with the fewest parts left that no node holds, and looks at the folders again every 15 seconds. Until then it
+went through one folder's whole listing before the next, the folders in their names' order: in the 2026-11-16 build
+the eight helpers were at the SSU models' and then cmalign's 97 parts each (2 h 32 m) while the final job searched
+the rRNA checks' three large searches alone (41 m, 45 m and 1 h 38 m; the same checks' later searches, with the
+helpers, 5 minutes each). The final job's next step waits for a short search's end; a long one's is needed at the
+stage's end alone. A helper in the middle of a long part (one of cmalign's: ten minutes) ends it first.
+
 **The package stage's steps at once** (since 2026-11-15). Steps that need none of each other's results run at the
 same time, each searching in folders of its own: the reference screen of MIDORI2 beside the copies' collection and
 checks; then the introns and genetic codes, the rRNA records and the organelle genes (which wait only for the
 records' species); within the rRNA records, their checks beside the 18S variable regions and amplicons (which need
 the audited records alone), and within the checks the 99% typing, the own-species check, the part screen and the SSU
-models. A step that fails fails the stage once the others have ended, their searches kept for the next run. The
+models. Since 2026-11-17 the part screen's four parts (the 18S, the junction, the 28S's two halves) are screened at
+once too, their typing sharing the threads: until then one after another (3 h 31 m in the 2026-11-16 build, 72
+minutes of them one genome's 99% types, typed for each part in turn).
+A step that fails fails the stage once the others have ended, their searches kept for the next run. The
 final node's memory holds the copies, the records and the organelle genes as before (they are all kept until the
 package is written); what the steps' process pools add at once has not been measured on a full build.
 
