@@ -278,9 +278,91 @@ def _benchmarks(folder):
     return out
 
 
+# --- an evaluation bundle --------------------------------------------------------------------------------------------
+# A build's evaluation bundle (docs/building.md: the manifest, species.tsv, genomes.tsv, busco/loci.tsv and
+# benchmarks/; no sequence, no copy or record table) leaves the cluster before the package does. stats() of one (since
+# 2026-11-15) takes its marker categories from what the bundle holds, every count the build's own:
+# - the BUSCOs and Eukore's loci as one category (the manifest counts the two sets' copies and tiers together);
+# - the rDNA records, regions, sources and tiers from benchmarks/rrna.tsv;
+# - the organelle genes' records from the manifest, their species from benchmarks/organelle.tsv; no tiers (the
+#   manifest of format 6 has none of the organelle genes': `confidence` None, which the page says).
+# The species holding a category are species.tsv's (`loci`, `rrna_records`; the organelles apart are not told: None).
+BUNDLE_TABLES = ("busco/copies.tsv", "rrna/records.tsv", "organelle/genes.tsv")
+TIERS = ("high", "unverified", "medium", "low")
+
+
+def is_bundle(folder):
+    """Whether the folder is a package's evaluation bundle: a manifest, none of the copy and record tables."""
+    return not any(os.path.isfile(os.path.join(folder, t)) for t in BUNDLE_TABLES)
+
+
+def _int(text):
+    return int(text) if str(text).isdigit() else 0
+
+
+def _bundle_categories(folder, manifest, species_rows):
+    """The marker categories of an evaluation bundle (above), as stats() gives a package's."""
+    counts = manifest.get("counts", {})
+    out = []
+    if counts.get("copies"):
+        rates = [_float(v) for (v,) in _rows(folder, "busco/loci.tsv", ("call_rate",))]
+        alone = counts.get("copy_unverified")
+        out.append(dict(
+            key="busco", title="BUSCO genes and Eukore's marker loci",
+            what="the near-universal single-copy orthologs of BUSCO's eukaryota_odb12 and the classic phylogenetic "
+                 "markers BUSCO does not hold (RPB1, RPB2, EF-2, TEF1, β-tubulin, actin, HSP90, GAPDH, histone H3), "
+                 "each copy whole with its introns, its coding sequence and protein",
+            loci=counts.get("busco_loci", 0) + counts.get("marker_loci", 0), sequences=counts["copies"],
+            species=sum(1 for r in species_rows if _int(r.get("loci")) > 0),
+            confidence=_confidence(counts.get("copy_confidence", {})),
+            unverified_alone=None if alone is None else sum(v.get("alone_in_family", 0) for v in alone.values()),
+            items_title="BUSCOs by the share of species they are called in", items_unit="BUSCOs",
+            items=[dict(name=h["name"], sequences=h["loci"]) for h in _histogram([v for v in rates if v is not None])]))
+    records, units = 0, 0
+    confidence, regions, sources = collections.Counter(), collections.Counter(), collections.Counter()
+    for row in _rows(folder, "benchmarks/rrna.tsv", ("source", "kind", "records") + RRNA_REGIONS + TIERS):
+        n = _int(row[2])
+        records += n
+        sources[row[0]] += n
+        units += n if row[1] == "rDNA" else 0
+        for region, v in zip(RRNA_REGIONS, row[3:3 + len(RRNA_REGIONS)]):
+            regions[region] += _int(v)
+        for tier, v in zip(TIERS, row[3 + len(RRNA_REGIONS):]):
+            confidence[tier] += _int(v)
+    if records:
+        items = [dict(name=r, sequences=regions[r], species=None) for r in RRNA_REGIONS if regions[r]]
+        items.append(dict(name="whole units (18S to 28S)", sequences=units, species=None))
+        out.append(dict(key="rrna", title="Nuclear rDNA", what="18S spans and whole operons (18S, ITS1, 5.8S, ITS2, "
+                        "28S, 5S) of the genomes, EUKARYOME's and ROD's long reads, with their 18S V1-V9",
+                        loci=sum(1 for r in RRNA_REGIONS if regions[r]), sequences=records,
+                        species=sum(1 for r in species_rows if _int(r.get("rrna_records")) > 0),
+                        confidence=_confidence(confidence), items_title="records holding each region", items=items,
+                        items_unit="records", sources=dict(sources.most_common())))
+    with_gene = collections.Counter()
+    for group, organelle, gene, n in _rows(folder, "benchmarks/organelle.tsv",
+                                           ("supergroup", "organelle", "gene", "with_gene")):
+        if group != "all":
+            with_gene[organelle, gene] += _int(n)
+    order = {g: i for i, g in enumerate(ORGANELLE_ORDER)}
+    for organelle, title in (("mitochondrion", "Mitochondrial genes"), ("plastid", "Plastid genes")):
+        genes = (counts.get("organelle_genes") or {}).get(organelle) or {}
+        if not genes:
+            continue
+        items = [dict(name=ORGANELLE_NAMES.get((organelle, g), g), sequences=n, species=with_gene.get((organelle, g)))
+                 for g, n in sorted(genes.items(), key=lambda kv: (order.get(kv[0], 99), kv[0]))]
+        out.append(dict(key=organelle, title=title,
+                        what=("rRNA (12S, 16S, 5S) and COX1, COX3, CYTB, nad1, nad5, atp6, with their proteins by "
+                              "the organelle's code" if organelle == "mitochondrion" else
+                              "rRNA (16S, 23S, 5S) and rbcL, matK, tufA, psbA, ycf1, the trnH-psbA spacer"),
+                        loci=len(genes), sequences=sum(genes.values()), species=None, confidence=None,
+                        items_title="records and species per gene", items=items, items_unit="records"))
+    return out
+
+
 def stats(folder):
     """A package's counts for the website -> (stats, taxonomy tree): its species per genome source and supergroup
-    (and group), its marker categories, its headline benchmarks; the tree (tree)."""
+    (and group), its marker categories, its headline benchmarks; the tree (tree). Of an evaluation bundle
+    (is_bundle) too: its marker categories are then _bundle_categories', and the stats say so (`bundle`)."""
     manifest = package.read(folder) or {}
     species_rows = list(package.read_table(folder, "species.tsv"))
     genomes = {}
@@ -309,7 +391,8 @@ def stats(folder):
     supergroups.sort(key=lambda x: (-x["species"], x["name"]))
     taxonomy = tree(species_rows)
     ranks = _rank_counts(taxonomy)
-    categories = [c for c in (
+    bundle = is_bundle(folder)
+    categories = _bundle_categories(folder, manifest, species_rows) if bundle else [c for c in (
         _loci_category(folder, "busco", species_of, "BUSCO genes",
                        "the near-universal single-copy orthologs of BUSCO's eukaryota_odb12, each copy whole with its "
                        "introns, its coding sequence and protein"),
@@ -322,13 +405,13 @@ def stats(folder):
     # counts.copy_unverified, package.unverified_alone): unverified for want of a relative, not of a check that
     # failed. None for a package written before (its manifest has no such count)
     for c in categories:
-        if c["key"] in package.LOCUS_SETS:
+        if c["key"] in package.LOCUS_SETS and "unverified_alone" not in c:
             alone = (counts.get("copy_unverified") or {}).get(c["key"], {} if "copy_unverified" in counts else None)
             c["unverified_alone"] = None if alone is None else alone.get("alone_in_family", 0)
     out = dict(package=os.path.basename(os.path.normpath(folder)), version=manifest.get("version"),
                eukore=manifest.get("eukore"), format=manifest.get("format"), built=manifest.get("built"),
                released=datetime.datetime.now().isoformat(timespec="seconds"), release_by=__version__,
-               partial=manifest.get("inputs", {}).get("partial"),
+               partial=manifest.get("inputs", {}).get("partial"), bundle=bundle,
                totals=dict(species=len(species_rows),
                            species_with_genome=sum(1 for r in species_rows if r.get("representative", "-") != "-"),
                            species_rrna_only=sum(1 for r in species_rows if r.get("representative", "-") == "-"),
@@ -624,6 +707,10 @@ def write(folder, out, log=print, files=True, threads=1):
         raise SystemExit(f"release: {folder} is no finished Eukore package (no {package.MANIFEST})")
     name = os.path.basename(os.path.normpath(folder))
     started = time.time()
+    bundle = is_bundle(folder)
+    if bundle and files:  # an evaluation bundle holds no file to download (since 2026-11-15)
+        log(f"release: {folder} is an evaluation bundle (no sequences): the website's data alone, no downloads")
+        files = False
     numbers, taxonomy = stats(folder)
     data = os.path.join(out, DATA)
     os.makedirs(data, exist_ok=True)
@@ -636,6 +723,16 @@ def write(folder, out, log=print, files=True, threads=1):
         _json(os.path.join(data, "downloads.json"),
               dict(package=name, version=numbers["version"], built=numbers["built"],
                    folder=f"{DOWNLOADS}/{name}/", compression="BGZF (gzip), level 9", files=entries))
+    elif bundle:  # another package's downloads beside this one's numbers would mislead: none listed, its own kept
+        listing = os.path.join(data, "downloads.json")
+        try:
+            with open(listing) as fh:
+                kept = json.load(fh).get("package") == name
+        except (OSError, ValueError, AttributeError):
+            kept = False
+        if not kept:
+            _json(listing, dict(package=name, version=numbers["version"], built=numbers["built"],
+                                folder=f"{DOWNLOADS}/{name}/", compression="BGZF (gzip), level 9", files=[]))
     log(f"release: {out} ({numbers['totals']['species']:,} species, {len(numbers['markers'])} marker categories"
         + (f", {len(entries)} downloads, {util.size_text(sum(e['bytes'] for e in entries))}" if files else "")
         + f"; {util.duration(time.time() - started)})")

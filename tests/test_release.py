@@ -361,6 +361,83 @@ class Release(unittest.TestCase):
                 self.assertNotIn("sketches", [e["key"] for e in json.load(fh)["files"]])
             self.assertFalse(os.path.exists(os.path.join(folder, "Eukore_2026.11_sketches.sig.gz")))
 
+    def test_an_evaluation_bundle_gives_the_website_data(self):
+        # a build's evaluation bundle (since 2026-11-15): no copy or record table, so the marker categories are the
+        # manifest's and the benchmarks' counts, no download is made, and another package's downloads are not listed
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = os.path.join(tmp, "Eukore_2026.11")
+            tsv(os.path.join(pkg, "species.tsv"), SPECIES, [
+                dict(taxid=4932, name="Saccharomyces cerevisiae", representative="GCA_1.1", source="ncbi", loci=3,
+                     rrna_records=2, organelle_genes=2, supergroup="Obazoa", group="Fungi"),
+                dict(taxid=2850, name="Phaeodactylum tricornutum", representative="TSA_GAAB01", source="tsa", loci=0,
+                     rrna_records=0, organelle_genes=0, supergroup="TSAR", group="Stramenopiles"),
+                dict(taxid=5911, name="Tetrahymena thermophila", representative="-", source="rrna", loci=0,
+                     rrna_records=1, organelle_genes=0, supergroup="TSAR", group="Alveolata")])
+            tsv(os.path.join(pkg, "genomes.tsv"), ("accession", "fetched", "source", "species_taxid", "representative"),
+                [dict(accession="GCA_1.1", fetched="GCA_1.1", source="ncbi", species_taxid=4932, representative="t"),
+                 dict(accession="TSA_GAAB01", fetched="TSA_GAAB01", source="tsa", species_taxid=2850,
+                      representative="t")])
+            tsv(os.path.join(pkg, "busco", "loci.tsv"), ("locus", "name", "call_rate"),
+                [dict(locus="1at2759", name="RPS3", call_rate=0.95), dict(locus="2at2759", name="EF", call_rate=0.5)])
+            tsv(os.path.join(pkg, "benchmarks", "rrna.tsv"),
+                ("source", "kind", "records", "18S", "ITS1", "5.8S", "ITS2", "28S", "5S", "high", "unverified",
+                 "medium", "low"),
+                [dict(source="genome", kind="rDNA", records=2, **{"18S": 2, "ITS1": 2, "5.8S": 2, "ITS2": 1,
+                                                                 "28S": 2, "5S": 0}, high=1, unverified=0, medium=1,
+                      low=0),
+                 dict(source="EUKARYOME", kind="18S", records=1, **{"18S": 1, "ITS1": 0, "5.8S": 0, "ITS2": 0,
+                                                                   "28S": 0, "5S": 0}, high=0, unverified=1,
+                      medium=0, low=0)])
+            tsv(os.path.join(pkg, "benchmarks", "organelle.tsv"),
+                ("supergroup", "species", "organelle", "gene", "with_gene"),
+                [dict(supergroup="Fungi", species=1, organelle="mitochondrion", gene="COX1", with_gene=1),
+                 dict(supergroup="Stramenopiles", species=1, organelle="mitochondrion", gene="COX1", with_gene=0)])
+            with open(os.path.join(pkg, package.MANIFEST), "w") as fh:
+                json.dump({"format": 6, "version": "2026.11", "eukore": "0.2.4", "built": "2026-11-14T17:36:38",
+                           "inputs": {}, "files": {},
+                           "counts": {"genomes": 2, "busco_loci": 2, "marker_loci": 1, "copies": 3,
+                                      "copy_confidence": {"high": 2, "medium": 1},
+                                      "copy_unverified": {"busco": {"alone_in_family": 1},
+                                                          "markers": {"alone_in_family": 1}},
+                                      "organelle_genes": {"mitochondrion": {"COX1": 1, "SSU": 1}}}}, fh)
+            self.assertTrue(release.is_bundle(pkg))
+            out = os.path.join(tmp, "release")
+            os.makedirs(os.path.join(out, "data"))  # another package's listing is there
+            with open(os.path.join(out, "data", "downloads.json"), "w") as fh:
+                json.dump({"package": "Eukore_2026.05", "files": [{"file": "x.tar.gz"}]}, fh)
+            said = []
+            release.write(pkg, out, log=said.append)
+            self.assertIn("evaluation bundle", said[0])
+            self.assertFalse(os.path.exists(os.path.join(out, "downloads")))
+            with open(os.path.join(out, "data", "downloads.json")) as fh:
+                listing = json.load(fh)
+            self.assertEqual((listing["package"], listing["files"]), ("Eukore_2026.11", []))
+            with open(os.path.join(out, "data", "stats.json")) as fh:
+                stats = json.load(fh)
+            self.assertTrue(stats["bundle"])
+            self.assertEqual(stats["totals"]["species"], 3)
+            by_key = {c["key"]: c for c in stats["markers"]}
+            self.assertEqual(sorted(by_key), ["busco", "mitochondrion", "rrna"])
+            loci = by_key["busco"]  # the BUSCOs and Eukore's loci together, as the manifest counts them
+            self.assertEqual((loci["loci"], loci["sequences"], loci["species"], loci["unverified_alone"]), (3, 3, 1, 2))
+            self.assertEqual(loci["confidence"], dict(high=2, unverified=0, medium=1, low=0))
+            rrna = by_key["rrna"]
+            self.assertEqual((rrna["sequences"], rrna["species"], rrna["loci"]), (3, 2, 5))
+            self.assertEqual(rrna["confidence"], dict(high=1, unverified=1, medium=1, low=0))
+            self.assertEqual(rrna["sources"], {"genome": 2, "EUKARYOME": 1})
+            self.assertEqual({i["name"]: i["sequences"] for i in rrna["items"]}["whole units (18S to 28S)"], 2)
+            mito = by_key["mitochondrion"]
+            self.assertIsNone(mito["confidence"])  # the manifest tells none of the organelle genes' tiers
+            self.assertEqual([(i["name"], i["sequences"], i["species"]) for i in mito["items"]],
+                             [("SSU rRNA (12S)", 1, None), ("COX1", 1, 1)])
+            # the same package's own downloads' listing is kept
+            with open(os.path.join(out, "data", "downloads.json"), "w") as fh:
+                json.dump({"package": "Eukore_2026.11", "files": [{"file": "y.tar.gz"}]}, fh)
+            release.write(pkg, out, log=said.append, files=False)
+            with open(os.path.join(out, "data", "downloads.json")) as fh:
+                self.assertEqual(json.load(fh)["files"], [{"file": "y.tar.gz"}])
+            self.assertFalse(release.is_bundle(toy_package(os.path.join(tmp, "whole"))))
+
     def test_no_release_of_an_unfinished_package(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit):

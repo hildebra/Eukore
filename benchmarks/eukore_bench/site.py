@@ -33,8 +33,13 @@ def rows_of(results, name):
     """A results table's rows for the page: those of `all` (the groups' stay in the table itself), each whole where
     the table has no groups; thresholds.tsv's without each BUSCO's own."""
     rows = figures_mod.read(os.path.join(results, f"{name}.tsv"))
-    if name == "thresholds":
-        return [r for r in rows if r["marker"] in SHOWN_MARKERS or r["source"].startswith("published")]
+    if name == "thresholds":  # all species' rows and (since 2026-11-15) each group's, which the page unfolds
+        from . import guidance  # noqa: PLC0415
+        rows = [r for r in rows if r["marker"] in SHOWN_MARKERS or r["source"].startswith("published")]
+        for r in rows:  # whether the cutoff parts the rank's taxa at all (guidance.USABLE): the page names none else
+            accuracy = figures_mod.num(r.get("accuracy", "-"))  # none: a published row, a table of before
+            r["usable"] = "-" if accuracy is None else "t" if accuracy >= guidance.USABLE else "f"
+        return rows
     if name in ALL_ROWS:
         return rows
     return [r for r in rows if r.get("supergroup") == "all"]

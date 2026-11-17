@@ -209,6 +209,23 @@ those that should be apart (`between`):
 side has no row. A threshold of 70 is the search's floor: any hit at all is of that rank. The identities come from
 the package's `benchmarks/resolution_hist.tsv` (a package built since 2026-11-12, with vsearch).
 
+**Read the accuracy before the threshold.** A balanced accuracy near 0.5 is a coin's: the marker does not part that
+rank's taxa at any identity, and the threshold named means nothing. On the first full build the 18S' species row
+named 97% at an accuracy of 0.56, while 60% of the species' 18S were 99% or more identical to another species' (a
+median of 99.5% to the nearest congener). Under 0.65 (`guidance.USABLE`) the website gives no cutoff and the figure
+no mark. Since 2026-11-15 each row also says how alike the nearest relative is, with no threshold in between:
+`nearest` (the sequences), `nearest_median` (to half a point) and `nearest_under_99` (their share under 99%), at the
+species row of every sequence's nearest other species, at a genus', family's or order's row of those whose nearest
+other species shares that rank and no deeper one (a genus: the nearest congener).
+
+**Per group** (since 2026-11-15; `supergroup`: `all`, then each group of species). A marker alike across one
+group's species and telling another's apart is pooled away in `all`: mammals' 18S are nearly all over 99% identical
+to another species', many protists' are not. Each group has its own rows of the pooled markers (all BUSCOs, the 18S,
+the ITS, ...; not each BUSCO's own), which the website unfolds under the row of all species. A group's species row
+has a threshold only where the intraspecific panel holds 5 species of the group; its `nearest` columns are given
+without. It needs a `resolution_hist.tsv` with the build's `supergroup` column (a build since 2026-11-15): a package
+built before has the rows of `all` alone.
+
 The rows of `source` `published` are thresholds from the literature
 ([`thresholds_published.tsv`](thresholds_published.tsv): fungal ITS and 28S D1/D2, Vu et al. 2019), for context:
 they are of other markers and taxa. Read the package's thresholds with its sampling in mind: a clade with few genomes

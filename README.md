@@ -7,9 +7,10 @@
 
 <p align="center">
   <b>A checked, complete reference of eukaryote marker genes, built from every eukaryote genome NCBI holds.</b><br>
-  BUSCO genes with all their introns, their CDS and proteins · whole rDNA operons with 18S V-regions · 15 organelle
-  barcode genes · in-silico PCR of 18 barcode primer pairs · introns, genetic codes, duplication · six references'
-  lineages and GBIF, Open Tree, WoRMS, UNITE, BOLD ids · a barcode gap · assembly metadata
+  BUSCO genes with all their introns, their CDS and proteins · nine classic phylogenetic markers · whole rDNA operons
+  and EUKARYOME's 18S, audited · 15 organelle barcode genes, with MIDORI2's screened COX1, CYTB and 12S · in-silico
+  PCR of 18 barcode primer pairs · introns, genetic codes, duplication · NCBI's and EUKARYOME's taxonomy on every
+  record, five more references' lineages and GBIF, Open Tree, WoRMS, UNITE, BOLD ids · a barcode gap · assembly metadata
 </p>
 
 <p align="center">
@@ -26,38 +27,87 @@
 
 Eukore is two things:
 - **a database**: for each eukaryote species with a genome at NCBI, its genes of BUSCO's 129 near-universal
-  eukaryote orthologs, its rDNA operons and its organelle rRNA, each sequence complete, labelled by NCBI's taxonomy,
-  checked across species and given a confidence tier;
+  eukaryote orthologs and of nine classic markers, its rDNA operons and its organelle genes; beside them the published
+  18S and operon reads of EUKARYOME and ROD and, for species without a genome, the mitochondrial barcode genes of
+  RefSeq and MIDORI2. Each sequence is complete, carries its NCBI and its EUKARYOME lineage, is checked across
+  species and given a confidence tier;
 - **the software that builds it** (this repository): from NCBI's assemblies to a versioned, self-describing package,
   resumable on a cluster, with benchmarks measured on every build.
 
-It is made for tools that detect and profile eukaryotes in metagenomes (protal reads it as its eukaryote reference),
-and for anyone needing clean eukaryote marker genes: phylogenetics, primer design, contamination screens. Eukore's
-version is 0.2.6 (package format 7); it was named EUKDB until 2026-11-06.
+It is made for tools that detect and profile eukaryotes in metagenomes (protal reads it as its only source of
+eukaryote marker genes, rRNA and names), and for anyone needing clean eukaryote marker genes: phylogenetics, primer
+design, barcoding, contamination screens. Eukore's version is 0.2.6 (package format 7); it was named EUKDB until
+2026-11-06.
 
 <p align="center">
-  <img src="docs/figures/overview_slide.png" alt="Eukore at a glance: 21 sources, the build's three stages, the package's parts" width="860">
+  <img src="docs/figures/overview_slide.png" alt="Eukore at a glance: 25 sources, the build's three stages, the package's parts" width="860">
 </p>
+
+## What Eukore holds, and what it leaves out
+
+**Capabilities.** One package gives a user, per species: nuclear protein-coding markers that tell congeners apart
+(129 BUSCOs, 9 classic markers; gene, CDS and protein), the rRNA that amplicon studies use (18S with V1-V9, ITS,
+28S), the organelle barcodes (COI, CYTB, 12S, 16S, rbcL, matK, ...), which primer pairs amplify it, its names in
+seven taxonomies, and how far each sequence can be trusted.
+
+**Taken in** (Eukore 0.2.6, format 7):
+- **Genomes**: one assembly per NCBI species of GenBank's six eukaryote divisions (fungi, protists, plants,
+  invertebrates, vertebrates), the best by NCBI's flags, its FCS-GX and ANI reports, RefSeq status, level and
+  contiguity; TOGA2's vertebrate assemblies NCBI lacks; for a species without a genome, its INSDC transcriptome (TSA,
+  10 Mb or more) or EukProt's records. The first full build (2026-11, Eukore 0.2.4) ran 33,664 species: 28,506 NCBI
+  assemblies, 5,028 transcriptomes, 79 TOGA2 assemblies, 51 EukProt records.
+- **Nuclear genes**: every BUSCO of eukaryota_odb12 and Eukore's nine own loci (RPB1, RPB2, EF-2, EF-1α, β-tubulin,
+  actin, HSP90, GAPDH, H3), called by Eukore; a genome's own annotation (NCBI, VEuPathDB, Ensembl, TOGA2) gives the
+  gene model where the HMM confirms it.
+- **rRNA**: every genome's 18S and rDNA units (a transcriptome's too; an 18S from the species' next assembly where
+  its genome holds none); as published records EUKARYOME 2.1's long reads and SSU set and ROD 1.2's operons, labelled
+  down to the rank their label reaches.
+- **Organelle genes**: of every species with a RefSeq organelle genome (with or without a nuclear genome), else of
+  its assembly's organelle molecules; EUKARYOME's mitochondrial, plastid and nucleomorph SSU; and, one record a
+  species without a RefSeq mitochondrial genome, MIDORI2's mitochondrial SSU (12S), COX1 and CYTB (COX1 of 213,812
+  species, CYTB of 50,844, SSU of 56,311 on MIDORI2 GB273).
+- **Names**: NCBI's taxonomy and EUKARYOME's as one tree, on every species, record and gene; each species' lineage
+  in PR2, KSGP, SILVA, UNITE and MIDORI2 and its ids elsewhere.
+
+**Left out:**
+- an assembly NCBI flags (contaminated, unverified source organism, misassembled, chimeric, low quality), one FCS-GX
+  finds mostly another organism's or that fails NCBI's ANI check, where the species has a better one; assemblies
+  under 2 Mb or under 30% of the species' typical size; NCBI's placeholder species (`sp.`, uncultured) and crosses of two species ("A x B");
+- the BUSCO copies of a genome that is a part of one, holds under half its clade's expected BUSCOs, or is the
+  flagged only assembly of its species (the species stays, with its rRNA and organelle genes;
+  `--keep_poor_genomes` keeps the copies, `low`);
+- the sequences of PR2, KSGP and SILVA: their records are linked to Eukore's by accession and their lineages given,
+  never taken; EUKARYOME's reads of compromised quality, its bacterial and archaeal SSU and pseudogenes;
+- of a published read, what the audit finds is not its rRNA: vectors, adapters, barcodes, telomere repeats, DNA
+  beside the gene, a chimera's foreign part;
+- of MIDORI2, the records its screen calls another organism's gene, a chimera or another gene, those outside the
+  gene's length, with over 0.5% ambiguous bases or without a reading frame (NUMTs), and its 16S (lrRNA) file;
+- organelle rRNA among the nuclear records (a mitochondrial SSU is not an 18S); prokaryotes and viruses.
+
+**Flagged, never silently dropped**: everything else. A fragment, a copy at a contig's end, a sequence shared with
+another clade, a contaminant's copy or a bacterium's SSU stays in the package with its tier (`high`, `unverified`,
+`medium`, `low`) and the reasons for it.
 
 ## What is in Eukore
 
 | | per species | from | complete as |
 |---|---|---|---|
-| **BUSCO genes** | each of the 129 BUSCOs of eukaryota_odb12 called in its genome, with its exons and introns; their coding sequences and proteins | NCBI's best assembly of the species (else an INSDC transcriptome), called by Eukore (miniprot, then BUSCO's HMMs) | the gene from first to last codon, introns and all, uncut and unmasked |
+| **BUSCO genes** | each of the 129 BUSCOs of eukaryota_odb12 called in its genome, with its exons and introns; their coding sequences and proteins | NCBI's best assembly of the species (else an INSDC transcriptome), called by Eukore (miniprot, then BUSCO's HMMs; a rescue pass for divergent genomes; a gene split across a skim's contigs joined) | the gene from first to last codon, introns and all, uncut and unmasked |
+| **classic markers** | RPB1, RPB2, EF-2, EF-1α (TEF1), β-tubulin, actin, HSP90, GAPDH, histone H3: none is a BUSCO; Eukore's own loci, called as the BUSCOs are | KOfam's profiles of each ortholog, its paralogs' as decoys; Swiss-Prot's and NCBI's proteins | as the BUSCO genes (`markers/`) |
 | **genetics** | each intron's phase, splice sites, U12 look and site on the gene's HMM; the genome's genetic code checked; its duplicated BUSCOs (haplotypes or a whole-genome duplication) | hmmalign on BUSCO's HMMs; vsearch | `busco/introns.tsv`, `intron_sites.tsv`, `genomes.tsv` |
-| **rDNA operons** | its 18S spans and whole units (18S, ITS1, 5.8S, ITS2, 28S, an inline 5S); the 18S's V1-V9; in-silico PCR of 10 amplicon primer pairs | its assembly (barrnap, ITSx); EUKARYOME's long reads and SSU set (labelled above species too; format 7) and ROD's operons, each audited as KSGP audits its records (vectors, flanks, chimeras); Infernal on Rfam's SSU model | from the 18S's start to the 28S's end |
-| **organelle genes** | mitochondrial and plastid SSU, LSU, 5S rRNA; mitochondrial COX1, COX3, CYTB, nad1, nad5, atp6; plastid rbcL, matK, tufA, psbA, ycf1 and the trnH-psbA spacer; their proteins by the organelle's code, checks and confidence, barcode primers' PCR | RefSeq's organelle genomes, else its assembly's organelle molecules (kept whole too) | the gene with its introns |
+| **rDNA operons** | its 18S spans and whole units (18S, ITS1, 5.8S, ITS2, 28S, an inline 5S); the 18S's V1-V9; in-silico PCR of 10 amplicon primer pairs | its assembly (barrnap, ITSx), else its next assembly's 18S; EUKARYOME's long reads and SSU set (labelled above species too; format 7) and ROD's operons, each audited as KSGP audits its records (vectors, flanks, chimeras); Infernal on Rfam's SSU models | from the 18S's start to the 28S's end |
+| **organelle genes** | mitochondrial and plastid SSU, LSU, 5S rRNA; mitochondrial COX1, COX3, CYTB, nad1, nad5, atp6; plastid rbcL, matK, tufA, psbA, ycf1 and the trnH-psbA spacer; their proteins by the organelle's code, checks and confidence, barcode primers' PCR | RefSeq's organelle genomes (of every species with one), else its assembly's organelle molecules (kept whole too); EUKARYOME's organelle SSU; MIDORI2's screened mitochondrial SSU, COX1 and CYTB of species without a RefSeq mitochondrial genome | the gene with its introns (MIDORI2's: the record as published, on the gene's strand) |
 | **assembly metadata** | its genome's size, contiguity, gaps, GC and its spread, soft-masking, CpG, duplicates, telomeres, organelle molecules, tetranucleotides, a sourmash sketch; NCBI's own summary | measured while the genome is on disk, before the build deletes it | in the package's `metadata/` |
-| **taxonomy** | NCBI's lineage (and with its empty ranks filled), supergroup (Obazoa, TSAR, ...) and group; its complete EUKARYOME lineage in one EUKARYOME tree, as every record's and organelle gene's (format 7); its lineage in PR2, KSGP, SILVA, UNITE (and MIDORI2); its Open Tree, GBIF, WoRMS, IRMNG, UNITE SH (and BOLD BIN) ids; its genome's type material | NCBI's taxdump, cut to the package | tied to no GTDB release |
-| **barcode gap** | for a panel of 40 well-sampled species, each marker's variation within the species beside its distance to the nearest other species | 3 further assemblies of each (other strains) | `intraspecific/` |
-| **checks** | per copy and record: own-species agreement (the owner of a sequence two clades' genomes share told), 99% collapses, length outliers, contig ends, assembly gaps, coding sequences against the proteins confirmed, tiara's and FCS-GX's contamination screens, an rRNA chimera screen, each 18S a nucleus'; a `high`/`unverified`/`medium`/`low` tier with its reasons | Eukore's checks across species | flagged, never silently dropped |
+| **taxonomy** | NCBI's lineage (and with its empty ranks filled), supergroup (Obazoa, TSAR, ...) and group; its complete EUKARYOME lineage in one EUKARYOME tree free of homonyms, as every record's and organelle gene's (format 7); its lineage in PR2, KSGP, SILVA, UNITE and MIDORI2; each rRNA record's PR2 and KSGP records (`taxonomy/links.tsv`); its Open Tree, GBIF, WoRMS, IRMNG, UNITE SH (and BOLD BIN) ids; its genome's type material | NCBI's taxdump, cut to the package; EUKARYOME 2.1's classification | tied to no GTDB release |
+| **barcode gap** | for a panel of 133 well-sampled species, each marker's variation within the species beside its distance to the nearest other species | up to 3 further assemblies of each (other strains) | `intraspecific/` |
+| **checks** | per copy and record: own-species agreement (the owner of a sequence two clades' genomes share told), 99% collapses, length outliers, contig ends, assembly gaps, coding sequences against the proteins confirmed, tiara's and FCS-GX's contamination screens, an rRNA chimera screen, each 18S a nucleus', the published reads' audit, MIDORI2's reference screen; a `high`/`unverified`/`medium`/`low` tier with its reasons; per genome a tier (`genome`, `draft`, `transcriptome`, `poor`, `partial`, `contaminated`) by its clade's expected BUSCOs | Eukore's checks across species | flagged, never silently dropped |
 | **benchmarks** | completeness, agreement with OrthoDB's gene models, marker resolution, rRNA completeness, naming, primer coverage, the barcode gap, run time | measured by each build | in the package's `benchmarks/` |
 
-All eukaryote groups of NCBI are covered: fungi, protists, plants, invertebrates and vertebrates (on NCBI's tables
-of 2026-11, about 29,000 species). The genome of a species is NCBI's best by Eukore's ranking, never one NCBI or its
-FCS-GX and ANI screens find contaminated or misidentified where a better one exists. 75 species with no assembly
-(protists from EukProt) come with their records; since 0.2, a species with no genome but an INSDC transcriptome
-(ENA's TSA sets: some 5,000 species, most animals and plants) has its BUSCOs called in it (`species.tsv`'s `source` `tsa`).
+A species is in the package by its genome (`species.tsv`'s `source`: an NCBI or TOGA2 assembly, `tsa` a
+transcriptome, EukProt's records), by rRNA records alone, or by organelle genes alone (`organelle`). The first full
+build (format 6) held 47,479 species, 33,664 of them with a genome; format 7's published 18S and MIDORI2's genes
+bring the species named to about 291,000 (measured on the inputs, not yet built), most of them known by a
+mitochondrial barcode gene alone.
 
 A package is plain TSV and gzipped FASTA with a `manifest.json` of checksums; its format is
 [docs/FORMAT.md](docs/FORMAT.md) (format 7). Every `.gz` file is BGZF (blocked gzip, since 2026-11-09): any gzip
@@ -66,15 +116,18 @@ reader reads it, `bgzip -d -@` decompresses it on many threads.
 ```
 Eukore_2026.11/
 ├── manifest.json            versions, inputs, counts, every file's size and MD5 (written last)
-├── species.tsv              one row per species: supergroup, group, NCBI and six references' lineages
+├── species.tsv              one row per species: its source, supergroup, group, NCBI and six references' lineages
 ├── crossrefs.tsv            each species' ids: Open Tree, GBIF, WoRMS, IRMNG, UNITE SH, BOLD BIN
-├── genomes.tsv              the species' genomes: accession, quality flags, rRNA copies, genetic code, duplication
+├── genomes.tsv              the species' genomes: accession, tier, quality flags, rRNA copies, genetic code, duplication
 ├── copy_numbers.tsv.gz      each genome's copies of every locus, rRNA gene and unit, organelle molecule and gene
+├── reference_screen.tsv     MIDORI2's records the screen dropped, cut or left for review
 ├── taxonomy/                NCBI's taxonomy, cut to the package (nodes with nuclear and organelle codes, names);
-│                            EUKARYOME's as one tree (eukaryome.tsv)
+│                            EUKARYOME's as one tree (eukaryome.tsv); PR2's and KSGP's records linked (links.tsv)
 ├── busco/                   loci.tsv (call rates per BUSCO), copies.tsv (calls, checks, confidence),
 │                            features.tsv, introns.tsv, intron_sites.tsv, copies/, cds/, proteins/<locus>.*.gz
-├── rrna/                    records.tsv, records.fna.gz, regions.tsv (18S V1-V9), amplicons.tsv (in-silico PCR)
+├── markers/                 Eukore's nine own loci (RPB1, RPB2, EF-2, TEF1, ...), as busco/
+├── rrna/                    records.tsv, records.fna.gz, audit.tsv (what was cut off the published reads, and why),
+│                            regions.tsv (18S V1-V9), amplicons.tsv (in-silico PCR)
 ├── organelle/               genes.tsv, genes.fna.gz, cds.fna.gz, proteins.faa.gz, amplicons.tsv, molecules.fna.gz
 ├── intraspecific/           the panel's further assemblies' copies, barcode_gap.tsv
 ├── metadata/                assembly.tsv.gz, tetranucleotides.tsv.gz, sketches.zip, ncbi.tsv.gz, codons.tsv.gz
@@ -122,9 +175,10 @@ What you may want, where it is in a package, and where it is described. The file
 
 ## Get Eukore
 
-**Prebuilt releases**: the first full release (built on NCBI's genomes of 2026-11) is being built; trial packages
-of a few clades exist so far. Until a release is published, build it yourself (below): a trial of seven clades took
-about an hour on 6 cores, the full reference needs a cluster.
+**Prebuilt releases**: none is published yet. The first full build (NCBI's genomes of 2026-11; Eukore 0.2.4,
+format 6) finished on 2026-11-14 and was evaluated; the fixes it led to and format 7 (Eukore 0.2.6) are in this
+repository, and the release will be built from them. Until it is published, build it yourself (below): a trial of
+seven clades took about an hour on 6 cores, the full reference needs a cluster.
 
 A release is published on Eukore's website (`website/`, PHP; the [website's README](website/README.md)): its
 statistics (species by genome source and supergroup, the taxonomy as a tree, the marker categories) and its
@@ -194,28 +248,35 @@ outputs are in [docs/building.md](docs/building.md).
 ### How it works
 
 1. **Genome set.** Per NCBI species, its best assembly: NCBI's contamination, misassembly and ANI flags excluded,
-   FCS-GX's contaminated assemblies demoted, then RefSeq reference, representative, assembly level, contiguity.
-2. **BUSCO calls.** miniprot aligns the 30 proteins of BUSCO's dataset nearest to the genome (and its ancestral
-   variants) with the genome's genetic code; hmmsearch confirms each region against all BUSCO HMMs at BUSCO's
-   cutoffs; the best copy is kept whole, its exons and introns annotated.
+   FCS-GX's contaminated assemblies demoted, then RefSeq reference, representative, assembly level, contiguity; a
+   TOGA2 assembly or a transcriptome where NCBI has no genome.
+2. **BUSCO and marker calls.** miniprot aligns the 30 proteins of BUSCO's dataset nearest to the genome (and its
+   ancestral variants) with the genome's genetic code; hmmsearch confirms each region against all BUSCO HMMs at
+   BUSCO's cutoffs; the best copy is kept whole, its exons and introns annotated. A locus still missing is searched
+   by its HMM in the genome's ORFs (the rescue pass); a gene cut by a skim's contigs is joined; the genome's own
+   annotation gives the model where the HMM confirms it; the coding sequence shipped is checked against the protein
+   confirmed.
 3. **rRNA.** barrnap finds each genome's rRNA genes and ITSx the ITS borders (with the lineage's profiles); whole
-   units are kept uncut. EUKARYOME's and ROD's long reads are labelled by NCBI taxid and annotated alike.
-4. **Organelle genes** (rRNA, COX1, CYTB, rbcL, matK, tufA) from RefSeq's organelle genomes, else from the assembly's organelle
-   molecules (nhmmer, barrnap).
+   units are kept uncut. EUKARYOME's long reads and SSU set and ROD's operons are labelled by NCBI taxid and by
+   EUKARYOME's tree, annotated alike, and audited (ends, flanks, vectors, chimeras).
+4. **Organelle genes** (rRNA and 12 protein-coding or spacer genes) from RefSeq's organelle genomes, else from the
+   assembly's organelle molecules (nhmmer, miniprot, barrnap); MIDORI2's SSU, COX1 and CYTB, screened for misnamed
+   and chimeric records, of the species RefSeq does not cover.
 5. **Assembly metadata.** One pass over each genome while it is on disk (`eukore/metadata.py`), and a sourmash
    sketch: what a user needs of the genome once the build has deleted it.
 6. **Checks across species.** Each copy against the same gene of every other species (own-species agreement,
-   identical copies, length outliers), an rRNA part screen for chimeras, tiara and FCS-GX on each copy's 50 kb
-   window; each copy and record gets a confidence tier with its reasons.
-7. **Package and benchmarks**, the manifest written last.
+   identical copies, length outliers), an rRNA part screen for chimeras, each 18S against Rfam's eukaryote and
+   prokaryote SSU models, tiara and FCS-GX on each copy's 50 kb window; each copy and record gets a confidence tier
+   with its reasons, each genome a tier by its clade's expected BUSCOs.
+7. **Package and benchmarks**, the manifest written last; then the release (the website's data and downloads).
 
 <p align="center">
   <img src="docs/figures/overview.png" alt="Eukore: the build from its sources to the package, and what the package holds" width="860">
 </p>
 
-The figure (`docs/figures/overview.py`; the parts added in Eukore 0.2 marked) carries NCBI's and the references'
-numbers of 2026-11; a package's own counts head its panel b with `--package`. The figure at the top of this page is
-its short form (`--slide`, 16:9, for a presentation).
+The figure (`docs/figures/overview.py`) describes Eukore 0.2.6 (format 7); its genome numbers and the counts that
+head panel b (`--package`) are the first full build's (Eukore_2026.11 of 2026-11-14, format 6), the references'
+those of 2026-11. The figure at the top of this page is its short form (`--slide`, 16:9, for a presentation).
 
 Details, and what was checked on real genomes, are in [docs/methods.md](docs/methods.md).
 
@@ -230,31 +291,34 @@ so does (since 2026-11-12) what describes the package as a resource: its breadth
 links, Eukore beside the other databases as collections of records, the checks' shares, the tree of the BUSCO proteins
 against NCBI's taxonomy, the identity that parts taxa, and the changes from one release to the next.
 
-On a trial package (seven clades, 2026-11-06, with the rescue pass; not a release):
+On the first full build (Eukore_2026.11 of 2026-11-14: Eukore 0.2.4, format 6, before the fixes and format 7 of
+0.2.6; not a release):
 
 | benchmark | figure |
 |---|---|
-| package | Eukore_2026.11-rescue (a trial: 7 clades), 33 species' genomes, 129 BUSCOs |
-| median complete BUSCOs per genome | 79.8% (6.1% of genomes at 90% or more) |
-| BUSCOs OrthoDB has a gene model of, called | 96.6% of 321 (4 species) |
-| of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | 83.5% |
-| the same, called without the species' own proteins | 93.8% called, 74.8% of them OrthoDB's gene model (4 species) |
-| of those also called with its own proteins, on the same gene | 100.0% of 301, 91.4% of them sharing 90% of the span; 20 called by the rescue pass |
-| BUSCO copies under 99% identical to any other species | 65.6% of 3,676 |
-| 18S copies under 99% identical to any other species | 36.6% of 41 |
-| rRNA records; operons with a whole 28S | 2,719; 99.6% of 2,551 |
-| species named in EUKARYOME by name or synonym | 30.2% |
-| species named in KSGP by name or synonym | 34.9% |
-| species named in PR2 by name or synonym | 30.2% |
-| genome run (BUSCOs, rRNA, tiara; before the rescue pass), median | 2.3 min on 2 threads, 93 min per Gb of genome |
+| species; with a genome; with rRNA records alone | 47,479; 33,664; 13,815 |
+| species with an rRNA record; a whole operon; an organelle gene | 38,190; 33,930; 13,868 |
+| median complete BUSCOs per genome | 96.9% (65.2% of genomes at 90% or more) |
+| BUSCOs OrthoDB has a gene model of, called | 99.1% of 87,927 (836 species) |
+| of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | 92.0% |
+| the same, called without the species' own proteins | 99.0% called, 82.9% of them OrthoDB's gene model |
+| calls laid on their genome's annotation (7,541 genomes) | introns exact 91.5%; coding bases' recall 94.0%, precision 96.6% |
+| BUSCO and marker copies; `high`, `unverified`, `medium`, `low` | 4,329,328; 61.8%, 6.1%, 32.1%, 0.1% |
+| BUSCO copies under 99% identical to their nearest congener | 62.0% of 2,549,280 |
+| 18S copies under 99% identical to their nearest congener | 26.5% of 18,777 |
+| rRNA records; operons with a whole 28S | 4,657,420; 95.1% of 2,390,529 |
+| genome run (BUSCOs, rRNA, tiara), median | 1.3 min, 3 min per Gb of genome |
 
 <p align="center">
   <img src="docs/benchmarks/figures/completeness.png" alt="BUSCO completeness per supergroup" width="860"><br>
   <img src="docs/benchmarks/figures/resolution.png" alt="Identity of each copy's nearest other species, by shared rank" width="860">
 </p>
 
-Among congeners the BUSCO genes tell species apart where the 18S cannot (65% of copies under 99% to every other species,
-against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/benchmarks.md).
+Among congeners the BUSCO genes tell species apart where the 18S cannot (62% of copies under 99% to their nearest
+congener, against 27% of 18S). Completeness is uneven: animals, plants and fungi have a median of 95-99% of the
+129 BUSCOs, Alveolata, Discoba and Metamonada 37-57%, where many of these genes are lost or too diverged for the
+dataset's proteins to find; genomes are therefore judged by their clade's expected BUSCOs (`genomes.tsv`'s `tier`).
+The two figures are that build's. All figures and what they show: [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Documentation
 
@@ -274,7 +338,7 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 | path | |
 |---|---|
 | `eukore_build.py` | the build (stages fetch, process, package) |
-| `eukore/` | the package: `genomes.py` (genome set, one genome's run), `odb.py`, `loci.py` (BUSCO calls), `rrna.py`, `screen.py` (rRNA and its chimera screen), `organelle.py`, `qc.py` (checks across species), `quality.py` (NCBI's FCS-GX and ANI reports), `labels.py` (PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2; crossrefs), `refscreen.py` (the reference screen: MIDORI2's misnamed and chimeric records), `groups.py` (supergroups, groups), `gencode.py` (NCBI's genetic codes), `align.py` (hmmalign), `introns.py`, `codecheck.py` (genetic code check), `regions.py` (18S V1-V9, cmalign), `primers.py` (in-silico PCR), `intraspecific.py` (barcode gap), `markers.py` (Eukore's marker set: KOfam, Swiss-Prot, NCBI), `package.py` (write, read, check), `benchmarks.py`, `release.py` (the website's data and the downloads), `util.py` (BGZF, downloads, progress) |
+| `eukore/` | the package: `genomes.py` (genome set, one genome's run), `odb.py`, `loci.py` (BUSCO calls), `rrna.py`, `screen.py` (rRNA and its chimera screen), `organelle.py`, `qc.py` (checks across species), `quality.py` (NCBI's FCS-GX and ANI reports), `labels.py` (PR2, EUKARYOME, KSGP, SILVA, UNITE, MIDORI2; crossrefs), `refscreen.py` (the reference screen: MIDORI2's misnamed and chimeric records), `audit.py` and `chimeras.py` (the published reads' audit: ends, flanks, vectors, chimeras), `eukaryome.py` (EUKARYOME's taxonomy as one tree), `links.py` (PR2's and KSGP's records linked), `tiers.py` (each clade's expected BUSCOs, the genomes' tiers), `annotation.py` (the genomes' own gene models), `groups.py` (supergroups, groups), `gencode.py` (NCBI's genetic codes), `align.py` (hmmalign), `introns.py`, `codecheck.py` (genetic code check), `regions.py` (18S V1-V9, cmalign), `primers.py` (in-silico PCR), `intraspecific.py` (barcode gap), `markers.py` (Eukore's marker set: KOfam, Swiss-Prot, NCBI), `package.py` (write, read, check), `benchmarks.py`, `release.py` (the website's data and the downloads), `util.py` (BGZF, downloads, progress) |
 | `data/` | the model species, curated rDNA units, the records of species without an assembly; since 0.2 `supergroups.tsv` (supergroups and groups), `primers.tsv` and `primer_pairs.tsv` (the in-silico PCR), `primer_references.fna` (their test records), `rrna_regions.tsv` (the 18S V-regions on yeast), `intraspecific_panel.tsv` (the barcode gap's species), `classic_markers.*`, `markers.tsv` (Eukore's marker loci: their KOfam targets and decoys) |
 | `envs/` | the micromamba environments (`eukore.yaml`; `tiara.yaml`, tiara needing an older Python) |
 | `tools/` | choosing loci: `rank_loci.py`, `eukaryote_panel.py`, `prokaryote_panel.py`, `prokaryote_separation.py`; `classic_markers.py` (classic markers among the BUSCOs), `primer_references.py` (the primers' test records), `organelle_models.py` (nhmmer against miniprot on RefSeq's exons), `validate_markers.py` (the marker loci against each species' own reference protein, held out), `screen_reference.py` (the reference screen on MIDORI2's files: KSGP's lists and the screened FASTA), (`eukore/run_report.py`, how a run went, is in every build's evaluation bundle: [building.md](docs/building.md#the-evaluation-bundle)) |
@@ -286,7 +350,34 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 
 ## Status and limitations
 
-- Version 0.2.6 (2026-11-14, package format 7, with the first full build's fixes: genome tiers, rRNA donors, MIDORI2 fetched, a copy split across contigs joined; EUKARYOME's records the only published 18S, its SSU set beside its long reads, each audited at build time as KSGP 4.1-4.5 audit their records (ends, flanks, chimeras: `rrna/audit.tsv`), PR2's and KSGP's records linked, not taken (`taxonomy/links.tsv`), MIDORI2's screened mitochondrial SSU, COX1 and CYTB (one of each a species without a RefSeq mitochondrial genome; COX1 and CYTB since 2026-11-15), EUKARYOME's reads labelled above species, the organelle genes of every species with a RefSeq organelle genome, and every species', record's and organelle gene's EUKARYOME lineage in one tree, `taxonomy/eukaryome.tsv` (since 2026-11-15 a genus name EUKARYOME holds only in another phylum or subphylum than NCBI's (a homonym) not a species' genus, and an NCBI clade EUKARYOME names otherwise the taxon of its species); tested on stand-ins and a trial clade, not yet on a full build). Version 0.2.4 (2026-11-12: the comparisons with other references, the read benchmark and the figures, Figure 1 among them, moved out of the build into `benchmarks/`; the build writes an evaluation bundle). The full reference has not been built on NCBI's release yet; format 4 has been built on trial clades, format 5 is being built; format 6 (2026-11-09: the four confidence tiers, coding sequences checked and recovered, a Duplicated locus' copy chosen by lineage, the owner of a shared sequence told, the 18S checked to be a nucleus', the genome record) is tested on stand-ins and four trial genomes, not yet on a built package.
+**Where it stands** (2026-11-15):
+- **Version 0.2.6, package format 7.** One full build exists, of Eukore 0.2.4 and format 6 (2026-11-14: 33,664
+  genomes, none failed). What came after it is tested on stand-ins, trial clades and the inputs themselves, not yet
+  on a full build:
+  - *the first build's fixes* (2026-11-14): genome tiers by each clade's expected BUSCOs, a poor, partial or
+    contaminated genome's copies left out; Eukore's own protist proteins as queries; a copy split across a skim's
+    contigs joined; an 18S from a species' next assembly, transcriptomes' rRNA, a 10 Mb floor for transcriptomes;
+    organelle genes on candidate contigs; MIDORI2 and UCSC GenArk's gene models fetched by the build;
+  - *format 7* (2026-11-14): EUKARYOME's records the only published 18S (its SSU set beside its long reads), each
+    audited at build time as KSGP 4.1-4.5 audit theirs (`rrna/audit.tsv`); PR2's and KSGP's records linked, not
+    taken (`taxonomy/links.tsv`); EUKARYOME's reads labelled above species; the organelle genes of every species
+    with a RefSeq organelle genome; every species', record's and gene's EUKARYOME lineage in one tree
+    (`taxonomy/eukaryome.tsv`);
+  - *2026-11-15*: MIDORI2's COX1 and CYTB beside its mitochondrial SSU, screened and filtered by protal's rules;
+    EUKARYOME's tree free of homonyms (a genus name of another phylum is not a species' genus; an NCBI clade
+    EUKARYOME names otherwise takes EUKARYOME's taxon). The organelle checks' run time on some 230,000 COX1 records
+    is not measured yet.
+- **Changes by format**: [docs/FORMAT.md](docs/FORMAT.md#changes). Format 6 (2026-11-09) brought the four confidence
+  tiers, checked coding sequences, a Duplicated locus' copy chosen by lineage, the owner of a shared sequence, the
+  18S checked to be a nucleus'.
+
+**Limitations:**
+- Protist lineages are thin: 48 of the 129 BUSCOs are called in under 20% of Discoba's genomes, and a gene model
+  made without a near relative's proteins is approximate (held out, 83% of calls are OrthoDB's gene model overall,
+  under 50% in Alveolata and Amoebozoa).
+- A third of the BUSCO copies are `medium` (a fragment, a contig's end, a duplicate, ...) and 6% `unverified` (no
+  relative near enough to check them by, half of them of a species alone in its family).
+- MIDORI2's records are one gene of one specimen under GenBank's name: screened across orders, not within one.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
 - The organelle genes have checks across species and a confidence tier since 0.2, measured on a trial without RefSeq's organelle release (assembly molecules alone). In assemblies, a protein-coding gene with introns takes miniprot's exons (median F1 0.96-0.99 against RefSeq's, against nhmmer's joined hits' 0.27-0.60), one without nhmmer's single hit ([methods.md](docs/methods.md)); a few splice sites stay off by some bases.
 - The genetic code check judges only the stop codons and CTG, where seen often enough at conserved positions (CTG-clade yeasts avoid CTG: not judged); a transcriptome's BUSCO copies (TSA, a species without a genome) have no introns and are at most `medium`.
@@ -302,10 +393,18 @@ against 37% of 18S). All figures and what they show: [docs/benchmarks.md](docs/b
 ## Sources and credits
 
 Eukore is built from public data, each under its own terms; check them before redistributing a package:
-NCBI's GenBank and RefSeq assemblies, taxonomy, FCS-GX and ANI reports and RefSeq organelle genomes; BUSCO's
-eukaryota_odb12 (OrthoDB 12.1); EUKARYOME 2.1; the rRNA Operon Database (ROD) 1.2; PR2 5.1.1; KSGP. The records of
-species without an assembly come from EukDetect2 (CC BY 4.0; Shih, Zhao, Pollard & Lind 2026). It runs miniprot,
-HMMER, barrnap, ITSx, vsearch, and optionally tiara and NCBI FCS-GX: please cite them with Eukore.
+- **sequences**: NCBI's GenBank and RefSeq assemblies and RefSeq's organelle genomes; INSDC's transcriptome
+  assemblies (via ENA); TOGA2's vertebrate assemblies; EUKARYOME 2.1 (long reads, SSU set); the rRNA Operon Database
+  (ROD) 1.2; MIDORI2 (SSU, COX1, CYTB); the records of species without an assembly from EukDetect2 (CC BY 4.0; Shih,
+  Zhao, Pollard & Lind 2026), of EukProt;
+- **models and proteins**: BUSCO's eukaryota_odb12 (OrthoDB 12.1); KEGG's KOfam profiles, Swiss-Prot's and NCBI's
+  proteins (the marker loci); Rfam's SSU models; gene models of NCBI, VEuPathDB, Ensembl, TOGA2 and UCSC GenArk;
+  NCBI's UniVec;
+- **names and screens**: NCBI's taxonomy, FCS-GX and ANI reports; EUKARYOME's classification; PR2 5.1.1, KSGP, SILVA
+  138.2 and UNITE 10.0 (names and record ids alone, no sequence); Open Tree of Life, GBIF, WoRMS, IRMNG, BOLD.
+
+It runs miniprot, HMMER, barrnap, ITSx, vsearch, Infernal, minimap2 and sourmash, and optionally tiara and NCBI
+FCS-GX: please cite them with Eukore.
 
 Eukore started inside protal's repository (`EUKDBbuild/`, 2026-11-05) and keeps that history. Questions and bug
 reports: [GitHub issues](https://github.com/hildebra/Eukore/issues).

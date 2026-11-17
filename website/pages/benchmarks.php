@@ -179,11 +179,71 @@ function rows_table(array $rows, array $columns, array $numeric = []): string
 <?php if (!empty($t['thresholds'])): ?>
 <h2 id="thresholds">Which identity parts taxa</h2>
 <hr>
-<p>For a user choosing a marker and a cutoff: the identity at or above which two sequences are of one taxon of a rank,
-  with the shares it keeps together and apart. Published thresholds of other markers and taxa are given for context.</p>
-<?= rows_table($t['thresholds'], ['marker' => 'Marker', 'rank' => 'Rank', 'threshold' => 'Identity (%)',
-                                  'within_kept' => 'Kept together', 'between_apart' => 'Kept apart',
-                                  'source' => 'Source'], ['threshold', 'within_kept', 'between_apart']) ?>
+<?php
+    // the package's own rows: those of all species, and each group's under them (thresholds.tsv's `supergroup`:
+    // since 2026-11-15; a table before has none, its rows all species')
+    $own = array_filter($t['thresholds'], fn($r) => strncmp((string) ($r['source'] ?? ''), 'published', 9) !== 0);
+    $published = array_filter($t['thresholds'], fn($r) => strncmp((string) ($r['source'] ?? ''), 'published', 9) === 0);
+    $main = array_filter($own, fn($r) => ($r['supergroup'] ?? 'all') === 'all');
+    $by_group = [];
+    foreach ($own as $r) {
+        if (($r['supergroup'] ?? 'all') !== 'all') {
+            $by_group[$r['marker'] . '|' . $r['rank']][] = $r;
+        }
+    }
+    // a row's cells: how alike the nearest relative is, then the cutoff, where one parts the taxa at all
+    $cells = function (array $r): string {
+        $share = fn($v) => is_numeric($v) ? pct($v, 0) : '–';
+        $usable = ($r['usable'] ?? 't') === 't' && is_numeric($r['threshold'] ?? null);
+        $none = is_numeric($r['threshold'] ?? null)
+            ? '<span class="fold-none" title="' . h('the best cutoff, ' . $r['threshold'] . '%, tells them apart with a '
+                . 'balanced accuracy of ' . $r['accuracy'] . ': 0.5 is a coin\'s') . '">none</span>'
+            : '<span class="fold-none" title="too few species with several assemblies to say">–</span>';
+        return '<span>' . (is_numeric($r['nearest'] ?? null) ? num($r['nearest']) : '–') . '</span>'
+            . '<span>' . h($r['nearest_median'] ?? '–') . '</span>'
+            . '<span>' . $share($r['nearest_under_99'] ?? null) . '</span>'
+            . '<span>' . ($usable ? h($r['threshold']) : $none) . '</span>'
+            . '<span>' . ($usable ? $share($r['within_kept']) . ' / ' . $share($r['between_apart']) : '–') . '</span>'
+            . '<span>' . (is_numeric($r['accuracy'] ?? null) ? h($r['accuracy']) : '–') . '</span>';
+    };
+    $relative = ['species' => 'nearest other species', 'genus' => 'nearest congener',
+                 'family' => 'nearest of another genus of its family', 'order' => 'nearest of another family of its order'];
+?>
+<p>For a user choosing a marker and a cutoff. First, how alike a sequence's nearest relative is: at the species row
+  its nearest other species of any kind, at the genus row its nearest congener, and so on (the median identity, to
+  half a point, and the share of sequences under 99% identical to it). Then the cutoff: the identity at or above
+  which two sequences are of one taxon of that rank, with the shares it keeps together and apart and their mean, the
+  balanced accuracy. Where that is under 0.65 (0.5 is a coin's) no cutoff is given: <b>the marker does not tell that
+  rank's taxa apart</b>, as the 18S does not tell most species.
+<?php if ($by_group): ?>
+  Open a row for each group of species (a group's species row has a cutoff only where enough of its species have
+  several assemblies).
+<?php else: ?>
+  This build's table of identities is not split by group (builds since 2026-11-15 are): the rows are all species'.
+<?php endif; ?></p>
+<div class="table-scroll"><div class="fold-table" role="table" aria-label="The identity that parts taxa">
+  <div class="fold-row fold-head" role="row"><span>Marker, rank</span><span>Sequences</span>
+    <span>Nearest relative: median identity (%)</span><span>Under 99% to it</span><span>Cutoff (%)</span>
+    <span>Kept together / apart</span><span>Balanced accuracy</span></div>
+<?php foreach ($main as $r):
+    $key = $r['marker'] . '|' . $r['rank'];
+    $name = '<span title="' . h($relative[$r['rank']] ?? '') . '">' . h($r['marker']) . ', ' . h($r['rank']) . '</span>';
+    if (empty($by_group[$key])): ?>
+  <div class="fold-row fold-major fold-plain" role="row"><?= $name . $cells($r) ?></div>
+<?php else: ?>
+  <details class="fold-group">
+    <summary class="fold-row fold-major" role="row"><?= $name . $cells($r) ?></summary>
+<?php foreach ($by_group[$key] as $g): ?>
+    <div class="fold-row fold-sub" role="row"><span><?= h($g['supergroup']) ?></span><?= $cells($g) ?></div>
+<?php endforeach; ?>
+  </details>
+<?php endif; endforeach; ?>
+</div></div>
+<?php if ($published): ?>
+<p>Published thresholds of other markers and taxa, for context:</p>
+<?= rows_table($published, ['marker' => 'Marker', 'rank' => 'Rank', 'threshold' => 'Identity (%)',
+                            'source' => 'Source'], ['threshold']) ?>
+<?php endif; ?>
 <?= figure_of($figures, 'thresholds') ?>
 <?php endif; ?>
 

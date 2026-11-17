@@ -192,6 +192,25 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 tr.row-major th, tr.row-major td { font-weight: 500; background: var(--surface-2); }
 th.indent { padding-left: 1.6rem; font-weight: 300; }
 
+/* --- a table whose rows unfold (Benchmarks: the identity that parts taxa, per group) ------------------------------ */
+.fold-table { min-width: 720px; margin-top: .75rem; font-size: .95rem; }
+.fold-row { display: grid; grid-template-columns: minmax(170px, 1.6fr) repeat(6, minmax(70px, 1fr)); gap: .6rem;
+            align-items: baseline; padding: .3rem .6rem; border-bottom: 1px solid #e3e6ea; }
+.fold-row > span:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+.fold-head { font-weight: 600; color: var(--ink-strong); border-bottom: 2px solid var(--rule); align-items: end; }
+.fold-major { font-weight: 500; }
+.fold-group > summary { list-style: none; cursor: pointer; }
+.fold-group > summary::-webkit-details-marker { display: none; }
+.fold-group > summary > span:first-child::before, .fold-plain > span:first-child::before {
+  content: "▸"; display: inline-block; width: 1.1em; color: var(--ink-muted); transition: transform .15s;
+}
+.fold-plain > span:first-child::before { visibility: hidden; }
+.fold-group[open] > summary > span:first-child::before { transform: rotate(90deg); }
+.fold-group[open] > summary { background: var(--surface-2); }
+.fold-sub { font-weight: 300; }
+.fold-sub > span:first-child { padding-left: 1.6em; }
+.fold-none { color: var(--ink-muted); }
+
 /* --- the taxonomy tree ---------------------------------------------------------------------------------------- */
 .tree-tools { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .5rem 1.5rem; }
 .tree-tools .legend { margin: .5rem 0; }
