@@ -124,6 +124,8 @@ def test_genomes(bench, package, genomes=None, per_group=reads.PER_GROUP, log=pr
         dest = genomes_mod.genome_file(folder, acc)
         there = genomes_mod.genome_file(genomes, acc) if genomes else None
         try:
+            if os.path.islink(dest) and not os.path.exists(dest):  # its genome since pruned from the build's folder
+                os.remove(dest)
             if os.path.isfile(dest):
                 pass
             elif there and os.path.isfile(there):

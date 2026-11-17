@@ -35,7 +35,21 @@ python3 -m eukore_bench.site RESULTS --release OUT/release        # onto the web
 | `eukore-benchmark.sh` | The comparisons and the read benchmark (`eukore_bench/compare.py`). The read benchmark aligns reads of up to 3 test genomes per supergroup to the whole package and to each other reference with minimap2: tens of GB of memory. | A compute node (threads: `-t`, else SLURM's `--cpus-per-task`) |
 | `eukore-figures.sh` | Figure 1 and every supplementary figure, `index.md` (captions and tables) and `summary.md`, into `RESULTS/figures` (`eukore_bench/figures.py`) | Anywhere |
 
-On a SLURM cluster, for example:
+With the build's own settings (`local/eukore.conf`, since 2026-11-17): `BENCH` names the folder (a permanent one: the
+other references' downloads and comparable forms are kept there between builds), `BENCH_RESULTS` the results (default
+`OUT/Eukore_<version>_benchmarks`), and
+
+```bash
+bash tools/eukore.sh benchmark                      # the downloads job, then the benchmarks' and figures' job
+AFTER=<final job> bash tools/eukore.sh benchmark    # once the build's final job has ended
+```
+
+runs the three steps in the build's environment (envs/eukore.yaml holds every tool here; `BENCH_ENV=active`: no
+`BENCH/env` made), with the build's NCBI taxonomy and BUSCO dataset (`SOURCES`), its genomes folder and its
+alignments (`WORK/align`). Options: `BENCH_PREP_OPTS`, `BENCH_OPTS`, `FIGURE_OPTS`; the jobs' `SBATCH_BENCH_PREP`
+(default `SBATCH_FETCH`'s) and `SBATCH_BENCH` (default `SBATCH_PROCESS`'s).
+
+By hand on a SLURM cluster, for example:
 ```bash
 sbatch -p download -c 2 --mem 8G --wrap "bash benchmarks/eukore-bench-prep.sh $BENCH $OUT/Eukore_2026.11 --genomes $GEN"
 sbatch -c 32 --mem 200G --wrap "bash benchmarks/eukore-benchmark.sh $BENCH $OUT/Eukore_2026.11 $RESULTS --tmp \$SLURM_LOCAL_SCRATCH"

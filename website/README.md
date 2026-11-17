@@ -29,8 +29,10 @@ OUT/release/
 │   ├── taxonomy.json     the species as a tree: [name, rank, species, with a genome, children | accession]
 │   └── downloads.json    the Downloads page's files: title, what, file, bytes, MD5
 └── downloads/Eukore_<version>/
-    ├── Eukore_<version>.tar.gz, _marker_genes.tar.gz, _marker_cds.tar.gz, _rrna_organelle.tar.gz
-    ├── Eukore_<version>_sketches.sig.gz, _species.tsv.gz, _genomes.tsv.gz, _assembly.tsv.gz, ...
+    ├── Eukore_<version>_core.tar.gz, _marker_genes.tar.gz, _marker_cds.tar.gz, _rrna_organelle.tar.gz
+    │                         (each package file in one of them alone; since 2026-11-17)
+    ├── Eukore_<version>_sketches.zip, _species.tsv.gz, _genomes.tsv.gz, _assembly.tsv.gz, ...
+    │                         (the sketches and BGZF tables: hard links to the package's own files)
     └── MD5SUMS
 ```
 

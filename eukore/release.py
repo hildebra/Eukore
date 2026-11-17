@@ -8,26 +8,32 @@ onto the site publishes it (`rsync -a OUT/release/ <site>/`):
     ├── data/taxonomy.json     its species as a tree (supergroup, group, phylum ... genus, species), each node's counts
     ├── data/downloads.json    each download: file, bytes, MD5, what it holds
     └── downloads/Eukore_<version>/
-        ├── Eukore_<version>.tar.gz                   the whole package
+        ├── Eukore_<version>_core.tar.gz              the manifest, species and genome tables, taxonomy, metadata,
+        │                                             benchmarks, organelle molecules: every file no part below holds
         ├── Eukore_<version>_marker_genes.tar.gz      the BUSCOs' and Eukore's loci's copies whole (exons, introns)
+        │                                             and their tables
         ├── Eukore_<version>_marker_cds.tar.gz        their coding sequences and proteins (no introns)
         ├── Eukore_<version>_rrna_organelle.tar.gz    rDNA records and their 18S regions; the organelle genes (12S,
         │                                             16S, COX1, rbcL, ...)
-        ├── Eukore_<version>_sketches.sig.gz          the genomes' sourmash sketches, one collection
+        ├── Eukore_<version>_sketches.zip             the genomes' sourmash sketches, one collection (the package's
+        │                                             metadata/sketches.zip, a hard link)
         ├── Eukore_<version>_<table>.gz               each metadata table alone (species, genomes, assembly, ...)
         └── MD5SUMS
 
-Every file is BGZF at level 9 (util.bgzf_open): gzip to every reader, decompressed on many threads by `bgzip -d -@`.
-A bundle's tar holds its files under Eukore_<version>/ as in the package, so that bundles unpacked side by side make
-up the package's folders (package.read_copies reads them). A rerun keeps the downloads made from the same package
-(its manifest's MD5) and makes those missing.
+Each package file is in one download alone (since 2026-11-17; until then a complete package's tar beside the parts,
+the sketches made again as one .sig.gz and every table copied: OUT held the package three times): the core and the
+parts unpacked side by side make up the package, its sketches.zip apart. A download that is a package file as it is
+(the sketches, a BGZF table) is a hard link to it, copied only where the file system makes none: no second copy in
+OUT. The tables alone are also in the core (tens of MB). Every file is BGZF at level 9 (util.bgzf_open; the sketches a
+zip): gzip to every reader, decompressed on many threads by `bgzip -d -@`. A bundle's tar holds its files under
+Eukore_<version>/ as in the package (package.read_copies reads them unpacked). A rerun keeps the downloads made from
+the same package (its manifest's MD5) and makes those missing.
 """
 
 import collections
 import concurrent.futures
 import contextlib
 import datetime
-import gzip
 import json
 import os
 import re
@@ -50,7 +56,6 @@ SOURCE_TEXT = {"NCBI RefSeq": "NCBI's RefSeq assembly", "NCBI GenBank": "NCBI's 
                "rRNA records only": "published rRNA records alone (EUKARYOME, ROD, PR2, GenBank, SILVA, ...)",
                "organelle genes only": "organelle genes alone (a RefSeq organelle genome, a published record)"}
 TREE_RANKS = ("supergroup", "group", "phylum", "class", "order", "family", "genus", "species")
-SHARED = ("species.tsv", "genomes.tsv")  # in every bundle: what the accessions and taxids are
 SKETCHES = "metadata/sketches.zip"
 TABLES = (("species.tsv", "Species", "one row per species: supergroup, group, NCBI's lineage and six references'"),
           ("genomes.tsv", "Genomes", "each species' genome: accession, quality flags, rRNA copies, genetic code, "
@@ -437,34 +442,44 @@ def _in_sets(rel, subfolders, tables):
 
 
 def _marker_genes(rel):
-    return rel in SHARED or _in_sets(rel, ("copies",), ("loci.tsv", "copies.tsv", "features.tsv", "introns.tsv",
-                                                       "intron_sites.tsv"))
+    return _in_sets(rel, ("copies",), ("loci.tsv", "copies.tsv", "features.tsv", "introns.tsv", "intron_sites.tsv"))
 
 
 def _marker_cds(rel):
-    return rel in SHARED or _in_sets(rel, ("cds", "proteins"), ("loci.tsv", "copies.tsv"))
+    return _in_sets(rel, ("cds", "proteins"), ())
 
 
 def _rrna_organelle(rel):
-    return rel in SHARED or rel.startswith("rrna/") or (rel.startswith("organelle/")
-                                                         and rel != "organelle/molecules.fna.gz")
+    return rel.startswith("rrna/") or (rel.startswith("organelle/") and rel != "organelle/molecules.fna.gz")
 
 
-BUNDLES = (("", "Complete package", "Eukore, whole",
-            "every file of the package: the marker genes, rDNA, organelle genes, metadata, taxonomy and benchmarks, "
-            "with the manifest of their sizes and MD5s", lambda rel: True),
-           ("_marker_genes", "Marker genes", "Marker genes with introns",
+def _core(rel):  # every file no part holds (bundle_of), the sketches apart (their own download)
+    return rel != SKETCHES
+
+
+# Each package file in the first bundle that takes it (bundle_of): one copy of it among the downloads (since
+# 2026-11-17; until then a complete package's tar, and species.tsv, genomes.tsv, loci.tsv and copies.tsv in every part)
+BUNDLES = (("_marker_genes", "Marker genes", "Marker genes with introns",
             "the BUSCO genes and Eukore's own marker loci, each copy whole from first to last codon (exons and "
-            "introns), one FASTA per locus; with their tables (copies, loci, exons and introns) and species.tsv, "
-            "genomes.tsv", _marker_genes),
+            "introns), one FASTA per locus; with their tables (copies, loci, exons and introns)", _marker_genes),
            ("_marker_cds", "Marker genes", "Marker genes without introns",
-            "the same copies' coding sequences (exons joined) and proteins, one FASTA per locus; with copies.tsv, "
-            "loci.tsv, species.tsv, genomes.tsv", _marker_cds),
+            "the same copies' coding sequences (exons joined) and proteins, one FASTA per locus; their tables are "
+            "the marker genes with introns' (copies.tsv, loci.tsv)", _marker_cds),
            ("_rrna_organelle", "rRNA and organelle markers", "rRNA operons and organelle markers",
             "nuclear rDNA records (18S spans and whole operons: 18S, ITS1, 5.8S, ITS2, 28S, 5S), their 18S V1-V9 and "
             "in-silico PCR; the mitochondrial and plastid genes (12S, 16S, 5S, COX1, CYTB, rbcL, matK, ...) with "
-            "their coding sequences, proteins and PCR; species.tsv, genomes.tsv (the organelle molecules whole are in "
-            "the complete package)", _rrna_organelle))
+            "their coding sequences, proteins and PCR (the organelle molecules whole are in the core)",
+            _rrna_organelle),
+           ("_core", "Package core", "Eukore's core (with every part)",
+            "the manifest of every file's size and MD5, species.tsv and genomes.tsv (what the accessions and taxids "
+            "are), the taxonomy, metadata tables, benchmarks and organelle molecules: every file of the package no "
+            "part above holds, the sketches apart. The core and the parts unpacked side by side are the package",
+            _core))
+
+
+def bundle_of(rel):
+    """The suffix of the bundle a package file goes into (the first of BUNDLES that takes it), or None."""
+    return next((suffix for suffix, _g, _t, _w, chosen in BUNDLES if chosen(rel)), None)
 
 
 TAR_EPOCH = 1767225600  # 2026-01-01 UTC: a bundle's members' time where the manifest tells no build time
@@ -515,38 +530,46 @@ def _tar(folder, rels, dest, top, mtime=TAR_EPOCH):
     _publish(part, dest)
 
 
+def _link(src, dest):
+    """A package file as a download (dest): a hard link to it, a copy where the file system makes none (another
+    device, a file system without links). Since 2026-11-17 (until then copied, or made again)."""
+    part = util.part_of(dest)
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(part)
+    try:
+        os.link(src, part)
+    except OSError:
+        shutil.copyfile(src, part)
+    util.publish(part, dest)
+
+
+def _sketch_count(path):
+    """The signature files of a sketches zip (sourmash reads the zip as one collection)."""
+    with zipfile.ZipFile(path) as z:
+        return sum(1 for n in z.namelist() if n.endswith((".sig", ".sig.gz", ".json", ".json.gz")))
+
+
 def _sketches(src, dest):
-    """The package's sketches.zip (sourmash signatures, one file a genome) as one signature file (a JSON list),
-    BGZF -> the signatures. Streamed: a full build's sketches never held at once."""
-    part, n = util.part_of(dest), 0
-    with zipfile.ZipFile(src) as z, util.bgzf_open(part) as out:
-        out.write("[")
-        for name in sorted(z.namelist()):
-            if not name.endswith((".sig", ".sig.gz", ".json", ".json.gz")):
-                continue
-            data = z.read(name)
-            if data[:2] == b"\x1f\x8b":
-                data = gzip.decompress(data)
-            got = json.loads(data)
-            for sig in got if isinstance(got, list) else [got]:
-                out.write((",\n" if n else "") + json.dumps(sig, separators=(",", ":")))
-                n += 1
-        out.write("]\n")
-    _publish(part, dest)
+    """The package's sketches.zip (sourmash signatures, one file a genome; sourmash reads it as one collection) as
+    dest, a hard link -> the signatures. Since 2026-11-17: until then written again as one BGZF JSON list, a second
+    copy of the largest file of the package (21 GB in the first full build), and a third in the complete tar."""
+    n = _sketch_count(src)  # a zip whose central directory is read whole (the manifest's MD5 checks its bytes)
+    _link(src, dest)
     return n
 
 
 def _table(src, dest):
-    """A package table as dest, BGZF at level 9: a BGZF table copied as it is, another compressed again. A BGZF table
-    without its end block is cut short: no download of it (since 2026-11-10: copied as it was)."""
+    """A package table as dest, BGZF at level 9: a BGZF table as it is (a hard link, since 2026-11-17; until then
+    copied), another compressed. A BGZF table without its end block is cut short: no download of it (since
+    2026-11-10: copied as it was)."""
     part = util.part_of(dest)
     if src.endswith(".gz") and util.is_bgzf(src):
         if not util.bgzf_whole(src):
             raise OSError(f"release: {src} is cut short (no BGZF end block): the package is damaged")
-        shutil.copyfile(src, part)
-    else:
-        with util.open_binary(src) as fh, util.bgzf_open(part, "wb") as out:
-            shutil.copyfileobj(fh, out, 1 << 22)
+        _link(src, dest)
+        return
+    with util.open_binary(src) as fh, util.bgzf_open(part, "wb") as out:
+        shutil.copyfileobj(fh, out, 1 << 22)
     _publish(part, dest)
 
 
@@ -586,7 +609,7 @@ def _download(item, dest, known, log):
     path = os.path.join(dest, item["file"])
     entry = {k: v for k, v in item.items() if k != "make"}
     sketches, made = item["key"] == "sketches", False
-    if os.path.isfile(path) and not util.bgzf_whole(path):
+    if os.path.isfile(path) and not sketches and not util.bgzf_whole(path):  # the sketches: a zip, a link
         log(f"release: {item['file']} of an earlier run is cut short (no BGZF end block): made again")
         os.remove(path)
     if not os.path.isfile(path):
@@ -606,8 +629,7 @@ def _download(item, dest, known, log):
         if same and isinstance(old.get("files"), int):
             entry["files"] = old["files"]
         else:
-            with gzip.open(path, "rt") as fh:
-                entry["files"] = len(json.load(fh))
+            entry["files"] = _sketch_count(path)
     entry.update(bytes=at.st_size, md5=md5)
     state = dict(bytes=at.st_size, mtime_ns=at.st_mtime_ns, md5=md5)
     if sketches:
@@ -634,18 +656,21 @@ def downloads(folder, dest, log=print, threads=1):
     rels = package_files(folder)
     mtime = built_time(folder)
     plan = []
-    for suffix, group, title, what, chosen in BUNDLES:
-        members = [r for r in rels if chosen(r)]
-        if suffix and all(r in SHARED for r in members):  # a bundle of the shared tables alone: none
+    members = collections.defaultdict(list)
+    for rel in rels:
+        members[bundle_of(rel)].append(rel)
+    for suffix, group, title, what, _chosen in sorted(BUNDLES, key=lambda b: b[0] != "_core"):  # the core first
+        if not members[suffix]:  # a part the package has nothing of: none
             continue
-        plan.append(dict(key=suffix.strip("_") or "complete", group=group, title=title, what=what,
-                         file=f"{name}{suffix}.tar.gz", files=len(members),
-                         make=lambda path, m=members: _tar(folder, m, path, name, mtime)))
+        plan.append(dict(key=suffix.strip("_"), group=group, title=title, what=what,
+                         file=f"{name}{suffix}.tar.gz", files=len(members[suffix]),
+                         make=lambda path, m=members[suffix]: _tar(folder, m, path, name, mtime)))
     if os.path.isfile(os.path.join(folder, SKETCHES)):
         plan.append(dict(key="sketches", group="Sourmash sketches", title="Sourmash sketches of the genomes",
                          what="each genome's sourmash signature (taken before the build deleted the genome), one "
-                              "collection: sourmash search, gather and compare read it as it is",
-                         file=f"{name}_sketches.sig.gz", files=None,
+                              "collection: sourmash search, gather and compare read the zip as it is (the "
+                              f"package's {SKETCHES})",
+                         file=f"{name}_sketches.zip", files=None,
                          make=lambda path: _sketches(os.path.join(folder, SKETCHES), path)))
     for rel, title, what in TABLES:
         if os.path.isfile(os.path.join(folder, rel)):

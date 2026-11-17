@@ -7,10 +7,14 @@
 #   REVERSION=1 bash tools/eukore.sh build      # once, on a build whose genomes an older Eukore ran: --reversion
 #   bash tools/eukore.sh final        # the final job alone, no array: the genomes done, the package made again
 #   bash tools/eukore.sh qc [N]      # N helpers of the package stage's vsearch checks (the final job submits them)
+#   bash tools/eukore.sh benchmark   # benchmarks/ on the finished package: the downloads job, then the
+#                                    # benchmarks' and figures' job after it
+#   AFTER=<final job> bash tools/eukore.sh benchmark   # ... once that job has ended
 #
 # The comparisons with other references, the read benchmark and the figures are not the build's (since
 # 2026-11-12; until then the `compare` step and the final job's --read_compare): benchmarks/README.md runs them on
-# the finished package.
+# the finished package, `benchmark` here (since 2026-11-17) with the settings' folders: the other references'
+# downloads and their comparable forms in BENCH (kept between builds), the results in BENCH_RESULTS.
 #
 # `build` submits both jobs at once. The process jobs share the genomes out by their claims; each, once no genome
 # is left for it, goes on with the steps that take one done genome at a time under its claim (the backfill with its
@@ -29,7 +33,7 @@
 set -Eeuo pipefail
 trap 'rc=$?; echo "line $LINENO: \"$BASH_COMMAND\" exited $rc" >&2' ERR
 
-STEP=${1:?give fetch, build, final or qc}
+STEP=${1:?give fetch, build, final, qc or benchmark}
 # sbatch runs a copy of this script from its spool folder: a job gets the script's own path from the submitting call
 if [[ -n ${SLURM_JOB_ID:-} && -n ${EUKORE_SH:-} ]]; then SELF=$EUKORE_SH; else SELF=$(readlink -f "$0"); fi
 CONF=${EUKORE_CONF:-$(dirname "$(dirname "$SELF")")/local/eukore.conf}
@@ -39,8 +43,13 @@ if [[ ! -f $CONF ]]; then
 fi
 TASKS=8; QC_TASKS=0; QC_IDLE=1800; MAMBA_ENV=eukore; GEN=; SOURCES=; SCR=; LOGS=
 BUILD_OPTS=(); FETCH_OPTS=(); FINAL_OPTS=(); SBATCH_ALL=(); SBATCH_FETCH=(); SBATCH_PROCESS=(); SBATCH_FINAL=(); SBATCH_QC=()
+BENCH=; BENCH_RESULTS=; BENCH_PREP_OPTS=(); BENCH_OPTS=(); FIGURE_OPTS=(); SBATCH_BENCH_PREP=(); SBATCH_BENCH=()
 source "$CONF"
 : "${PDIR:?$CONF: PDIR}" "${WORK:?$CONF: WORK}" "${OUT:?$CONF: OUT}" "${VERSION:?$CONF: VERSION}"
+PACKAGE=$OUT/Eukore_$VERSION
+BENCH_RESULTS=${BENCH_RESULTS:-$OUT/Eukore_${VERSION}_benchmarks}
+(( ${#SBATCH_BENCH_PREP[@]} )) || SBATCH_BENCH_PREP=(${SBATCH_FETCH[@]+"${SBATCH_FETCH[@]}"})
+(( ${#SBATCH_BENCH[@]} )) || SBATCH_BENCH=(${SBATCH_PROCESS[@]+"${SBATCH_PROCESS[@]}"})
 
 submit() {  # submit NAME [sbatch's options] -- STEP: the job's ID; fails when sbatch refuses the job
     local name=$1 opts=() call jid
@@ -193,8 +202,54 @@ _qc)
     # serves the final job's every search), till the final job ends (WORK/qc/helpers.stop)
     python3 -m eukore.qc helper "$WORK/qc" -t "${SLURM_CPUS_PER_TASK:-2}" --idle "${QC_IDLE:-1800}"
     ;;
+benchmark)  # benchmarks/ on the package (since 2026-11-17): the downloads job (internet), then the benchmarks' job
+    if [[ -z $BENCH ]]; then
+        echo "$CONF: BENCH, the benchmarks' folder (the other references, kept between builds), is not set" >&2
+        exit 1
+    fi
+    if [[ -z ${AFTER:-} && ! -f $PACKAGE/manifest.json ]]; then
+        echo "no finished package at $PACKAGE: the build first (or AFTER=<its final job> bash $SELF benchmark)" >&2
+        exit 1
+    fi
+    [[ -z $LOGS ]] || mkdir -p "$LOGS"
+    after=${AFTER:+afterok:$AFTER}
+    prep=$(submit Eukore-bench-prep ${SBATCH_BENCH_PREP[@]+"${SBATCH_BENCH_PREP[@]}"} \
+        ${after:+--dependency=$after --kill-on-invalid-dep=yes} -- _bench_prep)
+    # afterany: a download that failed (a server down) leaves that reference out, not the benchmarks
+    if ! bench=$(submit Eukore-bench ${SBATCH_BENCH[@]+"${SBATCH_BENCH[@]}"} \
+        --dependency="afterany:$prep${after:+,$after}" --kill-on-invalid-dep=yes -- _bench); then
+        scancel "$prep"
+        echo "job $prep cancelled: no benchmarks' job after it" >&2
+        exit 1
+    fi
+    echo "benchmark: downloads into $BENCH job $prep; the benchmarks and figures into $BENCH_RESULTS job $bench"
+    ;;
+_bench_prep)  # every download once in BENCH (kept: a rerun fetches only what is missing), the test genomes chosen
+    activate
+    export BENCH_ENV=active  # Eukore's environment (envs/eukore.yaml): no benchmarks' environment made in BENCH
+    src=${SOURCES:-$WORK/sources}
+    opts=(--genomes "${GEN:-$OUT/genomes}")
+    # the build's own NCBI taxonomy and BUSCO dataset, the package's versions, rather than downloads of other ones
+    [[ ! -s $src/taxdump.tar.gz ]] || opts+=(--taxdump "$src/taxdump.tar.gz")
+    [[ ! -d $src/eukaryota_odb12/hmms ]] || opts+=(--odb "$src/eukaryota_odb12")
+    bash "$PDIR/benchmarks/eukore-bench-prep.sh" "$BENCH" "$PACKAGE" "${opts[@]}" \
+        ${BENCH_PREP_OPTS[@]+"${BENCH_PREP_OPTS[@]}"}
+    ;;
+_bench)
+    activate
+    export BENCH_ENV=active
+    src=${SOURCES:-$WORK/sources}
+    opts=()
+    [[ ! -s $src/taxdump.tar.gz ]] || opts+=(--taxdump "$src/taxdump.tar.gz")
+    [[ ! -d $WORK/align ]] || opts+=(--align_cache "$WORK/align")  # the build's proteins on BUSCO's profiles
+    if [[ -n $SCR ]] && mkdir -p "$SCR/bench"; then opts+=(--tmp "$SCR/bench"); fi
+    bash "$PDIR/benchmarks/eukore-benchmark.sh" "$BENCH" "$PACKAGE" "$BENCH_RESULTS" ${opts[@]+"${opts[@]}"} \
+        ${BENCH_OPTS[@]+"${BENCH_OPTS[@]}"}
+    bash "$PDIR/benchmarks/eukore-figures.sh" "$BENCH" "$PACKAGE" "$BENCH_RESULTS" \
+        ${FIGURE_OPTS[@]+"${FIGURE_OPTS[@]}"}
+    ;;
 *)
-    echo "unknown step: $STEP (fetch, build, final or qc)" >&2
+    echo "unknown step: $STEP (fetch, build, final, qc or benchmark)" >&2
     exit 1
     ;;
 esac

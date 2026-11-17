@@ -27,8 +27,18 @@ QC_IDLE=1800                          # seconds a helper waits for the final job
 SCR=${SLURM_LOCAL_SCRATCH:+$SLURM_LOCAL_SCRATCH/Eukore}
 
 # the comparisons with other references (EukDetect2, MetaPhlAn 4, PR2), the read benchmark and the figures:
-# benchmarks/README.md, on the finished package (since 2026-11-12; until then COMPARE, MPA_* and
-# EUKDETECT_* here)
+# benchmarks/README.md, on the finished package (since 2026-11-12; until then COMPARE, MPA_* and EUKDETECT_* here),
+# `bash tools/eukore.sh benchmark` (since 2026-11-17), in MAMBA_ENV (envs/eukore.yaml holds their tools)
+BENCH=/path/to/DB/Eukore/bench       # the other references, kept between builds (~9 GB): their downloads, their
+                                      # comparable forms (compare/), the read benchmark's genomes; on a file system
+                                      # that keeps its files, not scratch
+BENCH_RESULTS=                        # the tables and figures (empty: OUT/Eukore_<VERSION>_benchmarks)
+BENCH_PREP_OPTS=()                    # eukore_bench.prep's: --read_genomes N, --mpa_version, --only pr2,...
+BENCH_OPTS=()                         # eukore_bench.compare's: --no_tree, --previous OUT/Eukore_<older version>
+FIGURE_OPTS=()                        # eukore_bench.figures': --format pdf
+SBATCH_BENCH_PREP=()                  # the downloads' job (empty: SBATCH_FETCH's; needs the internet)
+SBATCH_BENCH=(-p medium --cpus-per-task=32 --mem=200G --localscratch=ssd:200)  # the benchmarks' (empty:
+                                      # SBATCH_PROCESS'); minimap2 on the whole package: tens of GB
 
 # eukore_build.py's options: every stage's (the same --groups, --species for each), the fetch job's, the final job's
 # (-t is the job's --cpus-per-task). --ksgp_tax: a KSGP release's tax file, species.tsv's KSGP lineages and

@@ -47,18 +47,22 @@ $stats = release_json('stats.json');
 <h2>Unpacking</h2>
 <hr>
 <p>A bundle unpacks into the package's own folder, <code><?= h($listing['package'] ?? 'Eukore_<version>') ?>/</code>, its files where
-  the complete package has them: bundles unpacked side by side make up those parts of the package.</p>
+  the package has them. Each file of the package is in one bundle only: take the core (the manifest, the species and
+  genome tables, the taxonomy) with any part, and the core with every part unpacked side by side is the whole
+  package (its sketches apart, a download of their own).</p>
 <?php $p = h($listing['package'] ?? 'Eukore_2026.11'); ?>
 <pre><code># each file as published
 md5sum -c MD5SUMS
 # any tar unpacks a bundle; htslib's bgzip does it on 8 threads
-tar -xzf <?= $p ?>_marker_genes.tar.gz
-tar -I "bgzip -@ 8" -xf <?= $p ?>.tar.gz
+tar -xzf <?= $p ?>_core.tar.gz
+tar -I "bgzip -@ 8" -xf <?= $p ?>_marker_genes.tar.gz
+# the whole package: the core and every part
+for f in <?= $p ?>_*.tar.gz; do tar -I "bgzip -@ 8" -xf "$f"; done
 # a table, or a FASTA file inside a bundle, read as any .gz
 bgzip -d -@ 8 -c <?= $p ?>_assembly.tsv.gz | head
 zcat <?= $p ?>/busco/copies/10248812at2759.fna.gz | head -2
 # the genomes' sketches, as one sourmash collection
-sourmash search query.sig <?= $p ?>_sketches.sig.gz</code></pre>
+sourmash search query.sig <?= $p ?>_sketches.zip</code></pre>
 
 <h2>The software</h2>
 <hr>

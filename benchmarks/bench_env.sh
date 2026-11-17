@@ -2,12 +2,17 @@
 # Sourced by the benchmarks' scripts (since 2026-11-12): bench_env BENCH makes the benchmarks' environment at
 # BENCH/env where it is not there (benchmarks/env.yaml, by micromamba, mamba or conda; their package cache at
 # BENCH/pkgs, so that nothing goes to a home folder's conda directories), then puts it first on PATH and this folder
-# on PYTHONPATH (python3 -m eukore_bench.<module>). No activation needed.
+# on PYTHONPATH (python3 -m eukore_bench.<module>). No activation needed. BENCH_ENV=active (since 2026-11-17): the
+# environment already active instead (envs/eukore.yaml holds every tool of the benchmarks), none made.
 BENCH_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 bench_env() {
     local bench=$1 tool
     mkdir -p "$bench"
+    if [[ ${BENCH_ENV:-} == active ]]; then  # the environment already on PATH (tools/eukore.sh benchmark: Eukore's own)
+        export PYTHONPATH=$BENCH_HERE${PYTHONPATH:+:$PYTHONPATH}
+        return
+    fi
     local env=$bench/env
     if [[ ! -x $env/bin/python3 ]]; then
         if ! tool=$(command -v micromamba || command -v mamba || command -v conda); then
