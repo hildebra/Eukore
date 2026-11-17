@@ -40,14 +40,16 @@ other references' downloads and comparable forms are kept there between builds),
 `OUT/Eukore_<version>_benchmarks`), and
 
 ```bash
-bash tools/eukore.sh benchmark                      # the downloads job, then the benchmarks' and figures' job
-AFTER=<final job> bash tools/eukore.sh benchmark    # once the build's final job has ended
+bash tools/eukore.sh bench_downloads                # eukore-bench-prep.sh: a job on a download node
+AFTER=<its job id> bash tools/eukore.sh benchmark   # eukore-benchmark.sh and eukore-figures.sh: a compute node's job
 ```
 
 runs the three steps in the build's environment (envs/eukore.yaml holds every tool here; `BENCH_ENV=active`: no
 `BENCH/env` made), with the build's NCBI taxonomy and BUSCO dataset (`SOURCES`), its genomes folder and its
-alignments (`WORK/align`). Options: `BENCH_PREP_OPTS`, `BENCH_OPTS`, `FIGURE_OPTS`; the jobs' `SBATCH_BENCH_PREP`
-(default `SBATCH_FETCH`'s) and `SBATCH_BENCH` (default `SBATCH_PROCESS`'s).
+alignments (`WORK/align`). `AFTER=<final job>` makes `bench_downloads` wait for the build; `benchmark` refuses a
+`BENCH` no downloads job filled unless it waits for one. Options: `BENCH_DOWNLOADS_OPTS`, `BENCH_OPTS`,
+`FIGURE_OPTS`; each job's partition and size: `SBATCH_BENCH_DOWNLOADS` (default `SBATCH_FETCH`'s) and `SBATCH_BENCH`
+(default `SBATCH_PROCESS`'s).
 
 By hand on a SLURM cluster, for example:
 ```bash

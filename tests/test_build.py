@@ -1260,7 +1260,7 @@ class ChainTest(unittest.TestCase):
             self.assertIn("no settings at", got.stderr)
 
     def test_the_benchmark_jobs(self):
-        # tools/eukore.sh benchmark (since 2026-11-17): benchmarks/ on the package with the settings' folders, in
+        # tools/eukore.sh bench_downloads and benchmark (since 2026-11-17): benchmarks/ on the package with the settings' folders, in
         # Eukore's own environment (BENCH_ENV=active: none made in BENCH)
         import stat  # noqa: PLC0415
         import subprocess  # noqa: PLC0415
@@ -1300,27 +1300,41 @@ class ChainTest(unittest.TestCase):
                         calls = fh.read().splitlines()
                     os.remove(log)
                 return got, calls
-            got, calls = run("benchmark")  # no package yet
+            package, results = f"{out}/Eukore_2026.11", f"{out}/Eukore_2026.11_benchmarks"
+            # two steps, each its own job on its own partition (since 2026-11-17: one call submitted both)
+            got, calls = run("bench_downloads")  # no package yet
             self.assertEqual((got.returncode, calls), (1, []))
             self.assertIn("no finished package", got.stderr)
-            got, calls = run("benchmark", AFTER="77")  # after the final job: the downloads, then the benchmarks
-            self.assertEqual(got.returncode, 0, got.stderr)
-            self.assertEqual(len(calls), 2)
-            for said in ("-J Eukore-bench-prep", "-p download", "--dependency=afterok:77", f"{script} _bench_prep"):
+            got, calls = run("bench_downloads", AFTER="77")  # after the final job
+            self.assertEqual((got.returncode, len(calls)), (0, 1), got.stderr)
+            for said in ("-J Eukore-bench_downloads", "-p download", "--dependency=afterok:77",
+                         f"{script} _bench_downloads"):
                 self.assertIn(said, calls[0])
-            for said in ("-J Eukore-bench", "--mem=200G", "--dependency=afterany:101,afterok:77", f"{script} _bench"):
-                self.assertIn(said, calls[1])
-            got, calls = run("benchmark", TEST_BENCH="")
+            self.assertIn("AFTER=101 bash", got.stdout)
+            got, calls = run("benchmark")  # no downloads in BENCH yet
             self.assertEqual((got.returncode, calls), (1, []))
-            self.assertIn("BENCH, the benchmarks' folder", got.stderr)
+            self.assertIn("bench_downloads first", got.stderr)
+            got, calls = run("benchmark", AFTER="101")  # after the downloads, however they ended
+            self.assertEqual((got.returncode, len(calls)), (0, 1), got.stderr)
+            for said in ("-J Eukore-benchmark", "--mem=200G", "--dependency=afterany:101", f"{script} _benchmark"):
+                self.assertIn(said, calls[0])
+            self.assertNotIn("-p download", calls[0])
+            for step in ("bench_downloads", "benchmark"):
+                got, calls = run(step, AFTER="77", TEST_BENCH="")
+                self.assertEqual((got.returncode, calls), (1, []))
+                self.assertIn("BENCH, the benchmarks' folder", got.stderr)
             # inside the jobs: the build's own taxonomy, BUSCO dataset and alignments; the results beside the package
-            package, results = f"{out}/Eukore_2026.11", f"{out}/Eukore_2026.11_benchmarks"
             job = dict(SLURM_JOB_ID="101", SLURM_CPUS_PER_TASK="32", SLURM_LOCAL_SCRATCH="/ssd", EUKORE_SH=script)
-            got, calls = run("_bench_prep", **job)
+            got, calls = run("_bench_downloads", **job)
             self.assertEqual(calls, [f"python3 -m eukore_bench.prep {bench} --package {package} --genomes /g "
                                      f"--taxdump {src}/taxdump.tar.gz --odb {src}/eukaryota_odb12 BENCH_ENV=active"],
                              got.stderr)
-            got, calls = run("_bench", **dict(job, SLURM_LOCAL_SCRATCH=tmp))
+            got, calls = run("_benchmark", **dict(job, SLURM_LOCAL_SCRATCH=tmp))  # the final job left no package
+            self.assertEqual((got.returncode, calls), (1, []))
+            os.makedirs(package)
+            with open(os.path.join(package, "manifest.json"), "w") as fh:
+                fh.write("{}")
+            got, calls = run("_benchmark", **dict(job, SLURM_LOCAL_SCRATCH=tmp))
             self.assertEqual(calls, [
                 f"python3 -m eukore_bench.compare --package {package} --bench {bench} --out {results} -t 32 "
                 f"--taxdump {src}/taxdump.tar.gz --align_cache {work}/align --tmp {tmp}/Eukore/bench --no_tree "
