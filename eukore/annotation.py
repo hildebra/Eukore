@@ -160,7 +160,7 @@ def none_file(genomes_folder, accession):
 def noted_none(genomes_folder, accession):
     """The sources noted beside a genome to have no annotation of it (none_file) -> set."""
     path = none_file(genomes_folder, accession)
-    if not os.path.isfile(path):
+    if not util.exists(path):  # util.listed's listing where the fetch stage's selection holds one
         return set()
     with open(path) as fh:
         return {line.strip() for line in fh if line.strip()}
@@ -213,7 +213,7 @@ def found(genomes_folder, accession):
     """The best annotation beside a genome (the fetch stage's; SOURCES' order) -> (path, source), or (None, None)."""
     for source in SOURCES:
         path = gff_file(genomes_folder, accession, source)
-        if os.path.isfile(path):
+        if util.exists(path):
             return path, source
     return None, None
 

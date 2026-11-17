@@ -1409,6 +1409,32 @@ def genome_rrna_records(opts, job_map, ncbi, collected=None):
     return out
 
 
+def genomes_to_fetch(opts, job_map, extras, donors, loci):
+    """The fetch stage's genomes to download -> (jobs, {done genomes fetched again for better gene models}, {done
+    genomes of an older genome record fetched again}, counts): each genome (the plan's and the panel's) with a URL and
+    not here, unless done for loci (and of this genome record, its gene models the best there are); the rRNA donors not
+    here and not extracted. Each done genome's done.json read once, READ_THREADS at once (genomes.prefetch), and the
+    genomes folder listed once (util.listed): since 2026-11-17, until then each genome's done.json read up to five
+    times and its files looked for, one genome after another (a fetch with every genome there sat silent for long
+    on the shared file system)."""
+    everyone = {**job_map, **extras}
+    with genomes.cached_summaries(), util.listed(opts.genomes):
+        genomes.prefetch(opts.work, everyone)
+        missing = {a for a, j in everyone.items() if j["url"] and not j.get("path")
+                   and not util.exists(genomes.genome_file(opts.genomes, a))}
+        done = {a for a in missing if genomes.is_done(opts.work, a, loci)}
+        # a done genome no longer here is fetched again where better gene models than its run took are there
+        # (genomes.better_annotation): the process stage runs it again with them
+        again = {a for a in done if a in job_map and genomes.better_annotation(opts.work, job_map[a])}
+        # and a done genome of an older genome record (since 2026-11-09): run again by this one, unless --reversion
+        stale = {a for a in done if genomes.record_stale(opts.work, a)} - again
+        todo = [everyone[a] for a in sorted(missing) if a not in done or a in again or a in stale]
+        todo += [j for a, j in sorted(donors.items()) if a not in everyone and j["url"]
+                 and not util.exists(genomes.genome_file(opts.genomes, a)) and not genomes.donor_done(opts.work, a)]
+    counts = dict(genomes=len(everyone), here=len(everyone) - len(missing), pruned=len(done - again - stale))
+    return todo, again, stale, counts
+
+
 def annotations_to_fetch(work, genomes_folder, job_map, loci, veupathdb_key=None):
     """The fetch stage's genomes to fetch the annotation of -> jobs: those with a source still to ask
     (annotation.untried: none kept beside them, or a better one not asked yet) that the process stage runs (not done
@@ -1420,7 +1446,7 @@ def annotations_to_fetch(work, genomes_folder, job_map, loci, veupathdb_key=None
         return not genomes.is_done(work, a, loci) or genomes.record_stale(work, a)
     return [j for a, j in sorted(job_map.items()) if annotation.wanted(j)
             and annotation.untried(genomes_folder, j, veupathdb_key)
-            and (runs(a) or not store.has(genomes.done_dir(work, a), annotation.TABLE)
+            and (runs(a) or not genomes.has(work, a, annotation.TABLE)
                  or genomes.better_annotation(work, j))]
 
 
@@ -2334,27 +2360,16 @@ def _main(argv, held):
     if "fetch" in opts.stages:
         # the BUSCOs and the markers: a genome not searched for one is fetched again
         loci = called_loci(opts, src_dir, unbuilt=True)
-        # a done genome no longer here is fetched again where better gene models than its run took are there
-        # (genomes.better_annotation): the process stage runs it again with them
-        again = {a for a, j in job_map.items() if j["url"] and not j.get("path")
-                 and not os.path.isfile(genomes.genome_file(opts.genomes, a)) and genomes.is_done(opts.work, a, loci)
-                 and genomes.better_annotation(opts.work, j)}
+        started = time.time()
+        todo, again, stale, counts = genomes_to_fetch(opts, job_map, extras, donors, loci)
+        say(f"genomes to fetch chosen: of {counts['genomes']:,}, {counts['here']:,} here (or not downloaded), "
+            f"{counts['pruned']:,} done and pruned (not fetched again); took {util.duration(time.time() - started)}")
         if again:
             say(f"{len(again):,} done genomes no longer here fetched again for better gene models (e.g. "
                 f"{sorted(again)[:3]})")
-        # and a done genome of an older genome record (since 2026-11-09): run again by this one, unless --reversion
-        stale = {a for a, j in {**job_map, **extras}.items() if j["url"] and not j.get("path")
-                 and not os.path.isfile(genomes.genome_file(opts.genomes, a)) and genomes.is_done(opts.work, a, loci)
-                 and genomes.record_stale(opts.work, a)} - again
         if stale:
             say(f"{len(stale):,} done genomes of an older genome record than {genomes.GENOME_RECORD} no longer here "
                 f"fetched again to be run again (e.g. {sorted(stale)[:3]}; --reversion keeps their calls instead)")
-            again |= stale
-        todo = [j for a, j in sorted({**job_map, **extras}.items()) if j["url"] and not j.get("path")
-                and not os.path.isfile(genomes.genome_file(opts.genomes, a))
-                and (not genomes.is_done(opts.work, a, loci) or a in again)]
-        todo += [j for a, j in sorted(donors.items()) if a not in job_map and a not in extras and j["url"]
-                 and not genomes.donor_done(opts.work, a) and not os.path.isfile(genomes.genome_file(opts.genomes, a))]
         downloads = max(1, opts.downloads)
         say(f"fetching {len(todo):,} genomes ({sum(j.get('size') or 0 for j in todo) / 1e9:,.1f} Gb) into "
             f"{opts.genomes}, {downloads} at a time by {util.CURL or 'urllib'}, checked by "
@@ -2427,7 +2442,12 @@ def _main(argv, held):
         # the genomes' own gene models beside them, for the process stage's copies' models and their comparison
         # (annotation.py): NCBI's (RefSeq's, a GenBank submitter's; not where the assembly summary gives no
         # protein-coding genes), else Ensembl's, else TOGA2's
-        todo = annotations_to_fetch(opts.work, opts.genomes, job_map, loci, opts.veupathdb_key)
+        started = time.time()
+        # read and listed once, as the genomes' choice above (the downloads through: the folder listed anew)
+        with genomes.cached_summaries(), util.listed(opts.genomes):
+            genomes.prefetch(opts.work, [a for a, j in job_map.items() if annotation.wanted(j)])
+            todo = annotations_to_fetch(opts.work, opts.genomes, job_map, loci, opts.veupathdb_key)
+        say(f"annotations to fetch chosen: took {util.duration(time.time() - started)}")
         say(f"fetching {len(todo):,} genomes' annotations (the first of {', '.join(annotation.SOURCES)} that has one) "
             f"into {opts.genomes}")
         progress = util.Progress("annotations fetched", [1] * len(todo), say, opts.report_minutes * 60, "", 1,
