@@ -7,13 +7,14 @@
 #   REVERSION=1 bash tools/eukore.sh build      # once, on a build whose genomes an older Eukore ran: --reversion
 #   bash tools/eukore.sh final        # the final job alone, no array: the genomes done, the package made again
 #   bash tools/eukore.sh qc [N]      # N helpers of the package stage's vsearch checks (the final job submits them)
-#   bash tools/eukore.sh benchmark   # benchmarks/ on the finished package: the downloads job, then the
-#                                    # benchmarks' and figures' job after it
-#   AFTER=<final job> bash tools/eukore.sh benchmark   # ... once that job has ended
+#   bash tools/eukore.sh bench_downloads  # benchmarks/' downloads into BENCH (a download node; AFTER=<final job>)
+#   bash tools/eukore.sh benchmark   # benchmarks/ on the finished package: the comparisons, the read benchmark and
+#   AFTER=<bench_downloads job> bash tools/eukore.sh benchmark   # the figures (a compute node), after the downloads
 #
 # The comparisons with other references, the read benchmark and the figures are not the build's (since
 # 2026-11-12; until then the `compare` step and the final job's --read_compare): benchmarks/README.md runs them on
-# the finished package, `benchmark` here (since 2026-11-17) with the settings' folders: the other references'
+# the finished package, `bench_downloads` and `benchmark` here (since 2026-11-17; two jobs, each on its own
+# partition) with the settings' folders: the other references'
 # downloads and their comparable forms in BENCH (kept between builds), the results in BENCH_RESULTS.
 #
 # `build` submits both jobs at once. The process jobs share the genomes out by their claims; each, once no genome
@@ -33,7 +34,7 @@
 set -Eeuo pipefail
 trap 'rc=$?; echo "line $LINENO: \"$BASH_COMMAND\" exited $rc" >&2' ERR
 
-STEP=${1:?give fetch, build, final, qc or benchmark}
+STEP=${1:?give fetch, build, final, qc, bench_downloads or benchmark}
 # sbatch runs a copy of this script from its spool folder: a job gets the script's own path from the submitting call
 if [[ -n ${SLURM_JOB_ID:-} && -n ${EUKORE_SH:-} ]]; then SELF=$EUKORE_SH; else SELF=$(readlink -f "$0"); fi
 CONF=${EUKORE_CONF:-$(dirname "$(dirname "$SELF")")/local/eukore.conf}
@@ -43,12 +44,14 @@ if [[ ! -f $CONF ]]; then
 fi
 TASKS=8; QC_TASKS=0; QC_IDLE=1800; MAMBA_ENV=eukore; GEN=; SOURCES=; SCR=; LOGS=
 BUILD_OPTS=(); FETCH_OPTS=(); FINAL_OPTS=(); SBATCH_ALL=(); SBATCH_FETCH=(); SBATCH_PROCESS=(); SBATCH_FINAL=(); SBATCH_QC=()
-BENCH=; BENCH_RESULTS=; BENCH_PREP_OPTS=(); BENCH_OPTS=(); FIGURE_OPTS=(); SBATCH_BENCH_PREP=(); SBATCH_BENCH=()
+BENCH=; BENCH_RESULTS=; BENCH_DOWNLOADS_OPTS=(); BENCH_OPTS=(); FIGURE_OPTS=(); SBATCH_BENCH_DOWNLOADS=()
+SBATCH_BENCH=()
 source "$CONF"
 : "${PDIR:?$CONF: PDIR}" "${WORK:?$CONF: WORK}" "${OUT:?$CONF: OUT}" "${VERSION:?$CONF: VERSION}"
 PACKAGE=$OUT/Eukore_$VERSION
 BENCH_RESULTS=${BENCH_RESULTS:-$OUT/Eukore_${VERSION}_benchmarks}
-(( ${#SBATCH_BENCH_PREP[@]} )) || SBATCH_BENCH_PREP=(${SBATCH_FETCH[@]+"${SBATCH_FETCH[@]}"})
+# each benchmarks' job on its own partition: the downloads where the fetch runs, the benchmarks where the processes do
+(( ${#SBATCH_BENCH_DOWNLOADS[@]} )) || SBATCH_BENCH_DOWNLOADS=(${SBATCH_FETCH[@]+"${SBATCH_FETCH[@]}"})
 (( ${#SBATCH_BENCH[@]} )) || SBATCH_BENCH=(${SBATCH_PROCESS[@]+"${SBATCH_PROCESS[@]}"})
 
 submit() {  # submit NAME [sbatch's options] -- STEP: the job's ID; fails when sbatch refuses the job
@@ -116,6 +119,13 @@ activate() {  # the settings' micromamba environment, inside a job
     eval "$(micromamba shell hook -s bash)"
     [[ ${CONDA_DEFAULT_ENV:-} == "$MAMBA_ENV" ]] || micromamba activate "$MAMBA_ENV"
     set -eu
+}
+
+need_bench() {  # the settings' BENCH: the benchmarks' steps need it
+    if [[ -z $BENCH ]]; then
+        echo "$CONF: BENCH, the benchmarks' folder (the other references, kept between builds), is not set" >&2
+        exit 1
+    fi
 }
 
 need_local_tmp() {  # the node's local disk: the process and the final job need it (the shared file system's I/O)
@@ -202,29 +212,35 @@ _qc)
     # serves the final job's every search), till the final job ends (WORK/qc/helpers.stop)
     python3 -m eukore.qc helper "$WORK/qc" -t "${SLURM_CPUS_PER_TASK:-2}" --idle "${QC_IDLE:-1800}"
     ;;
-benchmark)  # benchmarks/ on the package (since 2026-11-17): the downloads job (internet), then the benchmarks' job
-    if [[ -z $BENCH ]]; then
-        echo "$CONF: BENCH, the benchmarks' folder (the other references, kept between builds), is not set" >&2
-        exit 1
-    fi
+bench_downloads)  # the benchmarks' downloads into BENCH (since 2026-11-17): a job of its own, on a node with internet
+    need_bench
     if [[ -z ${AFTER:-} && ! -f $PACKAGE/manifest.json ]]; then
-        echo "no finished package at $PACKAGE: the build first (or AFTER=<its final job> bash $SELF benchmark)" >&2
+        echo "no finished package at $PACKAGE: the build first (or AFTER=<its final job> bash $SELF bench_downloads)" >&2
         exit 1
     fi
     [[ -z $LOGS ]] || mkdir -p "$LOGS"
     after=${AFTER:+afterok:$AFTER}
-    prep=$(submit Eukore-bench-prep ${SBATCH_BENCH_PREP[@]+"${SBATCH_BENCH_PREP[@]}"} \
-        ${after:+--dependency=$after --kill-on-invalid-dep=yes} -- _bench_prep)
-    # afterany: a download that failed (a server down) leaves that reference out, not the benchmarks
-    if ! bench=$(submit Eukore-bench ${SBATCH_BENCH[@]+"${SBATCH_BENCH[@]}"} \
-        --dependency="afterany:$prep${after:+,$after}" --kill-on-invalid-dep=yes -- _bench); then
-        scancel "$prep"
-        echo "job $prep cancelled: no benchmarks' job after it" >&2
+    jid=$(submit Eukore-bench_downloads ${SBATCH_BENCH_DOWNLOADS[@]+"${SBATCH_BENCH_DOWNLOADS[@]}"} \
+        ${after:+--dependency=$after --kill-on-invalid-dep=yes} -- _bench_downloads)
+    echo "bench_downloads: job $jid, into $BENCH. The benchmarks after it: AFTER=$jid bash $SELF benchmark"
+    ;;
+benchmark)  # the comparisons, the read benchmark and the figures (since 2026-11-17): a compute node's job
+    need_bench
+    # no benchmarks on a BENCH no downloads job filled, unless it waits for one (as `build` for the fetch)
+    if [[ -z ${AFTER:-} && ! -f $BENCH/read_genomes/tests.tsv ]]; then
+        echo "no downloads in $BENCH (its read_genomes/tests.tsv missing): bash $SELF bench_downloads first, the" \
+            "benchmarks after it: AFTER=<its job id> bash $SELF benchmark" >&2
         exit 1
     fi
-    echo "benchmark: downloads into $BENCH job $prep; the benchmarks and figures into $BENCH_RESULTS job $bench"
+    [[ -z $LOGS ]] || mkdir -p "$LOGS"
+    # afterany: a download that failed (a server down) leaves that reference out, not the benchmarks
+    after=${AFTER:+afterany:$AFTER}
+    jid=$(submit Eukore-benchmark ${SBATCH_BENCH[@]+"${SBATCH_BENCH[@]}"} \
+        ${after:+--dependency=$after --kill-on-invalid-dep=yes} -- _benchmark)
+    echo "benchmark: job $jid, the tables and figures into $BENCH_RESULTS"
     ;;
-_bench_prep)  # every download once in BENCH (kept: a rerun fetches only what is missing), the test genomes chosen
+_bench_downloads)  # every download once in BENCH (kept: a rerun fetches only what is missing), the test genomes chosen
+    need_bench
     activate
     export BENCH_ENV=active  # Eukore's environment (envs/eukore.yaml): no benchmarks' environment made in BENCH
     src=${SOURCES:-$WORK/sources}
@@ -233,9 +249,14 @@ _bench_prep)  # every download once in BENCH (kept: a rerun fetches only what is
     [[ ! -s $src/taxdump.tar.gz ]] || opts+=(--taxdump "$src/taxdump.tar.gz")
     [[ ! -d $src/eukaryota_odb12/hmms ]] || opts+=(--odb "$src/eukaryota_odb12")
     bash "$PDIR/benchmarks/eukore-bench-prep.sh" "$BENCH" "$PACKAGE" "${opts[@]}" \
-        ${BENCH_PREP_OPTS[@]+"${BENCH_PREP_OPTS[@]}"}
+        ${BENCH_DOWNLOADS_OPTS[@]+"${BENCH_DOWNLOADS_OPTS[@]}"}
     ;;
-_bench)
+_benchmark)
+    need_bench
+    if [[ ! -f $PACKAGE/manifest.json ]]; then  # the final job it waited for ended without one
+        echo "no finished package at $PACKAGE" >&2
+        exit 1
+    fi
     activate
     export BENCH_ENV=active
     src=${SOURCES:-$WORK/sources}
@@ -249,7 +270,7 @@ _bench)
         ${FIGURE_OPTS[@]+"${FIGURE_OPTS[@]}"}
     ;;
 *)
-    echo "unknown step: $STEP (fetch, build, final, qc or benchmark)" >&2
+    echo "unknown step: $STEP (fetch, build, final, qc, bench_downloads or benchmark)" >&2
     exit 1
     ;;
 esac

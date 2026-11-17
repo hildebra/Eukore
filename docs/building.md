@@ -187,10 +187,11 @@ sbatch --dependency=afterany:$jid final.sh
 `tools/eukore.sh` does this for a SLURM cluster: `bash tools/eukore.sh fetch` submits the download job,
 `bash tools/eukore.sh build [N]` the chain (N process jobs, default 8, then the final job;
 `AFTER=<job id>` makes the chain wait for the fetch job, and a failed fetch cancels it; `REVERSION=1` adds
-`--reversion`). `bash tools/eukore.sh benchmark` (since 2026-11-17; `AFTER=<final job>` to wait for it) runs
-benchmarks/ on the finished package in the same environment: a downloads job (the other references into the settings'
-`BENCH`, kept between builds), then the comparisons, the read benchmark and the figures into `BENCH_RESULTS`
-(default `OUT/Eukore_<version>_benchmarks`). Its settings (the folders, the partitions, the build's options) are a small bash file,
+`--reversion`). benchmarks/ runs on the finished package in the same environment as two steps (since 2026-11-17),
+each a job on its own partition: `bash tools/eukore.sh bench_downloads` (`SBATCH_BENCH_DOWNLOADS`, default the fetch's;
+`AFTER=<final job>` to wait for it) fetches the other references into the settings' `BENCH`, kept between builds;
+`AFTER=<its job> bash tools/eukore.sh benchmark` (`SBATCH_BENCH`, default the process jobs') makes the comparisons,
+the read benchmark and the figures into `BENCH_RESULTS` (default `OUT/Eukore_<version>_benchmarks`). Its settings (the folders, the partitions, the build's options) are a small bash file,
 `tools/eukore.conf.example`, copied to `local/eukore.conf` or named by `$EUKORE_CONF`.
 
 **The package stage's vsearch checks on several nodes** (since 2026-11-11). The checks across species search each
