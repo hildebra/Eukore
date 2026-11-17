@@ -22,7 +22,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import eukore_build  # noqa: E402
-from eukore import ncbi as ncbi_mod, qc, util  # noqa: E402
+from eukore import genomes, ncbi as ncbi_mod, qc, util  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 YEAST, PARADOXUS, LACTIS = 4932, 27291, 28985
@@ -276,6 +276,52 @@ class SearchesTest(unittest.TestCase):
         began = time.time()
         self.assertEqual(qc.help_search(root, self.vsearch, 1, log=lambda _t: None, idle_for=60, poll=0.05), 0)
         self.assertLess(time.time() - began, 5)
+
+    def test_a_helper_takes_the_folder_with_the_fewest_left_first(self):
+        # since 2026-11-17: until then a folder's whole listing before the next folder, in their names' order (the
+        # 2026-11-16 build's helpers at cmalign's 97 parts while the final job searched the rRNA checks' alone)
+        root = os.path.join(self.tmp.name, "WORK2", "qc")
+        genes = [fx.cds_of(fx.protein(s)) for s in range(3, 9)]
+
+        def listed(kind, loci):  # a search's folder as qc.searched_loci leaves it for the helpers
+            folder = os.path.join(root, kind)
+            os.makedirs(folder)
+            lines = []
+            for locus, gene in loci:
+                queries = {"A": gene, "B": gene}
+                base = qc.search_base(locus, queries)
+                qc.write_inputs(folder, base, queries)
+                lines.append(qc.todo_line(base, qc.weight(queries)))
+            with open(os.path.join(folder, "todo.tsv"), "w", newline="\n") as fh:
+                fh.writelines(lines)
+
+        def helped(refresh):
+            shutil.rmtree(root, ignore_errors=True)
+            listed("cmalign", [(f"long{i}", genes[i]) for i in range(3)])  # the first by name
+            listed("rrna_own", [("short", genes[3])])
+            said = []
+
+            def log(text):
+                said.append(text.split(".")[0])
+                if len(said) == 2:  # while it searches the long one: the final job's next search
+                    listed("rrna_screen", [("next", genes[4])])
+            n = qc.help_search(root, self.vsearch, 1, log=log, refresh=refresh)
+            self.assertEqual(n, 5)
+            return said[:5]
+        self.assertEqual(helped(0), ["short", "long0", "next", "long1", "long2"])
+        # the folders looked at again every `refresh` seconds alone: the next search seen once those known are made
+        self.assertEqual(helped(3600), ["short", "long0", "long1", "long2", "next"])
+        # a search another node holds is left to it, the others made; none without its program (cmsearch's here)
+        shutil.rmtree(root)
+        listed("busco", [("held", genes[0]), ("free", genes[1])])
+        held = qc.search_base("held", {"A": genes[0], "B": genes[0]})
+        with genomes.claimed_file(qc.search_files(os.path.join(root, "busco"), held)[3]):
+            got = qc.waiting(root, lambda params: self.vsearch)
+            self.assertEqual([([e[0].split(".")[0] for e in free], [e[0].split(".")[0] for e in theirs])
+                              for _folder, free, theirs in got], [(["free"], ["held"])])
+            self.assertEqual(qc.help_search(root, self.vsearch, 1, log=lambda _t: None), 1)
+        self.assertEqual(qc.waiting(root, lambda params: None), [(os.path.join(root, "busco"), [], [])])
+        self.assertEqual(qc.help_search(root, self.vsearch, 1, log=lambda _t: None), 1)  # let go of: made now
 
     def test_a_large_locus_in_parts(self):
         # since 2026-11-15 (qc.split_todo): a locus of qc.PART_MIN queries or more searched in parts against its copies
