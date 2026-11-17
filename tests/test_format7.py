@@ -800,6 +800,36 @@ class Midori2Test(unittest.TestCase):
         self.assertEqual(counts["COX1: turned to its gene's strand"], 1)
         self.assertGreater(organelle.strand_score(rows["MIDORI2_SSU_S4.1"], organelle.strand_model([ssu])), 0)
 
+    def test_midori2_lsu(self):
+        # MIDORI2's mitochondrial LSU (since 2026-11-16: protal's fourth gene, which protal takes from the package
+        # alone): one record a species, of the gene's length; a stretch MIDORI2 files under the srRNA and the lrRNA of
+        # one species taken once, as its SSU
+        from eukore import organelle  # noqa: PLC0415
+        rng = random.Random(17)
+
+        def head(acc, taxid, name):
+            return f">{acc}###root_1;Eukaryota_2759;X_1;Y_2;Z_3;W_4;V_5;{name}_{taxid}\n"
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        ncbi = ncbi_world(tmp)
+        lsu = "".join(rng.choice("ACGT") for _ in range(1200))
+        both = "".join(rng.choice("ACGT") for _ in range(1500))
+        lr = os.path.join(tmp, "MIDORI2_UNIQ_NUC_GB273_lrRNA_RAW.fasta.gz")
+        with gzip.open(lr, "wt") as fh:
+            fh.write(head("L1.1", 4932, "Saccharomyces cerevisiae") + lsu + "\n"
+                     + head("L2.1", 9606, "Homo sapiens") + lsu[:250] + "\n"             # too short
+                     + head("T1.1", 27291, "Saccharomyces paradoxus") + both + "\n")    # filed under both genes
+        sr = os.path.join(tmp, "MIDORI2_UNIQ_NUC_GB273_srRNA_RAW.fasta.gz")
+        with gzip.open(sr, "wt") as fh:
+            fh.write(head("T1.1", 27291, "Saccharomyces paradoxus") + both + "\n")
+        self.assertIn("LSU", organelle.MIDORI2_GENES)
+        got, counts = organelle.midori2_records([lr, sr], ncbi)
+        rows = {n: (s, r) for n, s, r in got}
+        self.assertEqual(set(rows), {"MIDORI2_LSU_L1.1", "MIDORI2_SSU_T1.1"})
+        self.assertEqual(rows["MIDORI2_LSU_L1.1"][1]["gene"], "LSU")
+        self.assertIn(rows["MIDORI2_LSU_L1.1"][0], (lsu, rrna.revcomp(lsu)))  # the strand model of one record
+        self.assertEqual(counts["LSU: the species' record of another gene too (taken as that one)"], 1)
+        self.assertEqual(counts["LSU: not the gene's length"], 1)
+
 
 class PackageTest(unittest.TestCase):
     def test_a_package_of_format_7(self):
