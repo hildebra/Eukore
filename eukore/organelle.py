@@ -1231,8 +1231,13 @@ def run_claimed(args):
 
 def collect(ncbi, job_map, species_set, chosen, work_folder):
     """The package's organelle genes -> records [(name, sequence, row of GENE_COLUMNS)]: of each species in
-    species_set and each organelle, RefSeq's record's genes (chosen), else its assembly's."""
+    species_set and each organelle, RefSeq's record's genes (chosen), else its assembly's. Since 2026-11-18 not an
+    assembly's sequence that is another species' RefSeq organelle record (chosen): NCBI's RefSeq assembly of a species
+    can carry another species' RefSeq organelle genome as its own (Salvelinus sp. IW2-2015's chrMT is NC_000861.1,
+    Salvelinus alpinus' mitogenome), which went into the package under both species, one record name
+    (<seqid>_<gene>) twice; protal's mito_records.py stopped on it."""
     by_species = {int(j["species_taxid"]): (acc, j) for acc, j in job_map.items() if not j.get("path")}
+    refseq_of = {r["seqid"]: sp for (sp, _o), rows in chosen.items() for r in rows}  # RefSeq's record -> its species
     out = []
     for sp in sorted(species_set):
         for organelle in KINDS:
@@ -1245,7 +1250,8 @@ def collect(ncbi, job_map, species_set, chosen, work_folder):
                 path = assembly_file(work_folder, acc)
                 if os.path.isfile(path):
                     rows += [dict(r, taxid=int(job.get("taxid") or sp), source="assembly", accession=acc)
-                             for r in assembly_rows(path) if r["organelle"] == organelle]
+                             for r in assembly_rows(path)
+                             if r["organelle"] == organelle and refseq_of.get(r["seqid"], sp) == sp]
             animal, plant = is_animal(ncbi, sp), EMBRYOPHYTA in ncbi.ancestors(ncbi.merged.get(sp, sp))
             for r in sorted(rows, key=lambda r: GENES.index(r["gene"])):
                 seq = r["sequence"]

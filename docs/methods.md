@@ -192,7 +192,11 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
   genomes in the process stage, and again in the package stage before the prune, on the organelle molecules the
   metadata scan kept (`WORK/done/<accession>/organelle.fna.gz`; since 2026-11-08, else the genome where still on
   disk). An assembly searched before a gene of its organelles was added (its `WORK/organelle/assembly/` file's
-  `#searched` line, none before 2026-11-07) is searched again.
+  `#searched` line, none before 2026-11-07) is searched again. Since 2026-11-18 an assembly's molecule that is another
+  species' RefSeq organelle genome (its sequence name a RefSeq record the package takes for that species) is not
+  taken: NCBI's RefSeq assembly of a species can carry another species' RefSeq organelle genome as its own
+  (*Salvelinus* sp. IW2-2015's chrMT is *S. alpinus*' `NC_000861.1`). Its genes went into the package under both
+  species, one record name (`<seqid>_<gene>`) twice, and protal's mitochondrial records stopped on it.
 - **Else its candidate contigs** (since 2026-11-14): of a genome of 1 Gb or less titling no molecule an organelle,
   contigs of an organelle genome's length (AT-rich ones for a mitochondrion), searched as titled molecules are. Since
   2026-11-15 a candidate gives genes only where nhmmer or miniprot find a protein-coding gene of the organelle on it
