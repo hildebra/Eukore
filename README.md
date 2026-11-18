@@ -321,6 +321,44 @@ congener, against 27% of 18S). Completeness is uneven: animals, plants and fungi
 dataset's proteins to find; genomes are therefore judged by their clade's expected BUSCOs (`genomes.tsv`'s `tier`).
 The two figures are that build's. All figures and what they show: [docs/benchmarks.md](docs/benchmarks.md).
 
+The comparisons and the read benchmark, run on that finished package on 18 November 2026
+([benchmarks/](benchmarks/README.md); 10 other databases beside Eukore, simulated reads of 48 test genomes):
+
+| benchmark | figure |
+|---|---|
+| genera, families, orders, classes, phyla with a genome, of NCBI's with a genome | 14,322 of 14,322; 3,945 of 3,945; 1,013 of 1,013; 274 of 274; 73 of 73 |
+| species in Eukore and in none of the 10 other databases | 15,384 |
+| species with a genome's 18S named in none of PR2, SILVA, KSGP, EUKARYOME | 17,424 of 27,213 |
+| the same: ITS in none of UNITE, EUKARYOME; operon in none of ROD, EUKARYOME; mitochondrial genes in no MIDORI2 | 15,015 of 22,901; 16,231 of 22,923; 4,706 of 10,581 |
+| species another database holds that Eukore holds no record of (`missing.tsv`) | UNITE 36,415 of 58,038 (20,065 plants', 15,929 fungi's ITS); MIDORI2 14,590 of 295,550; PR2 841; KSGP 771; SILVA 650; EUKARYOME 119; EukDetect2 62 (placeholders such as *Piromyces* sp.) |
+| other databases' records agreeing with Eukore's genomes | EUKARYOME 171,756 of 553,680 (2,062 another species'); MIDORI2 870,050 of 912,289 (4,412); PR2 31,020 of 38,615 (3,208 another species', 3,063 unlike) |
+| genomes NCBI or its reports flag; genetic codes that differ from NCBI's | 8.5%; 15 of 33,409 |
+| NCBI's taxa that are one branch of the BUSCO tree (17,512 genomes) | genus 82.3%, family 76.3%, order 69.2%, class 72.4%, phylum 57.6% |
+| reads, species in the reference: species recall; precision (EukDetect2's) | 44.7%; 98.5% (20.9%; 91.3%) |
+| reads, species held out: genus recall; precision (EukDetect2's) | 56.8%; 97.1% (9.5%; 97.9%) |
+| detection F1 at 1,000, 5,000, 20,000 reads: species; genus held out | Eukore 0.54, 0.37, 0.25; 0.52, 0.57, 0.40. EukDetect2 0.66, 0.54, 0.35; 0.41, 0.51, 0.51 |
+| bacterial and archaeal reads placed in a eukaryote phylum, per million | Eukore 2,031; PR2, SILVA 44; EukDetect2, MetaPhlAn 4, UNITE 0 |
+
+<p align="center">
+  <img src="docs/benchmarks/figures/Fig1.png" alt="Figure 1: species per supergroup beside the other references; calls by distance to BUSCO's dataset; species told apart by marker; detection by depth" width="860">
+</p>
+
+Eukore holds every genus, family, order, class and phylum NCBI has a genome of, and 328,262 species against the next
+largest database's 295,550 (MIDORI2). The reads are simulated from Eukore's own loci, so the other references, which
+hold other genes, are measured on ground that is not theirs: Eukore places 45% of its test genomes' marker reads at
+the right species (EukDetect2 21%), but detects a sample's species less well than EukDetect2 (F1 0.54 against 0.66 at
+1,000 reads, 0.25 against 0.35 at 20,000: more false species, 243 against 103 in 48 samples at 20,000 reads) and its
+genus better when the species is held out at 1,000 and 5,000 reads. Its weak point in these reads is the rRNA:
+bacterial and archaeal reads reach 2,031 per million in a eukaryote phylum, and every one of the 441 that Eukore's
+rRNA records took (of 452 placed; the other 11 hit BUSCO copies) hit a record the package itself flags
+`ssu_prokaryote` (a bacterium's or an organelle's SSU, found in a eukaryote's assembly) with low confidence: a
+reference of the records of confidence medium or better would place 11 of 160,000 (69 per million, PR2's and SILVA's
+44). Three of the 48 test genomes had no marker reads (contaminated or poor assemblies, whose copies the package
+leaves out), and the host's reads (human chromosome 21: 5.9% placed, nearly all at the phylum, in the
+BUSCO copies' introns: the exons-only reference places a tenth of them) are scored apart from the background. That
+run's references held every record; since then the read benchmark leaves out the records of confidence `low` (the
+package's typical use; `--read_low` keeps them), so its next numbers will differ from the table's.
+
 ## Documentation
 
 | | |

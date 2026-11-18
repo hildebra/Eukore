@@ -236,8 +236,64 @@ What the build shows:
 | species named in PR2 by name or synonym | 11.7% of all, 47.6% of those with an rRNA record |
 | genome run (BUSCOs, rRNA), median | 1.1 min, 3 min per Gb of genome |
 
-The whole table, with the clade hold-outs, the barcode gap per marker and the primer pairs:
-[benchmarks/figures/summary.md](benchmarks/figures/summary.md).
+The whole table, with the clade hold-outs, the barcode gap per marker, the primer pairs and (since 2026-11-18) the
+comparisons and the read benchmark: [benchmarks/figures/summary.md](benchmarks/figures/summary.md).
+
+### The comparisons and the read benchmark on that build (2026-11-18)
+
+The benchmark step (`eukore.sh benchmark`: [benchmarks/README.md](../benchmarks/README.md)) ran on the same package
+with the build's own taxonomy, 10 other databases and 48 test genomes (16 supergroups, 3 each; about 3 h of the cluster's
+time, 156 min of it the tree). Its tables and figures are those of the website's Benchmarks page. What it shows:
+- **Breadth**: a genome of every genus (14,322), family (3,945), order (1,013), class (274) and phylum (73) NCBI has
+  one of; 328,262 species with any record, against MIDORI2's 295,550, UNITE's and KSGP's 58,000, PR2's 39,265.
+- **New to the other databases**: 15,384 species in Eukore and in none of the 10 others; 17,424 of the 27,213 species
+  with a genome's 18S in none of PR2, SILVA, KSGP and EUKARYOME; ITS 15,015 of 22,901; operons 16,231 of 22,923;
+  mitochondrial genes 4,706 of 10,581 (in no MIDORI2).
+- **What Eukore lacks** (`missing.tsv`, 53,448 species): UNITE's 36,415 (20,065 plants', 15,929 fungi's ITS, species
+  with no genome and none in EUKARYOME), MIDORI2's 14,590 (6,955 other animals', 4,010 vertebrates', 2,448 plants'),
+  PR2's 841, KSGP's 771, SILVA's 650, EUKARYOME's 119 (prokaryote names among them: *Bacillus cereus*,
+  *Pseudomonas fluorescens*, which Eukore leaves out by design) and EukDetect2's 62, all placeholders (*Piromyces*
+  sp., "uncultured eukaryote"): every real species of EukDetect2's 6,594 is in Eukore.
+- **Records beside other databases** (the same species' marker): EUKARYOME's 553,680 records, 171,756 agree with
+  Eukore's genomes, 2,062 are another species' gene and none unlike; MIDORI2's 912,289, 870,050 agree and 4,412 are
+  another species'; of PR2's 38,615 18S, 31,020 agree, 3,208 are another species' and 3,063 unlike (SILVA 9,341, 1,057,
+  1,662 of 12,586; UNITE's ITS 4,571, 404, 1,971 of 7,571).
+- **The tree**: 17,512 genomes' BUSCO proteins (50 genes): NCBI's taxa that are one branch are 82.3% of genera
+  (4,253), 76.3% of families, 69.2% of orders, 72.4% of classes and 57.6% of phyla; 471 genomes sit apart from their
+  taxon.
+- **Reads, the species in the reference** (marker reads of the test genomes: species recall; precision): Eukore
+  44.7%; 98.5% (genus 84.8%; 99.6%), its exons alone 17.7%, EukDetect2 20.9%; 91.3%. The species held out: genus
+  recall 56.8%, precision 97.1% (EukDetect2 9.5%; 97.9%). The reads come from Eukore's own loci: the other references
+  hold other genes (PR2, SILVA and UNITE: 18S and ITS only), so these figures say what the package holds, not that
+  its references beat theirs.
+- **Detection** (a sample: a test genome's reads and as many bacterial reads; a taxon with 3 reads and 1% of those
+  placed), F1 at 1,000, 5,000 and 20,000 reads: the species, Eukore 0.54, 0.37, 0.25, EukDetect2 0.66, 0.54, 0.35; the
+  genus with the species held out, Eukore 0.52, 0.57, 0.40, EukDetect2 0.41, 0.51, 0.51; the class with the order held
+  out 0.12, 0.10, 0.11 and 0.00, 0.08, 0.16. Eukore's recall rises with depth (0.42 to 0.85) and its precision falls
+  (0.77 to 0.14: 243 false taxa in 48 samples at 20,000 reads, EukDetect2's 103).
+- **Bacterial and archaeal reads**: 2,031 per million placed by Eukore in a eukaryote phylum (its 18S alone 1,156; PR2
+  and SILVA 44; EukDetect2, MetaPhlAn 4 and UNITE none). `background_hits.tsv` says whose: all 441 reads Eukore's rRNA
+  records took (the other 11 of its 452 hit BUSCO copies) hit records the package flags `ssu_prokaryote` and `low`
+  (a bacterium's or an organelle's SSU in a eukaryote's assembly: 73 records, 72 of them 61 genomes' own and one
+  EUKARYOME's; 42 18S, 31 operons); a reference of the medium and high records alone would place 11 reads of 160,000
+  (69 per million). The host's
+  reads (human chromosome 21) are scored apart: 5.9% placed, 0.25% at the species, in the BUSCO copies' introns (the
+  exons alone place 0.6%).
+- **Since that run** the read benchmark leaves the records of confidence `low` out of Eukore's references and of the
+  test genomes' marker reads (the package's typical use keeps the high, unverified and medium ones; `--read_low` keeps
+  them), so the reads and detection figures above are those of the references with every record.
+- **Test genomes**: three of the 48 (a contaminated assembly of 157 Mb, a metagenome-derived one and a poor one) have
+  no BUSCO copy in the package and give no marker reads; the benchmark now chooses tiers genome and draft only
+  (`bench_downloads --only tests` chooses them again).
+
+<p align="center">
+  <img src="benchmarks/figures/marker_reads.png" alt="Marker reads: species recall, genus recall and precision per reference" width="640"><br>
+  <img src="benchmarks/figures/detection_depth.png" alt="Detection F1, precision and recall by depth" width="860"><br>
+  <img src="benchmarks/figures/upset.png" alt="The species by the databases that hold them" width="860"><br>
+  <img src="benchmarks/figures/breadth_ranks.png" alt="Breadth at every rank" width="860">
+</p>
+
+The figures are the cluster's, the rest of them in the evaluation bundle `Eukore_2026.11_benchmarks_evaluation.tar.gz`.
 
 ## The methods review's changes against the code before them (2026-11-09)
 

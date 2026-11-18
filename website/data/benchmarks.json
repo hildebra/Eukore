@@ -1,6 +1,6 @@
 {
  "package": "Eukore_2026.11",
- "made": "2026-11-17T23:30:56",
+ "made": "2026-11-18T21:26:57",
  "tables": {
   "databases": [
    {
@@ -17,7 +17,7 @@
     "eukore_only": "-",
     "database_only": "-",
     "records": "9982341",
-    "bases": "-"
+    "bases": "49864403633"
    },
    {
     "database": "BUSCO (OrthoDB)",
@@ -52,6 +52,22 @@
     "bases": "-"
    },
    {
+    "database": "EukDetect2",
+    "markers": "BUSCO genes (eukaryota_odb12)",
+    "taxa": "fungi and protists",
+    "sequences": "the genes' regions of the genome, repeats masked, clustered at 99%",
+    "curation": "BUSCOs with bacterial hits left out; genomes clustered at 97% ANI",
+    "updates": "with its releases (v1.1, 2026-10)",
+    "reference": "Shih et al. 2026 (bioRxiv 10.64898/2026.06.24.734308); Lind & Pollard 2021",
+    "version": "Zenodo record 23479662",
+    "species": "6594",
+    "both": "6532",
+    "eukore_only": "321730",
+    "database_only": "62",
+    "records": "686916",
+    "bases": "1908894048"
+   },
+   {
     "database": "KSGP",
     "markers": "SSU rRNA",
     "taxa": "bacteria, archaea and eukaryotes",
@@ -84,6 +100,22 @@
     "bases": "-"
    },
    {
+    "database": "MetaPhlAn4",
+    "markers": "clade-specific marker genes",
+    "taxa": "bacteria and archaea; fungi and protists",
+    "sequences": "coding sequences unique to a clade",
+    "curation": "markers chosen as unique to their clade",
+    "updates": "with MetaPhlAn's database releases",
+    "reference": "Blanco-Miguez et al. 2023",
+    "version": "mpa_vJan26_CHOCOPhlAnSGB_202605",
+    "species": "465",
+    "both": "465",
+    "eukore_only": "327797",
+    "database_only": "0",
+    "records": "437113",
+    "bases": "170563449"
+   },
+   {
     "database": "PR2",
     "markers": "18S rRNA (plastid and mitochondrial SSU beside)",
     "taxa": "all eukaryotes, protists foremost",
@@ -96,8 +128,8 @@
     "both": "38424",
     "eukore_only": "289838",
     "database_only": "841",
-    "records": "-",
-    "bases": "-"
+    "records": "157866",
+    "bases": "222921283"
    },
    {
     "database": "ROD",
@@ -128,8 +160,8 @@
     "both": "22038",
     "eukore_only": "306224",
     "database_only": "650",
-    "records": "-",
-    "bases": "-"
+    "records": "42480",
+    "bases": "74626333"
    },
    {
     "database": "UNITE",
@@ -144,47 +176,15 @@
     "both": "21623",
     "eukore_only": "306639",
     "database_only": "36415",
-    "records": "-",
-    "bases": "-"
-   },
-   {
-    "database": "EukDetect2",
-    "markers": "BUSCO genes (eukaryota_odb12)",
-    "taxa": "fungi and protists",
-    "sequences": "the genes' regions of the genome, repeats masked, clustered at 99%",
-    "curation": "BUSCOs with bacterial hits left out; genomes clustered at 97% ANI",
-    "updates": "with its releases (v1.1, 2026-10)",
-    "reference": "Shih et al. 2026 (bioRxiv 10.64898/2026.06.24.734308); Lind & Pollard 2021",
-    "version": "-",
-    "species": "-",
-    "both": "-",
-    "eukore_only": "-",
-    "database_only": "-",
-    "records": "-",
-    "bases": "-"
-   },
-   {
-    "database": "MetaPhlAn4",
-    "markers": "clade-specific marker genes",
-    "taxa": "bacteria and archaea; fungi and protists",
-    "sequences": "coding sequences unique to a clade",
-    "curation": "markers chosen as unique to their clade",
-    "updates": "with MetaPhlAn's database releases",
-    "reference": "Blanco-Miguez et al. 2023",
-    "version": "-",
-    "species": "-",
-    "both": "-",
-    "eukore_only": "-",
-    "database_only": "-",
-    "records": "-",
-    "bases": "-"
+    "records": "113118",
+    "bases": "66004825"
    }
   ],
   "breadth_ranks": [
    {
     "supergroup": "all",
     "rank": "species",
-    "ncbi_named": "779253",
+    "ncbi_named": "783153",
     "ncbi_genome": "33466",
     "eukore_genome": "33460",
     "eukore": "328262"
@@ -192,26 +192,26 @@
    {
     "supergroup": "all",
     "rank": "genus",
-    "ncbi_named": "97994",
-    "ncbi_genome": "14296",
-    "eukore_genome": "14296",
-    "eukore": "75050"
+    "ncbi_named": "98437",
+    "ncbi_genome": "14322",
+    "eukore_genome": "14322",
+    "eukore": "75305"
    },
    {
     "supergroup": "all",
     "rank": "family",
-    "ncbi_named": "9092",
-    "ncbi_genome": "3942",
-    "eukore_genome": "3942",
-    "eukore": "8504"
+    "ncbi_named": "9107",
+    "ncbi_genome": "3945",
+    "eukore_genome": "3945",
+    "eukore": "8512"
    },
    {
     "supergroup": "all",
     "rank": "order",
-    "ncbi_named": "1450",
+    "ncbi_named": "1451",
     "ncbi_genome": "1013",
     "eukore_genome": "1013",
-    "eukore": "1415"
+    "eukore": "1416"
    },
    {
     "supergroup": "all",
@@ -228,6 +228,78 @@
     "ncbi_genome": "73",
     "eukore_genome": "73",
     "eukore": "79"
+   }
+  ],
+  "content": [
+   {
+    "supergroup": "all",
+    "of": "328262",
+    "marker": "BUSCO",
+    "species": "30609",
+    "same_assembly": "30609"
+   },
+   {
+    "supergroup": "all",
+    "of": "328262",
+    "marker": "18S",
+    "species": "79581",
+    "same_assembly": "27213"
+   },
+   {
+    "supergroup": "all",
+    "of": "328262",
+    "marker": "ITS",
+    "species": "31202",
+    "same_assembly": "22901"
+   },
+   {
+    "supergroup": "all",
+    "of": "328262",
+    "marker": "28S",
+    "species": "31294",
+    "same_assembly": "22923"
+   },
+   {
+    "supergroup": "all",
+    "of": "328262",
+    "marker": "operon",
+    "species": "31294",
+    "same_assembly": "22923"
+   },
+   {
+    "supergroup": "all",
+    "of": "328262",
+    "marker": "mitochondrion",
+    "species": "284466",
+    "same_assembly": "10581"
+   },
+   {
+    "supergroup": "all",
+    "of": "328262",
+    "marker": "plastid",
+    "species": "16596",
+    "same_assembly": "1568"
+   },
+   {
+    "supergroup": "all",
+    "of": "328262",
+    "marker": "BUSCO + 18S",
+    "species": "26792",
+    "same_assembly": "25313"
+   },
+   {
+    "supergroup": "all",
+    "of": "328262",
+    "marker": "BUSCO + operon",
+    "species": "22602",
+    "same_assembly": "21716"
+   },
+   {
+    "supergroup": "all",
+    "of": "328262",
+    "marker": "BUSCO + operon + organelle",
+    "species": "18774",
+    "same_assembly": "9054"
    }
   ],
   "panels": [
@@ -1792,7 +1864,67 @@
     "note": "ATCC MSA-1010"
    }
   ],
+  "novel": [
+   {
+    "supergroup": "all",
+    "marker": "18S",
+    "references": "PR2, SILVA, KSGP, EUKARYOME",
+    "genome": "27213",
+    "named": "9789",
+    "new": "17424"
+   },
+   {
+    "supergroup": "all",
+    "marker": "ITS",
+    "references": "UNITE, EUKARYOME",
+    "genome": "22901",
+    "named": "7886",
+    "new": "15015"
+   },
+   {
+    "supergroup": "all",
+    "marker": "operon",
+    "references": "ROD, EUKARYOME",
+    "genome": "22923",
+    "named": "6692",
+    "new": "16231"
+   },
+   {
+    "supergroup": "all",
+    "marker": "mitochondrial genes",
+    "references": "MIDORI2",
+    "genome": "10581",
+    "named": "5875",
+    "new": "4706"
+   }
+  ],
   "agreement": [
+   {
+    "database": "EUKARYOME",
+    "marker": "18S and operons",
+    "records": "553680",
+    "agree": "171756",
+    "disagree": "2062",
+    "unlike": "0",
+    "undecided": "379862",
+    "species": "73527",
+    "species_agree": "43605",
+    "species_differ": "339",
+    "how": "the build's own-species check against the genomes' records"
+   },
+   {
+    "database": "ROD",
+    "marker": "18S and operons",
+    "records": "69480",
+    "agree": "58158",
+    "disagree": "45",
+    "unlike": "0",
+    "undecided": "11277",
+    "species": "5273",
+    "species_agree": "4929",
+    "species_differ": "10",
+    "how": "the build's own-species check against the genomes' records"
+   },
    {
     "database": "MIDORI2",
     "marker": "mitochondrial genes",
@@ -1805,6 +1937,45 @@
     "species_agree": "-",
     "species_differ": "-",
     "how": "the build's reference screen (reference_screen.tsv)"
+   },
+   {
+    "database": "PR2",
+    "marker": "18S",
+    "records": "38615",
+    "agree": "31020",
+    "disagree": "3208",
+    "unlike": "3063",
+    "undecided": "1324",
+    "species": "5367",
+    "species_agree": "4716",
+    "species_differ": "611",
+    "how": "its records aligned to Eukore's genomes' 18S (minimap2): 97% or more alike to the species' own agree; as alike to another species' and nearer by 2% disagree; the other aligned ones are unlike"
+   },
+   {
+    "database": "SILVA",
+    "marker": "18S",
+    "records": "12586",
+    "agree": "9341",
+    "disagree": "1057",
+    "unlike": "1662",
+    "undecided": "526",
+    "species": "3685",
+    "species_agree": "3198",
+    "species_differ": "446",
+    "how": "its records aligned to Eukore's genomes' 18S (minimap2): 97% or more alike to the species' own agree; as alike to another species' and nearer by 2% disagree; the other aligned ones are unlike"
+   },
+   {
+    "database": "UNITE",
+    "marker": "ITS",
+    "records": "7571",
+    "agree": "4571",
+    "disagree": "404",
+    "unlike": "1971",
+    "undecided": "625",
+    "species": "4108",
+    "species_agree": "3450",
+    "species_differ": "536",
+    "how": "its records aligned to Eukore's genomes' ITS (minimap2): 97% or more alike to the species' own agree; as alike to another species' and nearer by 2% disagree; the other aligned ones are unlike"
    }
   ],
   "thresholds": [
@@ -4104,17 +4275,53 @@
    "databases": [
     "BUSCO (OrthoDB)",
     "EUKARYOME",
+    "EukDetect2",
     "Eukore",
     "KSGP",
     "MIDORI2",
+    "MetaPhlAn4",
     "PR2",
     "ROD",
     "SILVA",
     "UNITE"
    ],
-   "species": 380043,
-   "eukore_alone": 16808,
-   "in_every_database": 75
+   "species": 380105,
+   "eukore_alone": 15384,
+   "in_every_database": 13
+  },
+  "tree": {
+   "genomes": 17512,
+   "loci": 50,
+   "columns": 13423,
+   "per_genus": 2,
+   "ranks": {
+    "genus": {
+     "taxa": 4253,
+     "monophyletic": 3499,
+     "share": 0.8227
+    },
+    "family": {
+     "taxa": 2250,
+     "monophyletic": 1717,
+     "share": 0.7631
+    },
+    "order": {
+     "taxa": 707,
+     "monophyletic": 489,
+     "share": 0.6917
+    },
+    "class": {
+     "taxa": 203,
+     "monophyletic": 147,
+     "share": 0.7241
+    },
+    "phylum": {
+     "taxa": 59,
+     "monophyletic": 34,
+     "share": 0.5763
+    }
+   },
+   "strays": 471
   },
   "quality": {
    "genome": {
@@ -4146,12 +4353,90 @@
      "missing metadata": 1,
      "superseded by newer assembly for species": 1
     }
+   },
+   "BUSCO copy": {
+    "of": 3842912,
+    "checks": {
+     "contig_edge": 781241,
+     "transcript": 529341,
+     "draft_genome": 462379,
+     "own_species_undecided": 311627,
+     "gap": 242572,
+     "fragmented": 164344,
+     "length_short": 156582,
+     "duplicated": 67364,
+     "joined": 59105,
+     "rescued": 43942,
+     "length_long": 14704,
+     "internal_stops": 11600,
+     "own_species": 2547,
+     "cross_shared": 811,
+     "confidence: high": 2370851,
+     "confidence: medium": 1296412,
+     "confidence: unverified": 173102,
+     "confidence: low": 2547
+    }
+   },
+   "rRNA record": {
+    "of": 4678004,
+    "checks": {
+     "contig_edge": 336445,
+     "own_species_undecided": 277355,
+     "lsu_partial": 114805,
+     "screen": 40082,
+     "ambiguous": 14407,
+     "own_species": 11210,
+     "homopolymer": 9954,
+     "gap": 8159,
+     "flank": 6320,
+     "cross_shared": 4242,
+     "ssu_prokaryote": 2550,
+     "no_rrna": 2175,
+     "mislabel": 1488,
+     "chimera": 1060,
+     "chimera_recurrent": 867,
+     "chimera_weak": 772,
+     "chimera_cut": 579,
+     "telomere": 147,
+     "too_long": 3,
+     "vector": 1,
+     "confidence: high": 3983877,
+     "confidence: medium": 400700,
+     "confidence: unverified": 225115,
+     "confidence: low": 68312
+    }
+   },
+   "organelle gene": {
+    "of": 764979,
+    "checks": {
+     "length_short": 204363,
+     "own_species_undecided": 61568,
+     "cross_shared": 15593,
+     "partial": 8896,
+     "internal_stops": 7360,
+     "length_long": 3460,
+     "own_species": 2867,
+     "exons_approximate": 1505,
+     "ambiguous": 1203,
+     "trans_spliced": 588,
+     "screen_weak": 302,
+     "confidence: high": 501128,
+     "confidence: medium": 220687,
+     "confidence: unverified": 39107,
+     "confidence: low": 4057
+    }
    }
   },
   "rdna_published": {
    "species": 5,
    "measured": 0,
    "within": 0
+  },
+  "growth": {
+   "genomes": 28735,
+   "first_year": 2004,
+   "last_year": 2026,
+   "released_in_last_two_years": 0.3833
   },
   "cost": {
    "package_stage_seconds": 55774.8,
@@ -4160,28 +4445,28 @@
   },
   "breadth_ranks": {
    "species": {
-    "ncbi_named": 779253,
+    "ncbi_named": 783153,
     "ncbi_genome": 33466,
     "eukore_genome": 33460,
     "eukore": 328262
    },
    "genus": {
-    "ncbi_named": 97994,
-    "ncbi_genome": 14296,
-    "eukore_genome": 14296,
-    "eukore": 75050
+    "ncbi_named": 98437,
+    "ncbi_genome": 14322,
+    "eukore_genome": 14322,
+    "eukore": 75305
    },
    "family": {
-    "ncbi_named": 9092,
-    "ncbi_genome": 3942,
-    "eukore_genome": 3942,
-    "eukore": 8504
+    "ncbi_named": 9107,
+    "ncbi_genome": 3945,
+    "eukore_genome": 3945,
+    "eukore": 8512
    },
    "order": {
-    "ncbi_named": 1450,
+    "ncbi_named": 1451,
     "ncbi_genome": 1013,
     "eukore_genome": 1013,
-    "eukore": 1415
+    "eukore": 1416
    },
    "class": {
     "ncbi_named": 316,
@@ -4197,10 +4482,7 @@
    }
   }
  },
- "left_out": {
-  "content": "an evaluation bundle (no copy or record tables: the whole package's benchmarks count them)",
-  "novel": "an evaluation bundle (no copy or record tables: the whole package's benchmarks count them)"
- },
+ "left_out": {},
  "figures": [
   {
    "name": "breadth_ranks",
@@ -4208,9 +4490,19 @@
    "caption": "The breadth above the species. Left: eukaryote taxa at each rank, NCBI's named ones (a species: a binomial, no placeholder or hybrid; a higher taxon: one holding such a species), those NCBI holds a genome of, and Eukore's (with a genome; with any record). Right: per group, Eukore's taxa with a genome of NCBI's with one (a higher taxon counts in every group one of its species is of)."
   },
   {
+   "name": "content",
+   "file": "figures/content.png",
+   "caption": "The markers one species links. Left: the species holding each marker kind from any source (their genome, a RefSeq organelle genome, a published read) and from their genome's own assembly; ITS: ITS1, 5.8S and ITS2 on one record; operon: 18S to 28S on one record. Right: per group, the species holding it from their own assembly, of all the group's species."
+  },
+  {
    "name": "upset",
    "file": "figures/upset.png",
    "caption": "The species by the databases that hold them: each bar the species exactly those databases hold (the dots below; the largest combinations, and what Eukore holds alone), blue where Eukore is one of them; left, each database's species. A database's species are those NCBI names (its names matched to NCBI's); ROD and BUSCO's dataset, Eukore's own sources, are left out."
+  },
+  {
+   "name": "novel",
+   "file": "figures/novel.png",
+   "caption": "The species a genome is the first sequence of a marker for. Left: per marker, the species Eukore holds it of from their genome's own assembly, and those of them that none of the marker's references the build read names (by name, synonym or taxid: an upper bound, a reference may name a species otherwise). Right: their share per group."
   },
   {
    "name": "agreement",
@@ -4226,6 +4518,16 @@
    "name": "thresholds",
    "file": "figures/thresholds.png",
    "caption": "The identity that parts taxa, per marker and rank: the cutoff with the best balanced accuracy between the sequences that should stay together (a species: the intraspecific panel's least alike pair of its own assemblies; a higher rank: the copies whose nearest other species shares it) and those that should be apart (the copies whose nearest other species does not). All BUSCOs together, the 18S, each BUSCO (small dots)."
+  },
+  {
+   "name": "tree",
+   "file": "figures/tree.png",
+   "caption": "The tree of the BUSCO proteins against NCBI's taxonomy (tree.py: up to two species' genomes per genus, the loci Single in the most of them placed on BUSCO's profiles, FastTree). Left: NCBI's taxa with two genomes or more that are one branch of the unrooted tree. Right: the tree, the groups of its tips along it (bands), the genomes placed apart from their taxon marked."
+  },
+  {
+   "name": "growth",
+   "file": "figures/growth.png",
+   "caption": "The release's genomes by the year NCBI released their assemblies (bars), and those released by then (line); dashed, the other databases' release dates where benchmarks/databases.tsv gives them: what a database frozen then could not hold."
   }
  ]
 }
