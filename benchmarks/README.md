@@ -50,7 +50,10 @@ alignments (`WORK/align`), SILVA's and UNITE's files (`SOURCES/labels`). `benchm
 2026-11-17): Figure 1 and the supplementary ones (`RESULTS/figures`, PNG too where `FIGURE_OPTS` asks another
 format), the overview with the package's counts (`docs/figures/overview.py`: `overview.png`, `overview_slide.png`
 into `RESULTS/figures`; the website's Home shows copies in `website/images/`), and the website's Benchmarks page
-(`eukore_bench.site` into `OUT/release/data`, where the build wrote its release). `AFTER=<final job>` makes
+(`eukore_bench.site` into `OUT/release/data`, where the build wrote its release), and the run in one file to look at
+elsewhere (`eukore_bench.bundle`, since 2026-11-18: `OUT/Eukore_<VERSION>_benchmarks_evaluation.tar.gz`, tens of MB: the
+results' tables that the step wrote, the figures, the package's rows of the records that attract the background reads,
+the logs; `bash tools/eukore.sh bundle` makes it alone from the results already there). `AFTER=<final job>` makes
 `bench_downloads` wait for the build; `benchmark` refuses a
 `BENCH` no downloads job filled unless it waits for one. Options: `BENCH_DOWNLOADS_OPTS`, `BENCH_OPTS`,
 `FIGURE_OPTS`; each job's partition and size: `SBATCH_BENCH_DOWNLOADS` (default `SBATCH_FETCH`'s) and `SBATCH_BENCH`
@@ -347,7 +350,7 @@ PACKAGE/benchmarks --out DIR`), the figures that need no other reference are com
 |---|---|
 | `eukore-bench-prep.sh`, `eukore-benchmark.sh`, `eukore-figures.sh` | The three steps |
 | `bench_env.sh`, `env.yaml` | The environment, made at `BENCH/env` |
-| `eukore_bench/` | The Python of the three steps: `prep.py`, `compare.py`, `resource.py`, `databases.py`, `checks.py`, `tree.py`, `guidance.py`, `history.py`, `reads.py`, `references.py`, `figures.py`, `site.py` (the results for the website). It reads packages with the database's own code (`eukore/` of this checkout) |
+| `eukore_bench/` | The Python of the three steps: `prep.py`, `compare.py`, `resource.py`, `databases.py`, `checks.py`, `tree.py`, `guidance.py`, `history.py`, `reads.py`, `references.py`, `figures.py`, `site.py` (the results for the website), `bundle.py` (the run in one tar.gz). It reads packages with the database's own code (`eukore/` of this checkout) |
 | `read_background.tsv` | The read benchmark's background genomes |
 | `panels.tsv` | The named lists of organisms `panels.tsv` of the results looks up |
 | `databases.tsv` | What each database compared is, in words: the comparison table's text |
