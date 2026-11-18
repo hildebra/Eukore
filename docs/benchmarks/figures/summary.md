@@ -3,19 +3,31 @@
 | package | Eukore_2026.11, 33,460 species' genomes, 129 BUSCOs |
 | species; with a genome; with rRNA records alone | 328,262; 33,460; 50,667 |
 | species with an rRNA record; a whole operon; an organelle gene | 79,581; 31,294; 297,379 |
-| genera with a genome; with any record | 14,296 of NCBI's 14,296 with a genome (97,994 named); 75,050 |
-| families with a genome; with any record | 3,942 of NCBI's 3,942 with a genome (9,092 named); 8,504 |
-| orders with a genome; with any record | 1,013 of NCBI's 1,013 with a genome (1,450 named); 1,415 |
+| genera with a genome; with any record | 14,322 of NCBI's 14,322 with a genome (98,437 named); 75,305 |
+| families with a genome; with any record | 3,945 of NCBI's 3,945 with a genome (9,107 named); 8,512 |
+| orders with a genome; with any record | 1,013 of NCBI's 1,013 with a genome (1,451 named); 1,416 |
 | classes with a genome; with any record | 274 of NCBI's 274 with a genome (316 named); 310 |
 | phyla with a genome; with any record | 73 of NCBI's 73 with a genome (80 named); 79 |
+| species holding it from their own assembly (from any source) | BUSCO 30,609 (30,609); 18S 27,213 (79,581); ITS 22,901 (31,202); 28S 22,923 (31,294); operon 22,923 (31,294); mitochondrion 10,581 (284,466); plastid 1,568 (16,596); BUSCO + 18S 25,313 (26,792); BUSCO + operon 21,716 (22,602); BUSCO + operon + organelle 9,054 (18,774) |
 | WHO fungal priority pathogens: entries with a genome | 19 of 19 |
 | human parasites: entries with a genome | 44 of 45 (1 with rRNA records alone) |
 | model organisms: entries with a genome | 30 of 30 |
 | mock communities: entries with a genome | 10 of 10 |
-| species in Eukore and in none of 8 other databases | 16,808 |
+| species in Eukore and in none of 10 other databases | 15,384 |
+| species with a genome's 18S named in none of PR2, SILVA, KSGP, EUKARYOME | 17,424 of 27,213 |
+| species with a genome's ITS named in none of UNITE, EUKARYOME | 15,015 of 22,901 |
+| species with a genome's operon named in none of ROD, EUKARYOME | 16,231 of 22,923 |
+| species with a genome's mitochondrial genes named in none of MIDORI2 | 4,706 of 10,581 |
+| EUKARYOME (18S and operons): records agreeing with Eukore's genomes; another species'; unlike | 171,756; 2,062; 0 of 553,680 |
+| ROD (18S and operons): records agreeing with Eukore's genomes; another species'; unlike | 58,158; 45; 0 of 69,480 |
 | MIDORI2 (mitochondrial genes): records agreeing with Eukore's genomes; another species'; unlike | 870,050; 4,412; 0 of 912,289 |
+| PR2 (18S): records agreeing with Eukore's genomes; another species'; unlike | 31,020; 3,208; 3,063 of 38,615 |
+| SILVA (18S): records agreeing with Eukore's genomes; another species'; unlike | 9,341; 1,057; 1,662 of 12,586 |
+| UNITE (ITS): records agreeing with Eukore's genomes; another species'; unlike | 4,571; 404; 1,971 of 7,571 |
 | genomes NCBI or its reports flag; with copies another clade's | 8.5%; 1.3% of 33,409 |
 | genetic codes checked against the BUSCO genes: agree with NCBI's; differ; undecided | 30,573; 15; 10 of 33,409 genomes |
+| NCBI's taxa that are one branch of the BUSCO tree (17,512 genomes, 50 loci) | genus 82.3% of 4,253; family 76.3% of 2,250; order 69.2% of 707; class 72.4% of 203; phylum 57.6% of 59 |
+| genomes placed apart from their taxon in that tree | 471 |
 | median complete BUSCOs per genome | 98.4% (77.6% of genomes at 90% or more) |
 | BUSCOs OrthoDB has a gene model of, called | 98.8% of 88,053 (837 species) |
 | of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | 91.9% |
@@ -82,6 +94,22 @@
 | rRNA records; operons with a whole 28S | 5,102,572; 95.1% of 2,645,832 |
 | primer pairs: species amplified of those with a record it runs on | psbA-trnH 91.3%, rbcLa 91.2%, V4_TAReuk 74.8%, V9_1380F_1510R 52.3%, V9_1391F_EukB 48.0%, LR0R_LR5 36.2%, matK_KIM 35.4%, NS1_NS4 34.8%, ITS3_ITS4 34.5%, 16S_Palumbi 27.7%, NL1_NL4 27.6%, COI_Leray 25.2%, 12S_V5 23.9%, gITS7_ITS4 23.6%, ITS86F_ITS4 23.0%, ITS1F_ITS4 22.0%, MiFish-U 17.3%, COI_Folmer 3.4% |
 | the same, of the species of the clades each pair is for | rbcLa 94.6% (Viridiplantae), psbA-trnH 91.8% (Viridiplantae), V4_TAReuk 74.8% (all), 12S_V5 72.4% (Vertebrata), MiFish-U 53.1% (Vertebrata), V9_1380F_1510R 52.3% (all), ITS3_ITS4 49.8% (Fungi), ITS86F_ITS4 49.6% (Fungi), gITS7_ITS4 49.6% (Fungi), NL1_NL4 49.3% (Fungi), ITS1F_ITS4 48.9% (Fungi), V9_1391F_EukB 48.0% (all), LR0R_LR5 47.6% (Fungi), matK_KIM 35.4% (Viridiplantae), NS1_NS4 34.8% (all), 16S_Palumbi 29.9% (Metazoa/Vertebrata), COI_Leray 25.0% (Metazoa/Vertebrata), COI_Folmer 3.5% (Metazoa/Vertebrata) |
+| detection F1, EukDetect2 (1,000/5,000/20,000 reads) | species 0.66/0.54/0.35; genus held out 0.41/0.51/0.51; class held out 0.00/0.08/0.16 |
+| detection F1, Eukore (1,000/5,000/20,000 reads) | species 0.54/0.37/0.25; genus held out 0.52/0.57/0.40; class held out 0.12/0.10/0.11 |
+| detection F1, Eukore 18S (1,000/5,000/20,000 reads) | species 0.04/0.11/0.09; genus held out 0.00/0.19/0.23; class held out 0.00/0.04/0.07 |
+| detection F1, Eukore exons (1,000/5,000/20,000 reads) | species 0.31/0.41/0.33; genus held out 0.31/0.64/0.34; class held out 0.00/0.06/0.09 |
+| detection F1, MetaPhlAn4 (1,000/5,000/20,000 reads) | species 0.21/0.29/0.29; genus held out 0.09/0.17/0.17; class held out 0.00/0.00/0.00 |
+| detection F1, PR2 (1,000/5,000/20,000 reads) | species 0.00/0.08/0.13; genus held out 0.00/0.05/0.28; class held out 0.00/0.04/0.08 |
+| detection F1, SILVA (1,000/5,000/20,000 reads) | species 0.00/0.04/0.11; genus held out 0.00/0.05/0.34; class held out 0.00/0.00/0.23 |
+| detection F1, UNITE (1,000/5,000/20,000 reads) | species 0.00/0.00/0.04; genus held out 0.00/0.05/0.16; class held out 0.00/0.00/0.00 |
+| Eukore's genome reads censored (all secondary hits left out) | held_out 0.0%, novel 0.4% |
+| Eukore exons's genome reads censored (all secondary hits left out) | held_out 0.0%, novel 0.0% |
+| Eukore 18S's genome reads censored (all secondary hits left out) | held_out 0.0%, novel 0.0% |
+| EukDetect2's genome reads censored (all secondary hits left out) | held_out 0.0%, novel 0.0% |
+| MetaPhlAn4's genome reads censored (all secondary hits left out) | held_out 0.0%, novel 0.0% |
+| PR2's genome reads censored (all secondary hits left out) | held_out 0.0%, novel 0.0% |
+| SILVA's genome reads censored (all secondary hits left out) | held_out 0.0%, novel 0.0% |
+| UNITE's genome reads censored (all secondary hits left out) | held_out 0.0%, novel 0.0% |
 | species named in EUKARYOME by name or synonym | 18.6% |
 | species named in KSGP by name or synonym | 17.4% |
 | species named in MIDORI2 by name or synonym | 85.8% |
@@ -91,8 +119,7 @@
 | genome run (BUSCOs, rRNA, tiara), median | 1.1 min on 4/5/6/7 threads, 3 min per Gb of genome |
 | the package's size | 52.78 GB in 480 files |
 | the build's cost | genome runs 925.0 h (on 4/5/6/7 threads each); package stage 930 min |
-| content | not measured: an evaluation bundle (no copy or record tables: the whole package's benchmarks count them) |
-| novel | not measured: an evaluation bundle (no copy or record tables: the whole package's benchmarks count them) |
+| genomes NCBI released in 2025 and 2026 | 38.3% of 28,735 |
 
 | supergroup | species | with a genome | rRNA alone | complete BUSCOs, median | genomes ≥ 90% complete | with rRNA | with an operon | with an organelle gene |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|

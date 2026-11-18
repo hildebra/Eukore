@@ -480,7 +480,7 @@ class BackgroundReadsTest(unittest.TestCase):
             tables = {"genomes.tsv": [dict(accession="Y", representative="t", species_taxid="4932")],
                       "species.tsv": [dict(taxid="4932", group="Fungi")]}
 
-            def references(folder, out, ncbi, compare, inside, parts):
+            def references(folder, out, ncbi, compare, inside, parts, keep_low=False, left_out=None):
                 parts["B|r1"] = "rrna:18S"
                 return {"Eukore": (ref, taxa)}
             sims = {"bug.fna": ["ACGT" * 40] * 3, "human.fna": ["ACGT" * 40]}
@@ -507,6 +507,54 @@ class BackgroundReadsTest(unittest.TestCase):
             self.assertTrue(any(t.startswith("WARNING: test genome Y has 1 marker reads") for t in logged))
             self.assertEqual({(r["test"], r["assigned"]) for r in rows if r["reads"] == "genome"},
                              {("Bug", 3), ("Human", 1), ("Y", 0)})
+
+    def test_low_records_left_out_of_the_references(self):
+        # since 2026-11-18 Eukore's references (and the test genomes' marker reads) leave out the records of confidence
+        # low, the package's typical use: the 2026-11-17 build's bacterial reads placed in a eukaryote phylum were all on
+        # low rRNA records flagged ssu_prokaryote
+        import collections  # noqa: PLC0415
+        from eukore_bench import reads  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            folder = os.path.join(tmp, "Eukore_9")
+
+            def table(name, header, rows):
+                path = os.path.join(folder, name)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", newline="\n") as fh:
+                    fh.write("\t".join(header) + "\n" + "".join("\t".join(r) + "\n" for r in rows))
+
+            def fasta(name, records):
+                os.makedirs(os.path.dirname(os.path.join(folder, name)), exist_ok=True)
+                with gzip.open(os.path.join(folder, name), "wt") as fh:
+                    fh.writelines(f">{n}\n{s}\n" for n, s in records)
+            table("genomes.tsv", ["accession", "representative", "species_taxid"],
+                  [["A", "t", "4932"], ["B", "t", "28985"]])
+            table("busco/loci.tsv", ["locus"], [["1at2759"]])
+            table("busco/features.tsv", ["kind", "accession", "locus", "start", "end"],
+                  [["exon", "A", "1at2759", "0", "8"], ["exon", "B", "1at2759", "0", "8"]])
+            table("busco/copies.tsv", ["accession", "locus", "contig", "start", "end", "confidence"],
+                  [["A", "1at2759", "c1", "1", "9", "high"], ["B", "1at2759", "c1", "1", "9", "low"]])
+            fasta("busco/copies/1at2759.fna.gz", [("A", "ACGTACGTAC"), ("B", "TTGGCCAATT")])
+            # a low record of a (species, type) does not take its slot: the high one after it is kept
+            table("rrna/records.tsv", ["record", "kind", "species_taxid", "taxid", "type", "confidence", "regions",
+                                       "accession", "contig", "start", "end"],
+                  [["r_low", "18S", "4932", "4932", "t1", "low", "-", "B", "c1", "20", "30"],
+                   ["r_high", "18S", "4932", "4932", "t1", "high", "-", "A", "c1", "20", "30"],
+                   ["r_medium", "18S", "28985", "28985", "-", "medium", "-", "-", "-", "-", "-"]])
+            fasta("rrna/records.fna.gz", [("r_low", "ACGT" * 5), ("r_high", "TTGG" * 5), ("r_medium", "CCAA" * 5)])
+            gone = collections.Counter()
+            made = reads.references(folder, os.path.join(tmp, "refs"), ncbi, left_out=gone)
+            self.assertEqual(set(made["Eukore"][1]), {"A|1at2759", "r_high", "r_medium"})
+            self.assertEqual(set(made["Eukore 18S"][1]), {"r_high", "r_medium"})
+            self.assertEqual(dict(gone), {"BUSCO copies": 1, "rRNA records": 1})
+            kept = reads.references(folder, os.path.join(tmp, "refs_all"), ncbi, keep_low=True)
+            self.assertEqual(set(kept["Eukore"][1]), {"A|1at2759", "B|1at2759", "r_low", "r_medium"})  # r_low's slot
+            self.assertEqual(reads.low_copies(folder), {("B", "1at2759")})
+            # the test genomes' marker reads come from the records the references hold
+            self.assertEqual(reads.marker_spans(folder, ["A", "B"]), {"A": [("c1", 1, 9), ("c1", 20, 30)]})
+            self.assertEqual(dict(reads.marker_spans(folder, ["A", "B"], keep_low=True)),
+                             {"A": [("c1", 1, 9), ("c1", 20, 30)], "B": [("c1", 1, 9), ("c1", 20, 30)]})
 
     def test_test_genomes_of_the_tiers_the_package_holds(self):
         from eukore_bench import reads  # noqa: PLC0415

@@ -158,7 +158,7 @@ STEPS = ("compare", "resource", "databases", "checks", "thresholds", "history", 
 
 def run(package, bench, out, threads=1, minimap2=None, log=print, tmp=None, taxdump=None, tree=True,
         previous=None,
-        align_cache=None, only=None):
+        align_cache=None, only=None, read_low=False):
     """The comparisons and the read benchmark of package (BENCH: prep.py's folder) into out -> summary.json's
     figures. taxdump: NCBI's whole taxonomy (default BENCH's download; else the package's taxonomy/, which holds
     its own lineages alone: a species another reference holds alone is then not counted). only (since 2026-11-18): the
@@ -240,7 +240,7 @@ def run(package, bench, out, threads=1, minimap2=None, log=print, tmp=None, taxd
                 rows = reads.run(package, ncbi, os.path.join(bench, "read_genomes"), tests, minimap2, threads, work,
                                  compare, reads.read_background(prep.READ_BACKGROUND,
                                                                 os.path.join(bench, "read_background")),
-                                 None, log, detections=detections, hits_out=background_hits)
+                                 None, log, detections=detections, hits_out=background_hits, keep_low=read_low)
             benchmarks.write(out, "reads.tsv", reads.COLUMNS, rows)
             benchmarks.write(out, "detection.tsv", reads.DETECT_COLUMNS, detections)
             benchmarks.write(out, "background_hits.tsv", reads.HIT_COLUMNS, background_hits)
@@ -265,6 +265,8 @@ def main(argv=None):
     p.add_argument("--tmp", help="the read benchmark's temporary files (a node's local disk; default: in --out)")
     p.add_argument("--previous", help="an earlier package: the changes from it (history.py's changes.tsv)")
     p.add_argument("--no_tree", action="store_true", help="no species tree (tree.py: hours for all eukaryotes)")
+    p.add_argument("--read_low", action="store_true", help="the read benchmark keeps the records of confidence low in "
+                   "Eukore's references (default: left out, the package's typical use)")
     p.add_argument("--align_cache", help="the build's WORK/align: its proteins' rows on BUSCO's profiles, for the tree")
     p.add_argument("--only", help="only these steps, comma-separated (" + ", ".join(STEPS) + "): the results already "
                    "in --out kept as they are, e.g. `--only reads` to repeat the read benchmark (the tree and the "
@@ -276,7 +278,8 @@ def main(argv=None):
         p.error(f"--only: steps are {', '.join(STEPS)}")
     summary = run(a.package, a.bench, a.out, a.threads, a.minimap2,
                   log=lambda text: print(text, file=sys.stderr, flush=True), tmp=a.tmp, taxdump=a.taxdump,
-                  tree=not a.no_tree, align_cache=a.align_cache, previous=a.previous, only=only)
+                  tree=not a.no_tree, align_cache=a.align_cache, previous=a.previous, only=only,
+                  read_low=a.read_low)
     json.dump({k: summary[k] for k in ("breadth", "overlap", "reads", "left_out") if k in summary}, sys.stdout,
               indent=1)
     print()
