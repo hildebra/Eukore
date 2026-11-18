@@ -176,7 +176,7 @@ def run(package, out, summary, log=print):
                 "threshold": float(r["threshold"]), "accuracy": float(r["accuracy"])}
     groups = sorted({r["supergroup"] for r in rows} - {ALL})
     log("thresholds: " + "; ".join(
-        f"{m} " + ", ".join(f"{rank} {v['threshold']:g}%" + ("" if v["accuracy"] >= USABLE else " (parts nothing)")
+        f"{m} " + ", ".join(f"{rank} {v['threshold']:g}%" + ("" if v["accuracy"] >= USABLE else " (no usable cutoff)")
                             for rank, v in by.items()) for m, by in summary["thresholds"].items())
         + (f"; {len(groups)} groups' too" if groups else "; no groups (a resolution_hist.tsv before 2026-11-15)"))
     return summary

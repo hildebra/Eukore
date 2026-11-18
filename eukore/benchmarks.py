@@ -835,6 +835,20 @@ def overlap_rows(species, databases, ncbi):
     return rows
 
 
+MISSING_COLUMNS = ("database", "species_taxid", "species", "supergroup")
+
+
+def missing_rows(sets, ncbi, own):
+    """missing.tsv (since 2026-11-18): the species each database (sets: {name: its NCBI species}, own: Eukore's name
+    in it) holds that Eukore holds no record of, named: overlap.tsv's `database_only`, which counts them (the
+    2026-11-17 build lacked 36,415 of UNITE's 58,038 species, 14,590 of MIDORI2's 295,550 and 62 of EukDetect2's
+    6,594) with nothing to look at them by."""
+    cache = {}
+    return [dict(database=name, species_taxid=sp, species=ncbi.name.get(sp, "-"),
+                 supergroup=supergroup_of(ncbi, sp, cache))
+            for name, theirs in sorted(sets.items()) if name != own for sp in sorted(theirs - sets[own])]
+
+
 def copy_rows(genomes, species):
     """rrna_copies.tsv: each species' genome's rRNA as extracted (genomes.tsv: its 18S spans, rDNA units, whole
     units). An assembly collapses a tandem rDNA array: these are the copies assembled, not the genome's."""

@@ -231,6 +231,14 @@ class PackageTest(unittest.TestCase):
             self.assertEqual((got["breadth"]["compared_name"], got["breadth"]["both"]), ("Other", 1))
             self.assertEqual(got["left_out"]["reads"], "no minimap2 (the benchmarks' environment)")
             self.assertTrue(os.path.isfile(os.path.join(results, "completeness.tsv")))  # the package's own, copied
+            # since 2026-11-18: one step alone, the others' results in the folder kept as they are
+            overlap_before = fx.read_tsv(os.path.join(results, "overlap.tsv"))
+            with mock.patch.object(compare.shutil, "which", return_value=None):
+                again = compare.run(out, bench, results, 1, log=lambda t: None, only=("reads",))
+            self.assertEqual(fx.read_tsv(os.path.join(results, "overlap.tsv")), overlap_before)
+            self.assertEqual((again["overlap"], again["left_out"]["reads"]),
+                             (got["overlap"], "no minimap2 (the benchmarks' environment)"))
+            self.assertTrue(os.path.isfile(os.path.join(results, "missing.tsv")))  # databases.py's, since 2026-11-18
             # the evaluation bundle the package stage writes (since 2026-11-12)
             import eukore_build  # noqa: PLC0415
             opts = types.SimpleNamespace(out=os.path.join(tmp, "out"), work=work, genomes=genomes_dir, threads=1)
@@ -412,6 +420,129 @@ class CensoredReadsTest(unittest.TestCase):
             # was not full). novel: reads 0 and 1 censored
             self.assertEqual(got, {"in": (3, 3, 0, 2, 0), "held_out": (3, 1, 1, 0, 1), "novel": (3, 0, 2, 0, 0)})
             self.assertTrue(all(r["censored"] == 0 for r in rows if r["reads"] == "genome"))
+
+
+BACKGROUND_MINIMAP2 = '''#!/usr/bin/env python3
+"""minimap2's stand-in for the background reads: a bacterium's reads 0 and 1 best at a BUSCO copy (A|88at2759), its read
+2 at an rRNA record (B|r1, 140 of 150 identical); the host's read 0 at the copy too."""
+for read, target, matches in (("Bug|genome|0", "A|88at2759", 148), ("Bug|genome|1", "A|88at2759", 148),
+                              ("Bug|genome|2", "B|r1", 140), ("Human|genome|0", "A|88at2759", 148)):
+    print(read, 150, 0, 150, "+", target, 1000, 0, 150, matches, 150, 60, "tp:A:P", sep="\\t")
+'''
+
+
+def reads_row(**kw):
+    from eukore_bench import reads  # noqa: PLC0415
+    row = dict(test="t", kind="eukaryote", species_taxid="4932", supergroup="Fungi", congeners=1, reference="Eukore",
+               mode="in", reads="marker", n=0, assigned=0, censored=0)
+    row.update({f"{rank}_{v}": 0 for rank in reads.RANKS for v in ("correct", "wrong")})
+    return dict(row, **kw)
+
+
+class BackgroundReadsTest(unittest.TestCase):
+    """Since 2026-11-18, from the 2026-11-17 build's read benchmark: the host's reads (human chromosome 21, right on
+    its own lineage) apart from the bacterial and archaeal background's, which every placement gets wrong (Eukore's
+    8,244 per million were mostly the host's own, placed right); the records that attract background reads; test
+    genomes of the tiers whose copies the package holds; a novel mode told at class and phylum."""
+
+    def test_the_host_is_not_background(self):
+        from eukore_bench import compare, reads  # noqa: PLC0415
+        bug = reads_row(test="Bug", kind="background", species_taxid="-", reads="genome", n=1000, assigned=2,
+                        phylum_wrong=1, class_wrong=1)
+        host = reads_row(test="Human", kind="background", species_taxid="9606", reads="genome", n=1000, assigned=100,
+                         species_correct=60, phylum_correct=90, phylum_wrong=4)
+        novel = reads_row(mode="novel", n=10, assigned=7, class_correct=6, class_wrong=1, phylum_correct=9)
+        marker = reads_row(n=10, assigned=10, species_correct=4, genus_correct=8, genus_wrong=1)
+        self.assertEqual([reads.source_of(r) for r in (bug, host, novel)], ["background", "host", "eukaryote"])
+        got = compare.read_summary([bug, host, novel, marker])["Eukore"]
+        self.assertEqual((got["background_per_million"], got["background_to_a_phylum_per_million"]), (2000.0, 1000.0))
+        self.assertEqual(got["host"], {"assigned": 0.1, "species_right": 0.06, "phylum_right": 0.09,
+                                       "wrong_at_phylum_per_million": 4000.0})
+        # a novel species' reads are told at class and phylum (species and genus are wrong by construction)
+        self.assertEqual(got["novel"], {"class_recall": 0.6, "class_precision": round(6 / 7, 4), "phylum_recall": 0.9,
+                                        "phylum_precision": 1.0})
+        self.assertEqual((got["in"]["species_recall"], got["in"]["genus_precision"]), (0.4, round(8 / 9, 4)))
+
+    def test_what_attracts_the_background_reads(self):
+        from eukore_bench import reads  # noqa: PLC0415
+        self.assertEqual(reads.part_of("B|r1", {"B|r1": "rrna:18S"}, "Eukore"), "rrna:18S")
+        self.assertEqual(reads.part_of("A|88at2759", {}, "Eukore"), "busco:88at2759")
+        self.assertEqual(reads.part_of("A|88at2759", {}, "PR2"), "-")  # another reference's record
+        self.assertEqual(reads.best_target([(0.95, "t2"), (0.99, "t3"), (0.99, "t1"), (0.97, "gone")],
+                                           {"t1": 1, "t2": 1, "t3": 1}), (0.99, "t1"))
+        self.assertIsNone(reads.best_target([(0.99, "gone")], {}))
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            taxa = {"A|88at2759": 4932, "B|r1": 4932}
+            ref = os.path.join(tmp, "ref.fna")
+            with open(ref, "w") as fh:
+                fh.write(">A|88at2759\nACGT\n")
+            tables = {"genomes.tsv": [dict(accession="Y", representative="t", species_taxid="4932")],
+                      "species.tsv": [dict(taxid="4932", group="Fungi")]}
+
+            def references(folder, out, ncbi, compare, inside, parts):
+                parts["B|r1"] = "rrna:18S"
+                return {"Eukore": (ref, taxa)}
+            sims = {"bug.fna": ["ACGT" * 40] * 3, "human.fna": ["ACGT" * 40]}
+            logged = []
+            with mock.patch.object(reads.package, "read_table", lambda folder, name: tables[name]), \
+                    mock.patch.object(reads, "references", side_effect=references), \
+                    mock.patch.object(reads, "marker_spans", return_value={}), \
+                    mock.patch.object(reads, "simulate", lambda path, spans, rng, n: (
+                        ([], sims[os.path.basename(path)]) if os.path.basename(path) in sims else (["ACGT" * 40], []))):
+                hits = []
+                rows = reads.run(tmp, ncbi, tmp, ["Y"], fx.tool(tmp, "minimap2", BACKGROUND_MINIMAP2), 1,
+                                 os.path.join(tmp, "work"), background=[("Bug", os.path.join(tmp, "bug.fna"), None),
+                                                                        ("Human", os.path.join(tmp, "human.fna"), 9606)],
+                                 log=logged.append, hits_out=hits)
+            self.assertEqual([(h["test"], h["source"], h["record"], h["part"], h["reads"], h["identity"])
+                              for h in hits],
+                             [("Bug", "background", "A|88at2759", "busco:88at2759", 2, 98.7),
+                              ("Bug", "background", "B|r1", "rrna:18S", 1, 93.3),
+                              ("Human", "host", "A|88at2759", "busco:88at2759", 1, 98.7)])
+            self.assertEqual(set(reads.HIT_COLUMNS), set(hits[0]))
+            self.assertTrue(any("background reads best at busco records: 2" in t for t in logged))
+            self.assertTrue(any("host reads best at busco records: 1" in t for t in logged))
+            self.assertTrue(any("background reads best at rrna records: 1" in t for t in logged))
+            self.assertTrue(any(t.startswith("WARNING: test genome Y has 1 marker reads") for t in logged))
+            self.assertEqual({(r["test"], r["assigned"]) for r in rows if r["reads"] == "genome"},
+                             {("Bug", 3), ("Human", 1), ("Y", 0)})
+
+    def test_test_genomes_of_the_tiers_the_package_holds(self):
+        from eukore_bench import reads  # noqa: PLC0415
+        self.assertEqual([reads.testable(r) for r in (dict(tier="genome"), dict(tier="draft"), dict(tier="poor"),
+                                                     dict(tier="contaminated"), dict(tier="partial"),
+                                                     dict(tier="transcriptome"))],
+                         [True, True, False, False, False, False])
+        # a package from before the tiers: a genome with a BUSCO locus called
+        self.assertEqual([reads.testable(r) for r in (dict(loci="40"), dict(loci="0"), dict(tier="-", loci="7"), {})],
+                         [True, False, True, False])
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            reps = {"A": (4932, "a.fna"), "B": (4932, "b.fna"), "C": (28985, "c.fna")}
+            both = reads.choose(ncbi, reps, per_group=1, exists=lambda _p: True)
+            self.assertEqual(len(both), 1)
+            left = reads.choose(ncbi, reps, per_group=1, exists=lambda _p: True,
+                                usable={a for a in reps if a not in both})
+            self.assertEqual(len(left), 1)
+            self.assertNotEqual(left, both)  # the one chosen first is out: another takes its place
+            self.assertEqual(reads.choose(ncbi, reps, per_group=3, exists=lambda _p: True, usable=set()), [])
+
+    def test_the_species_a_database_holds_that_eukore_lacks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            sets = {"Eukore": {4932}, "PR2": {4932, 28985}, "UNITE": {28985, 6253}}
+            rows = benchmarks.missing_rows(sets, ncbi, "Eukore")
+            self.assertEqual([(r["database"], r["species_taxid"]) for r in rows],
+                             [("PR2", 28985), ("UNITE", 6253), ("UNITE", 28985)])
+            self.assertEqual(set(rows[0]), set(benchmarks.MISSING_COLUMNS))
+
+    def test_a_step_timed(self):
+        from eukore_bench import compare  # noqa: PLC0415
+        lines = []
+        with compare.timed(lines.append, "tree"):
+            pass
+        self.assertEqual(lines, ["  [tree: 0.0 min]"])
 
 
 if __name__ == "__main__":

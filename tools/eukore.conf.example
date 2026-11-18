@@ -35,7 +35,7 @@ BENCH=/path/to/DB/Eukore/bench       # the other references, kept between builds
                                       # that keeps its files, not scratch
 BENCH_RESULTS=                        # the tables and figures (empty: OUT/Eukore_<VERSION>_benchmarks)
 BENCH_DOWNLOADS_OPTS=()               # eukore_bench.prep's: --read_genomes N, --mpa_version, --only pr2,...
-BENCH_OPTS=()                         # eukore_bench.compare's: --no_tree, --previous OUT/Eukore_<older version>
+BENCH_OPTS=()                         # eukore_bench.compare's: --no_tree, --previous OUT/Eukore_<older version>, --only reads (one step alone: the results in the folder kept)
 FIGURE_OPTS=()                        # eukore_bench.figures': --format pdf
 SBATCH_BENCH_DOWNLOADS=()             # bench_downloads' job (empty: SBATCH_FETCH's; needs the internet)
 SBATCH_BENCH=(-p medium --cpus-per-task=32 --mem=200G --localscratch=ssd:200)  # benchmark's (empty:

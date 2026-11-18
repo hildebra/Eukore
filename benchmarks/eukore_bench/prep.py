@@ -141,7 +141,13 @@ def test_genomes(bench, package, genomes=None, per_group=reads.PER_GROUP, log=pr
             if r["representative"] == "t" and r["accession"].startswith(("GCA_", "GCF_"))
             and r.get("ftp") not in (None, "", "-")}
     reps = {a: (int(r["species_taxid"]), genomes_mod.genome_file(folder, a)) for a, r in rows.items()}
-    chosen = reads.choose(ncbi, reps, per_group, exists=lambda _p: True)
+    # since 2026-11-18 only genomes the package holds the copies of (reads.testable: the 2026-11-17 build's test
+    # genomes included a contaminated assembly of 157 Mb with no BUSCO copy, and two more of the dropped tiers)
+    usable = {a for a, r in rows.items() if reads.testable(r)}
+    chosen = reads.choose(ncbi, reps, per_group, exists=lambda _p: True, usable=usable)
+    skipped = len(rows) - len(usable)
+    if skipped:
+        log(f"  {skipped:,} genomes of the dropped tiers or without a BUSCO locus not chosen from")
     kept = []
     for acc in chosen:
         dest = genomes_mod.genome_file(folder, acc)

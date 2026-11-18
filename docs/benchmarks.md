@@ -296,8 +296,10 @@ draws them, with `index.md` captioning each and naming its tables):
   sharing most coding bases, the exons and splice sites exact, the coding bases shared; then deletes them. (The copy
   itself takes the annotation's model where its HMM confirms it, `model` its source; the table measures miniprot's.) `genes.tsv` gives each genome's distance to BUSCO's dataset
   (the x of Figure 1b) and its copies' intron bases (what an exon-only reference leaves out).
-- **Reads** (`reads.tsv`, `detection.tsv`): the read benchmark, since 2026-11-12 benchmarks/'s
-  (`eukore-benchmark.sh`; [benchmarks/README.md](../benchmarks/README.md#the-read-benchmark)).
+- **Reads** (`reads.tsv`, `detection.tsv`, `background_hits.tsv`): the read benchmark, since 2026-11-12 benchmarks/'s
+  (`eukore-benchmark.sh`; [benchmarks/README.md](../benchmarks/README.md#the-read-benchmark)). The bacterial and
+  archaeal background's reads, wrong wherever placed, are counted apart from the host's (human chromosome 21, right on
+  its own lineage); `background_hits.tsv` names the records that attract them.
 - **The checks** (`flags.tsv`), **rRNA regions' and mitochondrial genes' lengths** (`rrna_regions.tsv`),
   **organelle coverage** (`organelle.tsv`), **rRNA copies per genome as assembled** (`rrna_copies.tsv`).
 - **Other databases** (`overlap.tsv`): the species of PR2, EUKARYOME's long reads, KSGP, ROD, BUSCO's OrthoDB

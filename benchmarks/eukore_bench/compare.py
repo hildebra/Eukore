@@ -20,8 +20,9 @@ OUT_BENCH gets the package's own benchmarks (its benchmarks/ tables, summary.jso
   year NCBI released them, and with --previous the species and genomes changed since an earlier package;
 - tree.nwk, tree_tips.tsv, tree_taxa.tsv, tree_strays.tsv: the tree of its BUSCO proteins against NCBI's taxonomy
   (tree.py; where BENCH holds BUSCO's dataset and hmmalign and FastTree are on the path);
-- reads.tsv, detection.tsv: the read benchmark (reads.py) of Eukore and every other reference, on the test genomes
-  prep.py placed in BENCH/read_genomes and its bacterial background (BENCH/read_background);
+- reads.tsv, detection.tsv, background_hits.tsv: the read benchmark (reads.py) of Eukore and every other reference, on
+  the test genomes prep.py placed in BENCH/read_genomes and its bacterial background (BENCH/read_background); the
+  last table the records that attract the background's reads (since 2026-11-18);
 - summary.json and summary.md with their figures added (breadth, overlap, reads, detection).
 figures.py then draws every figure from OUT_BENCH. benchmarks/eukore-benchmark.sh runs this in the benchmarks'
 environment.
@@ -29,12 +30,14 @@ environment.
 
 import argparse
 import collections
+import contextlib
 import glob
 import json
 import os
 import shutil
 import sys
 import tempfile
+import time
 
 from . import ROOT  # noqa: F401  (the checkout on the path)
 from . import checks, databases, guidance, history, prep, reads, resource, tree as tree_mod
@@ -44,15 +47,16 @@ from eukore import benchmarks, ncbi as ncbi_mod, package as package_mod
 def read_summary(rows):
     """reads.tsv's headline: per reference and mode the marker reads' precision and recall at species and genus (held
     out: of the test genomes with another species of their genus in the package, the only ones a held-out read can be
-    placed right to its genus), and the background reads assigned per million, and to a phylum or deeper."""
+    placed right to its genus; novel, since 2026-11-18: at class and phylum, where a read of a lineage the reference
+    holds none of can be right), the bacterial and archaeal background reads assigned per million, and to a phylum or
+    deeper, and (since 2026-11-18, apart from them) the host's (human chromosome 21: right on its own lineage)."""
     out = collections.defaultdict(dict)
     sums = collections.defaultdict(collections.Counter)
     for r in rows:
         if r["mode"] == "held_out" and not int(r["congeners"]):
             continue
-        key = (r["reference"], r["mode"], r["kind"], r["reads"])
-        for c in ("n", "assigned", "species_correct", "species_wrong", "genus_correct", "genus_wrong",
-                  "phylum_wrong"):
+        key = (r["reference"], r["mode"], reads.source_of(r), r["reads"])
+        for c in ("n", "assigned") + tuple(f"{rank}_{v}" for rank in reads.RANKS for v in ("correct", "wrong")):
             sums[key][c] += int(r[c])
         sums[key]["censored"] += int(r.get("censored") or 0)  # since 2026-11-10
     for (ref, mode, kind, which), s in sums.items():
@@ -60,7 +64,8 @@ def read_summary(rows):
             # since 2026-11-10: the share of the genome reads whose secondary hits were all to records left out
             out[ref].setdefault("censored", {})[mode] = round(s["censored"] / s["n"], 4)
         if kind == "eukaryote" and which == "marker":
-            out[ref][mode] = {f"{r}_{m}": round(v, 4) if v is not None else None for r in ("species", "genus")
+            ranks = ("class", "phylum") if mode == "novel" else ("species", "genus")
+            out[ref][mode] = {f"{r}_{m}": round(v, 4) if v is not None else None for r in ranks
                               for m, v in (("recall", s[f"{r}_correct"] / s["n"] if s["n"] else None),
                                            ("precision", s[f"{r}_correct"] / (s[f"{r}_correct"] + s[f"{r}_wrong"])
                                             if s[f"{r}_correct"] + s[f"{r}_wrong"] else None))}
@@ -68,7 +73,23 @@ def read_summary(rows):
             out[ref]["background_per_million"] = round(1e6 * s["assigned"] / s["n"], 1) if s["n"] else None
             out[ref]["background_to_a_phylum_per_million"] = round(1e6 * s["phylum_wrong"] / s["n"], 1) \
                 if s["n"] else None
+        elif kind == "host" and s["n"]:
+            out[ref]["host"] = {"assigned": round(s["assigned"] / s["n"], 4),
+                                "species_right": round(s["species_correct"] / s["n"], 4),
+                                "phylum_right": round(s["phylum_correct"] / s["n"], 4),
+                                "wrong_at_phylum_per_million": round(1e6 * s["phylum_wrong"] / s["n"], 1)}
     return dict(out)
+
+
+@contextlib.contextmanager
+def timed(log, what):
+    """Log how long a step of run() took (since 2026-11-18: the 2026-11-17 build's benchmark job ran about four hours
+    and its log could not say which step took them)."""
+    began = time.monotonic()
+    try:
+        yield
+    finally:
+        log(f"  [{what}: {(time.monotonic() - began) / 60:.1f} min]")
 
 
 def species_of(package):
@@ -132,13 +153,22 @@ def write_summary(package, out, summary):
                                        composition or None))
 
 
+STEPS = ("compare", "resource", "databases", "checks", "thresholds", "history", "tree", "reads")
+
+
 def run(package, bench, out, threads=1, minimap2=None, log=print, tmp=None, taxdump=None, tree=True,
         previous=None,
-        align_cache=None):
+        align_cache=None, only=None):
     """The comparisons and the read benchmark of package (BENCH: prep.py's folder) into out -> summary.json's
     figures. taxdump: NCBI's whole taxonomy (default BENCH's download; else the package's taxonomy/, which holds
-    its own lineages alone: a species another reference holds alone is then not counted)."""
-    copy_own(package, out)
+    its own lineages alone: a species another reference holds alone is then not counted). only (since 2026-11-18): the
+    steps (STEPS) to run, the results already in out kept as they are (the 2026-11-17 build's benchmark job ran about
+    four hours, most of them the tree's and the databases', where the read benchmark alone is the one to repeat)."""
+    want = (lambda step: only is None or step in only)
+    if only is None:
+        copy_own(package, out)
+    else:
+        open_results(package, out)
     summary = load_summary(out)
     whole = prep.taxdump_of(bench, taxdump)
     if not whole:
@@ -151,7 +181,7 @@ def run(package, bench, out, threads=1, minimap2=None, log=print, tmp=None, taxd
         log(f"WARNING: no other reference in {os.path.join(bench, 'compare', prep.REFERENCES)} (prep.py): the read "
             "benchmark of Eukore alone, no comparisons")
     theirs = {name: benchmarks.compared_species(table, ncbi) for name, _fasta, table in compare}
-    if theirs:
+    if theirs and want("compare"):
         first = compare[0][0]
         rows = list(benchmarks.rows_of(os.path.join(out, "breadth.tsv")))
         if rows:
@@ -168,43 +198,57 @@ def run(package, bench, out, threads=1, minimap2=None, log=print, tmp=None, taxd
                               for r in rows if r["supergroup"] == "all"}
         log(f"compared: {', '.join(f'{n} {len(s):,} species' for n, s in theirs.items())}")
     # the package as a resource (since 2026-11-12): its breadth at every rank, its linked markers, the named lists
-    resource.run(package, out, ncbi, species, summary, bool(whole), log=log)
+    if want("resource"):
+        with timed(log, "resource"):
+            resource.run(package, out, ncbi, species, summary, bool(whole), log=log)
     minimap2 = minimap2 or shutil.which("minimap2")
     # beside the other databases (since 2026-11-12): the comparison table, the species several share, the species a
     # genome is the first sequence of a marker for, the same species' markers in two databases
-    databases.run(package, bench, out, ncbi, species, summary, theirs, compare, minimap2, threads, tmp, log)
+    if want("databases"):
+        with timed(log, "databases"):
+            databases.run(package, bench, out, ncbi, species, summary, theirs, compare, minimap2, threads, tmp, log)
     # how good its records are (since 2026-11-12): each check's share per group, the genetic codes, the rDNA copies;
     # the tree of its BUSCO proteins against NCBI's taxonomy (where BUSCO's profiles, hmmalign and FastTree are)
-    checks.run(package, out, species, summary, log)
-    guidance.run(package, out, summary, log)  # the identity that parts taxa, per marker and rank
-    history.run(package, out, species, summary, previous, log)  # its sizes, the genomes by year, the changes
-    if tree:
-        try:
-            tree_mod.run(package, out, ncbi, species, summary, prep.odb_of(bench), threads=threads,
-                         cache=align_cache, tmp=tmp, log=log)
-        except (RuntimeError, OSError) as e:  # a tool that failed: the other benchmarks are not lost
-            summary["left_out"]["tree"] = f"failed ({e})"
-            log(f"WARNING: the tree failed ({e}): left out")
-    else:
-        summary["left_out"]["tree"] = "not asked (--no_tree)"
+    if want("checks"):
+        with timed(log, "checks"):
+            checks.run(package, out, species, summary, log)
+    if want("thresholds"):
+        with timed(log, "thresholds"):
+            guidance.run(package, out, summary, log)  # the identity that parts taxa, per marker and rank
+    if want("history"):
+        with timed(log, "history"):
+            history.run(package, out, species, summary, previous, log)  # its sizes, the genomes by year, the changes
+    if want("tree"):
+        if tree:
+            try:
+                with timed(log, "tree"):
+                    tree_mod.run(package, out, ncbi, species, summary, prep.odb_of(bench), threads=threads,
+                                 cache=align_cache, tmp=tmp, log=log)
+            except (RuntimeError, OSError) as e:  # a tool that failed: the other benchmarks are not lost
+                summary["left_out"]["tree"] = f"failed ({e})"
+                log(f"WARNING: the tree failed ({e}): left out")
+        else:
+            summary["left_out"]["tree"] = "not asked (--no_tree)"
     tests_file = os.path.join(bench, "read_genomes", "tests.tsv")
     tests = [r["accession"] for r in benchmarks.rows_of(tests_file)] if os.path.isfile(tests_file) else []
-    summary["left_out"].pop("reads", None)
-    if tests and minimap2:
+    if want("reads") and tests and minimap2:
+        summary["left_out"].pop("reads", None)
         work = tempfile.mkdtemp(prefix="read_benchmark.", dir=tmp or out)
-        detections = []
+        detections, background_hits = [], []
         try:
-            rows = reads.run(package, ncbi, os.path.join(bench, "read_genomes"), tests, minimap2, threads, work,
-                             compare, reads.read_background(prep.READ_BACKGROUND,
-                                                            os.path.join(bench, "read_background")),
-                             None, log, detections=detections)
+            with timed(log, "read benchmark"):
+                rows = reads.run(package, ncbi, os.path.join(bench, "read_genomes"), tests, minimap2, threads, work,
+                                 compare, reads.read_background(prep.READ_BACKGROUND,
+                                                                os.path.join(bench, "read_background")),
+                                 None, log, detections=detections, hits_out=background_hits)
             benchmarks.write(out, "reads.tsv", reads.COLUMNS, rows)
             benchmarks.write(out, "detection.tsv", reads.DETECT_COLUMNS, detections)
+            benchmarks.write(out, "background_hits.tsv", reads.HIT_COLUMNS, background_hits)
             summary["reads"] = read_summary(rows)
             summary["detection"] = reads.detection_summary(detections)
         finally:
             shutil.rmtree(work, ignore_errors=True)
-    else:
+    elif want("reads"):
         summary["left_out"]["reads"] = ("no test genomes (prep.py --package)" if not tests
                                         else "no minimap2 (the benchmarks' environment)")
     write_summary(package, out, summary)
@@ -222,11 +266,17 @@ def main(argv=None):
     p.add_argument("--previous", help="an earlier package: the changes from it (history.py's changes.tsv)")
     p.add_argument("--no_tree", action="store_true", help="no species tree (tree.py: hours for all eukaryotes)")
     p.add_argument("--align_cache", help="the build's WORK/align: its proteins' rows on BUSCO's profiles, for the tree")
+    p.add_argument("--only", help="only these steps, comma-separated (" + ", ".join(STEPS) + "): the results already "
+                   "in --out kept as they are, e.g. `--only reads` to repeat the read benchmark (the tree and the "
+                   "databases took hours of the 2026-11-17 build's four)")
     p.add_argument("-t", "--threads", type=int, default=8)
     a = p.parse_args(argv)
+    only = [s.strip() for s in a.only.split(",") if s.strip()] if a.only else None
+    if only is not None and (not only or set(only) - set(STEPS)):
+        p.error(f"--only: steps are {', '.join(STEPS)}")
     summary = run(a.package, a.bench, a.out, a.threads, a.minimap2,
                   log=lambda text: print(text, file=sys.stderr, flush=True), tmp=a.tmp, taxdump=a.taxdump,
-                  tree=not a.no_tree, align_cache=a.align_cache, previous=a.previous)
+                  tree=not a.no_tree, align_cache=a.align_cache, previous=a.previous, only=only)
     json.dump({k: summary[k] for k in ("breadth", "overlap", "reads", "left_out") if k in summary}, sys.stdout,
               indent=1)
     print()

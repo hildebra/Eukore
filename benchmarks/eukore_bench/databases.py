@@ -424,6 +424,8 @@ def run(package, bench, out, ncbi, species, summary, theirs=None, compare=(), mi
     benchmarks.write(out, "databases.tsv", DATABASE_COLUMNS, rows)
     summary["databases"] = {r["database"]: {k: r[k] for k in ("version", "species", "both", "eukore_only",
                                                               "database_only", "records", "bases")} for r in rows}
+    if len(sets) > 1:  # since 2026-11-18: the species each holds that Eukore holds no record of, named
+        benchmarks.write(out, "missing.tsv", benchmarks.MISSING_COLUMNS, benchmarks.missing_rows(sets, ncbi, EUKORE))
     rows = upset_rows(sets, species, ncbi)
     benchmarks.write(out, "upset.tsv", UPSET_COLUMNS, rows)
     everywhere = [r for r in rows if r["supergroup"] == "all"]
