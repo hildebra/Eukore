@@ -141,6 +141,14 @@ before format 4) is run again. EukDetect1 and EukDetect2 were its sources of cop
      ([below](#checks-and-choices-format-6-since-2026-11-09));
    - `same_as`: the common ancestor of species with 99% identical copies;
    - `length_check`: its protein against its relatives' (until 2026-11-09 the bottom or top 5% of its locus).
+
+   Since 2026-11-17 the search behind the first two compares a sequence's first 5,000 bases (`qc.CHECK_BASES`): only
+   RPB1's coding sequences and the organelle genes compared as records with their introns (a fungus' mitochondrial
+   LSU: 4.4 kb at the median, 43 kb the longest) are longer. vsearch aligns the whole of both sequences and leaves its
+   fast aligner past some 5 kb each: a fungal mitochondrial LSU cost 39 core-seconds a query, 2.4 cut to 5,000 bases,
+   with the same own-species verdict for 359 of 360 organelle genes drawn (RPB1: 11 and 0.8 core-seconds, the nearest
+   copy the same for 27 of 28). The 2026-11-17 build's organelle step, 6 h 01 m of its final job's 9 h 31 m, was this
+   search. `length_check` reads the whole sequences.
 5. **Species without an assembly.** 75 species NCBI has no assembly of (EukDetect2 took them from EukProt, and
    re-assembled *Dientamoeba fragilis*' transcriptome) come from `data/no_assembly.fna.gz`. That file is the one
    remnant of EukDetect2 (CC BY 4.0; Shih, Zhao, Pollard & Lind 2026), made by `tools/no_assembly_records.py`. Their

@@ -90,6 +90,33 @@ def amplify(seq, pair, primers):
                 length=length, amplifies="t" if ok else "f")
 
 
+# Whether a record holds a pair's two primer sites at all (since 2026-11-17). A published barcode is the amplicon with
+# its primers cut off: of MIDORI2's COX1 records (GB273, 4,000 drawn) 73% hold neither site of Folmer's pair, 16%
+# both, and the pair amplifies 2%; so "species amplified of those with a record" (under 4% of the 2026-11 build's
+# animals, 41% of the build before, whose COX1 were whole genes of mitochondrial genomes) told what the records are,
+# not what the primers do. A primer's best place on a record that does not hold its site is a chance one, some 40% of its
+# bases off or more (a 25-mer's best of 700 windows: ~10 mismatches); within SITE_SHARE of its length it is the site.
+SITE_SHARE = 1 / 3
+
+
+def site_limits(primers=None, pairs=None):
+    """{pair: (forward's, reverse's mismatches within which the primer's best place on a record is its site)}."""
+    if primers is None or pairs is None:
+        primers, pairs = load()
+    return {p["pair"]: tuple(int(len(primers[p[side]]["sequence"]) * SITE_SHARE) for side in ("forward", "reverse"))
+            for p in pairs}
+
+
+def holds_sites(row, limits):
+    """Whether an amplicons.tsv row's record holds both primers' sites (site_limits): no reverse site found after
+    the forward's (`-`), or a pair the limits do not name: not."""
+    try:
+        forward, reverse = limits[row["pair"]]
+        return int(row["forward_mismatches"]) <= forward and int(row["reverse_mismatches"]) <= reverse
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def runs_on(pair, row, kind):
     """Whether a pair runs on a record: an rRNA pair on rRNA records; an organelle pair on its gene (an animal
     mitochondrion's 12S and 16S: SSU and LSU of a mitochondrion)."""

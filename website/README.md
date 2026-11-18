@@ -26,7 +26,7 @@ site is:
 OUT/release/
 ├── data/
 │   ├── stats.json        the Statistics page's numbers (and Home's totals)
-│   ├── taxonomy.json     the species as a tree: [name, rank, species, with a genome, children | accession]
+│   ├── taxonomy.json     the species as a tree: [name, rank, species, with a genome, children | accession, "-" (rRNA records alone) or "+" (organelle genes alone)]
 │   └── downloads.json    the Downloads page's files: title, what, file, bytes, MD5
 └── downloads/Eukore_<version>/
     ├── Eukore_<version>_core.tar.gz, _marker_genes.tar.gz, _marker_cds.tar.gz, _rrna_organelle.tar.gz

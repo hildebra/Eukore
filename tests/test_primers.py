@@ -81,6 +81,55 @@ class PrimerTest(unittest.TestCase):
             self.assertEqual(primers.run(records, "rrna", threads=3), alone)
         self.assertEqual(len({r["record"] for r in alone}), 7)
 
+    def test_a_barcode_cut_at_its_primers_holds_no_site(self):
+        # since 2026-11-17: a published barcode is the amplicon without its primers (MIDORI2's COX1), so the pair
+        # amplifies no such record; the species whose record holds both sites are counted apart
+        found, pairs = primers.load()
+        folmer = next(p for p in pairs if p["pair"] == "COI_Folmer")
+        limits = primers.site_limits(found, pairs)
+        self.assertEqual(limits["COI_Folmer"], (len(found["LCO1490"]["sequence"]) // 3,
+                                                len(found["HCO2198"]["sequence"]) // 3))
+        whole = references()[folmer["reference"]]
+        got = primers.amplify(whole, folmer, found)
+        self.assertEqual(got["amplifies"], "t")
+        self.assertTrue(primers.holds_sites(got, limits))
+        inside = whole[got["start"] + len(found["LCO1490"]["sequence"]):got["end"] - len(found["HCO2198"]["sequence"])]
+        cut = primers.amplify(inside, folmer, found)  # the barcode alone: each primer's best place a chance one
+        self.assertEqual(cut["amplifies"], "f")
+        self.assertFalse(primers.holds_sites(cut, limits))
+        self.assertFalse(primers.holds_sites(dict(pair="COI_Folmer", forward_mismatches=0), limits))  # no reverse site
+        self.assertFalse(primers.holds_sites(dict(pair="unknown", forward_mismatches=0, reverse_mismatches=0), limits))
+
+    def test_the_benchmark_counts_the_species_with_both_sites(self):
+        import tempfile  # noqa: PLC0415
+        from eukore import benchmarks  # noqa: PLC0415
+
+        def tsv(path, head, rows):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", newline="\n") as fh:
+                fh.write("\t".join(head) + "\n" + "".join("\t".join(map(str, r)) + "\n" for r in rows))
+        with tempfile.TemporaryDirectory() as tmp:
+            tsv(os.path.join(tmp, "organelle", "genes.tsv"), ("record", "species_taxid"),
+                [("whole", 1), ("off", 2), ("barcode", 3), ("barcode2", 4)])
+            head = ("record", "pair", "forward_mismatches", "reverse_mismatches", "amplifies")
+            tsv(os.path.join(tmp, "organelle", "amplicons.tsv"), head,
+                [("whole", "COI_Folmer", 1, 2, "t"),      # amplified
+                 ("off", "COI_Folmer", 5, 4, "f"),        # both sites there, too many mismatches
+                 ("barcode", "COI_Folmer", 11, 12, "f"),  # the amplicon alone: no site
+                 ("barcode2", "COI_Folmer", 10, "-", "f")])
+            species = {str(i): dict(supergroup="Metazoa") for i in (1, 2, 3, 4)}
+            rows = benchmarks.primer_rows(tmp, species)
+            row = next(r for r in rows if r["supergroup"] == "all")
+            self.assertEqual((row["species"], row["amplified"], row["share"], row["with_sites"], row["share_of_sites"]),
+                             (4, 1, "0.250", 2, "0.500"))
+            target = benchmarks.primers_on_target(rows)["COI_Folmer"]
+            self.assertEqual((target["share"], target["with_sites"], target["share_of_sites"]), (0.25, 2, 0.5))
+            # a table of before (no with_sites): the share of all species alone
+            old = [{k: r[k] for k in ("pair", "supergroup", "species", "amplified", "share")} for r in rows]
+            self.assertNotIn("share_of_sites", benchmarks.primers_on_target(old)["COI_Folmer"])
+            self.assertIn("COI_Folmer 50.0% of 2", benchmarks.summary_md(
+                dict(species=4, busco_loci=1, primers_target=benchmarks.primers_on_target(rows)), "p"))
+
 
 if __name__ == "__main__":
     unittest.main()

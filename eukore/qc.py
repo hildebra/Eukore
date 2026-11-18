@@ -53,6 +53,19 @@ SEARCH_LIMITS = (32, 256)       # vsearch's --maxaccepts and --maxrejects of a l
 SEARCH_OPTIONS = ("--self",)
 SEARCH_RECORD = 1               # what makes a kept search (searched_loci): raised when its options or files change
 SEARCH_POLL = 30                # seconds between looks at the loci other nodes search
+# The bases of a copy compared across species (check; since 2026-11-17): its first CHECK_BASES. vsearch aligns two
+# sequences whole, and past some 5 kb each it leaves its fast aligner. The 2026-11-17 build's organelle step took
+# 6 h 01 m, its 149 searches the final node and its helpers till the stage's end: an rRNA gene with its introns (a
+# fungus' mitochondrial LSU: of RefSeq's 695, 4.4 kb at the median, 247 over 5 kb, the longest 43 kb) or a gene's
+# span where no coding sequence is known cost 39 core-seconds a query against RefSeq's 17,805 mitochondrial LSU, an
+# animal's 1.2, and each long record among a query's candidates its share of that. Cut to 5,000 bases: 2.4 and 0.3
+# core-seconds, the own-species verdict the same for 359 of 360 queries drawn (30 a kingdom of SSU, LSU and COX1; one
+# fungal LSU undecided where it agreed); --maxrejects 32 in place of 256 saved less and changed 8 of the 360. RPB1's
+# coding sequences (5.3 kb; 31% of the BUSCO check's node time in the 2026-11-16 build) the same: 11 core-seconds a
+# query whole, 0.8 cut, the nearest other copy the same for 27 of 28 (34 copies; not measured on a whole build).
+# Every other locus' coding sequences are shorter and compared whole, their kept searches as they were; the length
+# check reads the whole sequences' lengths.
+CHECK_BASES = 5000
 
 
 def spliced(copy, features):
@@ -204,10 +217,10 @@ def check(copies, species_of, ncbi, vsearch=None, threads=1, protein_length=None
     by_locus, extra_of = collections.defaultdict(dict), collections.defaultdict(dict)
     for (acc, locus), cds in copies.items():
         if cds:
-            by_locus[locus][acc] = cds
+            by_locus[locus][acc] = cds[:CHECK_BASES]
     for (acc, locus, k), cds in extra.items():
         if cds:
-            extra_of[locus][f"{acc}#{k}"] = cds
+            extra_of[locus][f"{acc}#{k}"] = cds[:CHECK_BASES]
     lengths = dict(protein_length or {})
     for k in keys:
         lengths.setdefault(k, len(copies.get(k) or extra.get(k) or "") // 3)

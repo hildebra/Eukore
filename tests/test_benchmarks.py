@@ -256,6 +256,28 @@ class PackageTest(unittest.TestCase):
                 self.assertIn("## Figure 1", fh.read())
 
 
+class LabelSharesTest(unittest.TestCase):
+    def test_a_reference_names_the_species_holding_its_marker(self):
+        # since 2026-11-17: an 18S reference's share is of the species with an rRNA record, MIDORI2's of those with an
+        # organelle gene; the species of organelle genes alone (format 7) are not an 18S reference's to name
+        def row(rrna, organelle, **matches):
+            return dict({f"{ref.lower()}_match": "-" for ref in benchmarks.REFERENCES}, rrna_records=str(rrna),
+                        organelle_genes=str(organelle), supergroup="Metazoa", **matches)
+        species = {"1": row(3, 2, pr2_match="species", eukaryome_match="genus", midori2_match="taxid"),
+                   "2": row(1, 0, pr2_match="synonym", eukaryome_match="upward"),
+                   "3": row(2, 0, pr2_match="genus", eukaryome_match="none"),
+                   "4": row(0, 5, midori2_match="genus"), "5": row(0, 1, midori2_match="taxid"),
+                   "6": row("-", 1)}
+        shares = benchmarks.label_shares(species)
+        self.assertEqual(shares["PR2"], dict(marker="rrna_records", species=3, named=2, share=0.6667))
+        self.assertEqual(shares["MIDORI2"], dict(marker="organelle_genes", species=4, named=2, share=0.5))
+        self.assertEqual(shares["EUKARYOME"]["named"], 0)  # by a genus or a clade above alone
+        self.assertNotIn("SILVA", shares)  # not read: it named none
+        text = benchmarks.summary_md(dict(species=1, busco_loci=1, labels_of_marker=shares), "p")
+        self.assertIn("| species with an rRNA record named in PR2 by name or synonym | 66.7% of 3 |", text)
+        self.assertIn("| species with an organelle gene named in MIDORI2 by name or synonym | 50.0% of 4 |", text)
+
+
 class FigureTablesTest(unittest.TestCase):
     def test_reach_pooled_by_the_nearest_rank(self):
         # since 2026-11-10 (Figure 1b): a genome's levels of one nearest rank count once (its first)

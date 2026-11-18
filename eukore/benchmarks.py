@@ -45,7 +45,7 @@ import time
 
 from . import odb as odb_mod
 from . import genomes as genomes_mod
-from . import gencode, package, qc, rrna, store, util
+from . import gencode, package, primers, qc, rrna, store, util
 
 FOLDER = "benchmarks"
 KMER = 5
@@ -584,7 +584,7 @@ def marker_rows(folder, ncbi, marker_folder):
     return out
 
 
-PRIMER_COLUMNS = ("pair", "supergroup", "species", "amplified", "share")
+PRIMER_COLUMNS = ("pair", "supergroup", "species", "amplified", "share", "with_sites", "share_of_sites")
 
 
 # The clades each primer pair is for (since 2026-11-14): a pair's share of all species with a record mixes those it was
@@ -610,6 +610,10 @@ def primers_on_target(rows):
         n, got = sum(int(r["species"]) for r in mine), sum(int(r["amplified"]) for r in mine)
         if n:
             out[pair] = dict(share=round(got / n, 4), species=n, groups=list(groups or ("all",)))
+            # of the species whose record holds both primers' sites (since 2026-11-17; a table before has none)
+            sites = sum(count_of(r.get("with_sites")) or 0 for r in mine)
+            if any("with_sites" in r for r in mine):
+                out[pair].update(with_sites=sites, share_of_sites=round(got / sites, 4) if sites else None)
     return out
 
 
@@ -620,7 +624,8 @@ def primer_rows(folder, species):
     for sub, table in (("rrna", "records.tsv"), ("organelle", "genes.tsv")):
         path = os.path.join(folder, sub, table)
         species_of.update({r["record"]: r["species_taxid"] for r in rows_of(path)} if os.path.isfile(path) else {})
-    tried, amplified = collections.defaultdict(set), collections.defaultdict(set)
+    limits = primers.site_limits()
+    tried, amplified, sites = (collections.defaultdict(set) for _ in range(3))
     for sub in ("rrna", "organelle"):
         path = os.path.join(folder, sub, "amplicons.tsv")
         for r in rows_of(path) if os.path.isfile(path) else ():
@@ -631,8 +636,13 @@ def primer_rows(folder, species):
                 tried[(r["pair"], group)].add(sp)
                 if r["amplifies"] == "t":
                     amplified[(r["pair"], group)].add(sp)
+                # a record that holds both primers' sites (since 2026-11-17: a published barcode is the amplicon
+                # without them, primers.SITE_SHARE); one the pair amplifies holds them
+                if r["amplifies"] == "t" or primers.holds_sites(r, limits):
+                    sites[(r["pair"], group)].add(sp)
     return [dict(pair=p, supergroup=g, species=len(s), amplified=len(amplified[(p, g)]),
-                 share=f"{len(amplified[(p, g)]) / len(s):.3f}")
+                 share=f"{len(amplified[(p, g)]) / len(s):.3f}", with_sites=len(sites[(p, g)]),
+                 share_of_sites=f"{len(amplified[(p, g)]) / len(sites[(p, g)]):.3f}" if sites[(p, g)] else "-")
             for (p, g), s in sorted(tried.items(), key=lambda kv: (kv[0][0], kv[0][1] == "all", kv[0][1]))]
 
 
@@ -649,6 +659,28 @@ def label_rows(species):
                 counts[(group, ref)][how if how in MATCHES else "-"] += 1
     return [dict(supergroup=g, reference=ref, **{"none" if m == "-" else m: c[m] for m in MATCHES})
             for (g, ref), c in sorted(counts.items(), key=lambda kv: (kv[0][0] == "all", kv[0]))]
+
+
+# What a reference names (since 2026-11-17): an 18S or ITS reference the species with an rRNA record, MIDORI2 those with
+# an organelle gene. The share of all species (summary.json's `labels`) fell with every species the package took for
+# another marker: the 2026-11 build's 244,135 species of organelle genes alone made PR2 name 11.7% of the species and
+# UNITE 6.6%, where they named 47.6% and 18.2% of the 79,581 with an rRNA record (UNITE 54.1% of the fungi among them).
+LABEL_MARKER = {"MIDORI2": "organelle_genes"}
+NAMED = ("taxid", "species", "synonym")
+
+
+def label_shares(species):
+    """{reference: {marker, species, named, share}}: of the species holding the reference's marker (LABEL_MARKER;
+    species.tsv's rrna_records, organelle_genes), those it names by its taxid, their name or a synonym; a reference
+    that named none (not read) left out."""
+    out = {}
+    for ref in REFERENCES:
+        column = LABEL_MARKER.get(ref, "rrna_records")
+        hows = [r.get(f"{ref.lower()}_match", "-") for r in species.values() if count_of(r.get(column)) > 0]
+        named = sum(h in NAMED for h in hows)
+        if hows and any(h not in ("-", "none") for h in hows):
+            out[ref] = dict(marker=column, species=len(hows), named=named, share=round(named / len(hows), 4))
+    return out
 
 
 def runtime_rows(work, genomes, species):
@@ -1220,8 +1252,10 @@ def run(folder, ncbi, odb_folder=None, vsearch=None, threads=1, work=None, neare
         summary["left_out"]["barcode_gap"] = "no intraspecific panel (--intraspecific 0, or a package before format 5)"
     rows = label_rows(species)
     write(out, "labels.tsv", LABEL_COLUMNS, rows)
+    # of all the reference's rows (until 2026-11-17 without `upward`: EUKARYOME's share a little high)
     summary["labels"] = {r["reference"]: round((r["taxid"] + r["species"] + r["synonym"]) / max(1, sum(r[m] for m in (
-        "taxid", "species", "synonym", "genus", "none"))), 4) for r in rows if r["supergroup"] == "all"}
+        "taxid", "species", "synonym", "genus", "upward", "none"))), 4) for r in rows if r["supergroup"] == "all"}
+    summary["labels_of_marker"] = label_shares(species)
 
     if work:
         rows = runtime_rows(work, genomes, species)
@@ -1374,6 +1408,13 @@ def summary_md(s, name, clades=None, composition=None):
         lines.append("| the same, of the species of the clades each pair is for | " + ", ".join(
             f"{k} {pct(v['share'])} ({'/'.join(v['groups'])})" for k, v in sorted(t.items(), key=lambda kv:
                                                                                   -kv[1]["share"])) + " |")
+        # of the species whose record holds both primers' sites (since 2026-11-17): what the primers do, a published
+        # barcode cut at its primers (most of MIDORI2's COX1) set apart
+        held = {k: v for k, v in t.items() if v.get("share_of_sites") is not None}
+        if held:
+            lines.append("| the same, of those whose record holds both primers' sites | " + ", ".join(
+                f"{k} {pct(v['share_of_sites'])} of {v['with_sites']:,}" for k, v in
+                sorted(held.items(), key=lambda kv: -kv[1]["share_of_sites"])) + " |")
     for ref, modes in (s.get("detection") or {}).items():
         cells = []
         for mode, rank in (("in", "species"), ("held_out", "genus"), ("novel", "class")):
@@ -1390,6 +1431,10 @@ def summary_md(s, name, clades=None, composition=None):
                 f"{mode} {pct(v)}" for mode, v in r["censored"].items()) + " |")
     for ref, v in (s.get("labels") or {}).items():
         lines.append(f"| species named in {ref} by name or synonym | {pct(v)} |")
+    for ref, v in (s.get("labels_of_marker") or {}).items():  # since 2026-11-17: of those holding its marker
+        what = "an organelle gene" if v["marker"] == "organelle_genes" else "an rRNA record"
+        lines.append(f"| species with {what} named in {ref} by name or synonym | {pct(v['share'])} of "
+                     f"{v['species']:,} |")
     t = s.get("runtime")
     if t:
         per_gb = f", {t['seconds_per_gb'] / 60:.0f} min per Gb of genome" if t.get("seconds_per_gb") else ""

@@ -20,7 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmarks"))
 from eukore import benchmarks, ncbi as ncbi_mod  # noqa: E402
-from eukore_bench import databases  # noqa: E402
+from eukore_bench import databases, resource  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 YEAST, PARADOXUS = "GCA_000146045.2", "GCA_000000013.1"
@@ -253,6 +253,23 @@ class DatabasesTest(unittest.TestCase):
         for fn in (figures.upset, figures.novel, figures.agreement):
             self.assertTrue(os.path.isfile(fn(out, self.package, figs, "png")), fn.__name__)
         self.assertIn("| PR2 | 5.1.1 | 2 | 2 | 1 | 0 | 7 | 3,700 |", "\n".join(figures.databases_md(out)))
+
+    def test_a_bundles_records_are_its_manifests(self):
+        # an evaluation bundle (since 2026-11-17): no copy or record table to count, and the website's table said
+        # Eukore held 0 records; its manifest's counts are its records, its bases not told
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "manifest.json"), "w") as fh:
+                json.dump({"counts": {"copies": 10, "rrna_records": 5,
+                                      "organelle_genes": {"mitochondrion": {"COX1": 3, "SSU": 1},
+                                                          "plastid": {"rbcL": 2}}}}, fh)
+            self.assertEqual(databases.bundle_size(tmp), (21, "-"))
+            self.assertTrue(resource.is_bundle(tmp))
+            row = databases.database_rows(tmp, None, {databases.EUKORE: {1, 2}}, ())[0]
+            self.assertEqual((row["database"], row["species"], row["records"], row["bases"]),
+                             (databases.EUKORE, 2, 21, "-"))
+            with open(os.path.join(tmp, "manifest.json"), "w") as fh:
+                fh.write("{}")
+            self.assertEqual(databases.bundle_size(tmp), ("-", "-"))
 
     def test_the_tables_words(self):
         words = databases.read_words()

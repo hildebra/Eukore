@@ -629,6 +629,33 @@ class AuditTest(unittest.TestCase):
                                                   transl_table=t) for i, t in enumerate(("4", "-"))]}
         self.assertEqual(sorted(organelle.Nearest(chosen, ncbi).protein), [("NC_0.1", "COX1")])
 
+    def test_a_long_gene_compared_by_its_first_bases(self):
+        # since 2026-11-17: an rRNA gene with its introns (a fungus' mitochondrial LSU, 43 kb the longest) cost the
+        # search across species minutes a query; a gene's first CHECK_BASES are compared, its whole length checked
+        from unittest import mock  # noqa: PLC0415
+        from eukore import qc  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+        long_gene, short = random_seq(qc.CHECK_BASES + 3000, 31), random_seq(900, 32)
+        records = [(name, seq, dict(record=name, gene="LSU", organelle="mitochondrion", taxid=taxid,
+                                    species_taxid=taxid, partial="f", ambiguous="0.0000", model="refseq", exons=1))
+                   for name, seq, taxid in (("m1_LSU", long_gene, 4932), ("m2_LSU", short, 27291))]
+        seen = {}
+
+        def searched(_vsearch, queries, db, *_settings):
+            seen.update(queries)
+            return []
+        with mock.patch.object(qc.util, "vsearch_global", searched):
+            organelle.check(records, ncbi, vsearch="vsearch")
+        self.assertEqual(seen["m1_LSU"], long_gene[:qc.CHECK_BASES])  # its first bases alone searched
+        self.assertEqual(seen["m2_LSU"], short)                       # a shorter one whole
+        self.assertEqual(records[0][1], long_gene)                    # the record itself as it was
+        # the length check reads the whole sequences' lengths: the long gene is long beside its locus' others
+        copies = {(f"g{i}", "L"): random_seq(900, 40 + i) for i in range(5)}
+        copies[("g9", "L")] = long_gene
+        got = qc.check(copies, {f"g{i}": 4932 for i in list(range(5)) + [9]}, ncbi)
+        self.assertEqual((got[("g9", "L")]["length"], got[("g0", "L")]["length"]), ("long", "ok"))
+
     def test_a_codon_by_its_transl_except(self):
         # since 2026-11-10: a CDS's /transl_except codon is read as its amino acid, not a stop inside the protein
         coding = "ATG" + "AAA" * 4 + "TGA" + "AAA" * 4 + "TAA"  # its sixth codon (number 5) TGA: Trp by exception

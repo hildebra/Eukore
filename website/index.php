@@ -93,8 +93,18 @@ require __DIR__ . '/inc/header.php';
       <ul>
         <li>Metagenome profilers need eukaryote marker genes that are <b>complete</b>: protal reads Eukore as its
           only source of eukaryote marker genes, rRNA and names.</li>
-        <li>Among congeners, BUSCO genes tell species apart where the 18S cannot: on the first full build, 62% of
-          their copies were under 99% identical to the nearest congener's, against 27% of the 18S copies.</li>
+<?php
+// the build's own figures (stats.json's benchmarks.resolution: each marker's copies under 99% identical to their
+// nearest congener's), not numbers written here: they change with every build
+$res = $stats['benchmarks']['resolution'] ?? [];
+$busco99 = $res['BUSCO (all)']['congeners']['under_99'] ?? null;
+$ssu99 = $res['18S']['congeners']['under_99'] ?? null;
+$cox99 = $res['COX1']['congeners']['under_99'] ?? null;
+?>
+        <li>Among congeners, BUSCO genes tell species apart where the 18S cannot<?php if ($busco99 !== null && $ssu99 !== null): ?>:
+          in this build, <?= pct($busco99, 0) ?> of their copies are under 99% identical to the nearest congener's,
+          against <?= pct($ssu99, 0) ?> of the 18S copies<?php if ($cox99 !== null): ?> (and <?= pct($cox99, 0) ?> of
+          the mitochondrial COX1)<?php endif; ?><?php endif; ?>.</li>
         <li>One species' nuclear genes, rRNA and organelle barcodes stand side by side under one name: a link between
           metagenomes, amplicon surveys and barcoding.</li>
         <li>Phylogenetics, primer design and contamination screens get clean, labelled genes of every eukaryote group:

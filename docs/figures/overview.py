@@ -7,9 +7,9 @@ parts makes available. Drawn with the paper's palette (benchmarks/eukore_bench/f
     python3 docs/figures/overview.py --format svg --no_marks      # without the "added in 0.2" marks
     python3 docs/figures/overview.py --slide                      # overview_slide.png: fewer items, 16:9, the logo
 
-The numbers are NUMBERS below: the genomes' those of the first full build (Eukore_2026.11 of 2026-11-14), the
-references' those of 2026-11; the text is format 7's (Eukore 0.2.6). An item that starts with "*" is a part added
-since Eukore 0.2 (format 5) and gets a mark (--no_marks: none; the figures in docs/ and on the website are drawn so).
+The numbers are NUMBERS below: the genomes' those of the 2026-11-17 build (Eukore_2026.11, Eukore 0.2.7), the
+references' those of 2026-11; the text is format 7's (the build's Eukore and format: the package's with --package).
+An item that starts with "*" is a part added since Eukore 0.2 (format 5) and gets a mark (--no_marks: none; the figures in docs/ and on the website are drawn so).
 With --package panel b carries the package's own counts; update NUMBERS where the sources moved.
 """
 
@@ -25,6 +25,7 @@ ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 # moved there: this script did not run since)
 sys.path[:0] = [ROOT, os.path.join(ROOT, "benchmarks")]
 from eukore_bench import figures as pb  # noqa: E402
+from eukore import __version__ as VERSION  # noqa: E402
 plt = pb.plt
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch  # noqa: E402 (after plot_benchmarks' rcParams)
 
@@ -34,13 +35,17 @@ SOURCE_FILL = "#f3f7fd"       # the sources' and the package's boxes
 STAGE_FILL = SURFACE
 
 NUMBERS = {
-    "ncbi_species": "28,506", "ncbi_tb": "~6.5 TB", "toga2_species": "79", "tsa_species": "5,028",
-    "eukprot_species": "51", "veupathdb_species": "71", "ensembl_species": "2,037", "toga2_models": "907",
+    # the 2026-11-17 build's (Eukore_2026.11, 0.2.7): its species by source, its genomes' annotations by source (no
+    # VEuPathDB key in that build: UCSC GenArk's 11 copies alone), 6.9 TB of genomes kept
+    "ncbi_species": "28,736", "ncbi_tb": "~6.9 TB", "toga2_species": "67", "tsa_species": "4,606",
+    "eukprot_species": "51", "veupathdb_species": "11", "ensembl_species": "1,901", "toga2_models": "797",
     "buscos": "129", "primer_pairs": "18", "refseq_organelle": "~2.2 GB", "fcs_gx_db": "~470 GB",
     "sources": "25", "panel_species": "133", "panel_assemblies": "3", "benchmark_tables": "23",
     "midori2_species": "~230,000",
     "rrna_primer_pairs": "10", "organelle_primer_pairs": "8", "tetranucleotides": "136", "references": "6",
     "id_systems": "7", "ncbi_date": "2026-11",
+    # the build's Eukore and package format: the package's own with --package (manifest_counts), else the checkout's
+    "eukore": VERSION, "format": "7",
 }
 
 # layout, in mm
@@ -304,7 +309,18 @@ def panel_b(ax, n, marks, counts):
     """The package: one row per species, and what each part holds."""
     w, row1, row2 = panel_b_content(n)
     gap = 2.6
-    top_pad = 13
+    if counts:  # as many lines as the panel's width takes (since 2026-11-17: format 7's seven counts ran past it)
+        lines = [""]
+        for item in (f"{k}: {v}" for k, v in counts):
+            joined = f"{lines[-1]}  ·  {item}" if lines[-1] else item
+            if len(joined) * EM > WIDTH - 6 and lines[-1]:
+                lines.append(item)
+            else:
+                lines[-1] = joined
+    else:
+        lines = [fmt("the first full build: {ncbi_species} species with a genome, {tsa_species} with a transcriptome, "
+                     "{eukprot_species} with records; each with its {buscos} BUSCOs, rDNA, organelle genes", n)]
+    top_pad = 13 + LINE * (len(lines) - 1)
     h1, h2 = max(b.h for b in row1), max(b.h for b in row2)
     H = top_pad + h1 + gap + h2 + 2
     ax.set_xlim(0, WIDTH)
@@ -314,12 +330,8 @@ def panel_b(ax, n, marks, counts):
     ax.text(0, H - 1, "b", fontsize=FS_PANEL, fontweight="bold", va="top", ha="left")
     ax.text(5, H - 1, "The package: plain TSV and gzipped FASTA, one row per species", fontsize=FS_HEAD,
             fontweight="bold", va="top", ha="left")
-    if counts:
-        line = "  ·  ".join(f"{k}: {v}" for k, v in counts)
-    else:
-        line = fmt("the first full build: {ncbi_species} species with a genome, {tsa_species} with a transcriptome, "
-                   "{eukprot_species} with records; each with its {buscos} BUSCOs, rDNA, organelle genes", n)
-    ax.text(5, H - 5.6, line, fontsize=FS_BODY, color=INK2, va="top", ha="left")
+    for i, line in enumerate(lines):
+        ax.text(5, H - 5.6 - LINE * i, line, fontsize=FS_BODY, color=INK2, va="top", ha="left")
     top = H - top_pad
     xs = [1 + i * (w + gap) for i in range(4)]
     for x, b in zip(xs, row1):
@@ -329,14 +341,19 @@ def panel_b(ax, n, marks, counts):
     return H
 
 
-def manifest_counts(package):
+def manifest_counts(package, short=False):
+    """The package's counts for panel b's head (its manifest's), and its Eukore and format into NUMBERS. short: the
+    slide's line, without the taxa (since 2026-11-17: with the species of organelle genes alone it ran off the slide)."""
     with open(os.path.join(package, "manifest.json")) as fh:
         m = json.load(fh)
     c = m["counts"]
+    NUMBERS.update(eukore=str(m.get("eukore", VERSION)), format=str(m.get("format", NUMBERS["format"])))
     organelle = sum(sum(v.values()) for v in c.get("organelle_genes", {}).values())
-    return [("species with a genome", f"{c['species']:,}"), ("with rDNA alone", f"{c.get('species_rrna_only', 0):,}"),
-            ("BUSCO and marker copies", f"{c['copies']:,}"), ("rDNA records", f"{c['rrna_records']:,}"),
-            ("organelle genes", f"{organelle:,}"), ("taxa", f"{c['taxa']:,}")]
+    # the species of organelle genes alone (format 7; since 2026-11-17: 244,135 of the 2026-11 build's 328,262)
+    alone = [("organelle genes alone", f"{c['species_organelle_only']:,}")] if c.get("species_organelle_only") else []
+    return [("species with a genome", f"{c['species']:,}"), ("rDNA alone", f"{c.get('species_rrna_only', 0):,}"),
+            *alone, ("BUSCO and marker copies", f"{c['copies']:,}"), ("rDNA records", f"{c['rrna_records']:,}"),
+            ("organelle genes", f"{organelle:,}")] + ([] if short else [("taxa", f"{c['taxa']:,}")])
 
 
 def slide(n, counts):
@@ -358,8 +375,8 @@ def slide(n, counts):
     ax.imshow(logo, extent=[4, 4 + lw, H - 3 - lh, H - 3], zorder=3, interpolation="lanczos")
     ax.text(4 + lw + 10, H - 13, "Every eukaryote genome at NCBI, to one checked package of marker genes",
             fontsize=18, fontweight="bold", color=INK, va="center", ha="left")
-    ax.text(4 + lw + 10, H - 24, fmt("Eukore 0.2.6  ·  package format 7  ·  NCBI's tables and the references of "
-                                    "{ncbi_date}", n),
+    ax.text(4 + lw + 10, H - 24, fmt("Eukore {eukore}  ·  package format {format}  ·  NCBI's tables and the "
+                                    "references of {ncbi_date}", n),
             fontsize=FS_BODY, color=INK2, va="center", ha="left")
     top = H - 48
     xs, ws = 4, 96          # sources
@@ -429,7 +446,9 @@ def slide(n, counts):
     else:
         line = fmt("the first full build: {ncbi_species} species with a genome, {tsa_species} with a transcriptome, "
                    "{eukprot_species} with records", n)
-    ax.text(W / 2, 3, line, fontsize=FS_BODY, color=INK2, va="bottom", ha="center")
+    # a line longer than the slide is drawn smaller, not past its edges (since 2026-11-17: format 7's counts)
+    ax.text(W / 2, 3, line, fontsize=FS_BODY * min(1.0, (W - 16) / (len(line) * EM)), color=INK2, va="bottom",
+            ha="center")
     return fig
 
 
@@ -442,7 +461,7 @@ def main(argv=None):
     p.add_argument("--no_marks", action="store_true", help="no marks on the parts added in 0.2")
     p.add_argument("--slide", action="store_true", help="the simplified 16:9 version, with the logo")
     a = p.parse_args(argv)
-    counts = manifest_counts(a.package) if a.package else None
+    counts = manifest_counts(a.package, short=a.slide) if a.package else None
     os.makedirs(a.out, exist_ok=True)
     if a.slide:
         print(pb.save(slide(NUMBERS, counts), a.out, a.name or "overview_slide", a.format))

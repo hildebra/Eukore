@@ -65,7 +65,9 @@ function rows_table(array $rows, array $columns, array $numeric = []): string
   holds too, and its records.</p>
 <?= rows_table($t['databases'], ['database' => 'Database', 'markers' => 'Markers', 'taxa' => 'Taxa',
                                  'sequences' => 'A record is', 'curation' => 'Checked', 'reference' => 'Reference']) ?>
-<?= rows_table($t['databases'], ['database' => 'Database', 'version' => 'Version', 'species' => 'NCBI species',
+<?php // the counts of the databases counted for this release (one listed above and not read has no count)
+$counted = array_filter($t['databases'], fn($r) => is_numeric($r['species'] ?? null)); ?>
+<?= rows_table($counted, ['database' => 'Database', 'version' => 'Version', 'species' => 'NCBI species',
                                  'both' => 'In Eukore too', 'eukore_only' => "Eukore's alone",
                                  'database_only' => 'Its alone', 'records' => 'Records', 'bases' => 'Bases'],
                ['species', 'both', 'eukore_only', 'database_only', 'records', 'bases']) ?>

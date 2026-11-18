@@ -55,6 +55,10 @@ def data(results, figures=None):
                                                "changes", "breadth_ranks") if k in summary},
            "left_out": summary.get("left_out") or {}, "figures": []}
     captions = {name: caption for name, _fn, caption, _tables in figures_mod.FIGURES}
+    # a thresholds table without published rows (left out where not checked against their papers): none is drawn,
+    # and the figure's caption does not name them (since 2026-11-17)
+    if not any(r["source"].startswith("published") for r in out["tables"].get("thresholds", ())):
+        captions["thresholds"] = captions.get("thresholds", "").split("; published thresholds")[0].rstrip(".") + "."
     found = []
     for name in FIGURES:
         path = os.path.join(figures or os.path.join(results, figures_mod.FOLDER), f"{name}.png")

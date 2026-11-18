@@ -28,7 +28,7 @@ can also be given alone (`--odb`, `--taxdump`). `--out` writes the tables elsewh
 manifest does not list them).
 
 The figures, Figure 1 among them, are drawn by `benchmarks/eukore-figures.sh` ([benchmarks/](../benchmarks/README.md));
-the ones below are the first full build's (2026-11-14; [below](#the-figures-here)).
+the ones below are those of the build of 2026-11-17 ([below](#the-figures-here)).
 
 ## What is measured
 
@@ -152,6 +152,11 @@ region (18S, ITS1, 5.8S, ITS2, 28S, an inline 5S), a whole 28S, an 18S intron.
 Per supergroup and reference (PR2, EUKARYOME, KSGP), the species named by their name, an NCBI synonym, their genus
 alone, or not at all: how far a user can carry a package species into those references' taxonomies.
 
+`summary.json`'s `labels` is each reference's share of all the package's species; since 2026-11-17 `labels_of_marker`
+is its share of the species holding the marker it is a reference of (an rRNA record; for MIDORI2 an organelle gene).
+The first falls with every species the package takes for another marker: the 2026-11-17 build's 244,135 species of
+organelle genes alone made PR2 name 11.7% of its species, where it names 47.6% of the 79,581 with an rRNA record.
+
 ![Species named in each reference](benchmarks/figures/labels.png)
 
 ### Run time (`runtime.tsv`, `stages.tsv`)
@@ -167,6 +172,13 @@ Per primer pair of `data/primer_pairs.tsv` and group, the species with a record 
 it amplifies (`rrna/amplicons.tsv`, `organelle/amplicons.tsv`; the rule in [methods.md](methods.md)). `summary.json`'s
 `primers`: each pair's share over all species.
 
+Since 2026-11-17 also `with_sites`, the species whose record holds both primers' sites (each primer's best place
+within a third of its length in mismatches: `primers.SITE_SHARE`), and `share_of_sites`, those amplified of them. A
+published barcode is the amplicon with its primers cut off: of MIDORI2's COX1 records (GB273, 4,000 drawn) 73% hold
+neither site of Folmer's pair and 16% both, so the share of all species with a record fell from 41% of the animals
+(the 2026-11-14 build, whose COX1 were mitochondrial genomes' whole genes) to under 4% (the 2026-11-17 build, with
+MIDORI2's) without any change in the primers. `share_of_sites` is what the primers do; `share` what the records are.
+
 ### Barcode gap (`summary.json`'s `barcode_gap`; since 2026-11-07, format 5)
 
 From the package's `intraspecific/barcode_gap.tsv`: per marker (the BUSCOs together), the panel species measured and
@@ -174,50 +186,55 @@ the share resolved (every assembly of the species nearer to each other than to a
 
 ## The figures here
 
-The figures above are those of the first full build, drawn on 2026-11-15 from its evaluation bundle
-(`Eukore_2026.11` of 2026-11-14: Eukore 0.2.4, format 6; 33,664 genomes, 47,479 species; `python3 -m
-eukore_bench.figures PACKAGE`). That build is no release: it predates the fixes its evaluation led to (genome tiers,
-split copies joined, transcriptomes' rRNA) and format 7 (EUKARYOME's SSU set, the audit, MIDORI2's genes), and it was
-built without MIDORI2, VEuPathDB's annotations and KSGP 5.2. A release's own tables are in its `benchmarks/`, and
-`benchmarks/eukore-figures.sh` draws its figures. Until 2026-11-15 the figures here were a seven-clade trial's
-(33 genomes).
+The figures above are those of the build of 2026-11-17, drawn that day from its evaluation bundle (`Eukore_2026.11`:
+Eukore 0.2.7, format 7; 33,460 genomes, 328,262 species; `python3 -m eukore_bench.figures PACKAGE`). That build is no
+release: it was built without tiara, VEuPathDB's annotations and KSGP 5.2, and it predates the changes its evaluation
+led to (a copy's first 5,000 bases compared across species, the primer pairs counted on the records that hold their
+sites, a reference's names counted on the species that hold its marker). A release's own tables are in its
+`benchmarks/`, and `benchmarks/eukore-figures.sh` draws its figures. Until 2026-11-17 the figures here were those of
+the first full build (2026-11-14: Eukore 0.2.4, format 6; 33,664 genomes, 47,479 species), until 2026-11-15 a
+seven-clade trial's (33 genomes).
 
 What the build shows:
-- **Completeness** follows BUSCO's dataset: a median of 96.9% of the 129 BUSCOs per genome, 99.2% in Viridiplantae,
-  97.7% in Fungi, 96.1% in Metazoa and 94.6% in Vertebrata, but 85.3% in Stramenopiles, 56.6% in Alveolata, 55.8% in
-  Discoba and 36.8% in Metamonada. Chromosome-level assemblies of those lineages are no more complete: the limit is
-  the locus set and its query proteins (lost or far diverged genes), not the assemblies. Of the 2,664 NCBI genomes
-  under half complete, 2,333 are skims of a mean contig under 5 kb.
-- **OrthoDB**: of the 87,927 BUSCOs OrthoDB annotates in 836 of the build's species, Eukore called 99.1%, 92.0% of
+- **Completeness** follows BUSCO's dataset: a median of 98.4% of the 129 BUSCOs per genome (the genomes whose
+  copies the package holds: its tiers genome, draft and transcriptome), 99.2% in Viridiplantae and Fungi, 98.4% in
+  Metazoa and 96.9% in Vertebrata, but 91.5% in Stramenopiles, 66.7% in Alveolata, 62.8% in Discoba and 45.4% in
+  Metamonada. Chromosome-level assemblies of those lineages are no more complete: the limit is the locus set and its
+  query proteins (lost or far diverged genes), not the assemblies. Against the BUSCOs each clade's best genomes
+  hold (`complete_expected`) the medians are 77.4%, 88.8% and 73.0%. 2,251 genomes are of tier poor, 260 partial and
+  300 contaminated: their copies are left out.
+- **OrthoDB**: of the 88,053 BUSCOs OrthoDB annotates in 837 of the build's species, Eukore called 98.8%, 91.9% of
   them OrthoDB's own gene model.
-- **OrthoDB, own proteins left out** (the held-out calls): 99.0% called, 82.9% of them concordant, 99.6% on the same
+- **OrthoDB, own proteins left out** (the held-out calls): 99.0% called, 82.8% of them concordant, 99.6% on the same
   gene. With whole clades left out, the gene model holds while the nearest dataset species kept shares the class
   (81-87% concordant) and falls beyond it (phylum 62%, none 34%): what is lost is the exon ends, not the gene. The
   held-out figures are the ones to quote.
-- **Annotation**: laid on 7,541 genomes' own annotation, 91.5% of the calls' introns are exact; coding bases' recall
-  94.0%, precision 96.6%.
-- **Resolution**: 62.0% of the BUSCO copies are under 99% identical to their nearest congener, against 26.5% of the
-  species' 18S: among congeners the BUSCOs tell species apart where the 18S cannot.
+- **Annotation**: laid on 8,378 genomes' own annotation, 92.3% of the calls' introns are exact; coding bases' recall
+  94.5%, precision 96.7%.
+- **Resolution**: 62.4% of the BUSCO copies are under 99% identical to their nearest congener, against 30.6% of the
+  species' 18S: among congeners the BUSCOs tell species apart where the 18S cannot. Of the other markers (measured
+  since format 7): COX1 84.6%, ITS 77.6%, the 28S' D1-D2 43.4%, matK 12.1%, rbcL 6.1%.
 
 | benchmark | figure |
 |---|---|
-| package | Eukore_2026.11, 33,664 species' genomes, 129 BUSCOs |
-| species; with a genome; with rRNA records alone | 47,479; 33,664; 13,815 |
-| median complete BUSCOs per genome | 96.9% (65.2% of genomes at 90% or more) |
-| BUSCOs OrthoDB has a gene model of, called | 99.1% of 87,927 (836 species) |
-| of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | 92.0% |
-| the same, called without the species' own proteins | 99.0% called, 82.9% of them OrthoDB's gene model (836 species) |
-| of those also called with its own proteins, on the same gene | 99.6% of 87,011, 89.7% of them sharing 90% of the span; 517 called by the rescue pass |
-| calls laid on their genome's annotation (7,541 genomes): introns exact; coding bases' recall, precision | 91.5%; 94.0%, 96.6% |
-| BUSCO copies under 99% identical to any other species | 71.9% of 4,041,655 |
-| BUSCO copies under 99% identical to their nearest congener | 62.0% of 2,549,280 |
-| 18S copies under 99% identical to any other species | 40.1% of 32,163 |
-| 18S copies under 99% identical to their nearest congener | 26.5% of 18,777 |
-| rRNA records; operons with a whole 28S | 4,657,420; 95.1% of 2,390,529 |
-| species named in EUKARYOME by name or synonym | 31.3% |
-| species named in KSGP by name or synonym | 35.2% |
-| species named in PR2 by name or synonym | 19.5% |
-| genome run (BUSCOs, rRNA, tiara), median | 1.3 min, 3 min per Gb of genome |
+| package | Eukore_2026.11, 33,460 species' genomes, 129 BUSCOs |
+| species; with a genome; with rRNA records alone; with organelle genes alone | 328,262; 33,460; 50,667; 244,135 |
+| median complete BUSCOs per genome | 98.4% (77.6% of genomes at 90% or more) |
+| BUSCOs OrthoDB has a gene model of, called | 98.8% of 88,053 (837 species) |
+| of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | 91.9% |
+| the same, called without the species' own proteins | 99.0% called, 82.8% of them OrthoDB's gene model (837 species) |
+| of those also called with its own proteins, on the same gene | 99.6% of 86,857, 89.7% of them sharing 90% of the span; 517 called by the rescue pass |
+| calls laid on their genome's annotation (8,378 genomes): introns exact; coding bases' recall, precision | 92.3%; 94.5%, 96.7% |
+| BUSCO copies under 99% identical to any other species | 72.1% of 3,842,912 |
+| BUSCO copies under 99% identical to their nearest congener | 62.4% of 2,440,007 |
+| 18S copies under 99% identical to any other species | 39.8% of 73,479 |
+| 18S copies under 99% identical to their nearest congener | 30.6% of 45,999 |
+| COX1 copies under 99% identical to their nearest congener | 84.6% of 171,050 |
+| rRNA records; operons with a whole 28S | 5,102,572; 95.1% of 2,645,832 |
+| species named in EUKARYOME by name or synonym | 18.6% of all, 73.3% of the 79,581 with an rRNA record |
+| species named in KSGP by name or synonym | 17.4% of all, 71.6% of those with an rRNA record |
+| species named in PR2 by name or synonym | 11.7% of all, 47.6% of those with an rRNA record |
+| genome run (BUSCOs, rRNA), median | 1.1 min, 3 min per Gb of genome |
 
 The whole table, with the clade hold-outs, the barcode gap per marker and the primer pairs:
 [benchmarks/figures/summary.md](benchmarks/figures/summary.md).

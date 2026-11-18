@@ -21,7 +21,7 @@ import sys
 
 from . import ROOT
 from . import prep
-from eukore import benchmarks, groups, labels, ncbi as ncbi_mod, rrna
+from eukore import benchmarks, groups, labels, ncbi as ncbi_mod, release, rrna
 from eukore.genomes import HYBRID
 
 RANKS = ("species", "genus", "family", "order", "class", "phylum")
@@ -31,6 +31,7 @@ RANK_COLUMNS = ("supergroup", "rank", "ncbi_named", "ncbi_genome", "eukore_genom
 NO_SPECIES = ("not a species", "placeholder", "hybrid", "not in the taxdump")
 EUKARYOTA = 2759
 PANELS = os.path.join(ROOT, "benchmarks", "panels.tsv")
+BUNDLE = "an evaluation bundle (no copy or record tables: the whole package's benchmarks count them)"
 PANEL_COLUMNS = ("panel", "entry", "taxid", "ncbi_name", "rank", "status", "eukore_genome", "eukore", "ncbi_genome",
                  "loci", "rrna_records", "organelle_genes", "note")
 CONTENT_COLUMNS = ("supergroup", "of", "marker", "species", "same_assembly")
@@ -82,6 +83,20 @@ def named_species(ncbi, taxid):
     return labels.is_species_name(name) and not ncbi.is_placeholder(taxid) and not HYBRID.search(name)
 
 
+def is_bundle(package):
+    """Whether package is a build's evaluation bundle (release.is_bundle): its manifest, none of its copy and record
+    tables."""
+    return os.path.isfile(os.path.join(package, "manifest.json")) and release.is_bundle(package)
+
+
+def unknown_species(species, ncbi):
+    """The package's species the taxonomy given does not hold (since 2026-11-17): a taxdump older than the build's
+    (the benchmarks' own download, a local one) lacks the species NCBI named since. Of the 2026-11 build's 328,262
+    species a taxdump twelve days older lacked 1,620 (1,551 of them of organelle genes alone, MIDORI2's newest), which
+    until then were no species of Eukore's in breadth_ranks.tsv, databases.tsv and upset.tsv."""
+    return [t for t in species if ncbi.merged.get(int(t), int(t)) not in ncbi.rank]
+
+
 def rank_rows(species, taxa, ncbi, lineages, whole=True):
     """breadth_ranks.tsv's rows. species: species.tsv's rows by taxid; taxa: selection_taxa.tsv's rows (none: a
     package before 2026-11-12, `ncbi_genome` "-"); whole: ncbi is NCBI's whole taxonomy (else `ncbi_named` "-": a
@@ -109,7 +124,9 @@ def rank_rows(species, taxa, ncbi, lineages, whole=True):
             add("ncbi_genome", r["supergroup"], ncbi.merged.get(int(r["taxid"]), int(r["taxid"])), True)
     for taxid, r in species.items():
         t = ncbi.merged.get(int(taxid), int(taxid))
-        is_species = ncbi.rank.get(t) == "species"  # a published read labelled by its genus: no species
+        # a published read labelled by its genus: no species. A taxid the taxonomy given does not hold (unknown_species:
+        # one older than the build's) is the package's species all the same, its taxa above it not counted
+        is_species = ncbi.rank.get(t, "species") == "species"
         add("eukore", r["supergroup"], t, is_species)
         if r["representative"] != "-":
             add("eukore_genome", r["supergroup"], t, is_species)
@@ -283,6 +300,14 @@ def run(package, out, ncbi, species, summary, whole=True, panels=PANELS, log=pri
     """The resource's tables of package into out, their headline figures into summary (breadth_ranks, content,
     panels). species: compare.species_of's rows; whole: ncbi is NCBI's whole taxonomy."""
     lineages = Lineages(ncbi)
+    unknown = unknown_species(species, ncbi)
+    if unknown:
+        log(f"WARNING: {len(unknown):,} of the package's {len(species):,} species are not in the taxonomy given (a "
+            f"taxdump older than the build's; e.g. {', '.join(sorted(unknown)[:3])}): counted as species, their "
+            "genera and the taxa above not (give the build's own: --taxdump SOURCES/taxdump.tar.gz)")
+        summary["unknown_species"] = len(unknown)
+    else:
+        summary.pop("unknown_species", None)
     taxa = list(benchmarks.rows_of(os.path.join(out, "selection_taxa.tsv")))
     if not taxa:
         summary.setdefault("left_out", {})["ncbi_genome"] = \
@@ -291,10 +316,18 @@ def run(package, out, ncbi, species, summary, whole=True, panels=PANELS, log=pri
     benchmarks.write(out, "breadth_ranks.tsv", RANK_COLUMNS, rows)
     summary["breadth_ranks"] = {r["rank"]: {k: r[k] for k in RANK_COLUMNS[2:]} for r in rows
                                 if r["supergroup"] == "all"}
-    rows = content_rows(package, species)
-    benchmarks.write(out, "content.tsv", CONTENT_COLUMNS, rows)
-    summary["content"] = {r["marker"]: {"species": r["species"], "same_assembly": r["same_assembly"]}
-                          for r in rows if r["supergroup"] == "all"}
+    if is_bundle(package):  # no record table to read the markers' assemblies from (since 2026-11-17: a
+        # bundle's content.tsv counted no species with an 18S, an operon or an organelle gene)
+        summary.setdefault("left_out", {})["content"] = BUNDLE
+        summary.pop("content", None)
+        if os.path.isfile(os.path.join(out, "content.tsv")):
+            os.remove(os.path.join(out, "content.tsv"))
+    else:
+        summary.get("left_out", {}).pop("content", None)
+        rows = content_rows(package, species)
+        benchmarks.write(out, "content.tsv", CONTENT_COLUMNS, rows)
+        summary["content"] = {r["marker"]: {"species": r["species"], "same_assembly": r["same_assembly"]}
+                              for r in rows if r["supergroup"] == "all"}
     entries = read_panels(panels)
     if entries:
         rows = panel_rows(entries, species, taxa, ncbi, lineages)

@@ -48,6 +48,7 @@ CONCORDANT = 0.9         # OrthoDB's verdicts: concordant of called under this
 HELD_OUT_CONCORDANT = 0.8
 CALLED = 0.9
 GAP_RESOLVED = 0.5       # a marker's barcode gap: under half the panel's species resolved
+GAP_MIN = 10             # of this many panel species holding the marker at least
 GENOME_SHARE = 0.5       # a supergroup (of SUPERGROUP_MIN species or more) with under half its species with a genome
 SUPERGROUP_MIN = 20
 LOW_SHARE = 0.1          # a supergroup's copies low or unverified over this share
@@ -348,10 +349,12 @@ def report_package(rep, folder):
             rep.find("medium", f"OrthoDB: {label} called {d['called']} of OrthoDB's genes (under {CALLED})",
                      "orthodb.tsv's missed rows: the seeding (miniprot's queries) or the cut-offs")
     gap = s.get("barcode_gap") or {}
+    # a marker few of the panel's species hold says nothing (since 2026-11-17: the 2026-11 build's finding led with
+    # matK 0.00, mito_5S 0.00, plas_5S 0.00 and trnH-psbA 0.00, of 1, 2, 4 and 1 species)
     poor_gap = {m: v["resolved"] for m, v in gap.items() if v.get("resolved") is not None
-                and v["resolved"] < GAP_RESOLVED}
+                and v["resolved"] < GAP_RESOLVED and v.get("species_markers", GAP_MIN) >= GAP_MIN}
     if poor_gap:
-        rep.find("low", "markers resolving under half the panel's species: "
+        rep.find("low", f"markers resolving under half the panel's species (of {GAP_MIN} or more holding them): "
                         + ", ".join(f"{m} {v:.2f}" for m, v in sorted(poor_gap.items(), key=lambda kv: kv[1])),
                  "expected for the 18S; for a gene, its copies (resolution.tsv)")
     rep.section(f"The package: {os.path.basename(os.path.normpath(folder))}", *parts)
@@ -366,10 +369,18 @@ def report_package(rep, folder):
                            [[r["supergroup"], r["species"], r["with_genome"], r["rrna_only"], r["complete_median"],
                              r["with_operon"], r["with_organelle"]] for r in comp_rows]))
     if thin:
-        rep.find("low", "supergroups mostly of rRNA alone: " + ", ".join(
-            f"{r['supergroup']} ({r['with_genome']} of {r['species']} with a genome)" for r in thin),
-                 "transcriptomes (TSA) or no-assembly records where NCBI has no genome; the gene markers miss these "
-                 "species")
+        def alone(r):
+            """Of a supergroup's species without a genome, those of rRNA records and of organelle genes alone (format
+            7: until 2026-11-17 the finding called them all `of rRNA alone`, 177,371 animals of organelle genes alone
+            among them)."""
+            rrna = int(r.get("rrna_only") or 0)
+            organelle = int(r["species"]) - int(r["with_genome"]) - rrna
+            return f"; {rrna:,} of rRNA records alone" + (f", {organelle:,} of organelle genes alone"
+                                                          if organelle > 0 else "")
+        rep.find("low", "supergroups mostly of species without a genome: " + ", ".join(
+            f"{r['supergroup']} ({r['with_genome']} of {r['species']} with a genome{alone(r)})" for r in thin),
+                 "expected: published rRNA records and organelle genes (RefSeq's, MIDORI2's) reach far more species "
+                 "than genomes do; the gene markers miss these species until NCBI holds an assembly of them")
     flag_rows = rows_of(os.path.join(bench, "flags.tsv"))
     if flag_rows:
         by_group = collections.defaultdict(collections.Counter)
@@ -447,9 +458,13 @@ def report_inputs(rep, folder, facts=None):
     for name, ref in sorted(refs.items()):
         rows.append([name, ref.get("version", "-"), f"{ref.get('species', 0):,} species"])
     labels = counts.get("labels") or {}
-    species = counts.get("species", 0) + counts.get("species_rrna_only", 0)
+    # a reference that named none of the species it was asked about: its own counts' sum, not the species with a
+    # genome or rRNA (until 2026-11-17: with format 7's species of organelle genes alone, 244,135 of the 2026-11
+    # build's 328,262, every reference without a name for 84,127 species or more was one that `names none`: KSGP,
+    # PR2, SILVA and UNITE, which named 57,284, 38,276, 22,037 and 21,543 species by their name or a synonym)
     for name, got in sorted(labels.items()):
-        if species and got.get("-", 0) >= species:
+        asked = sum(got.values())
+        if asked and got.get("-", 0) >= asked:
             missing.append(f"{name.upper()} names none of the species (not given or not fetched)")
     ksgp = refs.get("KSGP", {}).get("version")
     if ksgp and ksgp.split(".")[0].isdigit() and int(ksgp.split(".")[0]) < 5:

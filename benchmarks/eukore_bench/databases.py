@@ -71,7 +71,10 @@ def species_sets(out, species, theirs, ncbi):
         sets[r["database"]].add(int(r["species_taxid"]))
     for name, held in (theirs or {}).items():
         sets[name] = set(held)
-    sets[EUKORE] = {t for t in (ncbi.merged.get(int(x), int(x)) for x in species) if ncbi.rank.get(t) == "species"}
+    # a species the taxonomy given does not hold (one older than the build's: resource.unknown_species) is Eukore's
+    # all the same (since 2026-11-17)
+    sets[EUKORE] = {t for t in (ncbi.merged.get(int(x), int(x)) for x in species)
+                    if ncbi.rank.get(t, "species") == "species"}
     return dict(sets)
 
 
@@ -348,6 +351,20 @@ def eukore_size(package):
     return records, bases
 
 
+def bundle_size(package):
+    """(records, bases) of an evaluation bundle (since 2026-11-17: without the copy and record tables eukore_size
+    counted none, and the website's table said Eukore held 0 records): its manifest's counts of copies, rRNA records
+    and organelle genes; its bases are not told (`-`)."""
+    try:
+        with open(os.path.join(package, "manifest.json")) as fh:
+            counts = json.load(fh).get("counts") or {}
+    except (OSError, ValueError):
+        counts = {}
+    organelle = sum(sum(genes.values()) for genes in (counts.get("organelle_genes") or {}).values())
+    records = (counts.get("copies") or 0) + (counts.get("rrna_records") or 0) + organelle
+    return (records or "-"), "-"
+
+
 def versions(package, bench):
     """{database: the version read}: the build's references (the manifest's inputs), the benchmarks' downloads."""
     out = {}
@@ -381,7 +398,7 @@ def database_rows(package, bench, sets, compare, sizes=True):
         held = sets.get(name)
         size = ("-", "-")
         if sizes and name == EUKORE:
-            size = eukore_size(package)
+            size = bundle_size(package) if resource.is_bundle(package) else eukore_size(package)
         elif sizes and name in fastas:
             size = fasta_size(*fastas[name])
         rows.append(dict(database=name, **words.get(name, {k: "-" for k in WORDS}), version=version.get(name, "-"),
@@ -413,10 +430,17 @@ def run(package, bench, out, ncbi, species, summary, theirs=None, compare=(), mi
     summary["upset"] = {"databases": sorted(sets), "species": sum(r["species"] for r in everywhere),
                         "eukore_alone": next((r["species"] for r in everywhere if r["databases"] == EUKORE), 0),
                         "in_every_database": next((r["species"] for r in everywhere if r["n"] == len(sets)), 0)}
-    rows = novel_rows(package, species, sets)
-    benchmarks.write(out, "novel.tsv", NOVEL_COLUMNS, rows)
-    summary["novel"] = {r["marker"]: {k: r[k] for k in ("references", "genome", "named", "new")}
-                        for r in rows if r["supergroup"] == "all"}
+    if resource.is_bundle(package):  # no record table: which species hold a marker from their genome is not told
+        summary.setdefault("left_out", {})["novel"] = resource.BUNDLE
+        summary["novel"] = {}
+        if os.path.isfile(os.path.join(out, "novel.tsv")):
+            os.remove(os.path.join(out, "novel.tsv"))
+    else:
+        summary.get("left_out", {}).pop("novel", None)
+        rows = novel_rows(package, species, sets)
+        benchmarks.write(out, "novel.tsv", NOVEL_COLUMNS, rows)
+        summary["novel"] = {r["marker"]: {k: r[k] for k in ("references", "genome", "named", "new")}
+                            for r in rows if r["supergroup"] == "all"}
     rows, records = published_agreement(package), []
     minimap2 = minimap2 or shutil.which("minimap2")
     for name, fasta, table in compare:
