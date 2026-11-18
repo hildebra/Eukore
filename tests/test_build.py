@@ -1287,6 +1287,7 @@ class ChainTest(unittest.TestCase):
                 fh.write(f"PDIR={pdir}\nWORK={work}\nOUT={out}\nGEN=/g\nSOURCES={src}\nVERSION=2026.11\n"
                          "SCR=${SLURM_LOCAL_SCRATCH:+$SLURM_LOCAL_SCRATCH/Eukore}\n"
                          f"BENCH=${{TEST_BENCH-{bench}}}\n"
+                         "LOGS=${TEST_LOGS-}\n"
                          "BENCH_OPTS=(--no_tree)\nFIGURE_OPTS=(${TEST_FIGURES-})\nSBATCH_FETCH=(-p download)\n"
                          "SBATCH_PROCESS=(--mem=200G)\n")
             env = {k: v for k, v in os.environ.items()
@@ -1366,6 +1367,20 @@ class ChainTest(unittest.TestCase):
                 f"{overview} BENCH_ENV=active", f"{overview} --slide BENCH_ENV=active",
                 f"python3 -m eukore_bench.site {results} --release {out}/release --package {package} BENCH_ENV=active",
                 bundle], got.stderr)
+            # the bundle's logs (since 2026-11-18), whichever step makes it: the newest benchmark job's and the newest
+            # bench_downloads job's (benchmark.9 written after benchmark.5)
+            logs = os.path.join(tmp, "logs")
+            os.makedirs(logs)
+            for i, name in enumerate(("benchmark.5", "benchmark.9", "bench_downloads.3")):
+                for ext in ("otxt", "etxt"):
+                    path = os.path.join(logs, f"{name}.{ext}")
+                    with open(path, "w") as fh:
+                        fh.write("log")
+                    os.utime(path, (1_000_000 + 10 * i, 1_000_000 + 10 * i))
+            got, calls = run("_bundle", TEST_LOGS=logs, **job)
+            self.assertEqual(got.returncode, 0, got.stderr)
+            self.assertIn(f"--logs {logs}/benchmark.9.otxt:{logs}/benchmark.9.etxt:{logs}/bench_downloads.3.otxt:"
+                          f"{logs}/bench_downloads.3.etxt", calls[0])
 
 
 if __name__ == "__main__":

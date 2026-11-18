@@ -303,7 +303,8 @@ for each version, and cite that DOI with the version.
 
 From each test genome, reads are simulated from its markers' loci (introns and all) and from anywhere in it, plus
 reads from the background genomes. They are aligned by minimap2 to:
-- Eukore;
+- Eukore (the records of confidence `low` left out, since 2026-11-18: the package's typical use keeps the high,
+  unverified and medium ones; `--read_low` keeps them, and the test genomes' marker reads come from the records kept);
 - Eukore's exons alone;
 - Eukore's 18S alone;
 - each other reference.
@@ -313,6 +314,10 @@ ancestor. No profiler is involved: the benchmark measures the reference. Each re
 - `in`: its species in the reference;
 - `held_out`: its species left out;
 - `novel`: its whole order left out.
+
+The 2026-11-17 build's benchmark kept every record: its 2,031 bacterial and archaeal reads per million placed in a
+eukaryote phylum were all on rRNA records the package itself flags `ssu_prokaryote` and `low` (73 records of 61
+genomes and one EUKARYOME read). Eukore's references now leave the `low` records out, as a user of the package would.
 
 The background is scored in two parts (since 2026-11-18). The bacterial and archaeal genomes' reads are wrong
 wherever a reference places them: `summary.json` gives them per million (`background_per_million`, and

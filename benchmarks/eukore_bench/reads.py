@@ -11,7 +11,9 @@ and BACKGROUND_READS from each of a few bacterial and archaeal genomes (benchmar
 assignment gets wrong.
 
 The references, each aligned to by minimap2 (-x sr, secondary alignments kept):
-- Eukore: the BUSCO copies whole and the rRNA records;
+- Eukore: the BUSCO copies whole and the rRNA records, those of confidence `low` left out (since 2026-11-18: the
+  package's typical use keeps the high, unverified and medium ones; the 2026-11-17 build's bacterial reads placed in a
+  eukaryote phylum were all on `low` rRNA records the package itself flags `ssu_prokaryote`);
 - Eukore exons: the copies' coding sequences alone (an exon-level reference, EukDetect's kind) and the rRNA records;
 - Eukore 18S: the rRNA records' 18S alone (an 18S reference, PR2's kind);
 - other references (compare: EukDetect2's database, MetaPhlAn 4's eukaryote markers, PR2's 18S; references.py
@@ -55,6 +57,7 @@ BACKGROUND_READS = 20_000
 PER_GROUP = 3          # test genomes per supergroup (prep.py --read_genomes)
 TEST_TIERS = ("genome", "draft")  # the tiers (tiers.py) a test genome is of: the package holds their copies
 MIN_MARKER_READS = 100            # under this many reads of its markers a test genome is warned of
+LOW = "low"                       # the confidence tier Eukore's references leave out (the package's `low` records)
 MIN_ID = 0.90
 MIN_COVER = 0.8
 NEAR = 0.01
@@ -165,12 +168,22 @@ def compared(compare):
     return [tuple(compare)] if isinstance(compare[0], str) else [tuple(c) for c in compare]
 
 
-def references(folder, out, ncbi, compare=None, inside=None, parts=None):
+def low_copies(folder):
+    """The (accession, locus) of the BUSCO copies of confidence `low` (busco/copies.tsv), streamed."""
+    return {(r["accession"], r["locus"]) for r in benchmarks_rows(os.path.join(folder, "busco", "copies.tsv"))
+            if r.get("confidence") == LOW}
+
+
+def references(folder, out, ncbi, compare=None, inside=None, parts=None, keep_low=False, left_out=None):
     """The references' FASTAs written into out -> {name: (path, {record: taxid})}. compare: other references, each
     (name, FASTA, table of record<TAB>taxid) (compared); inside: a test of a taxid (a trial package's clades) the
     compared references are cut to; parts: a dict that takes each rRNA record's kind ({record: "rrna:" + kind}: the
-    other Eukore records are BUSCO copies, named accession|locus)."""
+    other Eukore records are BUSCO copies, named accession|locus). Eukore's own references leave out the records of
+    confidence `low` (since 2026-11-18, the package's typical use: a user keeps the high, unverified and medium
+    ones; keep_low: all of them): left_out, a Counter, takes the number of each kind left out."""
     os.makedirs(out, exist_ok=True)
+    left_out = collections.Counter() if left_out is None else left_out
+    low = set() if keep_low else low_copies(folder)
     species_of = {r["accession"]: int(r["species_taxid"])
                   for r in package.read_table(folder, "genomes.tsv") if r["representative"] == "t"}
     exons = collections.defaultdict(list)
@@ -189,6 +202,9 @@ def references(folder, out, ncbi, compare=None, inside=None, parts=None):
             for acc, seq in package.read_copies(folder, locus).items():
                 if acc not in species_of:
                     continue
+                if (acc, locus) in low:
+                    left_out["BUSCO copies"] += 1
+                    continue
                 name = f"{acc}|{locus}"
                 whole.write(f">{name}\n{seq}\n")
                 taxa["Eukore"][name] = species_of[acc]
@@ -202,6 +218,9 @@ def references(folder, out, ncbi, compare=None, inside=None, parts=None):
         for name, seq in (odb_mod.read_fasta(path) if os.path.isfile(path) else ()):
             r = rows.get(name)
             if not r:
+                continue
+            if not keep_low and r.get("confidence") == LOW:  # before its (species, type) slot is taken
+                left_out["rRNA records"] += 1
                 continue
             if r.get("type", "-") != "-":
                 if (r["species_taxid"], r["type"]) in typed:
@@ -246,15 +265,18 @@ def read_of(contig, pos, rng):
     return revcomp(seq) if rng.random() < 0.5 else seq
 
 
-def marker_spans(folder, accessions):
+def marker_spans(folder, accessions, keep_low=False):
     """Genomes' BUSCO copies' and rRNA records' spans in their assemblies -> {accession: [(contig, start, end)]}
-    (1-based), the tables read once for them all (until 2026-11-06 once a test genome: 3.7 million rows each)."""
+    (1-based), the tables read once for them all (until 2026-11-06 once a test genome: 3.7 million rows each). Those
+    of confidence `low` are left out (since 2026-11-18) as the references leave them out: no read is asked of a record
+    that is not in them."""
     wanted, spans = set(accessions), collections.defaultdict(list)
     for r in benchmarks_rows(os.path.join(folder, "busco", "copies.tsv")):
-        if r["accession"] in wanted and r["start"].isdigit():
+        if r["accession"] in wanted and r["start"].isdigit() and (keep_low or r.get("confidence") != LOW):
             spans[r["accession"]].append((r["contig"], int(r["start"]), int(r["end"])))
     for r in benchmarks_rows(os.path.join(folder, "rrna", "records.tsv")):
-        if r.get("accession") in wanted and r.get("start", "-").isdigit():
+        if (r.get("accession") in wanted and r.get("start", "-").isdigit()
+                and (keep_low or r.get("confidence") != LOW)):
             spans[r["accession"]].append((r["contig"], int(r["start"]), int(r["end"])))
     return spans
 
@@ -475,10 +497,12 @@ def detection_summary(rows):
 # --- all of it -----------------------------------------------------------------------------------------------------
 
 def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=None, background=(), inside=None,
-        log=print, seed=1, n_genome=GENOME_READS, n_background=BACKGROUND_READS, detections=None, hits_out=None):
+        log=print, seed=1, n_genome=GENOME_READS, n_background=BACKGROUND_READS, detections=None, hits_out=None,
+        keep_low=False):
     """The read benchmark of the package in folder (tests: accessions of genomes in genomes_folder; background:
     [(name, FASTA)]) in work (deleted after) -> reads.tsv's rows; detections: a list given takes detection.tsv's rows
-    (each test genome a sample at DEPTHS, detect); hits_out: a list given takes background_hits.tsv's rows (HIT_COLUMNS)."""
+    (each test genome a sample at DEPTHS, detect); hits_out: a list given takes background_hits.tsv's rows (HIT_COLUMNS);
+    keep_low: the records of confidence `low` kept in Eukore's references and the test genomes' reads (see references)."""
     os.makedirs(work, exist_ok=True)
     rng = random.Random(seed)
     genomes = {r["accession"]: r for r in package.read_table(folder, "genomes.tsv") if r["representative"] == "t"}
@@ -486,11 +510,15 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
                for r in package.read_table(folder, "species.tsv")}
     genus_size = collections.Counter(genus_of(ncbi, int(g["species_taxid"])) for g in genomes.values())
     parts = {}
-    refs = references(folder, os.path.join(work, "refs"), ncbi, compare, inside, parts)
+    left_out = collections.Counter()
+    refs = references(folder, os.path.join(work, "refs"), ncbi, compare, inside, parts, keep_low, left_out)
+    if left_out:
+        log("  Eukore's references leave out the records of confidence low: " + ", ".join(
+            f"{n:,} {kind}" for kind, n in sorted(left_out.items())))
     reads_fa = os.path.join(work, "reads.fa")
     meta = {}  # test -> (kind, species taxid)
     counts = collections.Counter()  # (test, reads) -> reads simulated
-    spans = marker_spans(folder, tests)
+    spans = marker_spans(folder, tests, keep_low)
     with open(reads_fa, "w") as fh:
         for acc in tests:
             sp = int(genomes[acc]["species_taxid"])

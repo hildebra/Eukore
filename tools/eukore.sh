@@ -129,20 +129,24 @@ need_bench() {  # the settings' BENCH: the benchmarks' steps need it
     fi
 }
 
+newest_log() {  # NEWEST_LOG: the most recently written LOGS/NAME.<job>.otxt, or empty where there is none
+    local f
+    NEWEST_LOG=
+    for f in "$LOGS/$1".*.otxt; do  # a pattern that matches nothing stays as it is: not a file
+        if [[ -f $f && ( -z $NEWEST_LOG || $f -nt $NEWEST_LOG ) ]]; then NEWEST_LOG=$f; fi
+    done
+}
+
 bench_bundle() {  # the benchmark run's evaluation bundle (since 2026-11-18): OUT/Eukore_<version>_benchmarks_evaluation.tar.gz
-    # the results' tables and figures, what attracts the background reads, the benchmark job's own logs and the last
-    # bench_downloads job's: a file to copy into local/ of the checkout to have the run looked at. Never fails the job.
-    local logs=() newest
+    # the results' tables and figures, what attracts the background reads, the newest benchmark job's logs (the running
+    # job's own, or, for the step `bundle` alone, the run's that made the results) and the newest bench_downloads job's:
+    # a file to copy into local/ of the checkout to have the run looked at. Never fails the job.
+    local logs=() name
     if [[ -n $LOGS ]]; then
-        [[ -z ${SLURM_JOB_ID:-} ]] || logs+=("$LOGS/benchmark.$SLURM_JOB_ID.otxt" "$LOGS/benchmark.$SLURM_JOB_ID.etxt")
-        local downloads=()
-        shopt -s nullglob
-        downloads=("$LOGS"/bench_downloads.*.otxt)
-        shopt -u nullglob
-        if (( ${#downloads[@]} )); then
-            newest=${downloads[${#downloads[@]}-1]}
-            logs+=("$newest" "${newest%.otxt}.etxt")
-        fi
+        for name in benchmark bench_downloads; do
+            newest_log "$name"
+            [[ -z $NEWEST_LOG ]] || logs+=("$NEWEST_LOG" "${NEWEST_LOG%.otxt}.etxt")
+        done
     fi
     local IFS=:
     PYTHONPATH=$PDIR/benchmarks${PYTHONPATH:+:$PYTHONPATH} python3 -m eukore_bench.bundle "$PACKAGE" "$BENCH_RESULTS" \
