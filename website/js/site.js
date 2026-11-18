@@ -1,5 +1,5 @@
 // Eukore's website: the menu on a phone, the charts' tooltips, the statistics page's taxonomy tree (data/taxonomy.json:
-// [name, rank, species, with a genome, children | accession], rank an index of its "ranks", -1 the root).
+// [name, rank, species, with a genome, children | accession, "-" or "+"], rank an index of its "ranks", -1 the root).
 (function () {
   'use strict';
 
@@ -93,7 +93,9 @@
     var count;
     if (isSpecies) {
       count = el('span', 'tree-count');
-      var acc = typeof node[4] === 'string' && node[4] !== '-' ? node[4] : 'rRNA records';
+      // a species without a genome: "-" known by rRNA records alone, "+" by organelle genes alone (release.py)
+      var acc = node[4] === '+' ? 'organelle genes'
+        : typeof node[4] === 'string' && node[4] !== '-' ? node[4] : 'rRNA records';
       count.appendChild(el('span', 'tree-acc', acc));
     } else {
       var below = children ? children.length : 0;

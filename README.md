@@ -54,8 +54,8 @@ seven taxonomies, and how far each sequence can be trusted.
 - **Genomes**: one assembly per NCBI species of GenBank's six eukaryote divisions (fungi, protists, plants,
   invertebrates, vertebrates), the best by NCBI's flags, its FCS-GX and ANI reports, RefSeq status, level and
   contiguity; TOGA2's vertebrate assemblies NCBI lacks; for a species without a genome, its INSDC transcriptome (TSA,
-  10 Mb or more) or EukProt's records. The first full build (2026-11, Eukore 0.2.4) ran 33,664 species: 28,506 NCBI
-  assemblies, 5,028 transcriptomes, 79 TOGA2 assemblies, 51 EukProt records.
+  10 Mb or more) or EukProt's records. The build of 2026-11-17 (Eukore 0.2.7) ran 33,460 species: 28,736 NCBI
+  assemblies, 4,606 transcriptomes, 67 TOGA2 assemblies, 51 EukProt records.
 - **Nuclear genes**: every BUSCO of eukaryota_odb12 and Eukore's nine own loci (RPB1, RPB2, EF-2, EF-1α, β-tubulin,
   actin, HSP90, GAPDH, H3), called by Eukore; a genome's own annotation (NCBI, VEuPathDB, Ensembl, TOGA2) gives the
   gene model where the HMM confirms it.
@@ -105,9 +105,9 @@ another clade, a contaminant's copy or a bacterium's SSU stays in the package wi
 
 A species is in the package by its genome (`species.tsv`'s `source`: an NCBI or TOGA2 assembly, `tsa` a
 transcriptome, EukProt's records), by rRNA records alone, or by organelle genes alone (`organelle`). The first full
-build (format 6) held 47,479 species, 33,664 of them with a genome; format 7's published 18S and MIDORI2's genes
-bring the species named to about 291,000 (measured on the inputs, not yet built), most of them known by a
-mitochondrial barcode gene alone.
+build (format 6) held 47,479 species, 33,664 of them with a genome; the build of 2026-11-17 (format 7: EUKARYOME's
+published 18S, MIDORI2's genes) holds 328,262: 33,460 with a genome, 50,667 by rRNA records alone and 244,135 by
+organelle genes alone, most of those a mitochondrial barcode gene.
 
 A package is plain TSV and gzipped FASTA with a `manifest.json` of checksums; its format is
 [docs/FORMAT.md](docs/FORMAT.md) (format 7). Every `.gz` file is BGZF (blocked gzip, since 2026-11-09): any gzip
@@ -175,9 +175,9 @@ What you may want, where it is in a package, and where it is described. The file
 
 ## Get Eukore
 
-**Prebuilt releases**: none is published yet. The first full build (NCBI's genomes of 2026-11; Eukore 0.2.4,
-format 6) finished on 2026-11-14 and was evaluated; the fixes it led to and format 7 (Eukore 0.2.6) are in this
-repository, and the release will be built from them. Until it is published, build it yourself (below): a trial of
+**Prebuilt releases**: none is published yet. Two full builds of NCBI's genomes of 2026-11 were made and evaluated:
+Eukore 0.2.4, format 6 (2026-11-14) and Eukore 0.2.7, format 7 (2026-11-17, the one the numbers here are of); the
+fixes each led to are in this repository, and the release will be built from them. Until it is published, build it yourself (below): a trial of
 seven clades took about an hour on 6 cores, the full reference needs a cluster.
 
 A release is published on Eukore's website (`website/`, PHP; the [website's README](website/README.md)): its
@@ -274,9 +274,9 @@ outputs are in [docs/building.md](docs/building.md).
   <img src="docs/figures/overview.png" alt="Eukore: the build from its sources to the package, and what the package holds" width="860">
 </p>
 
-The figure (`docs/figures/overview.py`) describes Eukore 0.2.6 (format 7); its genome numbers and the counts that
-head panel b (`--package`) are the first full build's (Eukore_2026.11 of 2026-11-14, format 6), the references'
-those of 2026-11. The figure at the top of this page is its short form (`--slide`, 16:9, for a presentation).
+The figure (`docs/figures/overview.py`) describes Eukore 0.2.7 (format 7); its genome numbers and the counts that
+head panel b (`--package`) are those of the build of 2026-11-17 (Eukore_2026.11, format 7), the references' those of
+2026-11. The figure at the top of this page is its short form (`--slide`, 16:9, for a presentation).
 
 Details, and what was checked on real genomes, are in [docs/methods.md](docs/methods.md).
 
@@ -291,23 +291,24 @@ so does (since 2026-11-12) what describes the package as a resource: its breadth
 links, Eukore beside the other databases as collections of records, the checks' shares, the tree of the BUSCO proteins
 against NCBI's taxonomy, the identity that parts taxa, and the changes from one release to the next.
 
-On the first full build (Eukore_2026.11 of 2026-11-14: Eukore 0.2.4, format 6, before the fixes and format 7 of
-0.2.6; not a release):
+On the build of 2026-11-17 (Eukore_2026.11: Eukore 0.2.7, format 7; not a release: built without tiara, VEuPathDB's
+annotations and KSGP 5.2, and before the fixes its evaluation led to):
 
 | benchmark | figure |
 |---|---|
-| species; with a genome; with rRNA records alone | 47,479; 33,664; 13,815 |
-| species with an rRNA record; a whole operon; an organelle gene | 38,190; 33,930; 13,868 |
-| median complete BUSCOs per genome | 96.9% (65.2% of genomes at 90% or more) |
-| BUSCOs OrthoDB has a gene model of, called | 99.1% of 87,927 (836 species) |
-| of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | 92.0% |
-| the same, called without the species' own proteins | 99.0% called, 82.9% of them OrthoDB's gene model |
-| calls laid on their genome's annotation (7,541 genomes) | introns exact 91.5%; coding bases' recall 94.0%, precision 96.6% |
-| BUSCO and marker copies; `high`, `unverified`, `medium`, `low` | 4,329,328; 61.8%, 6.1%, 32.1%, 0.1% |
-| BUSCO copies under 99% identical to their nearest congener | 62.0% of 2,549,280 |
-| 18S copies under 99% identical to their nearest congener | 26.5% of 18,777 |
-| rRNA records; operons with a whole 28S | 4,657,420; 95.1% of 2,390,529 |
-| genome run (BUSCOs, rRNA, tiara), median | 1.3 min, 3 min per Gb of genome |
+| species; with a genome; with rRNA records alone; with organelle genes alone | 328,262; 33,460; 50,667; 244,135 |
+| species with an rRNA record; a whole operon; an organelle gene | 79,581; 31,294; 297,379 |
+| median complete BUSCOs per genome | 98.4% (77.6% of genomes at 90% or more) |
+| BUSCOs OrthoDB has a gene model of, called | 98.8% of 88,053 (837 species) |
+| of those called, OrthoDB's gene model (5-mers ≥ 90% both ways) | 91.9% |
+| the same, called without the species' own proteins | 99.0% called, 82.8% of them OrthoDB's gene model |
+| calls laid on their genome's annotation (8,378 genomes) | introns exact 92.3%; coding bases' recall 94.5%, precision 96.7% |
+| BUSCO and marker copies; `high`, `unverified`, `medium`, `low` | 4,114,253; 61.6%, 4.4%, 33.9%, 0.1% |
+| BUSCO copies under 99% identical to their nearest congener | 62.4% of 2,440,007 |
+| 18S copies under 99% identical to their nearest congener | 30.6% of 45,999 |
+| COX1 copies under 99% identical to their nearest congener | 84.6% of 171,050 |
+| rRNA records; operons with a whole 28S | 5,102,572; 95.1% of 2,645,832 |
+| genome run (BUSCOs, rRNA), median | 1.1 min, 3 min per Gb of genome |
 
 <p align="center">
   <img src="docs/benchmarks/figures/completeness.png" alt="BUSCO completeness per supergroup" width="860"><br>
@@ -350,10 +351,10 @@ The two figures are that build's. All figures and what they show: [docs/benchmar
 
 ## Status and limitations
 
-**Where it stands** (2026-11-15):
-- **Version 0.2.6, package format 7.** One full build exists, of Eukore 0.2.4 and format 6 (2026-11-14: 33,664
-  genomes, none failed). What came after it is tested on stand-ins, trial clades and the inputs themselves, not yet
-  on a full build:
+**Where it stands** (2026-11-17):
+- **Version 0.2.7, package format 7.** Two full builds exist: Eukore 0.2.4, format 6 (2026-11-14: 33,664 genomes,
+  none failed) and Eukore 0.2.7, format 7 (2026-11-17: 33,460 genomes, none failed, 6 not fetched; 328,262
+  species; its final job 9 h 31 m). The second ran what came after the first:
   - *the first build's fixes* (2026-11-14): genome tiers by each clade's expected BUSCOs, a poor, partial or
     contaminated genome's copies left out; Eukore's own protist proteins as queries; a copy split across a skim's
     contigs joined; an 18S from a species' next assembly, transcriptomes' rRNA, a 10 Mb floor for transcriptomes;
@@ -365,18 +366,21 @@ The two figures are that build's. All figures and what they show: [docs/benchmar
     (`taxonomy/eukaryome.tsv`);
   - *2026-11-15*: MIDORI2's COX1 and CYTB beside its mitochondrial SSU, screened and filtered by protal's rules;
     EUKARYOME's tree free of homonyms (a genus name of another phylum is not a species' genus; an NCBI clade
-    EUKARYOME names otherwise takes EUKARYOME's taxon). The organelle checks' run time on some 230,000 COX1 records
-    is not measured yet.
+    EUKARYOME names otherwise takes EUKARYOME's taxon). The organelle step was the 2026-11-17 build's longest (6 h 01 m):
+    its search across species aligned long genes whole.
+  Not yet run on a full build: the changes of 2026-11-17 (a copy's first 5,000 bases compared across species; the
+  helpers at the search with the fewest parts left; the rRNA part screen's four parts at once); tiara, VEuPathDB's
+  annotations (no key) and KSGP 5.2 were in neither build.
 - **Changes by format**: [docs/FORMAT.md](docs/FORMAT.md#changes). Format 6 (2026-11-09) brought the four confidence
   tiers, checked coding sequences, a Duplicated locus' copy chosen by lineage, the owner of a shared sequence, the
   18S checked to be a nucleus'.
 
 **Limitations:**
-- Protist lineages are thin: 48 of the 129 BUSCOs are called in under 20% of Discoba's genomes, and a gene model
+- Protist lineages are thin: 42 of the 129 BUSCOs are called in under 20% of Discoba's genomes, and a gene model
   made without a near relative's proteins is approximate (held out, 83% of calls are OrthoDB's gene model overall,
   under 50% in Alveolata and Amoebozoa).
-- A third of the BUSCO copies are `medium` (a fragment, a contig's end, a duplicate, ...) and 6% `unverified` (no
-  relative near enough to check them by, half of them of a species alone in its family).
+- A third of the BUSCO copies are `medium` (a fragment, a contig's end, a duplicate, ...) and 4% `unverified` (no
+  relative near enough to check them by, a third of them of a species alone in its family).
 - MIDORI2's records are one gene of one specimen under GenBank's name: screened across orders, not within one.
 - FCS-GX has been run with stand-ins only (its database is ~470 GB).
 - The organelle genes have checks across species and a confidence tier since 0.2, measured on a trial without RefSeq's organelle release (assembly molecules alone). In assemblies, a protein-coding gene with introns takes miniprot's exons (median F1 0.96-0.99 against RefSeq's, against nhmmer's joined hits' 0.27-0.60), one without nhmmer's single hit ([methods.md](docs/methods.md)); a few splice sites stay off by some bases.

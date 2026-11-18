@@ -77,6 +77,17 @@ class ResourceTest(unittest.TestCase):
         rows = resource.rank_rows(self.species, [], self.ncbi, lin, whole=False)
         self.assertEqual({(r["ncbi_named"], r["ncbi_genome"]) for r in rows}, {("-", "-")})
 
+    def test_a_species_newer_than_the_taxonomy_given(self):
+        # a taxdump older than the build's (since 2026-11-17): the package's species it lacks are species still
+        species = dict(self.species, **{"123456789": species_row("GCA_9.1", loci=1)})
+        self.assertEqual(resource.unknown_species(species, self.ncbi), ["123456789"])
+        self.assertEqual(resource.unknown_species(self.species, self.ncbi), [])
+        lin = resource.Lineages(self.ncbi)
+        rows = {(r["supergroup"], r["rank"]): r for r in resource.rank_rows(species, self.taxa, self.ncbi, lin)}
+        self.assertEqual((rows[("all", "species")]["eukore"], rows[("all", "species")]["eukore_genome"]), (3, 2))
+        self.assertEqual(rows[("all", "genus")]["eukore"], 2)  # its genus is not known: none counted
+        self.assertEqual(rows[("other eukaryotes", "species")]["eukore"], 0)  # the genus' read still names no species
+
     def test_markers_of_one_assembly(self):
         folder = os.path.join(self.tmp.name, "package")
         os.makedirs(os.path.join(folder, "rrna"))
@@ -154,6 +165,26 @@ class ResourceTest(unittest.TestCase):
         os.makedirs(figs)
         for fn in (figures.breadth_ranks, figures.content, figures.panels):
             self.assertTrue(os.path.isfile(fn(out, package, figs, "png")))
+
+    def test_an_evaluation_bundle_has_no_markers_to_count(self):
+        # a build's bundle (its manifest, no record tables; since 2026-11-17): content.tsv counted no species with an
+        # 18S, an operon or an organelle gene there; it is left out, and said so
+        package = os.path.join(self.tmp.name, "bundle")
+        out = os.path.join(self.tmp.name, "bundle_results")
+        os.makedirs(package)
+        os.makedirs(out)
+        with open(os.path.join(package, "manifest.json"), "w") as fh:
+            fh.write("{}")
+        self.assertTrue(resource.is_bundle(package))
+        self.assertFalse(resource.is_bundle(os.path.join(self.tmp.name, "no_package")))
+        with open(os.path.join(out, "content.tsv"), "w") as fh:  # one written before
+            fh.write("supergroup\n")
+        summary = {"species": 1, "busco_loci": 3, "left_out": {}, "content": {"18S": {}}}
+        resource.run(package, out, self.ncbi, self.species, summary, log=lambda t: None)
+        self.assertIn("evaluation bundle", summary["left_out"]["content"])
+        self.assertNotIn("content", summary)
+        self.assertFalse(os.path.exists(os.path.join(out, "content.tsv")))
+        self.assertTrue(os.path.isfile(os.path.join(out, "breadth_ranks.tsv")))
 
     def test_taxa_of_the_selection(self):
         rows = benchmarks.taxa_rows({4932: "chosen", 1080349: "hybrid"}, self.ncbi)

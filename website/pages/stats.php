@@ -48,8 +48,13 @@ $categories = $stats['markers'] ?? [];
 <section class="tiles" aria-label="Totals">
   <div class="tile"><span class="tile-label">Species</span><span class="tile-value"><?= num($t['species']) ?></span>
     <span class="tile-note"><?= num($t['species_with_genome']) ?> with a genome or transcriptome</span></div>
+<?php $organelle_only = $t['species_organelle_only'] ?? 0; if ($organelle_only > 0): ?>
+  <div class="tile"><span class="tile-label">Without a genome</span><span class="tile-value"><?= num($t['species_rrna_only'] + $organelle_only) ?></span>
+    <span class="tile-note"><?= num($organelle_only) ?> known by organelle genes alone, <?= num($t['species_rrna_only']) ?> by published rRNA reads</span></div>
+<?php else: ?>
   <div class="tile"><span class="tile-label">rRNA records alone</span><span class="tile-value"><?= num($t['species_rrna_only']) ?></span>
     <span class="tile-note">species known by published rRNA reads</span></div>
+<?php endif; ?>
   <div class="tile"><span class="tile-label">Taxa</span><span class="tile-value"><?= num($t['genera']) ?></span>
     <span class="tile-note">genera in <?= num($t['families']) ?> families, <?= num($t['phyla']) ?> phyla, <?= num($t['supergroups']) ?> supergroups</span></div>
   <div class="tile"><span class="tile-label">Marker categories</span><span class="tile-value"><?= num($t['marker_categories']) ?></span>
@@ -60,7 +65,8 @@ $categories = $stats['markers'] ?? [];
 <hr>
 <p>Each species' sequences come from one genome: NCBI's best assembly of it (RefSeq's copy where there is one), else
   an assembly of TOGA2's, an INSDC transcriptome, EukProt's records; species with no genome are known by their
-  published rRNA reads alone. Open a supergroup for its groups.</p>
+  published rRNA reads or by organelle genes alone (a RefSeq organelle genome, a screened MIDORI2 record). Open a
+  supergroup for its groups.</p>
 <ul class="legend" aria-label="Sources">
 <?php foreach ($sources['columns'] as $s): ?>
   <li title="<?= h($sources['text'][$s] ?? $s) ?>"><span class="swatch s<?= $slot[$s] ?? 0 ?>"></span><?= h($s) ?></li>
@@ -121,7 +127,7 @@ $categories = $stats['markers'] ?? [];
 <div class="tree-tools">
   <ul class="legend" aria-label="Species">
     <li><span class="swatch tree-genome"></span>with a genome or transcriptome</li>
-    <li><span class="swatch tree-rrna"></span>rRNA records alone</li>
+    <li><span class="swatch tree-rrna"></span><?= $organelle_only > 0 ? 'no genome: rRNA records or organelle genes alone' : 'rRNA records alone' ?></li>
   </ul>
   <label class="tree-search">Find a taxon <input type="search" id="tree-search" placeholder="e.g. Saccharomyces" autocomplete="off"></label>
 </div>

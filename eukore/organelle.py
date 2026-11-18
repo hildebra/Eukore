@@ -1526,10 +1526,10 @@ MAX_AMBIGUOUS = 0.005  # a record with this share of other bases than ACGT: low
 
 def check(records, ncbi, vsearch=None, threads=1, progress=None, searches=None):
     """The organelle genes' checks across species (since 2026-11-07; qc.check, each gene of each organelle a locus;
-    a protein-coding gene's coding sequence compared where it has one, else its record) and their proteins by the
-    species' organelle code (since 2026-11-10 a RefSeq CDS's own /transl_table before it: table_of) -> records, their
-    rows completed with own_species, same_as, length_check, internal_stops, confidence and flags (`protein` kept in
-    the row for write_genes)."""
+    a protein-coding gene's coding sequence compared where it has one, else its record; of either its first
+    qc.CHECK_BASES) and their proteins by the species' organelle code (since 2026-11-10 a RefSeq CDS's own /transl_table before it:
+    table_of) -> records, their rows completed with own_species, same_as, length_check, internal_stops, confidence and
+    flags (`protein` kept in the row for write_genes)."""
     from . import qc  # noqa: PLC0415
     seqs, species, lengths = {}, {}, {}
     for name, seq, row in records:

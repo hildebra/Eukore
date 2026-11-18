@@ -450,6 +450,26 @@ class Release(unittest.TestCase):
                 self.assertEqual(json.load(fh)["files"], [{"file": "y.tar.gz"}])
             self.assertFalse(release.is_bundle(toy_package(os.path.join(tmp, "whole"))))
 
+    def test_species_of_organelle_genes_alone_are_not_of_rrna_alone(self):
+        # format 7 (the 2026-11 build: 244,135 of 328,262 species): until 2026-11-17 the totals counted every species
+        # without a genome as of rRNA records alone, and the tree showed them so
+        rows = [dict(taxid=t, name=f"A {t}", representative=rep, source=source, supergroup="Obazoa", group="Metazoa")
+                for t, rep, source in ((1, "GCA_1.1", "ncbi"), (2, "-", "rrna"), (3, "-", "organelle"),
+                                       (4, "-", "organelle"))]
+        self.assertEqual([release.without_genome(r) for r in rows], [None, "rrna", "organelle", "organelle"])
+        leaves = {n[0]: n[4] for n in walk(release.tree(rows)).values() if not isinstance(n[4], list)}
+        self.assertEqual(leaves, {"A 1": "GCA_1.1", "A 2": "-", "A 3": "+", "A 4": "+"})
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = os.path.join(tmp, "Eukore_2026.11")
+            tsv(os.path.join(pkg, "species.tsv"), SPECIES, rows)
+            tsv(os.path.join(pkg, "genomes.tsv"), ("accession", "fetched", "source", "species_taxid", "representative"),
+                [dict(accession="GCA_1.1", fetched="GCA_1.1", source="ncbi", species_taxid=1, representative="t")])
+            with open(os.path.join(pkg, package.MANIFEST), "w") as fh:
+                json.dump({"format": 7, "version": "2026.11", "inputs": {}, "files": {}, "counts": {"genomes": 1}}, fh)
+            totals = release.stats(pkg)[0]["totals"]
+            self.assertEqual((totals["species"], totals["species_with_genome"], totals["species_rrna_only"],
+                              totals["species_organelle_only"]), (4, 1, 1, 2))
+
     def test_no_release_of_an_unfinished_package(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit):

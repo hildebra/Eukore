@@ -113,9 +113,23 @@ def _path(species):
     return out
 
 
+# in a tree's species' accession's place: one known by its organelle genes alone ("-": by rRNA records alone)
+ORGANELLE_ONLY = "+"
+
+
+def without_genome(species):
+    """Of a species row without a genome what it is known by: "organelle" (species.tsv's source `organelle`, format
+    7: a RefSeq organelle genome, a MIDORI2 record) or "rrna" (published rRNA records); None with a genome."""
+    if species.get("representative", "-") != "-":
+        return None
+    return "organelle" if species.get("source") == "organelle" else "rrna"
+
+
 def tree(species_rows):
     """The species as a tree -> [name, rank, species, with a genome, children] nested, children by species, most first;
-    a species is [name, rank, 1, 0 or 1, its genome's accession or '-']. rank: an index of TREE_RANKS (-1: the root)."""
+    a species is [name, rank, 1, 0 or 1, its genome's accession, '-' (rRNA records alone) or ORGANELLE_ONLY (since
+    2026-11-17: the 2026-11 build's 244,135 species of organelle genes alone were shown as of rRNA records)]. rank: an
+    index of TREE_RANKS (-1: the root)."""
     root = {"name": "Eukaryota", "rank": -1, "species": 0, "genomes": 0, "children": {}}
     for r in species_rows:
         has_genome = int(r.get("representative", "-") != "-")
@@ -130,7 +144,8 @@ def tree(species_rows):
             child["species"] += 1
             child["genomes"] += has_genome
             if rank == "species":
-                child["accession"] = r.get("representative", "-")
+                child["accession"] = ORGANELLE_ONLY if without_genome(r) == "organelle" \
+                    else r.get("representative", "-")
             node = child
 
     def packed(n):
@@ -377,11 +392,11 @@ def stats(folder):
             genomes[acc] = dict(accession=acc, fetched=fetched, source=source, species_taxid=sp)
     species_of = {acc: g["species_taxid"] for acc, g in genomes.items()}
     by_group = collections.defaultdict(lambda: collections.defaultdict(collections.Counter))
+    alone_of = {"organelle": "organelle genes only", "rrna": "rRNA records only"}
     for r in species_rows:
         rep = r.get("representative", "-")
-        alone = "organelle genes only" if r.get("source") == "organelle" else "rRNA records only"
-        source = alone if rep == "-" else source_of(genomes.get(rep, dict(source=r.get("source", ""),
-                                                                                         accession=rep)))
+        source = alone_of.get(without_genome(r)) or source_of(genomes.get(rep, dict(source=r.get("source", ""),
+                                                                                      accession=rep)))
         by_group[r.get("supergroup") or "incertae sedis"][r.get("group") or "other eukaryotes"][source] += 1
     columns = [s for s in SOURCES + ("other",) if any(c[s] for g in by_group.values() for c in g.values())]
     supergroups = []
@@ -417,9 +432,12 @@ def stats(folder):
                eukore=manifest.get("eukore"), format=manifest.get("format"), built=manifest.get("built"),
                released=datetime.datetime.now().isoformat(timespec="seconds"), release_by=__version__,
                partial=manifest.get("inputs", {}).get("partial"), bundle=bundle,
+               # species_rrna_only: until 2026-11-17 every species without a genome, so that the 2026-11 build's
+               # 244,135 species of organelle genes alone were counted as of rRNA records alone (294,802, not 50,667)
                totals=dict(species=len(species_rows),
-                           species_with_genome=sum(1 for r in species_rows if r.get("representative", "-") != "-"),
-                           species_rrna_only=sum(1 for r in species_rows if r.get("representative", "-") == "-"),
+                           species_with_genome=sum(1 for r in species_rows if without_genome(r) is None),
+                           species_rrna_only=sum(1 for r in species_rows if without_genome(r) == "rrna"),
+                           species_organelle_only=sum(1 for r in species_rows if without_genome(r) == "organelle"),
                            genomes=len(genomes), assemblies_listed=counts.get("genomes"),
                            supergroups=ranks.get("supergroup", 0), groups=ranks.get("group", 0),
                            phyla=ranks.get("phylum", 0), classes=ranks.get("class", 0), orders=ranks.get("order", 0),

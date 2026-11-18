@@ -66,6 +66,17 @@ class SiteTest(unittest.TestCase):
                 self.assertEqual(json.load(fh)["package"], "Eukore_y")
             with self.assertRaises(SystemExit):  # no release there
                 site.write(results, os.path.join(tmp, "nothing"), log=lambda t: None)
+            # the thresholds' figure's caption names the published ones only where the table holds them (since
+            # 2026-11-17: left out of a site's data, they were still in its caption)
+            with open(os.path.join(results, "figures", "thresholds.png"), "wb") as fh:
+                fh.write(b"PNG")
+            caption = {f["name"]: f["caption"] for f in site.data(results)[0]["figures"]}["thresholds"]
+            self.assertIn("published thresholds", caption)
+            benchmarks.write(results, "thresholds.tsv", ("marker", "rank", "threshold", "source"),
+                             [dict(marker="BUSCO (all)", rank="genus", threshold="98.5", source="package")])
+            caption = {f["name"]: f["caption"] for f in site.data(results)[0]["figures"]}["thresholds"]
+            self.assertNotIn("published", caption)
+            self.assertTrue(caption.endswith("(small dots)."))
 
 
 if __name__ == "__main__":

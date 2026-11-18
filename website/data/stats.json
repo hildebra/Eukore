@@ -1,29 +1,30 @@
 {
  "package": "Eukore_2026.11",
  "version": "2026.11",
- "eukore": "0.2.4",
- "format": 6,
- "built": "2026-11-14T17:36:38",
- "released": "2026-11-15T12:08:38",
- "release_by": "0.2.6",
+ "eukore": "0.2.7",
+ "format": 7,
+ "built": "2026-11-17T16:37:15",
+ "released": "2026-11-17T23:29:23",
+ "release_by": "0.2.7",
  "partial": null,
  "bundle": true,
  "totals": {
-  "species": 47479,
-  "species_with_genome": 33664,
-  "species_rrna_only": 13815,
-  "genomes": 33664,
-  "assemblies_listed": 74716,
+  "species": 328262,
+  "species_with_genome": 33460,
+  "species_rrna_only": 50667,
+  "species_organelle_only": 244135,
+  "genomes": 33460,
+  "assemblies_listed": 73989,
   "supergroups": 14,
   "groups": 23,
-  "phyla": 116,
-  "classes": 393,
-  "orders": 1438,
-  "families": 5402,
-  "genera": 19446,
+  "phyla": 99,
+  "classes": 392,
+  "orders": 1618,
+  "families": 8902,
+  "genera": 75555,
   "marker_categories": 4,
   "marker_loci": 162,
-  "sequences": 9107728
+  "sequences": 9981966
  },
  "sources": {
   "columns": [
@@ -32,7 +33,8 @@
    "TOGA2",
    "ENA TSA",
    "EukProt",
-   "rRNA records only"
+   "rRNA records only",
+   "organelle genes only"
   ],
   "text": {
    "NCBI RefSeq": "NCBI's RefSeq assembly",
@@ -40,56 +42,61 @@
    "TOGA2": "TOGA2's assembly (vertebrates with no NCBI genome)",
    "ENA TSA": "an INSDC transcriptome (no genome)",
    "EukProt": "EukProt's genome or transcriptome records (no assembly at NCBI)",
-   "rRNA records only": "published rRNA records alone (EUKARYOME, ROD, PR2, GenBank, SILVA, ...)"
+   "rRNA records only": "published rRNA records alone (EUKARYOME, ROD, PR2, GenBank, SILVA, ...)",
+   "organelle genes only": "organelle genes alone (a RefSeq organelle genome, a published record)"
   },
   "supergroups": [
    {
     "name": "Obazoa",
     "counts": {
-     "NCBI RefSeq": 2028,
-     "NCBI GenBank": 21169,
-     "TOGA2": 79,
-     "ENA TSA": 3998,
+     "NCBI RefSeq": 2029,
+     "NCBI GenBank": 21330,
+     "TOGA2": 67,
+     "ENA TSA": 3679,
      "EukProt": 10,
-     "rRNA records only": 8864
+     "rRNA records only": 38646,
+     "organelle genes only": 227998
     },
-    "species": 36148,
+    "species": 293759,
     "groups": [
      {
       "name": "Metazoa",
       "counts": {
        "NCBI RefSeq": 503,
-       "NCBI GenBank": 8467,
+       "NCBI GenBank": 8567,
        "TOGA2": 0,
-       "ENA TSA": 3663,
+       "ENA TSA": 3435,
        "EukProt": 2,
-       "rRNA records only": 1755
+       "rRNA records only": 25333,
+       "organelle genes only": 177371
       },
-      "species": 14390
+      "species": 215211
+     },
+     {
+      "name": "Vertebrata",
+      "counts": {
+       "NCBI RefSeq": 859,
+       "NCBI GenBank": 5919,
+       "TOGA2": 67,
+       "ENA TSA": 166,
+       "EukProt": 0,
+       "rRNA records only": 818,
+       "organelle genes only": 44187
+      },
+      "species": 52016
      },
      {
       "name": "Fungi",
       "counts": {
        "NCBI RefSeq": 661,
-       "NCBI GenBank": 6799,
+       "NCBI GenBank": 6829,
        "TOGA2": 0,
-       "ENA TSA": 52,
+       "ENA TSA": 50,
        "EukProt": 7,
-       "rRNA records only": 6518
+       "rRNA records only": 12406,
+       "organelle genes only": 6439
       },
-      "species": 14037
-     },
-     {
-      "name": "Vertebrata",
-      "counts": {
-       "NCBI RefSeq": 858,
-       "NCBI GenBank": 5888,
-       "TOGA2": 79,
-       "ENA TSA": 254,
-       "EukProt": 0,
-       "rRNA records only": 502
-      },
-      "species": 7581
+      "species": 26392
      },
      {
       "name": "other Opisthokonta",
@@ -99,9 +106,10 @@
        "TOGA2": 0,
        "ENA TSA": 27,
        "EukProt": 1,
-       "rRNA records only": 65
+       "rRNA records only": 72,
+       "organelle genes only": 1
       },
-      "species": 112
+      "species": 120
      },
      {
       "name": "Apusozoa and Breviatea",
@@ -109,49 +117,53 @@
        "NCBI RefSeq": 1,
        "NCBI GenBank": 1,
        "TOGA2": 0,
-       "ENA TSA": 2,
+       "ENA TSA": 1,
        "EukProt": 0,
-       "rRNA records only": 24
+       "rRNA records only": 17,
+       "organelle genes only": 0
       },
-      "species": 28
+      "species": 20
      }
     ]
    },
    {
     "name": "Archaeplastida",
     "counts": {
-     "NCBI RefSeq": 215,
-     "NCBI GenBank": 4056,
+     "NCBI RefSeq": 216,
+     "NCBI GenBank": 4105,
      "TOGA2": 0,
-     "ENA TSA": 646,
+     "ENA TSA": 592,
      "EukProt": 12,
-     "rRNA records only": 2362
+     "rRNA records only": 6033,
+     "organelle genes only": 14393
     },
-    "species": 7291,
+    "species": 25351,
     "groups": [
      {
       "name": "Viridiplantae",
       "counts": {
-       "NCBI RefSeq": 212,
-       "NCBI GenBank": 4000,
+       "NCBI RefSeq": 213,
+       "NCBI GenBank": 4045,
        "TOGA2": 0,
-       "ENA TSA": 605,
+       "ENA TSA": 558,
        "EukProt": 5,
-       "rRNA records only": 2087
+       "rRNA records only": 5148,
+       "organelle genes only": 12707
       },
-      "species": 6909
+      "species": 22676
      },
      {
       "name": "Rhodophyta",
       "counts": {
        "NCBI RefSeq": 3,
-       "NCBI GenBank": 55,
+       "NCBI GenBank": 59,
        "TOGA2": 0,
-       "ENA TSA": 38,
+       "ENA TSA": 33,
        "EukProt": 5,
-       "rRNA records only": 268
+       "rRNA records only": 879,
+       "organelle genes only": 1684
       },
-      "species": 369
+      "species": 2663
      },
      {
       "name": "Glaucophyta",
@@ -159,11 +171,12 @@
        "NCBI RefSeq": 0,
        "NCBI GenBank": 1,
        "TOGA2": 0,
-       "ENA TSA": 3,
+       "ENA TSA": 1,
        "EukProt": 0,
-       "rRNA records only": 3
+       "rRNA records only": 4,
+       "organelle genes only": 2
       },
-      "species": 7
+      "species": 8
      },
      {
       "name": "other Archaeplastida",
@@ -173,9 +186,10 @@
        "TOGA2": 0,
        "ENA TSA": 0,
        "EukProt": 2,
-       "rRNA records only": 4
+       "rRNA records only": 2,
+       "organelle genes only": 0
       },
-      "species": 6
+      "species": 4
      }
     ]
    },
@@ -183,37 +197,40 @@
     "name": "TSAR",
     "counts": {
      "NCBI RefSeq": 65,
-     "NCBI GenBank": 720,
+     "NCBI GenBank": 734,
      "TOGA2": 0,
-     "ENA TSA": 285,
+     "ENA TSA": 249,
      "EukProt": 11,
-     "rRNA records only": 2063
+     "rRNA records only": 4559,
+     "organelle genes only": 1566
     },
-    "species": 3144,
+    "species": 7184,
     "groups": [
      {
       "name": "Stramenopiles",
       "counts": {
        "NCBI RefSeq": 14,
-       "NCBI GenBank": 529,
+       "NCBI GenBank": 537,
        "TOGA2": 0,
-       "ENA TSA": 155,
+       "ENA TSA": 138,
        "EukProt": 1,
-       "rRNA records only": 804
+       "rRNA records only": 1477,
+       "organelle genes only": 1104
       },
-      "species": 1503
+      "species": 3271
      },
      {
       "name": "Alveolata",
       "counts": {
        "NCBI RefSeq": 51,
-       "NCBI GenBank": 176,
+       "NCBI GenBank": 182,
        "TOGA2": 0,
-       "ENA TSA": 105,
+       "ENA TSA": 91,
        "EukProt": 3,
-       "rRNA records only": 982
+       "rRNA records only": 2399,
+       "organelle genes only": 438
       },
-      "species": 1317
+      "species": 3164
      },
      {
       "name": "Rhizaria",
@@ -221,11 +238,12 @@
        "NCBI RefSeq": 0,
        "NCBI GenBank": 15,
        "TOGA2": 0,
-       "ENA TSA": 25,
+       "ENA TSA": 20,
        "EukProt": 6,
-       "rRNA records only": 273
+       "rRNA records only": 679,
+       "organelle genes only": 24
       },
-      "species": 319
+      "species": 744
      },
      {
       "name": "Telonemia",
@@ -235,35 +253,10 @@
        "TOGA2": 0,
        "ENA TSA": 0,
        "EukProt": 1,
-       "rRNA records only": 4
+       "rRNA records only": 4,
+       "organelle genes only": 0
       },
       "species": 5
-     }
-    ]
-   },
-   {
-    "name": "Discoba",
-    "counts": {
-     "NCBI RefSeq": 22,
-     "NCBI GenBank": 115,
-     "TOGA2": 0,
-     "ENA TSA": 16,
-     "EukProt": 3,
-     "rRNA records only": 98
-    },
-    "species": 254,
-    "groups": [
-     {
-      "name": "Discoba",
-      "counts": {
-       "NCBI RefSeq": 22,
-       "NCBI GenBank": 115,
-       "TOGA2": 0,
-       "ENA TSA": 16,
-       "EukProt": 3,
-       "rRNA records only": 98
-      },
-      "species": 254
      }
     ]
    },
@@ -271,89 +264,83 @@
     "name": "Amoebozoa",
     "counts": {
      "NCBI RefSeq": 10,
-     "NCBI GenBank": 49,
+     "NCBI GenBank": 56,
      "TOGA2": 0,
-     "ENA TSA": 35,
+     "ENA TSA": 26,
      "EukProt": 0,
-     "rRNA records only": 127
+     "rRNA records only": 695,
+     "organelle genes only": 137
     },
-    "species": 221,
+    "species": 924,
     "groups": [
      {
       "name": "Amoebozoa",
       "counts": {
        "NCBI RefSeq": 10,
-       "NCBI GenBank": 49,
+       "NCBI GenBank": 56,
        "TOGA2": 0,
-       "ENA TSA": 35,
+       "ENA TSA": 26,
        "EukProt": 0,
-       "rRNA records only": 127
+       "rRNA records only": 695,
+       "organelle genes only": 137
       },
-      "species": 221
+      "species": 924
      }
     ]
    },
    {
-    "name": "incertae sedis",
+    "name": "Discoba",
     "counts": {
-     "NCBI RefSeq": 0,
-     "NCBI GenBank": 4,
+     "NCBI RefSeq": 22,
+     "NCBI GenBank": 114,
      "TOGA2": 0,
-     "ENA TSA": 0,
-     "EukProt": 0,
-     "rRNA records only": 152
+     "ENA TSA": 14,
+     "EukProt": 3,
+     "rRNA records only": 376,
+     "organelle genes only": 31
     },
-    "species": 156,
+    "species": 560,
     "groups": [
      {
-      "name": "other eukaryotes",
+      "name": "Discoba",
       "counts": {
-       "NCBI RefSeq": 0,
-       "NCBI GenBank": 4,
+       "NCBI RefSeq": 22,
+       "NCBI GenBank": 114,
        "TOGA2": 0,
-       "ENA TSA": 0,
-       "EukProt": 0,
-       "rRNA records only": 152
+       "ENA TSA": 14,
+       "EukProt": 3,
+       "rRNA records only": 376,
+       "organelle genes only": 31
       },
-      "species": 156
+      "species": 560
      }
     ]
    },
    {
-    "name": "Cryptista",
+    "name": "Metamonada",
     "counts": {
-     "NCBI RefSeq": 1,
-     "NCBI GenBank": 9,
+     "NCBI RefSeq": 4,
+     "NCBI GenBank": 25,
      "TOGA2": 0,
-     "ENA TSA": 17,
-     "EukProt": 1,
-     "rRNA records only": 66
+     "ENA TSA": 6,
+     "EukProt": 4,
+     "rRNA records only": 177,
+     "organelle genes only": 0
     },
-    "species": 94,
+    "species": 216,
     "groups": [
      {
-      "name": "Cryptophyceae",
+      "name": "Metamonada",
       "counts": {
-       "NCBI RefSeq": 1,
-       "NCBI GenBank": 9,
+       "NCBI RefSeq": 4,
+       "NCBI GenBank": 25,
        "TOGA2": 0,
-       "ENA TSA": 16,
-       "EukProt": 0,
-       "rRNA records only": 60
+       "ENA TSA": 6,
+       "EukProt": 4,
+       "rRNA records only": 177,
+       "organelle genes only": 0
       },
-      "species": 86
-     },
-     {
-      "name": "other Cryptista",
-      "counts": {
-       "NCBI RefSeq": 0,
-       "NCBI GenBank": 0,
-       "TOGA2": 0,
-       "ENA TSA": 1,
-       "EukProt": 1,
-       "rRNA records only": 6
-      },
-      "species": 8
+      "species": 216
      }
     ]
    },
@@ -361,25 +348,27 @@
     "name": "Haptista",
     "counts": {
      "NCBI RefSeq": 1,
-     "NCBI GenBank": 13,
+     "NCBI GenBank": 11,
      "TOGA2": 0,
-     "ENA TSA": 22,
+     "ENA TSA": 21,
      "EukProt": 1,
-     "rRNA records only": 49
+     "rRNA records only": 92,
+     "organelle genes only": 2
     },
-    "species": 86,
+    "species": 128,
     "groups": [
      {
       "name": "Haptophyta",
       "counts": {
        "NCBI RefSeq": 1,
-       "NCBI GenBank": 13,
+       "NCBI GenBank": 11,
        "TOGA2": 0,
-       "ENA TSA": 21,
+       "ENA TSA": 20,
        "EukProt": 0,
-       "rRNA records only": 34
+       "rRNA records only": 71,
+       "organelle genes only": 1
       },
-      "species": 69
+      "species": 104
      },
      {
       "name": "Centroplasthelida",
@@ -389,35 +378,51 @@
        "TOGA2": 0,
        "ENA TSA": 1,
        "EukProt": 1,
-       "rRNA records only": 15
+       "rRNA records only": 21,
+       "organelle genes only": 1
       },
-      "species": 17
+      "species": 24
      }
     ]
    },
    {
-    "name": "Metamonada",
+    "name": "Cryptista",
     "counts": {
-     "NCBI RefSeq": 4,
-     "NCBI GenBank": 23,
+     "NCBI RefSeq": 1,
+     "NCBI GenBank": 8,
      "TOGA2": 0,
-     "ENA TSA": 7,
-     "EukProt": 4,
-     "rRNA records only": 11
+     "ENA TSA": 17,
+     "EukProt": 1,
+     "rRNA records only": 67,
+     "organelle genes only": 6
     },
-    "species": 49,
+    "species": 100,
     "groups": [
      {
-      "name": "Metamonada",
+      "name": "Cryptophyceae",
       "counts": {
-       "NCBI RefSeq": 4,
-       "NCBI GenBank": 23,
+       "NCBI RefSeq": 1,
+       "NCBI GenBank": 8,
        "TOGA2": 0,
-       "ENA TSA": 7,
-       "EukProt": 4,
-       "rRNA records only": 11
+       "ENA TSA": 16,
+       "EukProt": 0,
+       "rRNA records only": 63,
+       "organelle genes only": 6
       },
-      "species": 49
+      "species": 94
+     },
+     {
+      "name": "other Cryptista",
+      "counts": {
+       "NCBI RefSeq": 0,
+       "NCBI GenBank": 0,
+       "TOGA2": 0,
+       "ENA TSA": 1,
+       "EukProt": 1,
+       "rRNA records only": 4,
+       "organelle genes only": 0
+      },
+      "species": 6
      }
     ]
    },
@@ -429,9 +434,10 @@
      "TOGA2": 0,
      "ENA TSA": 0,
      "EukProt": 3,
-     "rRNA records only": 8
+     "rRNA records only": 9,
+     "organelle genes only": 0
     },
-    "species": 11,
+    "species": 12,
     "groups": [
      {
       "name": "other eukaryotes",
@@ -441,9 +447,10 @@
        "TOGA2": 0,
        "ENA TSA": 0,
        "EukProt": 3,
-       "rRNA records only": 8
+       "rRNA records only": 9,
+       "organelle genes only": 0
       },
-      "species": 11
+      "species": 12
      }
     ]
    },
@@ -455,9 +462,10 @@
      "TOGA2": 0,
      "ENA TSA": 1,
      "EukProt": 3,
-     "rRNA records only": 5
+     "rRNA records only": 2,
+     "organelle genes only": 0
     },
-    "species": 11,
+    "species": 8,
     "groups": [
      {
       "name": "other eukaryotes",
@@ -467,9 +475,38 @@
        "TOGA2": 0,
        "ENA TSA": 1,
        "EukProt": 3,
-       "rRNA records only": 5
+       "rRNA records only": 2,
+       "organelle genes only": 0
       },
-      "species": 11
+      "species": 8
+     }
+    ]
+   },
+   {
+    "name": "incertae sedis",
+    "counts": {
+     "NCBI RefSeq": 0,
+     "NCBI GenBank": 3,
+     "TOGA2": 0,
+     "ENA TSA": 0,
+     "EukProt": 0,
+     "rRNA records only": 3,
+     "organelle genes only": 2
+    },
+    "species": 8,
+    "groups": [
+     {
+      "name": "other eukaryotes",
+      "counts": {
+       "NCBI RefSeq": 0,
+       "NCBI GenBank": 3,
+       "TOGA2": 0,
+       "ENA TSA": 0,
+       "EukProt": 0,
+       "rRNA records only": 3,
+       "organelle genes only": 2
+      },
+      "species": 8
      }
     ]
    },
@@ -481,9 +518,10 @@
      "TOGA2": 0,
      "ENA TSA": 1,
      "EukProt": 0,
-     "rRNA records only": 7
+     "rRNA records only": 6,
+     "organelle genes only": 0
     },
-    "species": 8,
+    "species": 7,
     "groups": [
      {
       "name": "other eukaryotes",
@@ -493,9 +531,10 @@
        "TOGA2": 0,
        "ENA TSA": 1,
        "EukProt": 0,
-       "rRNA records only": 7
+       "rRNA records only": 6,
+       "organelle genes only": 0
       },
-      "species": 8
+      "species": 7
      }
     ]
    },
@@ -507,7 +546,8 @@
      "TOGA2": 0,
      "ENA TSA": 0,
      "EukProt": 2,
-     "rRNA records only": 2
+     "rRNA records only": 2,
+     "organelle genes only": 0
     },
     "species": 4,
     "groups": [
@@ -519,7 +559,8 @@
        "TOGA2": 0,
        "ENA TSA": 0,
        "EukProt": 2,
-       "rRNA records only": 2
+       "rRNA records only": 2,
+       "organelle genes only": 0
       },
       "species": 4
      }
@@ -533,9 +574,10 @@
      "TOGA2": 0,
      "ENA TSA": 0,
      "EukProt": 1,
-     "rRNA records only": 1
+     "rRNA records only": 0,
+     "organelle genes only": 0
     },
-    "species": 2,
+    "species": 1,
     "groups": [
      {
       "name": "other eukaryotes",
@@ -545,9 +587,10 @@
        "TOGA2": 0,
        "ENA TSA": 0,
        "EukProt": 1,
-       "rRNA records only": 1
+       "rRNA records only": 0,
+       "organelle genes only": 0
       },
-      "species": 2
+      "species": 1
      }
     ]
    }
@@ -559,15 +602,15 @@
    "title": "BUSCO genes and Eukore's marker loci",
    "what": "the near-universal single-copy orthologs of BUSCO's eukaryota_odb12 and the classic phylogenetic markers BUSCO does not hold (RPB1, RPB2, EF-2, TEF1, β-tubulin, actin, HSP90, GAPDH, histone H3), each copy whole with its introns, its coding sequence and protein",
    "loci": 138,
-   "sequences": 4329328,
-   "species": 33524,
+   "sequences": 4114253,
+   "species": 30609,
    "confidence": {
-    "high": 2673662,
-    "unverified": 262800,
-    "medium": 1387895,
-    "low": 4971
+    "high": 2534876,
+    "unverified": 182161,
+    "medium": 1394317,
+    "low": 2899
    },
-   "unverified_alone": 130509,
+   "unverified_alone": 62802,
    "items_title": "BUSCOs by the share of species they are called in",
    "items_unit": "BUSCOs",
    "items": [
@@ -601,15 +644,15 @@
     },
     {
      "name": "70%-80%",
-     "sequences": 11
+     "sequences": 0
     },
     {
      "name": "80%-90%",
-     "sequences": 110
+     "sequences": 14
     },
     {
      "name": "90%-100%",
-     "sequences": 8
+     "sequences": 115
     }
    ]
   },
@@ -618,56 +661,56 @@
    "title": "Nuclear rDNA",
    "what": "18S spans and whole operons (18S, ITS1, 5.8S, ITS2, 28S, 5S) of the genomes, EUKARYOME's and ROD's long reads, with their 18S V1-V9",
    "loci": 6,
-   "sequences": 4657420,
-   "species": 38190,
+   "sequences": 5102572,
+   "species": 79581,
    "confidence": {
-    "high": 3764410,
-    "unverified": 328875,
-    "medium": 503605,
-    "low": 60530
+    "high": 3983877,
+    "unverified": 225115,
+    "medium": 809275,
+    "low": 84305
    },
    "items_title": "records holding each region",
    "items": [
     {
      "name": "18S",
-     "sequences": 4657420,
+     "sequences": 5102572,
      "species": null
     },
     {
      "name": "ITS1",
-     "sequences": 2390529,
+     "sequences": 2645832,
      "species": null
     },
     {
      "name": "5.8S",
-     "sequences": 2390529,
+     "sequences": 2645832,
      "species": null
     },
     {
      "name": "ITS2",
-     "sequences": 2370218,
+     "sequences": 2603609,
      "species": null
     },
     {
      "name": "28S",
-     "sequences": 2390529,
+     "sequences": 2645758,
      "species": null
     },
     {
      "name": "5S",
-     "sequences": 99251,
+     "sequences": 100680,
      "species": null
     },
     {
      "name": "whole units (18S to 28S)",
-     "sequences": 2390529,
+     "sequences": 2645832,
      "species": null
     }
    ],
    "items_unit": "records",
    "sources": {
-    "genome": 4427802,
-    "EUKARYOME": 160138,
+    "genome": 4479412,
+    "EUKARYOME": 553680,
     "ROD": 69480
    }
   },
@@ -676,55 +719,55 @@
    "title": "Mitochondrial genes",
    "what": "rRNA (12S, 16S, 5S) and COX1, COX3, CYTB, nad1, nad5, atp6, with their proteins by the organelle's code",
    "loci": 9,
-   "sequences": 92815,
+   "sequences": 640284,
    "species": null,
    "confidence": null,
    "items_title": "records and species per gene",
    "items": [
     {
      "name": "SSU rRNA (12S)",
-     "sequences": 11542,
-     "species": 11542
+     "sequences": 86334,
+     "species": 83264
     },
     {
      "name": "LSU rRNA (16S)",
-     "sequences": 11564,
-     "species": 11564
+     "sequences": 116243,
+     "species": 114525
     },
     {
      "name": "5S rRNA",
-     "sequences": 1305,
-     "species": 1305
+     "sequences": 1562,
+     "species": 1562
     },
     {
      "name": "COX1",
-     "sequences": 11478,
-     "species": 11478
+     "sequences": 247825,
+     "species": 243037
     },
     {
      "name": "COX3",
-     "sequences": 11407,
-     "species": 11407
+     "sequences": 27159,
+     "species": 27159
     },
     {
      "name": "CYTB",
-     "sequences": 11416,
-     "species": 11416
+     "sequences": 79688,
+     "species": 78167
     },
     {
      "name": "nad1",
-     "sequences": 11392,
-     "species": 11392
+     "sequences": 27163,
+     "species": 27163
     },
     {
      "name": "nad5",
-     "sequences": 11402,
-     "species": 11402
+     "sequences": 27367,
+     "species": 27367
     },
     {
      "name": "atp6",
-     "sequences": 11309,
-     "species": 11309
+     "sequences": 26943,
+     "species": 26943
     }
    ],
    "items_unit": "records"
@@ -734,55 +777,55 @@
    "title": "Plastid genes",
    "what": "rRNA (16S, 23S, 5S) and rbcL, matK, tufA, psbA, ycf1, the trnH-psbA spacer",
    "loci": 9,
-   "sequences": 28165,
+   "sequences": 124857,
    "species": null,
    "confidence": null,
    "items_title": "records and species per gene",
    "items": [
     {
      "name": "SSU rRNA (16S)",
-     "sequences": 3702,
-     "species": 3702
+     "sequences": 16239,
+     "species": 16077
     },
     {
      "name": "LSU rRNA (23S)",
-     "sequences": 3699,
-     "species": 3699
+     "sequences": 16058,
+     "species": 16058
     },
     {
      "name": "5S rRNA",
-     "sequences": 3641,
-     "species": 3641
+     "sequences": 15899,
+     "species": 15899
     },
     {
      "name": "rbcL",
-     "sequences": 3667,
-     "species": 3667
+     "sequences": 16047,
+     "species": 16047
     },
     {
      "name": "matK",
-     "sequences": 3128,
-     "species": 3128
+     "sequences": 15063,
+     "species": 15063
     },
     {
      "name": "tufA",
-     "sequences": 576,
-     "species": 576
+     "sequences": 1056,
+     "species": 1056
     },
     {
      "name": "psbA",
-     "sequences": 3662,
-     "species": 3662
+     "sequences": 16047,
+     "species": 16047
     },
     {
      "name": "ycf1",
-     "sequences": 2984,
-     "species": 2984
+     "sequences": 13908,
+     "species": 13908
     },
     {
      "name": "trnH-psbA",
-     "sequences": 3106,
-     "species": 3106
+     "sequences": 14540,
+     "species": 14540
     }
    ],
    "items_unit": "records"
@@ -790,76 +833,126 @@
  ],
  "benchmarks": {
   "completeness": {
-   "median": 0.969,
-   "at_least_90": 0.6525,
+   "median": 0.984,
+   "at_least_90": 0.7759,
    "by_supergroup": {
-    "Alveolata": 0.566,
-    "Amoebozoa": 0.775,
-    "Apusozoa and Breviatea": 0.403,
-    "Centroplasthelida": 0.806,
-    "Cryptophyceae": 0.4925,
-    "Discoba": 0.558,
-    "Fungi": 0.977,
-    "Glaucophyta": 0.434,
-    "Haptophyta": 0.612,
-    "Metamonada": 0.3685,
-    "Metazoa": 0.961,
-    "Rhizaria": 0.674,
-    "Rhodophyta": 0.682,
-    "Stramenopiles": 0.853,
-    "Vertebrata": 0.946,
+    "Alveolata": 0.667,
+    "Amoebozoa": 0.864,
+    "Apusozoa and Breviatea": 0.767,
+    "Centroplasthelida": 0.837,
+    "Cryptophyceae": 0.736,
+    "Discoba": 0.628,
+    "Fungi": 0.992,
+    "Glaucophyta": 0.876,
+    "Haptophyta": 0.767,
+    "Metamonada": 0.4535,
+    "Metazoa": 0.984,
+    "Rhizaria": 0.767,
+    "Rhodophyta": 0.783,
+    "Stramenopiles": 0.915,
+    "Vertebrata": 0.969,
     "Viridiplantae": 0.992,
-    "other Cryptista": 0.76,
-    "other Opisthokonta": 0.88,
-    "other eukaryotes": 0.554
+    "other Cryptista": 0.775,
+    "other Opisthokonta": 0.915,
+    "other eukaryotes": 0.574
    }
   },
   "resolution": {
    "BUSCO (all)": {
     "congeners": {
-     "copies": 2549280,
-     "under_99": 0.6201,
-     "under_97": 0.3978
+     "copies": 2440007,
+     "under_99": 0.6242,
+     "under_97": 0.4046
     },
-    "copies": 4041655,
-    "under_99": 0.7191,
-    "under_97": 0.5305
+    "copies": 3842912,
+    "under_99": 0.7213,
+    "under_97": 0.5342
    },
    "18S": {
     "congeners": {
-     "copies": 18777,
-     "under_99": 0.2645,
-     "under_97": 0.1344
+     "copies": 45999,
+     "under_99": 0.3058,
+     "under_97": 0.1327
     },
-    "copies": 32163,
-    "under_99": 0.4012,
-    "under_97": 0.2458
+    "copies": 73479,
+    "under_99": 0.3975,
+    "under_97": 0.2001
+   },
+   "ITS": {
+    "congeners": {
+     "copies": 14996,
+     "under_99": 0.7764,
+     "under_97": 0.6022
+    },
+    "copies": 33086,
+    "under_99": 0.7522,
+    "under_97": 0.6557
+   },
+   "28S D1-D2": {
+    "congeners": {
+     "copies": 19030,
+     "under_99": 0.4339,
+     "under_97": 0.1975
+    },
+    "copies": 32384,
+    "under_99": 0.5941,
+    "under_97": 0.3712
+   },
+   "COX1": {
+    "congeners": {
+     "copies": 171050,
+     "under_99": 0.8457,
+     "under_97": 0.705
+    },
+    "copies": 235698,
+    "under_99": 0.8668,
+    "under_97": 0.7549
+   },
+   "rbcL": {
+    "congeners": {
+     "copies": 13089,
+     "under_99": 0.0609,
+     "under_97": 0.0228
+    },
+    "copies": 15946,
+    "under_99": 0.1368,
+    "under_97": 0.0564
+   },
+   "matK": {
+    "congeners": {
+     "copies": 12509,
+     "under_99": 0.1212,
+     "under_97": 0.0265
+    },
+    "copies": 14994,
+    "under_99": 0.2096,
+    "under_97": 0.0739
    }
   },
   "rrna": {
-   "records": 4657420,
-   "operons": 2390529,
-   "lsu_complete_of_operons": 0.9512
+   "records": 5102572,
+   "operons": 2645832,
+   "lsu_complete_of_operons": 0.9506
   },
   "primers": {
-   "12S_V5": 0.28,
-   "16S_Palumbi": 0.631,
-   "COI_Folmer": 0.204,
-   "COI_Leray": 0.741,
-   "ITS1F_ITS4": 0.467,
-   "ITS3_ITS4": 0.723,
-   "ITS86F_ITS4": 0.502,
-   "LR0R_LR5": 0.769,
-   "MiFish-U": 0.228,
-   "NL1_NL4": 0.597,
-   "NS1_NS4": 0.497,
-   "V4_TAReuk": 0.63,
-   "V9_1380F_1510R": 0.919,
-   "V9_1391F_EukB": 0.853,
-   "gITS7_ITS4": 0.516,
-   "matK_KIM": 0.307,
-   "psbA-trnH": 0.881,
-   "rbcLa": 0.823
+   "12S_V5": 0.239,
+   "16S_Palumbi": 0.277,
+   "COI_Folmer": 0.034,
+   "COI_Leray": 0.252,
+   "ITS1F_ITS4": 0.22,
+   "ITS3_ITS4": 0.345,
+   "ITS86F_ITS4": 0.23,
+   "LR0R_LR5": 0.362,
+   "MiFish-U": 0.173,
+   "NL1_NL4": 0.276,
+   "NS1_NS4": 0.348,
+   "V4_TAReuk": 0.748,
+   "V9_1380F_1510R": 0.523,
+   "V9_1391F_EukB": 0.48,
+   "gITS7_ITS4": 0.236,
+   "matK_KIM": 0.354,
+   "psbA-trnH": 0.913,
+   "rbcLa": 0.912
   }
  },
  "ranks": [

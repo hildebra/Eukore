@@ -119,7 +119,8 @@ class RunReport(unittest.TestCase):
         run_report.report_package(rep, pkg)
         text = rep.text("t")
         for want in ("1 benchmarks left out: reads", "Discoba 0.41", "the held-out calls concordant 0.7",
-                     "the held-out calls called 0.8", "18S 0.30", "Rhizaria (10 of 100 with a genome)",
+                     "the held-out calls called 0.8", "18S 0.30",
+                     "Rhizaria (10 of 100 with a genome; 90 of rRNA records alone)",
                      "1 supergroups with over 10% of their BUSCO copies low or unverified: Discoba 33.3%", "| own_species | 50 |",
                      "1 genomes with 20% or more of their BUSCOs duplicated", "| Discoba | 1 | 1 | 100.0% |"):
             self.assertIn(want, text)
@@ -127,6 +128,35 @@ class RunReport(unittest.TestCase):
         findings = text.split("## Findings")[1].split("\n## ")[0]
         self.assertLess(findings.index("**high**"), findings.index("**medium**"))
         self.assertLess(findings.index("**medium**"), findings.index("**low**"))
+
+    def test_a_package_with_species_of_organelle_genes_alone(self):
+        # format 7 (since 2026-11-17): most species are known by organelle genes alone, which made the report say
+        # that four references named none of the species and that the supergroups were `mostly of rRNA alone`; a
+        # barcode gap of a marker one species holds led its finding
+        pkg = os.path.join(self.tmp.name, "Eukore_7")
+        bench = os.path.join(pkg, "benchmarks")
+        write(os.path.join(bench, "summary.json"), json.dumps(dict(
+            species=10, busco_loci=100, barcode_gap={"matK": {"resolved": 0.0, "species_markers": 1},
+                                                     "18S": {"resolved": 0.27, "species_markers": 96}})))
+        tsv(os.path.join(bench, "composition.tsv"),
+            ("supergroup", "species", "with_genome", "rrna_only", "complete_median", "complete_90", "with_rrna",
+             "with_operon", "with_organelle"),
+            [(g, 1000, 60, 120, "0.98", "0.8", 170, 40, 960) for g in ("Metazoa", "all")])
+        write(os.path.join(pkg, "manifest.json"), json.dumps(dict(
+            inputs=dict(references={"PR2": {"version": "5.1.1", "species": 40891}}),
+            counts=dict(species=60, species_rrna_only=120, species_organelle_only=820,
+                        labels={"pr2": {"species": 110, "genus": 300, "-": 590},
+                                "silva": {"-": 1000}}))))
+        rep = run_report.Report()
+        run_report.report_package(rep, pkg)
+        run_report.report_inputs(rep, pkg)
+        text = rep.text("t")
+        self.assertIn("SILVA names none of the species", text)
+        self.assertNotIn("PR2 names none", text)  # 590 unnamed of its 1,000, over the 180 with a genome or rRNA
+        self.assertIn("Metazoa (60 of 1000 with a genome; 120 of rRNA records alone, 820 of organelle genes alone)",
+                      text)
+        self.assertIn("18S 0.27", text)
+        self.assertNotIn("matK 0.00", text)
 
     def test_no_package_benchmarks(self):
         rep = run_report.Report()
