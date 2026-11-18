@@ -10,6 +10,7 @@
 #   bash tools/eukore.sh bench_downloads  # benchmarks/' downloads into BENCH (a download node; AFTER=<final job>)
 #   bash tools/eukore.sh benchmark   # benchmarks/ on the finished package: the comparisons, the read benchmark and
 #   AFTER=<bench_downloads job> bash tools/eukore.sh benchmark   # the figures (a compute node), after the downloads
+#   bash tools/eukore.sh bundle      # the benchmark run in one tar.gz (OUT/Eukore_<V>_benchmarks_evaluation.tar.gz: `benchmark` makes it too)
 #
 # The comparisons with other references, the read benchmark and the figures are not the build's (since
 # 2026-11-12; until then the `compare` step and the final job's --read_compare): benchmarks/README.md runs them on
@@ -34,7 +35,7 @@
 set -Eeuo pipefail
 trap 'rc=$?; echo "line $LINENO: \"$BASH_COMMAND\" exited $rc" >&2' ERR
 
-STEP=${1:?give fetch, build, final, qc, bench_downloads or benchmark}
+STEP=${1:?give fetch, build, final, qc, bench_downloads, benchmark or bundle}
 # sbatch runs a copy of this script from its spool folder: a job gets the script's own path from the submitting call
 if [[ -n ${SLURM_JOB_ID:-} && -n ${EUKORE_SH:-} ]]; then SELF=$EUKORE_SH; else SELF=$(readlink -f "$0"); fi
 CONF=${EUKORE_CONF:-$(dirname "$(dirname "$SELF")")/local/eukore.conf}
@@ -126,6 +127,26 @@ need_bench() {  # the settings' BENCH: the benchmarks' steps need it
         echo "$CONF: BENCH, the benchmarks' folder (the other references, kept between builds), is not set" >&2
         exit 1
     fi
+}
+
+bench_bundle() {  # the benchmark run's evaluation bundle (since 2026-11-18): OUT/Eukore_<version>_benchmarks_evaluation.tar.gz
+    # the results' tables and figures, what attracts the background reads, the benchmark job's own logs and the last
+    # bench_downloads job's: a file to copy into local/ of the checkout to have the run looked at. Never fails the job.
+    local logs=() newest
+    if [[ -n $LOGS ]]; then
+        [[ -z ${SLURM_JOB_ID:-} ]] || logs+=("$LOGS/benchmark.$SLURM_JOB_ID.otxt" "$LOGS/benchmark.$SLURM_JOB_ID.etxt")
+        local downloads=()
+        shopt -s nullglob
+        downloads=("$LOGS"/bench_downloads.*.otxt)
+        shopt -u nullglob
+        if (( ${#downloads[@]} )); then
+            newest=${downloads[${#downloads[@]}-1]}
+            logs+=("$newest" "${newest%.otxt}.etxt")
+        fi
+    fi
+    local IFS=:
+    PYTHONPATH=$PDIR/benchmarks${PYTHONPATH:+:$PYTHONPATH} python3 -m eukore_bench.bundle "$PACKAGE" "$BENCH_RESULTS" \
+        --bench "$BENCH" --logs "${logs[*]-}" || echo "no benchmark bundle (eukore_bench.bundle failed)" >&2
 }
 
 need_local_tmp() {  # the node's local disk: the process and the final job need it (the shared file system's I/O)
@@ -284,9 +305,28 @@ _benchmark)
     else
         echo "no $OUT/release/data (the build's release step): the website's benchmarks not written" >&2
     fi
+    # the run in one file to look at elsewhere (since 2026-11-18)
+    bench_bundle
+    ;;
+bundle)  # the benchmark run's evaluation bundle alone, from the results already in BENCH_RESULTS (since 2026-11-18)
+    need_bench
+    if [[ ! -d $BENCH_RESULTS ]]; then
+        echo "no benchmark results at $BENCH_RESULTS: bash $SELF benchmark first" >&2
+        exit 1
+    fi
+    [[ -z $LOGS ]] || mkdir -p "$LOGS"
+    after=${AFTER:+afterany:$AFTER}
+    jid=$(submit Eukore-bundle ${SBATCH_BENCH[@]+"${SBATCH_BENCH[@]}"} \
+        ${after:+--dependency=$after --kill-on-invalid-dep=yes} -- _bundle)
+    echo "bundle: job $jid, into $OUT/$(basename "$BENCH_RESULTS")_evaluation.tar.gz"
+    ;;
+_bundle)
+    need_bench
+    activate
+    bench_bundle
     ;;
 *)
-    echo "unknown step: $STEP (fetch, build, final, qc, bench_downloads or benchmark)" >&2
+    echo "unknown step: $STEP (fetch, build, final, qc, bench_downloads, benchmark or bundle)" >&2
     exit 1
     ;;
 esac

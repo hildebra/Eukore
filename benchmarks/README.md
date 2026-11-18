@@ -50,11 +50,23 @@ alignments (`WORK/align`), SILVA's and UNITE's files (`SOURCES/labels`). `benchm
 2026-11-17): Figure 1 and the supplementary ones (`RESULTS/figures`, PNG too where `FIGURE_OPTS` asks another
 format), the overview with the package's counts (`docs/figures/overview.py`: `overview.png`, `overview_slide.png`
 into `RESULTS/figures`; the website's Home shows copies in `website/images/`), and the website's Benchmarks page
-(`eukore_bench.site` into `OUT/release/data`, where the build wrote its release). `AFTER=<final job>` makes
+(`eukore_bench.site` into `OUT/release/data`, where the build wrote its release), and the run in one file to look at
+elsewhere (`eukore_bench.bundle`, since 2026-11-18: `OUT/Eukore_<VERSION>_benchmarks_evaluation.tar.gz`, tens of MB: the
+results' tables that the step wrote, the figures, the package's rows of the records that attract the background reads,
+the logs; `bash tools/eukore.sh bundle` makes it alone from the results already there). `AFTER=<final job>` makes
 `bench_downloads` wait for the build; `benchmark` refuses a
 `BENCH` no downloads job filled unless it waits for one. Options: `BENCH_DOWNLOADS_OPTS`, `BENCH_OPTS`,
 `FIGURE_OPTS`; each job's partition and size: `SBATCH_BENCH_DOWNLOADS` (default `SBATCH_FETCH`'s) and `SBATCH_BENCH`
 (default `SBATCH_PROCESS`'s).
+
+To repeat the read benchmark alone (since 2026-11-18; the tree and the databases took most of the 2026-11-17 build's
+four hours), set `BENCH_DOWNLOADS_OPTS=(--only tests)` and `BENCH_OPTS=(--only reads)` in `tools/eukore.conf` (the
+test genomes are chosen again; the other steps of `compare` are `compare, resource, databases, checks, thresholds,
+history, tree`), then:
+```bash
+bash tools/eukore.sh bench_downloads      # AFTER=<id> where a job is to wait for
+AFTER=<its job id> bash tools/eukore.sh benchmark   # the results already in RESULTS are kept; figures redrawn
+```
 
 By hand on a SLURM cluster, for example:
 ```bash
@@ -81,7 +93,7 @@ folder's conda directories, and nothing needs activating: the scripts put `BENCH
 | `downloads/eukdetect2/` | EukDetect2's database v1.1: `eukdb.fasta` and `busco_taxid_genome_link.txt` alone, MD5s checked. The rest of its 7 GB is bowtie2 indexes, which the comparison does not use | 2 GB | Zenodo record 23479662 |
 | `downloads/eukaryota_odb12/` | BUSCO's dataset, for the tree's profiles (`hmms/`): the build's own linked (`--odb SOURCES/eukaryota_odb12`: the package's version), else BUSCO's newest downloaded | 60 MB; nothing where linked | BUSCO's server |
 | `read_background/` | The read benchmark's 7 bacteria, an archaeon and human chromosome 21 ([`read_background.tsv`](read_background.tsv)) | 40 MB | NCBI |
-| `read_genomes/` | The read benchmark's test genomes (`tests.tsv`): up to `--read_genomes` (default 3) per supergroup, those with the most congeners in the package first. Linked from `--genomes` (the build's folder) where they are there, else downloaded | Depends on the genomes chosen (a vertebrate's is ~1 GB); nothing where linked | NCBI |
+| `read_genomes/` | The read benchmark's test genomes (`tests.tsv`): up to `--read_genomes` (default 3) per supergroup, those with the most congeners in the package first, of the genome and draft tiers only (a poor or contaminated genome has no copy in the package; since 2026-11-18). Linked from `--genomes` (the build's folder) where they are there, else downloaded | Depends on the genomes chosen (a vertebrate's is ~1 GB); nothing where linked | NCBI |
 | `compare/` | The other references made comparable (`eukore_bench/references.py`): `<name>.fna.gz` and `<name>_taxids.tsv` (PR2, MetaPhlAn 4's eukaryote markers, SILVA's eukaryote 18S as DNA, UNITE's ITS: each record's species where NCBI names it, else its genus), and `references.tsv` listing every reference with its FASTA and record-to-taxid table. EukDetect2's pair is used as it is | Smaller than the downloads | |
 
 `--only taxdump,pr2,silva,unite,metaphlan,eukdetect2,odb,background,tests,convert` runs some of the steps. Every
@@ -98,7 +110,12 @@ reference of `compare/references.tsv` is compared as a collection and in the rea
 - **`breadth_ranks.tsv`, `content.tsv`, `panels.tsv`**: the package as a resource (`eukore_bench/resource.py`; below).
 - **`databases.tsv`, `upset.tsv`, `novel.tsv`, `agreement.tsv`, `agreement_records.tsv`**: the package beside the
   other databases (`eukore_bench/databases.py`; below).
-- **`reads.tsv`, `detection.tsv`**: the read benchmark (`eukore_bench/reads.py`; below).
+- **`reads.tsv`, `detection.tsv`, `background_hits.tsv`**: the read benchmark (`eukore_bench/reads.py`; below).
+  `background_hits.tsv` (since 2026-11-18) names the records that attract the background's reads: per background
+  genome and reference its 50 records with most reads placed `in` (their best hit), what each is (`busco:<locus>`,
+  `rrna:<kind>`, or `-` for another reference's) and the reads' mean identity.
+- **`missing.tsv`** (since 2026-11-18, with `upset.tsv`): the species each other database holds that Eukore holds no
+  record of, named (`overlap.tsv`'s `database_only`, which counts them).
 - **`summary.json`, `summary.md`**: the package's headline figures with these added.
 
 ### The package as a resource
@@ -297,6 +314,15 @@ ancestor. No profiler is involved: the benchmark measures the reference. Each re
 - `held_out`: its species left out;
 - `novel`: its whole order left out.
 
+The background is scored in two parts (since 2026-11-18). The bacterial and archaeal genomes' reads are wrong
+wherever a reference places them: `summary.json` gives them per million (`background_per_million`, and
+`background_to_a_phylum_per_million` for those placed in a eukaryote phylum). Human chromosome 21's reads are the
+host's, right on its own lineage where the package holds it: they are reported apart (`host`: the share placed, right
+at the species and the phylum, and wrong at a phylum per million), not as background placed. (The 2026-11-17 build's
+Eukore showed 8,244 background reads per million, a figure that counted human reads placed right, and 1,841 per
+million placed in a wrong phylum, against EukDetect2's 6: bacterial reads and the host's were not told apart.) A
+novel mode is told at class and phylum, where its reads can be right. The log gives the minutes each step took, and `background_hits.tsv` says which records the wrong reads hit.
+
 Detection (`detection.tsv`): each test genome is a sample of 1,000, 5,000 and 20,000 of its reads, with as many
 bacterial reads. A taxon is detected with 3 reads or more and 1% or more of the reads placed at its rank. The F1 per
 reference is computed for the right species (in) and genus (held out). Human chromosome 21 in the background stands
@@ -324,7 +350,7 @@ PACKAGE/benchmarks --out DIR`), the figures that need no other reference are com
 |---|---|
 | `eukore-bench-prep.sh`, `eukore-benchmark.sh`, `eukore-figures.sh` | The three steps |
 | `bench_env.sh`, `env.yaml` | The environment, made at `BENCH/env` |
-| `eukore_bench/` | The Python of the three steps: `prep.py`, `compare.py`, `resource.py`, `databases.py`, `checks.py`, `tree.py`, `guidance.py`, `history.py`, `reads.py`, `references.py`, `figures.py`, `site.py` (the results for the website). It reads packages with the database's own code (`eukore/` of this checkout) |
+| `eukore_bench/` | The Python of the three steps: `prep.py`, `compare.py`, `resource.py`, `databases.py`, `checks.py`, `tree.py`, `guidance.py`, `history.py`, `reads.py`, `references.py`, `figures.py`, `site.py` (the results for the website), `bundle.py` (the run in one tar.gz). It reads packages with the database's own code (`eukore/` of this checkout) |
 | `read_background.tsv` | The read benchmark's background genomes |
 | `panels.tsv` | The named lists of organisms `panels.tsv` of the results looks up |
 | `databases.tsv` | What each database compared is, in words: the comparison table's text |

@@ -1324,6 +1324,16 @@ class ChainTest(unittest.TestCase):
                 got, calls = run(step, AFTER="77", TEST_BENCH="")
                 self.assertEqual((got.returncode, calls), (1, []))
                 self.assertIn("BENCH, the benchmarks' folder", got.stderr)
+            # the run's bundle alone (since 2026-11-18): from results that are there, a job of the benchmarks' partition
+            got, calls = run("bundle")
+            self.assertEqual((got.returncode, calls), (1, []))
+            self.assertIn("no benchmark results", got.stderr)
+            os.makedirs(results)
+            got, calls = run("bundle", AFTER="101")
+            self.assertEqual((got.returncode, len(calls)), (0, 1), got.stderr)
+            for said in ("-J Eukore-bundle", "--mem=200G", "--dependency=afterany:101", f"{script} _bundle"):
+                self.assertIn(said, calls[0])
+            os.rmdir(results)
             # inside the jobs: the build's own taxonomy, BUSCO dataset and alignments; the results beside the package
             job = dict(SLURM_JOB_ID="101", SLURM_CPUS_PER_TASK="32", SLURM_LOCAL_SCRATCH="/ssd", EUKORE_SH=script)
             got, calls = run("_bench_downloads", **job)
@@ -1340,20 +1350,22 @@ class ChainTest(unittest.TestCase):
             # build wrote its release
             figures = f"python3 -m eukore_bench.figures {package} --benchmarks {results}"
             overview = f"python3 {pdir}/docs/figures/overview.py --package {package} --out {results}/figures --no_marks"
+            # the run in one file (since 2026-11-18; no logs named here: the settings have no LOGS folder)
+            bundle = f"python3 -m eukore_bench.bundle {package} {results} --bench {bench} --logs  BENCH_ENV=active"
             self.assertEqual(calls, [
                 f"python3 -m eukore_bench.compare --package {package} --bench {bench} --out {results} -t 32 "
                 f"--taxdump {src}/taxdump.tar.gz --align_cache {work}/align --tmp {tmp}/Eukore/bench --no_tree "
                 "BENCH_ENV=active",
-                f"{figures} BENCH_ENV=active", f"{overview} BENCH_ENV=active", f"{overview} --slide BENCH_ENV=active"],
-                got.stderr)
+                f"{figures} BENCH_ENV=active", f"{overview} BENCH_ENV=active", f"{overview} --slide BENCH_ENV=active",
+                bundle], got.stderr)
             self.assertIn("the website's benchmarks not written", got.stderr)
             os.makedirs(os.path.join(out, "release", "data"))
             got, calls = run("_benchmark", TEST_FIGURES="--format pdf", **dict(job, SLURM_LOCAL_SCRATCH=tmp))
             self.assertEqual(calls[1:], [  # PNG too for the website
                 f"{figures} --format pdf BENCH_ENV=active", f"{figures} BENCH_ENV=active",
                 f"{overview} BENCH_ENV=active", f"{overview} --slide BENCH_ENV=active",
-                f"python3 -m eukore_bench.site {results} --release {out}/release --package {package} BENCH_ENV=active"],
-                got.stderr)
+                f"python3 -m eukore_bench.site {results} --release {out}/release --package {package} BENCH_ENV=active",
+                bundle], got.stderr)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ import os
 import random
 import shutil
 import subprocess
+import time
 
 from eukore import labels, package, qc, rrna, util
 from eukore import odb as odb_mod
@@ -52,6 +53,8 @@ COVERAGE = 3           # marker reads: each locus' bases read this many times
 GENOME_READS = 20_000  # reads of a test genome from anywhere in it
 BACKGROUND_READS = 20_000
 PER_GROUP = 3          # test genomes per supergroup (prep.py --read_genomes)
+TEST_TIERS = ("genome", "draft")  # the tiers (tiers.py) a test genome is of: the package holds their copies
+MIN_MARKER_READS = 100            # under this many reads of its markers a test genome is warned of
 MIN_ID = 0.90
 MIN_COVER = 0.8
 NEAR = 0.01
@@ -64,6 +67,12 @@ REFERENCES = ("Eukore", "Eukore exons", "Eukore 18S")
 COLUMNS = ("test", "kind", "species_taxid", "supergroup", "congeners", "reference", "mode", "reads", "n",
            "assigned") + tuple(f"{r}_{x}" for r in RANKS for x in ("correct", "wrong")) + (
                "censored",)  # since 2026-11-10 (the last column): of the reads not assigned, those censored()
+# background_hits.tsv (since 2026-11-18): the records that attract background reads placed `in`: per background genome
+# and reference its BACKGROUND_TOP records with most reads (their best hit), what record it is (a BUSCO locus, an rRNA
+# record's kind) and the reads' mean identity. The 2026-11-17 build's Eukore placed 331 of 160,000 bacterial and
+# archaeal reads in a eukaryote phylum (EukDetect2: 1) with nothing to say which records took them.
+HIT_COLUMNS = ("test", "source", "reference", "record", "taxid", "part", "reads", "identity")
+BACKGROUND_TOP = 50
 # detection (detection.tsv): each test genome a sample, its reads from anywhere in it (the first `depth`) and as many
 # background reads (depth / their genomes of each); a taxon is detected with MIN_READS reads placed to it at the rank
 # scored (the species with it in the reference, `in`; its genus with it held out) and MIN_SHARE of the sample's reads
@@ -86,14 +95,59 @@ def genus_of(ncbi, taxid):
     return next((t for t in ncbi.ancestors(ncbi.merged.get(taxid, taxid)) if ncbi.rank.get(t) == "genus"), None)
 
 
-def choose(ncbi, reps, per_group=PER_GROUP, exists=os.path.isfile):
+def source_of(row):
+    """What a reads.tsv row's reads are: `eukaryote` (a test genome's), `host` (a background genome of a eukaryote, human
+    chromosome 21: its reads are right on its own lineage) or `background` (a bacterium's or archaeon's: wrong
+    wherever placed). Until 2026-11-18 the summary and the figure counted the host's reads placed right (where the
+    package holds the host) as background placed: the 2026-11-17 build's Eukore 8,244 per million were mostly the
+    host's own."""
+    if row["kind"] == "background" and row.get("species_taxid", "-") not in ("-", ""):
+        return "host"
+    return row["kind"]
+
+
+def part_of(record, parts, reference):
+    """A record's part of a reference, for the table of what attracts background reads: an rRNA record's `rrna:<kind>`
+    (parts), a Eukore BUSCO copy's `busco:<locus>` (named accession|locus), or `-` (another reference's record)."""
+    if record in parts:
+        return parts[record]
+    if reference in REFERENCES and "|" in record:
+        return "busco:" + record.rpartition("|")[2]
+    return "-"
+
+
+def best_target(hits, taxa):
+    """A read's hits [(identity, target)] -> (identity, target) of its best hit among the reference's records (the
+    first by name of those tied), or None."""
+    held = [(i, t) for i, t in hits if t in taxa]
+    if not held:
+        return None
+    best = max(i for i, _t in held)
+    return best, min(t for i, t in held if i == best)
+
+
+def testable(row):
+    """Whether a genomes.tsv row can be a test genome (since 2026-11-18): a genome the package holds the copies of, of
+    tier genome or draft (a package from before the tiers: with a BUSCO locus called). The 2026-11-17 build's three
+    test genomes without marker reads were of the dropped tiers (no BUSCO copy in the package: a contaminated
+    assembly NCBI excludes, an assembly derived from a metagenome, a poor one), and a transcriptome's reads are no
+    genome's."""
+    tier = row.get("tier")
+    if tier and tier != "-":
+        return tier in TEST_TIERS
+    loci = row.get("loci") or "0"
+    return loci.isdigit() and int(loci) > 0
+
+
+def choose(ncbi, reps, per_group=PER_GROUP, exists=os.path.isfile, usable=None):
     """The test genomes: reps {accession: (species taxid, genome path)} -> [accession], up to per_group per supergroup,
-    those whose genus holds the most other species first, then by accession."""
+    those whose genus holds the most other species first, then by accession. usable: the accessions that may be
+    chosen (testable()'s; default all)."""
     genus = {a: genus_of(ncbi, sp) for a, (sp, _p) in reps.items()}
     size = collections.Counter(g for g in genus.values() if g)
     by_group = collections.defaultdict(list)
     for a, (sp, path) in reps.items():
-        if path and exists(path):
+        if path and exists(path) and (usable is None or a in usable):
             by_group[labels.group(ncbi, sp)].append(a)
     out = []
     for group in sorted(by_group):
@@ -111,10 +165,11 @@ def compared(compare):
     return [tuple(compare)] if isinstance(compare[0], str) else [tuple(c) for c in compare]
 
 
-def references(folder, out, ncbi, compare=None, inside=None):
+def references(folder, out, ncbi, compare=None, inside=None, parts=None):
     """The references' FASTAs written into out -> {name: (path, {record: taxid})}. compare: other references, each
     (name, FASTA, table of record<TAB>taxid) (compared); inside: a test of a taxid (a trial package's clades) the
-    compared references are cut to."""
+    compared references are cut to; parts: a dict that takes each rRNA record's kind ({record: "rrna:" + kind}: the
+    other Eukore records are BUSCO copies, named accession|locus)."""
     os.makedirs(out, exist_ok=True)
     species_of = {r["accession"]: int(r["species_taxid"])
                   for r in package.read_table(folder, "genomes.tsv") if r["representative"] == "t"}
@@ -153,6 +208,8 @@ def references(folder, out, ncbi, compare=None, inside=None):
                     continue
                 typed.add((r["species_taxid"], r["type"]))
             taxid = int(r["taxid"])
+            if parts is not None:
+                parts[name] = "rrna:" + r["kind"]
             for ref, fh in (("Eukore", whole), ("Eukore exons", cds)):
                 fh.write(f">{name}\n{seq}\n")
                 taxa[ref][name] = taxid
@@ -418,17 +475,18 @@ def detection_summary(rows):
 # --- all of it -----------------------------------------------------------------------------------------------------
 
 def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=None, background=(), inside=None,
-        log=print, seed=1, n_genome=GENOME_READS, n_background=BACKGROUND_READS, detections=None):
+        log=print, seed=1, n_genome=GENOME_READS, n_background=BACKGROUND_READS, detections=None, hits_out=None):
     """The read benchmark of the package in folder (tests: accessions of genomes in genomes_folder; background:
     [(name, FASTA)]) in work (deleted after) -> reads.tsv's rows; detections: a list given takes detection.tsv's rows
-    (each test genome a sample at DEPTHS, detect)."""
+    (each test genome a sample at DEPTHS, detect); hits_out: a list given takes background_hits.tsv's rows (HIT_COLUMNS)."""
     os.makedirs(work, exist_ok=True)
     rng = random.Random(seed)
     genomes = {r["accession"]: r for r in package.read_table(folder, "genomes.tsv") if r["representative"] == "t"}
     species = {int(r["taxid"]): dict(r, supergroup=r.get("group") or r.get("supergroup", "-"))  # format 5: its group
                for r in package.read_table(folder, "species.tsv")}
     genus_size = collections.Counter(genus_of(ncbi, int(g["species_taxid"])) for g in genomes.values())
-    refs = references(folder, os.path.join(work, "refs"), ncbi, compare, inside)
+    parts = {}
+    refs = references(folder, os.path.join(work, "refs"), ncbi, compare, inside, parts)
     reads_fa = os.path.join(work, "reads.fa")
     meta = {}  # test -> (kind, species taxid)
     counts = collections.Counter()  # (test, reads) -> reads simulated
@@ -442,6 +500,9 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
                 counts[(acc, kind)] = len(reads)
                 fh.writelines(f">{acc}|{kind}|{i}\n{s}\n" for i, s in enumerate(reads))
             log(f"  reads of {acc}: {len(marker):,} from its markers, {len(anywhere):,} from anywhere")
+            if len(marker) < MIN_MARKER_READS:  # since 2026-11-18: three of the 2026-11-17 build's 48 had none
+                log(f"WARNING: test genome {acc} has {len(marker):,} marker reads (its copies not in the package?): "
+                    f"it tests the references' off-target reads alone")
         for name, path, *taxid in background:  # (name, FASTA[, NCBI taxid: a eukaryote's, since 2026-11-09])
             _m, anywhere = simulate(path, [], rng, n_background)
             meta[name] = ("background", int(taxid[0]) if taxid and taxid[0] else 0)
@@ -454,6 +515,7 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
     for ref, (fasta, taxa) in refs.items():
         if not taxa:
             continue
+        began = time.monotonic()
         paf, err = os.path.join(work, "hits.paf"), os.path.join(work, "minimap2.err")
         # --split-prefix: a reference over minimap2's index part (-I, 8 Gb: the full package's) is indexed in parts,
         # and a read's hits of all parts merged, consecutive (paf_groups; until 2026-11-06 a read was counted once a
@@ -468,9 +530,16 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
         os.remove(err)
         tally = collections.defaultdict(collections.Counter)
         placed = {mode: collections.defaultdict(dict) for mode in MODES}  # genome reads: {source: {index: taxon}}
+        attracted = collections.defaultdict(lambda: [0, 0.0])  # (test, record) -> [background reads, identities]
         for read, hits, targets, secondary in paf_reads(paf):
             test, kind, i = read.rsplit("|", 2)
             what, sp = meta[test]
+            if what == "background":  # since 2026-11-18: the record each background read placed `in` is best at
+                best = best_target(hits, taxa) if assign(hits, taxa, ncbi, cache=cache) is not None else None
+                if best:
+                    got = attracted[(test, best[1])]
+                    got[0] += 1
+                    got[1] += best[0]
             for mode in MODES:
                 clade = None
                 if mode == "novel" and what == "eukaryote":
@@ -529,7 +598,21 @@ def run(folder, ncbi, genomes_folder, tests, minimap2, threads, work, compare=No
                             rank=DETECT_RANK[mode], depth=depth,
                             in_reference="t" if in_reference(sp, mode, held, ncbi, cache) else "f",
                             true_reads=right, detected="t" if found else "f", false_taxa=wrong))
-        log(f"  reads aligned to {ref} ({len(taxa):,} records)")
+        if attracted:
+            by_part, per_test = collections.Counter(), collections.defaultdict(list)
+            for (test, record), (n_reads, identities) in attracted.items():
+                part = part_of(record, parts, ref)
+                by_part[("host" if meta[test][1] else "background", part.partition(":")[0])] += n_reads
+                per_test[test].append((n_reads, record, identities / n_reads, part))
+            if hits_out is not None:
+                for test, got in sorted(per_test.items()):
+                    for n_reads, record, identity, part in sorted(got, key=lambda g: (-g[0], g[1]))[:BACKGROUND_TOP]:
+                        hits_out.append(dict(test=test, source="host" if meta[test][1] else "background",
+                                             reference=ref, record=record, taxid=taxa[record], part=part,
+                                             reads=n_reads, identity=round(100 * identity, 1)))
+            log(f"  background reads placed by {ref}: " + "; ".join(
+                f"{source} reads best at {kind} records: {n:,}" for (source, kind), n in sorted(by_part.items())))
+        log(f"  reads aligned to {ref} ({len(taxa):,} records, {(time.monotonic() - began) / 60:.1f} min)")
     for path in [p for p, _t in refs.values()] + [reads_fa]:
         if os.path.isfile(path):
             os.remove(path)

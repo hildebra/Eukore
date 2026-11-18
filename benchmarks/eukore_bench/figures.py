@@ -1248,7 +1248,10 @@ def read_metrics(bench):
     for r in read(os.path.join(bench, "reads.tsv")):
         if r["mode"] == "held_out" and not int(r["congeners"]):
             continue  # no other species of its genus in the package: its held-out reads cannot be placed to it
-        key = (r["reference"], r["mode"], r["kind"], r["reads"])
+        # the host's reads (human chromosome 21, right on its own lineage) apart from the bacterial and archaeal
+        # background's, which every placement gets wrong (since 2026-11-18: they were one `background` before)
+        kind = "host" if r["kind"] == "background" and r.get("species_taxid", "-") not in ("-", "") else r["kind"]
+        key = (r["reference"], r["mode"], kind, r["reads"])
         for c in r:
             if c in ("n", "assigned") or c.endswith(("_correct", "_wrong")):
                 sums[key][c] += int(r[c])
@@ -1262,6 +1265,8 @@ def read_metrics(bench):
         elif kind == "background" and s["n"]:
             out[ref]["background"] = 1e6 * s["assigned"] / s["n"]
             out[ref]["background_phylum"] = 1e6 * s["phylum_wrong"] / s["n"]
+        elif kind == "host" and s["n"]:
+            out[ref]["host_phylum_wrong"] = 1e6 * s["phylum_wrong"] / s["n"]
     return out
 
 
@@ -1285,7 +1290,8 @@ def marker_reads(bench, package, out, fmt):
         bg = m[r].get("background_phylum")
         if bg is not None:
             ax.text(j, 1.03, f"{bg:,.0f}", ha="center", va="bottom", fontsize=7, color=INK2)
-    ax.text(-0.5, 1.10, "background reads per million placed in a eukaryote phylum:", fontsize=7, color=INK2)
+    ax.text(-0.5, 1.10, "bacterial and archaeal reads per million placed in a eukaryote phylum:", fontsize=7,
+            color=INK2)
     ax.set_xticks(range(len(refs)), [tick_label(r) for r in refs])
     ax.set_ylim(0, 1.16)
     ax.set_yticks([0, 0.25, 0.5, 0.75, 1])
@@ -2123,7 +2129,10 @@ FIGURES = (
     ("marker_reads", marker_reads, "Reads simulated from Eukore's own markers' loci (BUSCO genes and rRNA) per "
                                    "reference: species recall (species in), genus recall and precision (held out). "
                                    "Eukore's genes, so the other references, which hold other genes, are measured on "
-                                   "ground that is not theirs.", "reads"),
+                                   "ground that is not theirs. Above the bars: the bacterial and archaeal reads per "
+                                   "million that a reference places in a eukaryote phylum (human chromosome 21's "
+                                   "reads, right on their own lineage, are scored apart); background_hits.tsv names "
+                                   "the records that attract them.", "reads, background_hits"),
     ("detection_depth", detection_depth, "Detection's F1, precision and recall by the sample's depth, per reference "
                                          "and mode: the right species with it in the reference, the right genus with "
                                          "it held out, the right class with its order held out (novel); the reads "
