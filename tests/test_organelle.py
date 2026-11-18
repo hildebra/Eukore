@@ -404,6 +404,32 @@ class AssemblyTest(unittest.TestCase):
             with gzip.open(os.path.join(out, "organelle", "genes.fna.gz"), "rt") as fh:
                 self.assertEqual(fh.read().count(">"), 7)
 
+    def test_an_assembly_with_another_species_refseq_organelle_genome(self):
+        # 2026-11-18: NCBI's RefSeq assembly of a species can carry another species' RefSeq organelle genome as its own
+        # (Salvelinus sp. IW2-2015's chrMT is S. alpinus' NC_000861.1). Its genes went into the package under both
+        # species, one record name twice, which stopped protal's mito_records.py: the assembly's copy is not taken.
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            src = os.path.join(tmp, "sources")
+            release(src)
+            work = os.path.join(tmp, "work", "organelle")
+            chosen = organelle.choose(organelle.refseq_genes(src, work, ncbi, lambda _t: 0), ncbi)
+            genomes_dir = os.path.join(tmp, "genomes")
+            os.makedirs(genomes_dir)
+            with gzip.open(genomes.genome_file(genomes_dir, YEAST), "wt") as fh:  # the human's RefSeq record's name
+                fh.write(f">c1 Saccharomyces cerevisiae chromosome I\n{random_seq(5000, 5)}\n"
+                         f">NC_000001.1 Saccharomyces cerevisiae mitochondrion, complete genome\n{YEAST_MT}\n")
+            jobs = {YEAST: dict(accession=YEAST, species_taxid=4932, taxid=559292)}
+            barrnap, nhmmer = fx.tool(tmp, "barrnap", BARRNAP), fx.tool(tmp, "nhmmer", NHMMER)
+            organelle.assembly_pass(work, jobs, lambda a: genomes.genome_file(genomes_dir, a), chosen, ncbi,
+                                    barrnap, nhmmer, 1, 1, lambda _t: 0)
+            self.assertTrue(any(r["seqid"] == "NC_000001.1" for r in
+                                organelle.assembly_rows(organelle.assembly_file(work, YEAST))))  # searched, found
+            records = organelle.collect(ncbi, jobs, {4932, 9606}, chosen, work)
+            self.assertEqual({r["species_taxid"] for _n, _s, r in records}, {9606})
+            names = [n for n, _s, _r in records]
+            self.assertEqual(len(names), len(set(names)))
+
     def test_an_assembly_searched_before_its_genes_were_added(self):
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))

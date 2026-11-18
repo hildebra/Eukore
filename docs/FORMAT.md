@@ -579,7 +579,8 @@ barcode), and since format 5 mitochondrial COX3, nad1, nad5 and atp6 and plastid
 species' genes come from one source: its RefSeq organelle genome (the one with the most of these genes, then of the
 species' own taxid, then the longest), else the organelle molecules of its own assembly (those NCBI's FASTA titles
 name a mitochondrion, chloroplast, plastid or apicoplast; since 2026-11-10 also a kinetoplast, maxicircle,
-minicircle, chromatophore or cyanelle). Since format 7 the species are every species with a RefSeq organelle genome
+minicircle, chromatophore or cyanelle; since 2026-11-18 not one that is another species' RefSeq organelle genome, which
+a RefSeq assembly can carry as its own: every `record` is under one species). Since format 7 the species are every species with a RefSeq organelle genome
 (until then the species with a genome or rRNA records alone): a species of organelle genes alone is a row of
 `species.tsv` (`source` `organelle`), its genes all those of its RefSeq genome (its rRNA, COX1, CYTB, ...). And
 EUKARYOME's organelle SSU (its SSU set's `k___mitochondrion`, `k___plastid` and `k___nucleomorph` records, labelled
