@@ -51,6 +51,11 @@ SBATCH_BENCH=(-p medium --cpus-per-task=32 --mem=200G --localscratch=ssd:200)  #
 BUILD_OPTS=(--ksgp_tax /path/to/KSGP_v5.2/KSGP_v5.2_plus2.tax)
 FETCH_OPTS=(--downloads 12)
 FINAL_OPTS=(--keep_gb 1000)
+# protal's genome sketch of the package's species (since 2026-11-19): the final job makes it before the prune with
+# protal's own binary, metadata/protal_sketch.bin (none without --protal): about 5,000 entries for a genome of 500 Mb
+# (--protal_sketch_kmers, --protal_sketch_mb), 1,000 to 100,000 a species; for all eukaryotes ~3.4 GB, and ~20 GB of
+# the final job's memory while it runs:
+# FINAL_OPTS=(--keep_gb 1000 --protal /path/to/protal/build/protal)
 
 # sbatch's options: every job's, then each kind's. A list of partitions (-p a,b,c) is refused whole when one of
 # them refuses the job: try each alone with `sbatch --test-only` (a large-memory partition may refuse a small job)
