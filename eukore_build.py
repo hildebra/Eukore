@@ -921,7 +921,7 @@ class HelperPool:
     before."""
 
     def __init__(self, opts):
-        self.opts, self.lock, self.job = opts, threading.Lock(), None
+        self.opts, self.lock, self.job, self.started = opts, threading.Lock(), None, False
         self.root = os.path.join(opts.work, "qc")
         with contextlib.suppress(FileNotFoundError):
             os.remove(os.path.join(self.root, qc_mod.STOP))  # a stop of an earlier final job
@@ -936,13 +936,14 @@ class HelperPool:
                              check=False)
         return run.returncode == 0 and any(s.strip() in HELPER_STATES for s in run.stdout.splitlines())
 
-    def __call__(self, n, folder):
-        """The helpers of n searches whose inputs are in folder -> the function the search calls at its end."""
+    def __call__(self, n, folder, what="loci to search"):
+        """The helpers of n searches (or a pass' tasks: what) whose inputs are in folder -> the function the search
+        calls at its end."""
         with self.lock:
             if self.running():
-                say(f"  {n:,} loci to search: their inputs in {folder}; the helpers of job {self.job} take them")
+                say(f"  {n:,} {what}: their inputs in {folder}; the helpers of job {self.job} take them")
                 return lambda: None
-            say(f"  {n:,} loci to search: their inputs in {folder}; helpers started by: {self.opts.qc_helpers}")
+            say(f"  {n:,} {what}: their inputs in {folder}; helpers started by: {self.opts.qc_helpers}")
             try:
                 # not this node's TMPDIR (--local_tmp's folder, which sbatch --export=ALL would hand to the helpers'
                 # nodes, where it is not; since 2026-11-17): a helper takes its own node's (tools/eukore.sh _qc)
@@ -959,6 +960,7 @@ class HelperPool:
                     f"can help all the same: python3 -m eukore.qc helper {os.path.dirname(folder)} -t <threads>")
                 return None
             job = (run.stdout.strip().splitlines() or [""])[-1].strip()
+            self.started = True
             say(f"  helpers: job {job or '?'}")
             if self.tracked(job):  # kept for the stage's next searches, cancelled by close()
                 self.job = job
@@ -972,6 +974,8 @@ class HelperPool:
     def close(self):
         """The package stage's end: its helpers waiting for work stop (WORK/qc/helpers.stop), the array cancelled."""
         with self.lock:
+            if not self.started:  # none started by this build (closed at its exit since 2026-11-19): none to stop
+                return
             with contextlib.suppress(OSError):
                 os.makedirs(self.root, exist_ok=True)
                 with open(os.path.join(self.root, qc_mod.STOP), "w") as fh:
@@ -988,10 +992,43 @@ def helper_pool(opts):
     with _POOL_LOCK:
         if getattr(opts, "_helper_pool", None) is None:
             opts._helper_pool = HelperPool(opts)
+            # the helpers stopped however the build ends (since 2026-11-19 the process stage's passes submit them
+            # too, not the package stage alone)
+            atexit.register(opts._helper_pool.close)
     return opts._helper_pool
 
 
 _POOL_LOCK = threading.Lock()
+
+
+def shared_pass(opts, kind):
+    """A pass over the genomes shared with the helper nodes (qc.write_pass, WORK/qc/<kind>/; since 2026-11-19), or
+    None without --qc_helpers -> a function (run, args, items) -> a function that takes the tasks back."""
+    pool = helper_pool(opts)
+    if pool is None:
+        return None
+    folder = os.path.join(opts.work, "qc", kind)
+
+    def share(run, args, items):
+        qc_mod.write_pass(folder, run, args, items)
+        stop = pool(len(items), folder, what="tasks of a pass")
+
+        def end():
+            qc_mod.end_pass(folder)
+            if stop:
+                stop()
+        return end
+    return share
+
+
+def pass_files(opts, share):
+    """Where a pass' files written for its tasks go: the WORK's file system where helper nodes share them (share),
+    else this node's temporary folder (--local_tmp)."""
+    if not share:
+        return tempfile.TemporaryDirectory()
+    root = os.path.join(opts.work, "qc")
+    os.makedirs(root, exist_ok=True)
+    return tempfile.TemporaryDirectory(dir=root, prefix="files.")
 
 
 def qc_searches(opts, kind, prune=True):
@@ -1502,19 +1539,31 @@ def annotate_pass(opts, job_map, may_fetch):
     say(f"gene models: {len(todo)} genomes' calls to compare with their annotation")
     compared, left, elsewhere, failed = 0, 0, 0, []
     progress = progress_of(opts, "genomes compared", [1] * len(todo), "", 1)
-    # -j at once, a GFF read on one core each (until 2026-11-08 one at a time, in this process)
-    task = functools.partial(annotate_one, opts.work, opts.genomes, may_fetch, opts.veupathdb_key)
-    with util.process_pool(opts.jobs) as pool:
-        for acc, n, why in util.unordered(pool, task, todo, progress, lambda: running(opts, progress)):
-            if why:
-                failed.append((acc, why))
-                progress.step(1, failed=True)
-                continue
-            if n == organelle_mod.ELSEWHERE:
-                elsewhere += 1
-            else:
-                compared, left = compared + (n is not None), left + (n is None)
-            progress.step(1)
+    # -j at once, a GFF read on one core each (until 2026-11-08 one at a time, in this process); since 2026-11-19 with
+    # --qc_helpers shared with the helper nodes where nothing is fetched (a fetch is the download node's, and no
+    # VEuPathDB key goes into the WORK), the genomes another node holds awaited
+    args = (opts.work, opts.genomes, may_fetch, opts.veupathdb_key)
+    share = None if may_fetch else shared_pass(opts, "annotation_pass")
+    end = share("eukore_build:annotate_one", (opts.work, opts.genomes, False, None), todo) if share else None
+    try:
+        with util.process_pool(opts.jobs) as pool:
+            for acc, n, why in qc_mod.shared_results(pool, functools.partial(annotate_one, *args), todo,
+                                                     lambda j: j["accession"],
+                                                     lambda j: not annotation.missing(opts.work, j),
+                                                     wait=end is not None, progress=progress,
+                                                     note=lambda: running(opts, progress)):
+                if why:
+                    failed.append((acc, why))
+                    progress.step(1, failed=True)
+                    continue
+                if n == organelle_mod.ELSEWHERE:
+                    elsewhere += 1
+                else:
+                    compared, left = compared + (n is not None), left + (n is None)
+                progress.step(1)
+    finally:
+        if end:
+            end()
     say(f"  {compared} genomes compared, {left} without their annotation beside them (fetched by the next "
         "--stage fetch; a genome run without it is run again with it, genomes.better_annotation), "
         + (f"{elsewhere} by another build, " if elsewhere else "")
@@ -1555,14 +1604,15 @@ def organelle_genes(opts, src_dir, job_map, ncbi):
     if barrnap and nhmmer:
         # an assembly a task, -t at once, each of up to organelle.TASK_THREADS threads (since 2026-11-16; until then
         # one: the 2026-11-16 build's final job waited an hour on one assembly's candidate contigs, at 1 core of 60),
-        # the largest first (assembly_pass)
-        with tempfile.TemporaryDirectory() as tmp:  # the packed genomes' molecules, as files for the tools
+        # the largest first (assembly_pass); with --qc_helpers shared with the helper nodes (since 2026-11-19)
+        share = shared_pass(opts, "organelle_pass")
+        with pass_files(opts, share) as tmp:  # the packed genomes' molecules, as files for the tools
             organelle_mod.assembly_pass(folder, job_map, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
                                         barrnap, nhmmer, opts.threads, organelle_mod.task_threads(opts.threads), say,
                                         shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
                                         saved_of=functools.partial(saved_molecules, opts, tmp),
                                         progress=functools.partial(progress_of, opts, unit="", scale=1),
-                                        claim=functools.partial(genomes.claimed, opts.work))
+                                        claim=functools.partial(genomes.claimed, opts.work), share=share)
     else:
         say("WARNING: no barrnap or nhmmer: the assemblies' organelle molecules not searched")
     return chosen
@@ -1649,13 +1699,16 @@ def intraspecific_pass(opts, src_dir, ncbi, extras):
     barrnap, nhmmer = shutil.which("barrnap"), shutil.which("nhmmer")
     if barrnap and nhmmer:
         # the packed genomes' molecules written into a folder of the pass' (since 2026-11-11: none was given, and a
-        # packed extra still to search stopped the build with a TypeError)
-        with tempfile.TemporaryDirectory() as tmp:
+        # packed extra still to search stopped the build with a TypeError); since 2026-11-19 each under its genome's
+        # claim, with --qc_helpers shared with the helper nodes
+        share = shared_pass(opts, "organelle_extras_pass")
+        with pass_files(opts, share) as tmp:
             organelle_mod.assembly_pass(folder, extras, lambda a: genomes.genome_file(opts.genomes, a), chosen, ncbi,
                                         barrnap, nhmmer, opts.threads, organelle_mod.task_threads(opts.threads), say,
                                         shutil.which(opts.miniprot) if opts.organelle_models == "miniprot" else None,
                                         every=True, saved_of=functools.partial(saved_molecules, opts, tmp),
-                                        progress=functools.partial(progress_of, opts, unit="", scale=1))
+                                        progress=functools.partial(progress_of, opts, unit="", scale=1),
+                                        claim=functools.partial(genomes.claimed, opts.work), share=share)
     # their genome files kept for a run again, within --keep_gb (genomes.prune; since 2026-11-16: with --keep_gb
     # deleted here, whatever the room, and fetched again by each rerun)
 
@@ -2678,10 +2731,8 @@ def _main(argv, held):
         # organelle genes (once the records' species are known). Each step's searches go to the helpers as before, in
         # folders of their own (qc.searched_loci removes other searches' files from its folder). A step that fails
         # fails the stage once the others have ended, their searches kept for the next run.
-        pool = helper_pool(opts)
-        if pool is not None:
-            atexit.register(pool.close)  # the helpers stopped however the stage ends
-        steps = concurrent.futures.ThreadPoolExecutor(4, thread_name_prefix="package")
+        pool = helper_pool(opts)  # the helpers stopped however the build ends (helper_pool's atexit)
+        steps =concurrent.futures.ThreadPoolExecutor(4, thread_name_prefix="package")
         screen_step = None
         if opts.midori2 and not opts.no_reference_screen:  # since 2026-11-10: MIDORI2's misnamed, chimeric records
             def screen_references():

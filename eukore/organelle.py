@@ -29,7 +29,7 @@ import subprocess
 import tempfile
 import time
 
-from . import gencode, rrna, util, versions
+from . import gencode, qc, rrna, util, versions
 
 REFSEQ_RELEASE = "https://ftp.ncbi.nlm.nih.gov/refseq/release"
 RELEASE_FILE = re.compile(r"\b((mitochondrion|plastid)\.\d+\.genomic\.gbff\.gz)\b")
@@ -1144,7 +1144,7 @@ def organelles_of(ncbi, taxid):
 
 
 def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer, workers=1, threads=1, log=print,
-                  miniprot=None, every=False, saved_of=None, progress=None, claim=None):
+                  miniprot=None, every=False, saved_of=None, progress=None, claim=None, share=None):
     """The organelle genes of each species' assembly where RefSeq has not every organelle's record it can hold
     (chosen; organelles_of: until 2026-11-06 every animal and fungus was searched for a plastid, ~10,000 genomes), its
     organelle molecules there (saved_of(accession) -> the molecules metadata.describe kept, WORK/done/<accession>/
@@ -1154,7 +1154,10 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
     organelle code (an assembly searched with the other models is searched again; since 2026-11-10 also one searched
     with other inputs: search_key). saved_of and genome_of are asked by threads (util.threaded). claim: genomes.claimed
     of the WORK (picklable: a partial), each assembly searched under its genome's claim (run_claimed; since 2026-11-11:
-    a SLURM array's tasks run the pass) -> those run here."""
+    a SLURM array's tasks run the pass) -> those run here. share (with claim; since 2026-11-19): a function
+    (run, args, tasks) -> a function that takes them back, or None: the tasks shared with the helper nodes (the
+    final job's --qc_helpers: qc.help_pass), saved_of's and genome_of's files where they can read them; the
+    assemblies another node holds are awaited (qc.shared_results), not left to it."""
     nearest = Nearest(chosen, ncbi)
     asked = []
     for acc, job in sorted(job_map.items()):
@@ -1213,20 +1216,30 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
     # until 2026-11-08 at each 5% of the assemblies)
     progress = (progress or (lambda what, w: util.Progress(what, w, log, unit="", scale=1)))(
         "assemblies searched", [1] * len(todo))
-    with util.process_pool(workers) as pool:  # a worker that dies stops the build, not a wait forever
-        for acc, n, why in util.unordered(pool, run_claimed if claim else run_assembly, tasks, progress,
-                                          lambda: f", {min(max(1, workers), progress.n - progress.done)} running"):
-            if why:
-                failed += 1
-                log(f"  {acc}: organelle genes failed: {why}")
-            elsewhere += n == ELSEWHERE
-            progress.step(1, failed=bool(why))
+    # the tasks shared with the helper nodes (share: qc.write_pass's, -> a function that takes them back; since
+    # 2026-11-19), each searched under its genome's claim; those another node holds awaited here, so that the
+    # package's collect finds every one
+    end = share("eukore.organelle:run_claimed", (), tasks) if share and claim else None
+    try:
+        with util.process_pool(workers) as pool:  # a worker that dies stops the build, not a wait forever
+            for acc, n, why in qc.shared_results(
+                    pool, run_claimed if claim else run_assembly, tasks, lambda t: t[2][0] if claim else t[0],
+                    lambda t: searched_already(t[2][2], *t[1]), wait=end is not None, progress=progress,
+                    note=lambda: f", {min(max(1, workers), progress.n - progress.done)} running"):
+                if why:
+                    failed += 1
+                    log(f"  {acc}: organelle genes failed: {why}")
+                elsewhere += n == ELSEWHERE
+                progress.step(1, failed=bool(why))
+    finally:
+        if end:
+            end()
     if elsewhere:
         log(f"  organelle genes: {elsewhere} assemblies searched by another build, or under its claim")
     return len(todo) - elsewhere, failed
 
 
-ELSEWHERE = "elsewhere"  # run_claimed's genes where another build holds the genome or searched it meanwhile
+ELSEWHERE = qc.ELSEWHERE  # run_claimed's genes where another build holds the genome or searched it meanwhile
 
 
 def searched_already(out, need, same, models):

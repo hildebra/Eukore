@@ -245,7 +245,8 @@ _process)
 _final)
     need_local_tmp
     # the vsearch checks across species shared with QC_TASKS helper jobs, which the package stage submits itself once
-    # their inputs are written (since 2026-11-11)
+    # their inputs are written (since 2026-11-11); since 2026-11-19 the process stage's passes over the genomes too
+    # (the organelle genes of the assemblies, the gene models' comparison), which submit them first
     helpers=()
     if (( ${QC_TASKS:-0} > 0 )); then helpers=(--qc_helpers "bash $(printf %q "$SELF") qc" --qc_tasks "$QC_TASKS"); fi
     # this job's own logs, in the evaluation bundle the package stage writes (OUT/Eukore_<version>_evaluation.tar.gz)
@@ -254,7 +255,8 @@ _final)
         ${FINAL_OPTS[@]+"${FINAL_OPTS[@]}"}
     ;;
 qc)  # the helpers of the package stage's searches (the loci's vsearch, since 2026-11-13 the rRNA checks', the SSU
-    # models' cmsearch and the 18S cmalign parts too): QC_TASKS (or N) jobs, each searching loci till none is left
+    # models' cmsearch and the 18S cmalign parts too) and, since 2026-11-19, of the final job's passes over the
+    # genomes (WORK/qc/*/pass.pkl): QC_TASKS (or N) jobs, each searching loci till none is left
     tasks=${2:-$QC_TASKS}
     if (( tasks < 1 )); then
         echo "no helpers: QC_TASKS of $CONF is 0, and no number given (bash $SELF qc N)" >&2

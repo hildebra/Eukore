@@ -414,6 +414,52 @@ class AssemblyTest(unittest.TestCase):
             self.assertEqual((len(made), len(said)), (2, 1))  # waited, said once, made nothing itself
             self.assertTrue(os.path.isfile(lock))  # the other's lock left to it
 
+    def test_the_pass_shared_with_helpers(self):
+        # since 2026-11-19 the final job's pass is shared with the helper nodes (qc.write_pass): an assembly a helper
+        # holds is awaited, not left (the package's collect would miss it), and the tasks taken back at the end
+        import functools  # noqa: PLC0415
+        import pickle  # noqa: PLC0415
+        import threading  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        from eukore import qc  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
+            src = os.path.join(tmp, "sources")
+            release(src)
+            root = os.path.join(tmp, "work")
+            work = os.path.join(root, "organelle")
+            chosen = organelle.choose(organelle.refseq_genes(src, work, ncbi, lambda _t: 0), ncbi)
+            genomes_dir = os.path.join(tmp, "genomes")
+            os.makedirs(genomes_dir)
+            with gzip.open(genomes.genome_file(genomes_dir, YEAST), "wt") as fh:
+                fh.write(f">m1 Saccharomyces cerevisiae mitochondrion, complete genome\n{YEAST_MT}\n")
+            jobs = {YEAST: dict(accession=YEAST, species_taxid=4932, taxid=559292)}
+            barrnap, nhmmer = fx.tool(tmp, "barrnap", BARRNAP), fx.tool(tmp, "nhmmer", NHMMER)
+            folder = os.path.join(root, "qc", "organelle_pass")
+            held = genomes.claim(root, YEAST)  # a helper's
+            shared, taken_back = [], []
+
+            def helper():  # the helper's search ends: its file written, its claim let go
+                _claim, _check, item = shared[0][2][0]
+                organelle.run_assembly(item)
+                os.remove(held)
+
+            def share(run, args, tasks):
+                path = qc.write_pass(folder, run, args, tasks)
+                with open(path, "rb") as fh:
+                    shared.append((run, args, pickle.load(fh)["items"]))
+                threading.Timer(0.3, helper).start()
+                return lambda: (qc.end_pass(folder), taken_back.append(1))
+            with mock.patch.object(qc, "PASS_POLL", 0.1):
+                ran = organelle.assembly_pass(work, jobs, lambda a: genomes.genome_file(genomes_dir, a), chosen, ncbi,
+                                              barrnap, nhmmer, 1, 1, lambda _t: 0,
+                                              claim=functools.partial(genomes.claimed, root), share=share)
+            self.assertEqual(ran, (0, 0))  # made by the helper, awaited here
+            self.assertTrue(os.path.isfile(organelle.assembly_file(work, YEAST)))
+            self.assertEqual((shared[0][0], shared[0][1], len(shared[0][2])), ("eukore.organelle:run_claimed", (), 1))
+            self.assertEqual(taken_back, [1])
+            self.assertFalse(os.path.exists(os.path.join(folder, qc.PASS)))
+
     def test_an_assembly_into_the_package(self):
         with tempfile.TemporaryDirectory() as tmp:
             ncbi = ncbi_mod.Ncbi(fx.taxdump(os.path.join(tmp, "taxdump.tar.gz")))
