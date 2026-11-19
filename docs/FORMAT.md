@@ -73,6 +73,7 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 | [`busco/introns.tsv`, `intron_sites.tsv`](#busco) | each intron's phase, splice sites, class, U12 look, place on the HMM; the sites shared across species | 5 |
 | [`markers/`](#markers-format-5) | Eukore's own marker loci (RPB1, RPB2, EF-2, EF-1α, ...): the same files as `busco/`, for genes BUSCO cannot hold | 5 |
 | [`rrna/records.tsv`, `records.fna.gz`](#rrna) | 18S spans and rDNA units of genomes and published long reads, since 7 EUKARYOME's published 18S, audited; their parts, checks, confidence, SSU model, rank, NCBI and EUKARYOME lineages, what the audit cut off | 4, more in 6 and 7 |
+| [`rrna/prokaryote_ssu.tsv`, `prokaryote_ssu.fna.gz`](#rrna) | the records set apart: a bacterium's or an organelle's SSU found among a genome's 18S (`ssu_model` bacteria or archaea), as `records.tsv` | 7, since 2026-11-19 |
 | [`rrna/audit.tsv`](#rrna) | each published record's audit findings: what was cut off and why, its chimera calls | 7 |
 | [`rrna/regions.tsv`](#rrna) | each record's 18S V1-V5, V7-V9 | 5 |
 | [`rrna/amplicons.tsv`](#rrna) | in-silico PCR of 10 18S, ITS and 28S primer pairs on each record | 5 |
@@ -431,6 +432,12 @@ manifest's `counts.marker_loci` the markers.
 
 ## rrna/
 - `records.fna.gz`: every record, `>record`, uncut.
+- `prokaryote_ssu.tsv`, `prokaryote_ssu.fna.gz` (since 2026-11-19, format 7): the records whose 18S Rfam's bacterial or
+  archaeal SSU model scores best (`ssu_model` `bacteria` or `archaea`: a contaminant's 16S on another contig of the
+  assembly, a symbiont's in a transcriptome, an organelle's SSU on a contig not titled so), with `records.tsv`'s
+  columns and flags (`ssu_prokaryote`, `low`). They are no species' record: not in `records.tsv`, `regions.tsv` or
+  `amplicons.tsv`, nor counted in `species.tsv` (a species known by such a record alone is not in the package); the
+  manifest counts them (`rrna_prokaryote_ssu`). Until then they stayed among the records, `low`.
 - `records.tsv`:
 
 | column | |
@@ -454,7 +461,7 @@ manifest's `counts.marker_loci` the markers.
 | `gaps` | runs of 10 Ns or more in the record |
 | `confidence`, `flags` | `high`, `unverified`, `medium` or `low`, and why (below) |
 | `cross` | the species of another clade whose record holds its 18S: an `f`'s source; an undecided record's other holder where its own clade's nearest 18S is 2 points or more under it or the two are 99.5% alike (format 6; the 18S' own rule since 2026-11-10) |
-| `ssu_model` | the SSU model of Rfam that scores its 18S best (cmsearch of the profile HMMs of RF01960 and RF02542, eukaryote, RF00177, bacteria, RF01959, archaea; a prokaryote model by 20 bits over the eukaryote's best): `eukarya`, `bacteria` or `archaea` (a bacterium's, a mitochondrion's or a plastid's SSU: `low`), `-` where none scored it or not measured (format 6) |
+| `ssu_model` | the SSU model of Rfam that scores its 18S best (cmsearch of the profile HMMs of RF01960 and RF02542, eukaryote, RF00177, bacteria, RF01959, archaea; a prokaryote model by 20 bits over the eukaryote's best): `eukarya`, `bacteria` or `archaea` (a bacterium's, a mitochondrion's or a plastid's SSU: `low`, and since 2026-11-19 in `prokaryote_ssu.tsv`, not here), `-` where none scored it or not measured (format 6) |
 | `via` | format 7: the EUKARYOME file a published record comes from, `EUKARYOME_long` (its long reads) or `EUKARYOME_SSU` (its SSU set), else `-` |
 | `source_label` | format 7: a published record's own label as EUKARYOME gives it (`k__..;g__Genus;s__epithet`, `unclassified` for an unnamed rank), else `-` |
 | `telomere` | format 7: its longest run of a telomere repeat (6 units or more of TTAGGG, TTAGG, TTTAGGG, TTGGGG or TTTTGGGG, in any phase, on either strand), 0 for none |
@@ -889,6 +896,10 @@ them). `genomes.tsv`'s
   reference's genus lineage of another deep lineage (Stramenopiles, Alveolata, Rhizaria, ...) no species' match; the
   window screen's references 3 distinct 18S a genome, an assembly's copies one genome; the manifest's
   `inputs.queries` (Eukore's own query proteins: the set, and how many genomes took which).
+  Since 2026-11-19, the same format: a record whose 18S Rfam's bacterial or archaeal SSU model scores best
+  (`ssu_prokaryote`) is set apart in `rrna/prokaryote_ssu.tsv` and `.fna.gz` (`records.tsv`'s columns), out of
+  `records.*`, `regions.tsv`, `amplicons.tsv` and the species' counts (a species known by such a record alone is no
+  row); the manifest's `counts.rrna_prokaryote_ssu`. A reader of `records.tsv` needs no change.
 - 2026-11-10, no new format (optional): `reference_screen.tsv` and the manifest's `inputs.references.MIDORI2.screen`
   (and `files`), where the build was given MIDORI2 files; `species.tsv`'s `midori2` no longer names a species by a
   record the screen drops. MIDORI2's later header layout (GB273's: a tab, every NCBI rank as `rank_Name_taxid`) is

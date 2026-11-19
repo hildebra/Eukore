@@ -749,7 +749,8 @@ def unverified_alone(copy_rows, genomes, ncbi, set_of=None):
 
 
 def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, inputs=None, organelle=None,
-          references=(), before_manifest=None, metadata=None, tables=(), writers=(), threads=1, eukaryome=None):
+          references=(), before_manifest=None, metadata=None, tables=(), writers=(), threads=1, eukaryome=None,
+          rrna_apart=()):
     """The package into `out` (written beside it and renamed into place; the manifest last) -> its folder.
     before_manifest: a function of the unfinished package's folder, run once its tables are written (the build's
     benchmarks: benchmarks.run), whose result (a dict) the manifest keeps as `benchmarks`.
@@ -763,7 +764,9 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
     genomes' copies and features read `threads` at once by a pool of processes (genome_files; since 2026-11-10), the
     files the same as one after another. eukaryome: EUKARYOME's taxonomy (eukaryome.Tree; since 2026-11-14, format 7):
     every species', record's and organelle gene's EUKARYOME lineage, taxonomy/eukaryome.tsv; without one species.tsv's
-    EUKARYOME lineages are the name matches of format 6."""
+    EUKARYOME lineages are the name matches of format 6. rrna_apart: the records set apart from rrna (since
+    2026-11-19, rrna.split_prokaryote: a prokaryote's SSU), written to rrna/prokaryote_ssu.* and counted, no species'
+    record."""
     part = util.part_of(out)
     shutil.rmtree(part, ignore_errors=True)
     # each locus' set: busco/ (BUSCO's), markers/ (Eukore's own, markers.py; since 2026-11-07), the same files in each
@@ -857,6 +860,9 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
         rrna_mod.write_records(os.path.join(part, "rrna"), rrna)
         for _name, _seq, row in rrna:
             n_records[int(row["species_taxid"])] += 1
+    if rrna_apart:  # a prokaryote's SSU found among a genome's 18S (since 2026-11-19): beside the records, not among them
+        from . import rrna as rrna_mod  # noqa: PLC0415
+        rrna_mod.write_records(os.path.join(part, "rrna"), rrna_apart, rrna_mod.APART)
     from . import organelle as organelle_mod  # noqa: PLC0415
     organelle_mod.write_genes(os.path.join(part, "organelle"), organelle)
     n_organelle = collections.Counter(int(row["species_taxid"]) for _n, _s, row in organelle)
@@ -943,6 +949,8 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
                                k for r in organelle_only for k in kinds_of[int(r["taxid"])])),
                            "genomes": len(genomes), "copies": collected.get("copy_count", 0),
                            "copy_status": dict(statuses), "rrna_records": sum(n_records.values()),
+                           # since 2026-11-19: the prokaryote SSU set apart (rrna/prokaryote_ssu.*)
+                           "rrna_prokaryote_ssu": len(rrna_apart or ()),
                            # the records by source, rank and how their taxid was found, each by tier (format 7)
                            "rrna_sources": tiers_by(rrna or (), "source"),
                            "rrna_ranks": tiers_by(rrna or (), "rank"),

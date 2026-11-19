@@ -81,8 +81,9 @@ require __DIR__ . '/inc/header.php';
           species stays, with its rRNA and organelle genes.</li>
         <li>The sequences of PR2, KSGP and SILVA: their records are linked to Eukore's and their names given, never
           taken.</li>
-        <li>Prokaryote and organelle SSU among the 18S; MIDORI2's records of the wrong length, with ambiguous bases
-          or without a reading frame.</li>
+        <li>Prokaryote and organelle SSU among the 18S (a contaminant's 16S, a symbiont's in a transcriptome: set
+          apart in their own file of the package); MIDORI2's records of the wrong length, with ambiguous bases or
+          without a reading frame.</li>
       </ul>
     </div>
   </div>

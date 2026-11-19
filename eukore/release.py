@@ -485,7 +485,8 @@ BUNDLES = (("_marker_genes", "Marker genes", "Marker genes with introns",
             "the marker genes with introns' (copies.tsv, loci.tsv)", _marker_cds),
            ("_rrna_organelle", "rRNA and organelle markers", "rRNA operons and organelle markers",
             "nuclear rDNA records (18S spans and whole operons: 18S, ITS1, 5.8S, ITS2, 28S, 5S), their 18S V1-V9 and "
-            "in-silico PCR; the mitochondrial and plastid genes (12S, 16S, 5S, COX1, CYTB, rbcL, matK, ...) with "
+            "in-silico PCR, and apart from them the prokaryote SSU found among the genomes' 18S; the mitochondrial and "
+            "plastid genes (12S, 16S, 5S, COX1, CYTB, rbcL, matK, ...) with "
             "their coding sequences, proteins and PCR (the organelle molecules whole are in the core)",
             _rrna_organelle),
            ("_core", "Package core", "Eukore's core (with every part)",
