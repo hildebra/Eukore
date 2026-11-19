@@ -192,7 +192,10 @@ each a job on its own partition: `bash tools/eukore.sh bench_downloads` (`SBATCH
 `AFTER=<final job>` to wait for it) fetches the other references into the settings' `BENCH`, kept between builds;
 `AFTER=<its job> bash tools/eukore.sh benchmark` (`SBATCH_BENCH`, default the process jobs') makes the comparisons,
 the read benchmark and every figure into `BENCH_RESULTS` (default `OUT/Eukore_<version>_benchmarks`): the paper's,
-the overview with the package's counts, and the website's Benchmarks page into `OUT/release/data`. Its settings (the folders, the partitions, the build's options) are a small bash file,
+the overview with the package's counts, and the website's Benchmarks page into `OUT/release/data`. Since 2026-11-19
+`build` and `final` submit both jobs after the final job themselves where `BENCH` is set (`BENCH_AFTER_FINAL=0`: not;
+without `BENCH` they say how to start them): the downloads once the final job ended well, the benchmark after them.
+Its settings (the folders, the partitions, the build's options) are a small bash file,
 `tools/eukore.conf.example`, copied to `local/eukore.conf` or named by `$EUKORE_CONF`.
 
 **The package stage's vsearch checks on several nodes** (since 2026-11-11). The checks across species search each
