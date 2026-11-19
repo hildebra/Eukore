@@ -37,6 +37,8 @@ Eukore_*/
 *~
 benchmarks/paper/
 
+.claude
+
 # editors and OS
 .vscode/
 .idea/
