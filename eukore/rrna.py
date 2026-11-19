@@ -1413,10 +1413,28 @@ def own_species(records, ncbi, vsearch, threads=1, searcher=None, log=None):
     return out
 
 
-def write_records(folder, records):
-    """records [(name, sequence, row)] -> folder/records.fna.gz and records.tsv (RECORD_COLUMNS)."""
+PROKARYOTE_MODELS = ("bacteria", "archaea")  # ssu_model's prokaryote SSU models (a bacterium's or an organelle's)
+APART = "prokaryote_ssu"  # rrna/<APART>.tsv and .fna.gz: the records set apart (split_prokaryote)
+
+
+def split_prokaryote(records):
+    """finish's records -> (the package's records, those set apart): since 2026-11-19 a record whose 18S a prokaryote
+    SSU model scores best (ssu_model bacteria or archaea: `ssu_prokaryote`) is no eukaryote's rRNA record. It is a
+    contaminant's 16S on another contig of the assembly, a symbiont's in a transcriptome, an organelle's on a contig
+    not titled so. Until then they stayed among the records, low: the benchmark of 2026-11-18 found that they took
+    every bacterial read the 2026-11-17 build's rRNA records placed (73 records, 72 of them from 61 eukaryote
+    assemblies and transcriptomes). Set apart, they stay in the package's rrna/prokaryote_ssu.* (write_records)."""
+    kept, apart = [], []
+    for record in records:
+        (apart if record[2].get("ssu_model") in PROKARYOTE_MODELS else kept).append(record)
+    return kept, apart
+
+
+def write_records(folder, records, stem="records"):
+    """records [(name, sequence, row)] -> folder/<stem>.fna.gz and <stem>.tsv (RECORD_COLUMNS): records, or since
+    2026-11-19 APART (split_prokaryote's)."""
     os.makedirs(folder, exist_ok=True)
-    fasta, table = os.path.join(folder, "records.fna.gz"), os.path.join(folder, "records.tsv")
+    fasta, table = os.path.join(folder, f"{stem}.fna.gz"), os.path.join(folder, f"{stem}.tsv")
     with util.bgzf_open(util.part_of(fasta)) as fa, open(util.part_of(table), "w", newline="\n") as tb:
         tb.write("\t".join(RECORD_COLUMNS) + "\n")
         for name, seq, row in records:

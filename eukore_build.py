@@ -2759,7 +2759,17 @@ def _main(argv, held):
                 finally:
                     concurrent.futures.wait([regions_done])
                 tables += regions_done.result()
-            return records, tables, stamp, tree
+            # a prokaryote's SSU among the 18S (ssu_model bacteria or archaea) set apart (since 2026-11-19): written to
+            # rrna/prokaryote_ssu.*, its regions and amplicons (made beside the checks, of every record) left out
+            records, apart = rrna.split_prokaryote(records)
+            if apart:
+                gone = {name for name, _s, _r in apart}
+                tables = [(rel, columns, [r for r in rows if r.get("record") not in gone]
+                           if rel in ("rrna/regions.tsv", "rrna/amplicons.tsv") else rows)
+                          for rel, columns, rows in tables]
+                say(f"rRNA: {len(apart):,} records a prokaryote SSU model scores best (a bacterium's or an organelle's "
+                    f"SSU, ssu_prokaryote) set apart: rrna/{rrna.APART}.tsv, not among the records")
+            return records, tables, stamp, tree, apart
 
         def organelle_step():
             tables, screened = [], screen_step.result() if screen_step else None
@@ -2792,7 +2802,7 @@ def _main(argv, held):
         running_steps = [steps.submit(step) for step in (genetics_step, rrna_step, organelle_step)]
         concurrent.futures.wait(running_steps)  # every step ended: one's failure raised below, the others' work kept
         steps.shutdown()
-        _, (records, rrna_tables, audit_stamp, tree), (organelle, screened, organelle_tables) = \
+        _, (records, rrna_tables, audit_stamp, tree, rrna_apart), (organelle, screened, organelle_tables) = \
             [s.result() for s in running_steps]
         extra_tables = rrna_tables + organelle_tables  # in the order the steps ran in until 2026-11-15
         writers = []
@@ -2858,7 +2868,8 @@ def _main(argv, held):
                                  + tables(src_dir, "refseq", opts.groups), jobs=job_map)
         out = package.write(os.path.join(opts.out, f"Eukore_{opts.version}"), opts.version, ncbi, collected,
                             loci_items(opts, src_dir), records, opts.genomes, inputs, organelle, references, hook,
-                            metadata=meta, tables=extra_tables, writers=writers, threads=opts.threads, eukaryome=tree)
+                            metadata=meta, tables=extra_tables, writers=writers, threads=opts.threads, eukaryome=tree,
+                            rrna_apart=rrna_apart)
         say(f"Eukore: {out} ({json.dumps(package.read(out)['counts'])})")
         if pool is not None:  # the benchmarks' searches were the last: the helpers stop (HelperPool)
             pool.close()

@@ -82,11 +82,17 @@ seven taxonomies, and how far each sequence can be trusted.
   beside the gene, a chimera's foreign part;
 - of MIDORI2, the records its screen calls another organism's gene, a chimera or another gene, those outside the
   gene's length, with over 0.5% ambiguous bases or without a reading frame (NUMTs), and its 16S (lrRNA) file;
-- organelle rRNA among the nuclear records (a mitochondrial SSU is not an 18S); prokaryotes and viruses.
+- the rRNA of an assembly's mitochondrion and plastid molecules among the nuclear records (a mitochondrial SSU is not
+  an 18S); prokaryote and virus species;
+- among the rRNA records, since 2026-11-19, an SSU that Rfam's bacterial or archaeal model scores best (a
+  contaminant's 16S on another contig, a symbiont's in a transcriptome, an organelle's on a contig not titled so):
+  set apart in `rrna/prokaryote_ssu.tsv` and `.fna.gz`, no species' record. Until then they stayed among the
+  records, `low`, and in the benchmark of 2026-11-18 they took every bacterial read the 2026-11-17 build's rRNA
+  records placed (73 records, 72 of them from 61 eukaryote assemblies and transcriptomes).
 
 **Flagged, never silently dropped**: everything else. A fragment, a copy at a contig's end, a sequence shared with
-another clade, a contaminant's copy or a bacterium's SSU stays in the package with its tier (`high`, `unverified`,
-`medium`, `low`) and the reasons for it.
+another clade or a contaminant's copy stays in the package with its tier (`high`, `unverified`, `medium`, `low`) and
+the reasons for it.
 
 ## What is in Eukore
 

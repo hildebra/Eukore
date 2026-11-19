@@ -167,7 +167,10 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
   mitochondrion, chloroplast, plastid or apicoplast (since 2026-11-10 also a kinetoplast, maxicircle, minicircle,
   chromatophore, cyanelle or nucleomorph) are left out: barrnap's eukaryote models call a mitochondrial
   SSU an 18S, and that bacterial-type gene then takes bacterial reads. Organelle rRNA comes from the organelle
-  pass below.
+  pass below. An SSU on any other contig (a contaminant's 16S, a symbiont's in a transcriptome, an organelle's on a
+  contig not titled so) is told by Rfam's prokaryote models scoring it best (`ssu_prokaryote`; the checks below) and,
+  since 2026-11-19, set apart in `rrna/prokaryote_ssu.*`: no species' record (until then a `low` one, which took
+  every bacterial read the 2026-11-17 build's rRNA records placed in the read benchmark).
 - **Published records.** EUKARYOME 2.1's long reads and ROD v1.2's operons, labelled by NCBI taxid.
 - **Checks**, each a column of `rrna/records.tsv`:
   - ambiguous bases and homopolymers;
@@ -530,7 +533,7 @@ of frame shipped as `high`, the true owner of a contaminant's sequence called an
   screen the BUSCO windows alone: a contaminant contig's 16S, a NUMT or an endosymbiont's insertion gave a species an
   "18S" (`medium`, nothing being near it). cmsearch scores each distinct 18S by the profile HMMs of Rfam's eukaryote
   (RF01960, and RF02542 for microsporidia) and prokaryote (RF00177, RF01959) SSU models: a prokaryote model's best by 20
-  bits over the eukaryote's is `ssu_prokaryote`, `low`. An 18S over 10,000 bases (since 2026-11-13) is no one 18S:
+  bits over the eukaryote's is `ssu_prokaryote`, `low`, and since 2026-11-19 set apart (`rrna/prokaryote_ssu.*`). An 18S over 10,000 bases (since 2026-11-13) is no one 18S:
   18S-like pieces each within 1,500 bases of the next chained into one span (up to 847 kb), or a published read whose
   regions were not found, taken whole (EUKARYOME's of 32,759 bases); it is `too_long`, `low`, and none of the checks
   run on it (the screen's vsearch, whose alignments cost the product of the lengths, waited an hour on one); a screen

@@ -20,7 +20,7 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from eukore import audit, chimeras, eukaryome, labels, links, ncbi as ncbi_mod, package, rrna, screen  # noqa: E402
+from eukore import audit, chimeras, eukaryome, labels, links, ncbi as ncbi_mod, odb, package, rrna, screen  # noqa: E402
 import fixtures as fx  # noqa: E402
 
 HEADER = ("superkingdom", "kingdom", "subreg", "phylum", "subphy", "class", "order", "family", "gen", "kgd-specific")
@@ -894,6 +894,42 @@ class PackageTest(unittest.TestCase):
             self.assertEqual(counts["rrna_sources"], {"EUKARYOME": {"high": 2, "medium": 1}})
             self.assertEqual(counts["rrna_ranks"]["family"], {"medium": 1})
             self.assertEqual(manifest["inputs"]["eukaryome_taxonomy"]["version"], "2.1")
+
+    def test_a_prokaryote_ssu_set_apart(self):
+        # since 2026-11-19 an 18S a bacterial or archaeal SSU model scores best (ssu_prokaryote) is no species'
+        # record: rrna/prokaryote_ssu.*, not rrna/records.*, no species row of its own, counted in the manifest
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi = ncbi_world(tmp)
+            base = dict(kind="18S", accession="GCA_1.1", regions="-", length=40, lsu_complete="f", source="genome",
+                        label_from="assembly")
+            records = [("GCA_1.1_18S_1", "ACGT" * 10, dict(base, record="GCA_1.1_18S_1", taxid=4932, species_taxid=4932,
+                                                            ssu_model="eukarya", confidence="high", flags="-")),
+                       ("GCA_2.1_18S_1", "TTGG" * 10, dict(base, record="GCA_2.1_18S_1", accession="GCA_2.1",
+                                                            taxid=27291, species_taxid=27291, ssu_model="bacteria",
+                                                            confidence="low", flags="ssu_prokaryote")),
+                       ("GCA_3.1_18S_1", "CCAA" * 10, dict(base, record="GCA_3.1_18S_1", accession="GCA_3.1",
+                                                            taxid=4932, species_taxid=4932, ssu_model="archaea",
+                                                            confidence="low", flags="ssu_prokaryote"))]
+            kept, apart = rrna.split_prokaryote(records)
+            self.assertEqual(([n for n, _s, _r in kept], [n for n, _s, _r in apart]),
+                             (["GCA_1.1_18S_1"], ["GCA_2.1_18S_1", "GCA_3.1_18S_1"]))
+            collected = {"genomes": {}, "copy_rows": [], "taxids": set(), "work": tmp, "done": []}
+            out = package.write(os.path.join(tmp, "Eukore_2026.11"), "2026.11", ncbi, collected, [], kept,
+                                rrna_apart=apart)
+            self.assertIsNone(package.check(out, deep=True))
+            self.assertEqual([r["record"] for r in package.read_table(out, "rrna/records.tsv")], ["GCA_1.1_18S_1"])
+            set_apart = package.read_table(out, f"rrna/{rrna.APART}.tsv")
+            self.assertEqual([(r["record"], r["ssu_model"], r["confidence"], r["flags"]) for r in set_apart],
+                             [("GCA_2.1_18S_1", "bacteria", "low", "ssu_prokaryote"),
+                              ("GCA_3.1_18S_1", "archaea", "low", "ssu_prokaryote")])
+            self.assertEqual([n for n, _s in odb.read_fasta(os.path.join(out, "rrna", f"{rrna.APART}.fna.gz"))],
+                             ["GCA_2.1_18S_1", "GCA_3.1_18S_1"])
+            # S. paradoxus, known by the bacterium's SSU alone, is no species of the package
+            self.assertEqual({r["taxid"] for r in package.read_table(out, "species.tsv")}, {"4932"})
+            with open(os.path.join(out, "manifest.json")) as fh:
+                manifest = json.load(fh)
+            self.assertEqual((manifest["counts"]["rrna_records"], manifest["counts"]["rrna_prokaryote_ssu"]), (1, 2))
+            self.assertIn(f"rrna/{rrna.APART}.tsv", manifest["files"])
 
 
 if __name__ == "__main__":
