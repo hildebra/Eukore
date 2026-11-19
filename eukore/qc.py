@@ -26,10 +26,16 @@ Each a column of busco/copies.tsv; a copy failing one is kept and flagged, so th
 
 import argparse
 import collections
+import concurrent.futures
+import contextlib
+import functools
 import glob
 import gzip
 import hashlib
+import importlib
+import itertools
 import os
+import pickle
 import re
 import shutil
 import sys
@@ -787,6 +793,129 @@ def searched_line(base, timing):
 STOP = "helpers.stop"  # in WORK/qc: the final job's end (since 2026-11-15): its helpers waiting for work stop
 REFRESH = 15  # seconds a helper's look at the folders (waiting) serves it, before it looks at them again
 
+# --- passes shared with the helpers (since 2026-11-19) -----------------------------------------------------------------
+# The final job's passes over the genomes whose tasks each run under their genome's claim (organelle.run_claimed: the
+# organelle genes of the assemblies; eukore_build.annotate_one: the gene models' comparison): their tasks listed in
+# WORK/qc/<pass>/pass.pkl, run by the helpers too. A task is run(*args, item) -> (key, result, why), result ELSEWHERE
+# where another node holds the item or made it. Until then the final job ran them alone: the 2026-11-19 build's
+# organelle genes of 3,901 assemblies, ~1 a minute on 60 cores, a day of the final job's 47 hours, its 20 helpers not
+# yet submitted (the package stage's searches submitted them).
+PASS = "pass.pkl"
+PASS_POLL = SEARCH_POLL  # seconds between the final job's looks at the items other nodes hold (shared_results)
+ELSEWHERE = "elsewhere"  # organelle.ELSEWHERE's: a task's result where another node holds its item or made it
+
+
+def write_pass(folder, run, args, items):
+    """A pass' tasks shared with the helpers: run, 'module:function' (importable by a helper: eukore's modules, or
+    eukore_build's from the checkout the helper runs in), called as run(*args, item) -> its file."""
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, PASS)
+    with open(util.part_of(path), "wb") as fh:
+        pickle.dump({"run": run, "args": tuple(args), "items": list(items)}, fh, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(util.part_of(path), path)
+    return path
+
+
+def end_pass(folder):
+    """The pass' tasks taken back from the helpers (its file removed): those a helper runs now end as they will."""
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(os.path.join(folder, PASS))
+
+
+def run_task(run, args, item):
+    """A pass' task in a helper's worker, its function imported by name (pickle's by-name lookup of a function the
+    final job ran as __main__ fails)."""
+    module, name = run.split(":")
+    return getattr(importlib.import_module(module), name)(*args, item)
+
+
+def shared_results(pool, task, items, key_of, finished, wait=True, progress=None, note=lambda: "", poll=None):
+    """util.unordered's results of task over items in pool, the items other nodes hold (a result ELSEWHERE, and not
+    finished(item)) awaited where wait: each tried again every `poll` seconds (default PASS_POLL; a dead node's claim
+    taken over by the task, claim_file), till it is made here or finished -> the results, ELSEWHERE for an item
+    another node made. Without wait, as util.unordered (a SLURM array's tasks: another task's genome is left to it)."""
+    poll = PASS_POLL if poll is None else poll
+    by_key = {key_of(i): i for i in items}
+    pending = []
+    for result in util.unordered(pool, task, items, progress, note):
+        if wait and result[1] == ELSEWHERE and not finished(by_key[result[0]]):
+            pending.append(by_key[result[0]])
+            continue
+        yield result
+    while pending:
+        if progress is not None:
+            progress.tick(f"; {len(pending):,} run by other nodes")
+        time.sleep(poll)
+        again = []
+        for item in pending:
+            if finished(item):
+                yield key_of(item), ELSEWHERE, None
+            else:
+                again.append(item)
+        pending = []
+        for result in util.unordered(pool, task, again, progress, note):
+            if result[1] == ELSEWHERE and not finished(by_key[result[0]]):
+                pending.append(by_key[result[0]])
+            else:
+                yield result
+
+
+def help_pass(path, threads, log=print, busy=lambda: False, poll=SEARCH_POLL):
+    """A helper's share of a pass (its file at path): its tasks run `threads` at a time, in the pass' order (the
+    largest first), each under its item's claim (the task's own), till none is left or busy() (searches of loci
+    waiting: the final job's next step waits on those) or the pass is taken back -> (tasks made here, whether every
+    task was tried)."""
+    try:
+        with open(path, "rb") as fh:
+            got = pickle.load(fh)
+    except FileNotFoundError:  # taken back meanwhile
+        return 0, False
+    except Exception as e:  # noqa: BLE001  a pass this helper cannot read (another checkout's?): left to the others
+        log(f"{path}: not read ({type(e).__name__}: {e}): its tasks left to the other nodes")
+        return 0, True
+    name = os.path.basename(os.path.dirname(path))
+    task = functools.partial(run_task, got["run"], got["args"])
+    items, made, failed, stopped = iter(got["items"]), 0, 0, False
+    began = time.time()
+    with util.process_pool(threads) as pool:
+        running = set()
+        while True:
+            if not stopped and (busy() or not os.path.exists(path)):
+                stopped = True
+            if not stopped:
+                running |= {pool.submit(task, item) for item in itertools.islice(items, max(0, threads - len(running)))}
+            if not running:
+                break
+            done, running = concurrent.futures.wait(running, timeout=poll,
+                                                    return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                try:
+                    key, result, why = future.result()
+                except Exception as e:  # noqa: BLE001  a task's error, never the helper's end
+                    failed += 1
+                    log(f"{name}: a task failed: {type(e).__name__}: {e}")
+                    continue
+                if why:
+                    failed += 1
+                    log(f"{name}: {key} failed: {why}")
+                elif result != ELSEWHERE:
+                    made += 1
+    tried = next(items, None) is None
+    if made or failed:
+        log(f"{name}: {made:,} tasks made here, {failed:,} failed, in {util.duration(time.time() - began)}"
+            + ("" if tried else " (stopped: searches waiting, or the pass taken back)"))
+    return made, tried
+
+
+def shared_passes(root):
+    """The passes under root shared with the helpers -> [(path, its version: mtime and size)]."""
+    out = []
+    for path in sorted(glob.glob(os.path.join(root, "*", PASS))):
+        with contextlib.suppress(OSError):
+            st = os.stat(path)
+            out.append((path, (st.st_mtime_ns, st.st_size)))
+    return out
+
 
 def waiting(root, tool_of):
     """The searches under root not searched yet, by folder (its todo.tsv) -> [(folder, free, held)] in the folders'
@@ -830,7 +959,11 @@ def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, 
     eight helpers were at the SSU models' and then the 18S alignments' 97 parts each (22:24 to 00:56) while the
     final job searched the rRNA checks' three large searches alone (41 m, 45 m and 1 h 38 m; the same checks' later
     searches, with the helpers, 5 minutes each). The final job's next step waits for a short search's end; a long
-    one's is needed at the stage's end alone."""
+    one's is needed at the stage's end alone.
+
+    Since 2026-11-19, with no search left that no node holds, the tasks of the final job's passes over the genomes
+    (shared_passes: the organelle genes of the assemblies, the gene models' comparison) are run here too (help_pass),
+    each under its genome's claim, giving way to a search that comes meanwhile."""
     def tool_of(params):
         return (cmsearch if isinstance(params, CmParams) else cmalign if isinstance(params, CmalignParams)
                 else minimap2 if isinstance(params, MapParams) else vsearch)
@@ -844,7 +977,15 @@ def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, 
             return False
         log(searched_line(base, timing))
         return True
-    done, idle, last = 0, False, time.time()
+    looked = [0.0, False]  # when the folders were last looked at for busy(), and whether a search waited then
+
+    def busy():
+        """Whether a search no node holds waits (a pass' tasks give way to it), looked at every `refresh` seconds."""
+        if time.time() - looked[0] >= refresh:
+            looked[:] = [time.time(), any(entries for _f, entries, _h in waiting(root, tool_of))]
+        return looked[1]
+    done, tasks, idle, last = 0, 0, False, time.time()
+    through = {}  # each pass' version (shared_passes) whose every task this helper tried
     stop = os.path.join(root, STOP)
     while True:
         if idle:
@@ -854,6 +995,7 @@ def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, 
         idle = True
         folders, seen = waiting(root, tool_of), time.time()
         free = [(folder, entries) for folder, entries, _held in folders if entries]
+        left = bool(free)
         while free:
             folder, entries = min(free, key=lambda f: len(f[1]))  # the fewest left: of several the first by name
             if searched(folder, entries.pop(0)):
@@ -861,12 +1003,28 @@ def help_search(root, vsearch, threads, log=print, cmsearch=None, cmalign=None, 
                 if last - seen >= refresh:  # another search's parts may wait since: the folders looked at again
                     break
             free = [f for f in free if f[1]]
+        else:
+            left = False
+        # no search left that no node holds: the passes' tasks (since 2026-11-19), each pass gone through once a
+        # version (the final job retries those other nodes held), given up for a search that comes meanwhile
+        for path, version in ([] if left else shared_passes(root)):
+            if through.get(path) == version:
+                continue
+            made, tried = help_pass(path, threads, log, busy)
+            if made:
+                tasks, idle, last = tasks + made, False, time.time()
+            if tried:
+                through[path] = version
+            else:
+                idle = False  # a search waits, or the pass was taken back: looked at again at once
+                break
         if idle:  # none made here: those other nodes hold tried, a dead node's taken over (search_one)
             for folder, _free, held in folders:
                 for entry in held:
                     if searched(folder, entry):
                         done, idle, last = done + 1, False, time.time()
-    log(f"{done:,} loci searched here; none left" + (" (the final job ended)" if os.path.exists(stop) else ""))
+    log(f"{done:,} loci searched here" + (f", {tasks:,} tasks of the passes made" if tasks else "") + "; none left"
+        + (" (the final job ended)" if os.path.exists(stop) else ""))
     return done
 
 
