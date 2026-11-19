@@ -17,17 +17,20 @@ onto the site publishes it (`rsync -a OUT/release/ <site>/`):
         │                                             16S, COX1, rbcL, ...)
         ├── Eukore_<version>_sketches.zip             the genomes' sourmash sketches, one collection (the package's
         │                                             metadata/sketches.zip, a hard link)
+        ├── Eukore_<version>_protal_sketch.bin        protal's genome sketch of the species (the package's
+        │                                             metadata/protal_sketch.bin, a hard link; since 2026-11-19)
         ├── Eukore_<version>_<table>.gz               each metadata table alone (species, genomes, assembly, ...)
         └── MD5SUMS
 
 Each package file is in one download alone (since 2026-11-17; until then a complete package's tar beside the parts,
 the sketches made again as one .sig.gz and every table copied: OUT held the package three times): the core and the
-parts unpacked side by side make up the package, its sketches.zip apart. A download that is a package file as it is
-(the sketches, a BGZF table) is a hard link to it, copied only where the file system makes none: no second copy in
-OUT. The tables alone are also in the core (tens of MB). Every file is BGZF at level 9 (util.bgzf_open; the sketches a
-zip): gzip to every reader, decompressed on many threads by `bgzip -d -@`. A bundle's tar holds its files under
-Eukore_<version>/ as in the package (package.read_copies reads them unpacked). A rerun keeps the downloads made from
-the same package (its manifest's MD5) and makes those missing.
+parts unpacked side by side make up the package, its sketches.zip and protal_sketch.bin apart (since 2026-11-19; a few
+GB). A download that is a package file as it is (the sketches, a BGZF table) is a hard link to it, copied only where
+the file system makes none: no second copy in OUT. The tables alone are also in the core (tens of MB). Every file is
+BGZF at level 9 (util.bgzf_open; the sourmash sketches a zip, protal's sketch its own format): gzip to every reader,
+decompressed on many threads by `bgzip -d -@`. A bundle's tar holds its files under Eukore_<version>/ as in the
+package (package.read_copies reads them unpacked). A rerun keeps the downloads made from the same package (its
+manifest's MD5) and makes those missing.
 """
 
 import collections
@@ -57,6 +60,8 @@ SOURCE_TEXT = {"NCBI RefSeq": "NCBI's RefSeq assembly", "NCBI GenBank": "NCBI's 
                "organelle genes only": "organelle genes alone (a RefSeq organelle genome, a published record)"}
 TREE_RANKS = ("supergroup", "group", "phylum", "class", "order", "family", "genus", "species")
 SKETCHES = "metadata/sketches.zip"
+PROTAL_SKETCH = "metadata/protal_sketch.bin"  # protal's genome sketch (protal_sketch.py; since 2026-11-19)
+AS_IS = ("sketches", "protal_sketch")  # downloads that are a package file as it is, no BGZF
 TABLES = (("species.tsv", "Species", "one row per species: supergroup, group, NCBI's lineage and six references'"),
           ("genomes.tsv", "Genomes", "each species' genome: accession, quality flags, rRNA copies, genetic code, "
                                      "duplication"),
@@ -471,8 +476,8 @@ def _rrna_organelle(rel):
     return rel.startswith("rrna/") or (rel.startswith("organelle/") and rel != "organelle/molecules.fna.gz")
 
 
-def _core(rel):  # every file no part holds (bundle_of), the sketches apart (their own download)
-    return rel != SKETCHES
+def _core(rel):  # every file no part holds (bundle_of), the sketches apart (their own downloads)
+    return rel not in (SKETCHES, PROTAL_SKETCH)
 
 
 # Each package file in the first bundle that takes it (bundle_of): one copy of it among the downloads (since
@@ -628,7 +633,7 @@ def _download(item, dest, known, log):
     path = os.path.join(dest, item["file"])
     entry = {k: v for k, v in item.items() if k != "make"}
     sketches, made = item["key"] == "sketches", False
-    if os.path.isfile(path) and not sketches and not util.bgzf_whole(path):  # the sketches: a zip, a link
+    if os.path.isfile(path) and item["key"] not in AS_IS and not util.bgzf_whole(path):  # the sketches: links
         log(f"release: {item['file']} of an earlier run is cut short (no BGZF end block): made again")
         os.remove(path)
     if not os.path.isfile(path):
@@ -691,6 +696,14 @@ def downloads(folder, dest, log=print, threads=1):
                               f"package's {SKETCHES})",
                          file=f"{name}_sketches.zip", files=None,
                          make=lambda path: _sketches(os.path.join(folder, SKETCHES), path)))
+    if os.path.isfile(os.path.join(folder, PROTAL_SKETCH)):  # since 2026-11-19: a few GB, in no bundle
+        plan.append(dict(key="protal_sketch", group="protal genome sketch",
+                         title="protal's genome sketch of the species",
+                         what="the genome sketch protal's database build merges into its own (about 10 entries a Mb "
+                              "of each species' genome, its marker genes left out; protal's format, the "
+                              f"package's {PROTAL_SKETCH})",
+                         file=f"{name}_protal_sketch.bin", files=None,
+                         make=lambda path: _link(os.path.join(folder, PROTAL_SKETCH), path)))
     for rel, title, what in TABLES:
         if os.path.isfile(os.path.join(folder, rel)):
             base = os.path.basename(rel)

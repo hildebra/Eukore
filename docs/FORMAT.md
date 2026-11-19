@@ -82,7 +82,7 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 | [`organelle/amplicons.tsv`](#organelle) | in-silico PCR of 8 COI, rbcL, matK, psbA-trnH, 12S and 16S primer pairs | 5 |
 | [`organelle/molecules.fna.gz`](#organelle) | the assemblies' organelle molecules, whole | 4 |
 | [`intraspecific/`](#intraspecific-format-5) | the panel's further assemblies' copies, rRNA and organelle genes; the barcode gap | 5, more in 6 |
-| [`metadata/`](#metadata) | each genome's measures (size, contiguity, GC, masking, telomeres, ...), tetranucleotides, sketches, NCBI's summary, codon evidence | codons: 5 |
+| [`metadata/`](#metadata) | each genome's measures (size, contiguity, GC, masking, telomeres, ...), tetranucleotides, sketches, NCBI's summary, codon evidence, protal's genome sketch | codons: 5; protal's sketch: 7, since 2026-11-19 |
 | [`benchmarks/`](#benchmarks-optional) | the build's measures of the package | |
 
 ## manifest.json
@@ -105,7 +105,11 @@ were there, and its counts: the ends' and flanks' cuts and flags, `ends_and_flan
 `chimeras`), the link files (`links`: PR2's and KSGP's version, file, MD5 and records linked) and EUKARYOME's taxonomy
 (`eukaryome_taxonomy`: EUKARYOME's version, its classification table's file and MD5, the tree's taxa by where they come
 from, `eukaryome` the table, `eukaryome_label` EUKARYOME's records' labels, `ncbi` NCBI's names added, and the NCBI
-taxa by how they were placed);
+taxa by how they were placed); since 2026-11-19 `protal_sketch`, of the protal genome sketch
+`metadata/protal_sketch.bin` (its `file`, the `protal` binary that made it and its `version`, its entries' options
+`kmers`, `kmers_mb`, `kmers_min` and `kmers_max`, its `species` and `genomes`, the copies' `gene_spans` left out,
+when it was `made` and its `state`: `made`, `reused` from an earlier run, or `stale`, a kept sketch whose genomes were
+pruned since, `stale` saying why; `null` where the package holds none);
 `inputs.partial.species_clades` in a trial package limited to those clades, which a user
 should not take for Eukore), `counts` (species, species with rRNA alone, genomes, copies and their
 calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa, `busco_loci`, the
@@ -699,6 +703,21 @@ there; one without a row was not.
 - `sketches.zip` (where sourmash was there): one sourmash FracMinHash signature per genome (`signatures/<accession>.sig.gz`,
   named by its accession; k 21 and 31, scaled 10,000, no abundances), a collection sourmash reads whole: `sourmash
   search`, `compare`, `gather` and ANI against any genome or metagenome sketched alike.
+- `protal_sketch.bin` (since 2026-11-19, where the build was given `--protal`): protal's genome sketch of the package's
+  species, made by protal's own `protal sketch` while the genomes were on disk, in protal's format. protal reads it,
+  Eukore does not: protal's database builds merge it into their own sketch, so that its eukaryote part is made once
+  per Eukore release. Per species about 5,000 entries for a genome of 500 Mb (10 a Mb; `--protal_sketch_kmers` for a
+  genome of `--protal_sketch_mb` Mb), 1,000 to 100,000, scaling with its representative genome's size: windows of that
+  genome that no other species' genome in the sketch holds, off its BUSCO and marker copies (each copy's span from
+  first to last codon, introns and all, as `busco/copies.tsv` places it, Duplicated loci's other copies too, is left
+  out: protal aligns those genes). Its keys are the representatives' accessions (`genomes.tsv`'s `accession`), which
+  protal maps to its own species names. Its species are those of `genomes.tsv` whose representative genome was on
+  disk, but a transcriptome (`source` `tsa`), EukProt's records (`no_assembly`) and a genome whose copies the package
+  leaves out (tier poor, partial or contaminated, without `--keep_poor_genomes`); a species' further assemblies on
+  disk (`source` `assembly` or `intraspecific`) keep their windows out of the other species' entries. The manifest's
+  `inputs.protal_sketch` says what made it. For all eukaryotes ~280 M entries, ~3.4 GB: protal's database build takes a
+  subset (its smallest hashes). Not in the release's core: a download of its own (`Eukore_<version>_protal_sketch.bin`),
+  as the sourmash sketches are; protal reads a package unpacked without it.
 - `ncbi.tsv.gz`: NCBI's assembly_summary row (GenBank's and RefSeq's tables the build read; `inputs.assembly_tables`) of
   every assembly of `genomes.tsv` and of the RefSeq copy fetched: `genome` (its `genomes.tsv` accession), `fetched`
   (`t` for the assembly file Eukore read), then every column of NCBI's tables as NCBI names them (`assembly_accession`,

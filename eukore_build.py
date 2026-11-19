@@ -19,7 +19,8 @@ Stages:
   (mitochondrial and plastid rRNA, mitochondrial COX1) of RefSeq's organelle genomes, and of the assemblies' own
   organelle molecules where RefSeq has none (WORK/organelle);
 - package: the copies' checks across species, the published rRNA reads' regions (WORK/published), the organelle genes
-  of any assembly not searched yet, OUT/genomes (--genomes) cut back to --keep_gb where given (genomes.prune: the
+  of any assembly not searched yet, with --protal protal's genome sketch of the species (since 2026-11-19:
+  eukore/protal_sketch.py), OUT/genomes (--genomes) cut back to --keep_gb where given (genomes.prune: the
   model species' and the smallest kept first; without it no genome file is deleted), then OUT/Eukore_<version>/ and,
   unless --no_release, OUT/release/: the website's data (website/) and the downloads, BGZF (eukore/release.py);
 - release: OUT/release/ again of a finished OUT/Eukore_<version>/.
@@ -68,6 +69,7 @@ from eukore import store  # noqa: E402
 from eukore import tiers as tiers_mod  # noqa: E402
 from eukore import qc as qc_mod  # noqa: E402
 from eukore import versions  # noqa: E402
+from eukore import protal_sketch  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
 TAXDUMP_AGE = 7 * 86400  # a taxdump this much older than the assembly tables is fetched again (fetch_sources)
@@ -478,6 +480,30 @@ def pack_pass(opts):
     store.close()
     say(f"  {len(folders) - len(failed):,} packed"
         + (f", {len(failed):,} failed (left as folders, read as before; e.g. {failed[:2]})" if failed else ""))
+
+
+def protal_step(opts, collected, stages):
+    """protal's genome sketch of the package's species (eukore/protal_sketch.py; since 2026-11-19), with --protal,
+    before the prune deletes the genomes -> (a package writer putting it in as metadata/protal_sketch.bin, or None;
+    the manifest's inputs.protal_sketch, or None where the package holds none). A failure is said, never the build's
+    end."""
+    if not getattr(opts, "protal", None):
+        say(f"protal sketch: none made (no --protal): the package holds no {protal_sketch.IN_PACKAGE}")
+        return None, None
+    with timed(stages, "protal genome sketch", opts):
+        binary = shutil.which(opts.protal)
+        if not binary:
+            say(f"WARNING: --protal {opts.protal}: no such program: no protal sketch in the package")
+            return None, None
+        try:
+            path, about = protal_sketch.build(
+                binary, collected["genomes"], functools.partial(genomes.genome_file, os.path.abspath(opts.genomes)),
+                opts.work, opts.protal_sketch_kmers, opts.protal_sketch_mb, opts.threads, collected.get("dropped", ()),
+                say)
+        except Exception as e:  # noqa: BLE001  the package is written without it
+            say(f"WARNING: protal sketch failed ({type(e).__name__}: {e}): no protal sketch in the package")
+            return None, None
+    return (functools.partial(protal_sketch.into_package, path) if path else None), about
 
 
 def drop_superseded(opts, job_map):
@@ -1978,6 +2004,7 @@ def banner(opts, argv, whence):
                       "passes over all genomes left to a run without it)" if opts.genomes_only
                       else ", then the organelle genes"),
         "package": "the checks across species" + (", FCS-GX's screen" if opts.fcs_gx_db else "")
+                   + (", protal's genome sketch (--protal)" if opts.protal else "")
                    + ("" if opts.no_benchmarks else ", the benchmarks") + f", then OUT/{package_dir}/"
                    + ("" if opts.no_release else " and OUT/release/ (the website's data, the release's bundles)"),
         "release": f"OUT/release/ of OUT/{package_dir}/: the website's data and the release's bundles, BGZF"}
@@ -2154,6 +2181,21 @@ def _main(argv, held):
                                                           "(metadata/sketches.zip; default: sourmash on the PATH, else "
                                                           "none)")
     p.add_argument("--no_sketches", action="store_true", help="no sourmash sketches of the genomes")
+    p.add_argument("--protal", metavar="BIN",
+                   help="protal, which makes its genome sketch of the package's species before the prune (BIN sketch, "
+                        "on -t threads; metadata/protal_sketch.bin, which protal's database builds merge into their "
+                        "own; kept in WORK/protal_sketch/ for a rerun; since 2026-11-19). For all eukaryotes ~280 M "
+                        "entries, ~3.4 GB in the package (a release download of its own), ~20 GB of memory while it "
+                        "runs (4 candidates of 19 bytes an entry). Default: none made (protal is not looked for on the "
+                        "PATH)")
+    p.add_argument("--protal_sketch_kmers", type=int, default=protal_sketch.KMERS, metavar="N",
+                   help="the protal sketch's entries for a species whose genome is --protal_sketch_mb Mb, scaling "
+                        "with its genome's size, from N / 5 to 20 x N (protal sketch --kmers, --kmers_min, "
+                        "--kmers_max; default %(default)s: 10 a Mb, 1,000 to 100,000 a species; protal's database "
+                        "build takes a subset, its smallest hashes)")
+    p.add_argument("--protal_sketch_mb", type=int, default=protal_sketch.MB, metavar="MB",
+                   help="the genome size, Mb, that has --protal_sketch_kmers entries (protal sketch --kmers_mb; "
+                        "default %(default)s)")
     p.add_argument("--refresh", action="store_true",
                    help="fetch again what chooses the genomes and their gene models (NCBI's assembly tables, its "
                         "FCS-GX and ANI reports, Ensembl's, VEuPathDB's and TOGA2's indexes): a species' newer or "
@@ -2276,6 +2318,9 @@ def _main(argv, held):
                 "(fetch,process or process,package)")
     if opts.genomes_only and opts.stages != ("process",):  # `all` would package without the passes
         p.error("--genomes_only: with --stage process alone")
+    if opts.protal_sketch_kmers < 1 or opts.protal_sketch_mb < 1:
+        p.error(f"--protal_sketch_kmers {opts.protal_sketch_kmers}, --protal_sketch_mb {opts.protal_sketch_mb}: "
+                "1 or more each")
     warning = None  # said after the banner
     if opts.scratch:  # checked now, not after the minutes of planning (since 2026-11-08)
         why = scratch_problem(opts.scratch)
@@ -2836,6 +2881,10 @@ def _main(argv, held):
         annotate_pass(opts, job_map, may_fetch="fetch" in opts.stages)
         with timed(stages, "assembly metadata", opts):
             describe_pass(opts, job_map)  # before the prune: measured while the genomes are there
+        # protal's genome sketch of the species (since 2026-11-19, --protal): before the prune, the genomes there
+        sketch_writer, inputs["protal_sketch"] = protal_step(opts, collected, stages)
+        if sketch_writer is not None:
+            writers.append(sketch_writer)
         drop_superseded(opts, job_map)
         # without --keep_gb, every genome kept (since 2026-11-08; the manifest written all the same)
         with genomes.cached_summaries():  # its done genomes read READ_THREADS at once (since 2026-11-11: one by one)

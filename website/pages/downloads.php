@@ -49,7 +49,7 @@ $stats = release_json('stats.json');
 <p>A bundle unpacks into the package's own folder, <code><?= h($listing['package'] ?? 'Eukore_<version>') ?>/</code>, its files where
   the package has them. Each file of the package is in one bundle only: take the core (the manifest, the species and
   genome tables, the taxonomy) with any part, and the core with every part unpacked side by side is the whole
-  package (its sketches apart, a download of their own).</p>
+  package (its sketches apart, sourmash's and protal's, downloads of their own).</p>
 <?php $p = h($listing['package'] ?? 'Eukore_2026.11'); ?>
 <pre><code># each file as published
 md5sum -c MD5SUMS
