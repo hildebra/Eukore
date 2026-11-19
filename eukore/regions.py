@@ -15,7 +15,7 @@ import tempfile
 import time
 
 from . import align as align_mod
-from . import util
+from . import util, versions
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REGIONS = os.path.join(HERE, "data", "rrna_regions.tsv")
@@ -140,7 +140,7 @@ def ssu_models(seqs, cm, cmsearch="cmsearch", threads=1, tmp=None, work=None, se
     digest = util.md5(cm) if os.path.isfile(cm) else None
     if folder and digest:
         key = hashlib.md5("\n".join([digest, repr(SSU_MODELS), str(SSU_MARGIN)]).encode())
-        stem = os.path.join(folder, "cmalign", f"models.{key.hexdigest()[:10]}")
+        stem = os.path.join(folder, "cmalign", f"models.{key.hexdigest()[:10]}{versions.tag('ssu_models')}")
     cache = util.cache_read(stem) if stem else {}
     order = {_digest(seq): seq for seq in distinct if _digest(seq) not in cache}
     if order:
@@ -391,10 +391,11 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print, tmp
     # aligned, so that a killed run kept none; and an 18S cmalign failed on was cached as one without regions, never
     # aligned again: now left out, tried again by the next run). Its name is the digest of all its regions depend on:
     # the model, the regions table, the reference, SLACK, MAX_SSU (since 2026-11-08: the model's alone, an edited
-    # regions table's regions never placed); one file per process (since 2026-11-08: two package stages on one WORK
-    # appended to one, their lines interleaved), all read
+    # regions table's regions never placed), and the step ssu_regions' MAJOR from 2 on (versions.tag, since
+    # 2026-11-19); one file per process (since 2026-11-08: two package stages on one WORK appended to one, their lines
+    # interleaved), all read
     key = hashlib.md5("\n".join([util.md5(cm), util.md5(REGIONS), reference(), str(SLACK), str(MAX_SSU)]).encode())
-    stem = os.path.join(work, "cmalign", f"ssu.{key.hexdigest()[:10]}") if work else None
+    stem = os.path.join(work, "cmalign", f"ssu.{key.hexdigest()[:10]}{versions.tag('ssu_regions')}") if work else None
     cache = util.cache_read(stem) if stem else {}  # a line a killed run cut: aligned again
     # the 18S this cmalign failed on (since 2026-11-10, a cache of their own: every run aligned them again, each
     # failing batch in its halves, to fail again): kept under the digest of the model, the matrix limit and the
@@ -403,7 +404,8 @@ def run(records, cm, cmalign_bin="cmalign", threads=1, work=None, log=print, tmp
     failed_stem = None
     if work:
         failed_key = hashlib.md5("\n".join([util.md5(cm), str(MXSIZE), _program(cmalign_bin)]).encode())
-        failed_stem = os.path.join(work, "cmalign", f"unaligned.{failed_key.hexdigest()[:10]}")
+        failed_stem = os.path.join(work, "cmalign",
+                                   f"unaligned.{failed_key.hexdigest()[:10]}{versions.tag('ssu_regions')}")
     unaligned = util.cache_read(failed_stem) if failed_stem else {}
     ssu = {}
     for name, seq, row in records:

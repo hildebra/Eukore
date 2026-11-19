@@ -429,8 +429,9 @@ class ResumeTest(unittest.TestCase):
 
     def test_a_task_after_nothing_left_ends_at_once(self):
         # since 2026-11-16: a --genomes_only task that found no genome left writes WORK/process.nothing_left; a later
-        # task with the same code, options, sources and genomes ends before it reads the taxonomy; a source changed (a
-        # fetch since) or another option, it runs
+        # task with the same steps' versions (since 2026-11-19; the code's text until then: test_versions), options,
+        # sources and genomes ends before it reads the taxonomy; a source changed (a fetch since) or another option, it
+        # runs
         import contextlib  # noqa: PLC0415
         import io  # noqa: PLC0415
         import eukore_build  # noqa: PLC0415

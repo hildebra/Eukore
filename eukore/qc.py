@@ -36,7 +36,7 @@ import sys
 import tempfile
 import time
 
-from . import util
+from . import util, versions
 
 NEAR = 1.0
 FOREIGN_ID = 90.0
@@ -51,7 +51,7 @@ CROSS_MIN = 3
 SEARCHED = "loci searched (vsearch)"
 SEARCH_LIMITS = (32, 256)       # vsearch's --maxaccepts and --maxrejects of a locus' search
 SEARCH_OPTIONS = ("--self",)
-SEARCH_RECORD = 1               # what makes a kept search (searched_loci): raised when its options or files change
+SEARCH_RECORD = versions.major("qc_search")  # what makes a kept search (searched_loci): versions.STEPS
 SEARCH_POLL = 30                # seconds between looks at the loci other nodes search
 # The bases of a copy compared across species (check; since 2026-11-17): its first CHECK_BASES. vsearch aligns two
 # sequences whole, and past some 5 kb each it leaves its fast aligner. The 2026-11-17 build's organelle step took
@@ -345,10 +345,10 @@ class Params(tuple):
 
 
 DEFAULT = Params()
-CM_RECORD = 1  # what makes a kept cmsearch part (CmParams): raised when util.CMSEARCH_OPTIONS or its table change
+CM_RECORD = versions.major("qc_cmsearch")  # what makes a kept cmsearch part (CmParams): versions.STEPS
 
 
-CMALIGN_RECORD = 1  # what makes a kept cmalign part (CmalignParams): raised when regions.align_file's lines change
+CMALIGN_RECORD = versions.major("qc_cmalign")  # what makes a kept cmalign part (CmalignParams): versions.STEPS
 
 
 class CmalignParams(tuple):
@@ -385,10 +385,8 @@ class CmParams(tuple):
         return ["cmsearch", self[0], self[1], "-"]
 
 
-MAP_RECORD = 1  # what makes a kept window-screen part (MapParams): raised when chimeras.map_file's lines change
-# what makes a kept UCHIME part (UchimeParams): raised when chimeras.uchime_file's lines change; 2 (2026-11-15): the
-# whole database, a query's own record left out by --self
-UCHIME_RECORD = 2
+MAP_RECORD = versions.major("qc_window_screen")  # what makes a kept window-screen part (MapParams): versions.STEPS
+UCHIME_RECORD = versions.major("qc_uchime")  # what makes a kept UCHIME part (UchimeParams): versions.STEPS
 
 
 class MapParams(tuple):

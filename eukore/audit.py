@@ -42,7 +42,7 @@ import tempfile
 
 import numpy as np
 
-from . import primers as primers_mod, rrna, util
+from . import primers as primers_mod, rrna, util, versions
 
 K = 25              # a vector's match: this many bases or more (NCBI's VecScreen: a terminal match of 24-25 bases)
 LOW_SHARE = 0.6     # a K-mer of low complexity: this share of it one base
@@ -364,7 +364,7 @@ def end_cuts(seq, unit, vector_spans, primer_hits):
 
 
 
-AUDIT_RECORD = 1  # what makes a read's cached audit (audit_text): raised when the ends' or flanks' rules change
+AUDIT_RECORD = versions.major("rrna_audit")  # what makes a read's cached audit (audit_text): versions.STEPS
 MEDIUM = {"flank", "chimera_cut", "chimera_weak", "chimera_recurrent"}  # the audit's flags of tier medium; else low
 PUBLISHED = ("EUKARYOME", "ROD")  # the sources audited
 _VECTORS = {}  # {UniVec folder: Vectors}, built once a process

@@ -67,16 +67,16 @@ from eukore import __version__  # noqa: E402
 from eukore import store  # noqa: E402
 from eukore import tiers as tiers_mod  # noqa: E402
 from eukore import qc as qc_mod  # noqa: E402
+from eukore import versions  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
 TAXDUMP_AGE = 7 * 86400  # a taxdump this much older than the assembly tables is fetched again (fetch_sources)
 NO_ASSEMBLY = os.path.join(sources.DATA, "no_assembly.fna.gz")
 PUBLISHED_BATCH = 250  # published reads a barrnap + ITSx run
-# the published reads' regions, kept in WORK/published: a new name where their borders change (2: ITSx's guessed 5.8S
-# borders no longer taken, 2026-11-06; 3: regions on the record, not the unit, and the read's strand, 2026-11-06;
-# 4: an 18S read's 18S alone, each read's audit of its ends and flanks, 2026-11-14), so that a rerun annotates them
-# again (its batches named anew: published_batches)
-PUBLISHED_REGIONS = "regions.4.tsv"
+# the published reads' regions, kept in WORK/published: a new name where their borders change (the step
+# published_regions' MAJOR, versions.STEPS, its history there), so that a rerun annotates them again (its batches named
+# anew: published_batches)
+PUBLISHED_REGIONS = f"regions.{versions.major('published_regions')}.tsv"
 FCS_THREADS = 4  # cores of each FCS-GX run (GX_NUM_CORES); -t / FCS_THREADS runs at once
 PACK_THREADS = 8  # done folders packed at once (pack_pass: small files read, one written)
 QC_TASKS_GUESS = 8  # the helpers --qc_helpers starts where --qc_tasks does not say (tools/eukore.conf.example's)
@@ -625,15 +625,13 @@ VOLATILE = {"-t", "--threads", "-j", "--jobs", "--memory_gb", "--local_tmp", "--
 
 
 def process_fingerprint(opts, src_dir, argv):
-    """What a --genomes_only task's work depends on, as a digest (since 2026-11-16): the build's code (every module),
-    its options (VOLATILE's left out), the VEuPathDB key's presence, the sources' files (their names, sizes and times:
+    """What a --genomes_only task's work depends on, as a digest (since 2026-11-16): the steps' MAJORs
+    (versions.digest; until 2026-11-19 the text of every module, so that any edit made the array's tasks plan again),
+    the options (VOLATILE's left out), the VEuPathDB key's presence, the sources' files (their names, sizes and times:
     a fetch that changes one, the taxdump, the tables, changes it), WORK's own queries and unavailable genomes, and the
     genomes folder's files (a genome fetched since)."""
     h = hashlib.sha1()
-    here = os.path.dirname(os.path.abspath(__file__))
-    for path in sorted([os.path.abspath(__file__)] + glob.glob(os.path.join(here, "eukore", "*.py"))):
-        with open(path, "rb") as fh:
-            h.update(os.path.basename(path).encode() + b"\0" + fh.read())
+    h.update(f"steps\t{versions.digest()}\n".encode())
     args, skip = [], False
     for a in argv:
         if skip:
@@ -2022,6 +2020,8 @@ def banner(opts, argv, whence):
     rows.append(("record", f"genome record {genomes.GENOME_RECORD}: "
                  + ("every done genome stamped with it, its calls kept (--reversion)" if opts.reversion else
                     "a done genome of an older one is run again")))
+    # the steps' versions (since 2026-11-19): a kept result of another MAJOR is made again
+    rows.append(("steps", versions.text()))
     rule = "=" * 100
     return "\n".join([rule, f" Eukore {__version__}: the standalone eukaryote reference's build",
                       f" {datetime.datetime.now():%Y-%m-%d %H:%M:%S} on {socket.gethostname()} (pid {os.getpid()}), "
@@ -2335,8 +2335,8 @@ def _main(argv, held):
         fingerprint = process_fingerprint(opts, src_dir, sys.argv[1:] if argv is None else argv)
         stamp = nothing_left(opts.work, fingerprint)
         if stamp:
-            say(f"process stage: nothing left to run (WORK/{NOTHING_LEFT}: {stamp}), the same code, options, sources "
-                "and genomes: this task ends")
+            say(f"process stage: nothing left to run (WORK/{NOTHING_LEFT}: {stamp}), the same steps' versions, "
+                "options, sources and genomes: this task ends")
             return 0
     try:
         ncbi = ncbi_mod.Ncbi(os.path.join(src_dir, "taxdump.tar.gz"))
