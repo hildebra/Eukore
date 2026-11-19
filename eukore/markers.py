@@ -52,7 +52,7 @@ import tempfile
 import time
 import urllib.request
 
-from . import util
+from . import util, versions
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TABLE = os.path.join(HERE, "data", "markers.tsv")
@@ -66,7 +66,7 @@ STATE = "markers.json"
 SET = ("hmms", "decoys", "scores_cutoff", "links_to_ODB12.txt", "hmm_spans", "members.tsv", "refseq_db.faa.gz", STATE)
 OLD = ".old"  # the set a build replaces, for the moment of the swap (swap())
 RECHECK = "recheck."  # recheck()'s cache in the folder: recheck.<digest>.tsv.gz
-RECIPE = 1  # the build's rules: raised with a change of them that none of recipe()'s constants shows
+RECIPE = versions.major("markers")  # the build's rules: raised with a change none of recipe()'s constants shows
 KOFAM = "https://www.genome.jp/ftp/db/kofam"
 SWISSPROT = ("https://ftp.ebi.ac.uk/pub/databases/uniprot/current_release/knowledgebase/complete/"
              "uniprot_sprot.fasta.gz")  # its eukaryote proteins: the candidates (UniProt's REST export is too slow)

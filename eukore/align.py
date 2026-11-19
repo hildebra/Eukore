@@ -11,7 +11,7 @@ import os
 import subprocess
 import tempfile
 
-from . import util
+from . import util, versions
 
 AMINO = "ACDEFGHIKLMNPQRSTVWY"  # HMMER's order of the match emissions
 
@@ -93,7 +93,8 @@ def align_locus(hmm, proteins, hmmalign="hmmalign", cache=None, tmp=None):
     if not proteins or not hmm or not os.path.isfile(hmm):
         return {}
     key_of = {n: hashlib.md5(p.replace("*", "X").encode()).hexdigest() for n, p in proteins.items() if p}
-    stem = os.path.join(cache, f"{os.path.basename(hmm)[:-4]}.{util.md5(hmm)[:16]}") if cache else None
+    stem = os.path.join(cache, f"{os.path.basename(hmm)[:-4]}.{util.md5(hmm)[:16]}{versions.tag('protein_rows')}") \
+        if cache else None
     rows = util.cache_read(stem) if stem else {}
     todo = {k: proteins[n].replace("*", "X") for n, k in key_of.items() if k not in rows}
     if todo:

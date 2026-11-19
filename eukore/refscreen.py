@@ -54,7 +54,7 @@ import subprocess
 import tempfile
 import threading
 
-from . import util
+from . import util, versions
 
 WINDOW, STEP, VERIFY_STEP = 300, 150, 50
 MIN_LENGTH = 150      # shorter records are not screened
@@ -77,7 +77,7 @@ COPIES = 200         # the check: minimap2's secondary hits a window (its copies
 OPEN_AT_ONCE = 200   # the check's own-clade references written this many clades at a time (a node's ulimit -n: 1024)
 ACCEPTS, REJECTS = 100, 400  # the check: vsearch's hits a window (its relatives), and the rejects it tries
 RANKS = ("phylum", "class", "order")
-VERSION = "1"         # raised where the screen's rules change: a build's kept screen of another version is run again
+VERSION = str(versions.major("reference_screen"))  # a build's kept screen of another one is run again (versions.STEPS)
 CALLS = ("misnamed", "chimera", "other_gene", "weak", "cleared")
 CALL_COLUMNS = ("record", "gene", "taxid", "species_taxid", "length", "call", "action", "keep_start", "keep_end",
                 "clade", "label_clade", "identity", "relatives", "own_clade", "windows", "layout", "targets")

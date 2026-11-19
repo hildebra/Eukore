@@ -31,7 +31,7 @@ import time
 
 import numpy as np
 
-from . import util
+from . import util, versions
 from .copies import revcomp  # IUPAC's codes too (the copies' and the records' one table)
 
 MOTIFS = ("GTGCCAGCAGCCGCGGTAA", "AAACTTAAAGGAATTGACGG", "GGTGGTGCATGGCCGTTCTTAGTT")  # 18S ~570, ~1,140, ~1,200
@@ -53,8 +53,8 @@ MAX_SSU_LEN = 10000
 JOIN_SHARE = 1.3
 MAX_LSU_SPAN = 15000
 # the saved extractions' 18S records of joined pieces extracted again from their own sequence with these limits
-# (resplit; raised when joined's rule changes again)
-JOIN_RECORD = 1
+# (resplit): the step rrna_join's MAJOR (versions.STEPS)
+JOIN_RECORD = versions.major("rrna_join")
 MAX_ITS = 3000      # the 5.8S's end to the 28S: at most (EUKARYOME 2.1's longest by barrnap: 2,551, Phaeocystis)
 # the 18S's end to the 5.8S: at most (since 2026-11-10; until then MAX_ITS: of EUKARYOME 2.1's long reads 24 have an
 # ITS1 of 3,030-4,272 by barrnap, opossum 3.1 kb, fungus gnats 3.1 kb, Trinematidae 3.4-3.8 kb, Ceramium 3.0 kb,

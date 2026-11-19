@@ -473,7 +473,7 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--genomes DIR` | `OUT/genomes` | the genomes' folder: the fetch stage downloads each species' genome, its gene models and NCBI's assembly report into it, the process stage reads them from it, the package stage cuts it back to `--keep_gb`; the same for every stage (since 2026-11-09) |
 | `--sources DIR` | `WORK/sources` | the sources' folder: the fetch stage downloads into it what every other stage reads (NCBI's taxonomy and assembly tables, BUSCO's dataset, the marker set, the references' files); a folder of its own keeps them on a file system that keeps its files while WORK is elsewhere, e.g. on scratch. Builds may share it: a fetch takes its lock there too, one at a time. A moved folder serves as it was. A stage other than fetch stops at once without it (its `taxdump.tar.gz`); the same for every stage (since 2026-11-11) |
 | `--stage` | `all` | `fetch`, `process`, `package` or `all` (the three in turn); stages that follow one another, with commas: `process,package`, `fetch,process` (one run, one plan; since 2026-11-10); `release`: `OUT/release/` again of a finished `OUT/Eukore_<version>/` (since 2026-11-09) |
-| `--genomes_only` | | with `--stage process`: run the genomes, then the passes that take one genome at a time under its claim (since 2026-11-10: the backfill, the assembly metadata, the done folders' packing; since 2026-11-11 the organelle genes and the gene models' comparison, without fetching), and stop; the passes over all genomes (intraspecific panel, gene models to fetch) and what the runs left to a run without it after them all (`--stage process,package`: it waits for the genomes other runs still hold, runs what they left, then makes the passes and the package); for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages), `tools/eukore.sh`; since 2026-11-09). Since 2026-11-16 a run that found no genome left to run writes `WORK/process.nothing_left` with a digest of the code, options (but threads and the like), sources and genomes folder; a later run with the same digest ends within seconds, before reading the taxonomy (an array's tasks started after the work was done) |
+| `--genomes_only` | | with `--stage process`: run the genomes, then the passes that take one genome at a time under its claim (since 2026-11-10: the backfill, the assembly metadata, the done folders' packing; since 2026-11-11 the organelle genes and the gene models' comparison, without fetching), and stop; the passes over all genomes (intraspecific panel, gene models to fetch) and what the runs left to a run without it after them all (`--stage process,package`: it waits for the genomes other runs still hold, runs what they left, then makes the passes and the package); for several runs on one WORK, e.g. a SLURM array ([A full build](#a-full-build-in-three-stages), `tools/eukore.sh`; since 2026-11-09). Since 2026-11-16 a run that found no genome left to run writes `WORK/process.nothing_left` with a digest of the steps' MAJORs ([since 2026-11-19](#when-a-step-runs-again-the-steps-versions); the code's text until then), options (but threads and the like), sources and genomes folder; a later run with the same digest ends within seconds, before reading the taxonomy (an array's tasks started after the work was done) |
 | `--done_folders` | | keep each genome's results as a folder of 8-14 small files (`WORK/done/<accession>/`, as every build before 2026-11-10) rather than one file (`WORK/done/<accession>.zip`, the default: for all eukaryotes some 30,000 files in place of 300,000 in 30,000 folders on the shared file system). Either way a WORK holding the other form is read as it is; without this flag the process stage packs the folders it finds |
 | `--no_release` | | the package stage writes no `OUT/release/` (the website's data and the downloads, a second copy of the package: since 2026-11-09 written last by default) |
 | `--groups` | all six | NCBI's assembly groups: `fungi`, `protozoa`, `plant`, `invertebrate`, `vertebrate_mammalian`, `vertebrate_other` (comma-separated) |
@@ -563,6 +563,48 @@ assembly tables, its FCS-GX and ANI reports, and Ensembl's, VEuPathDB's and TOGA
 its download fails). The next plan then takes NCBI's newer assemblies, and the rules above fetch and run what changed.
 Without it, these sources stay as first fetched; the taxdump is fetched again whenever NCBI's is newer (since
 2026-11-16), with or without `--refresh`.
+
+#### When a step runs again: the steps' versions
+
+A kept result is taken by a later run where what it was made from is the same: its inputs (the sources' files, the
+genome, the models, the options) and the version of the step that made it. Eukore's code itself is never compared:
+an edit to it, a new Eukore, runs nothing again by itself (since 2026-11-19; until then the process stage's
+`WORK/process.nothing_left` held a digest of every module's text, so that any edit, a comment's too, sent a SLURM
+array's tasks through the plan again).
+
+Each step that keeps a result has a version, `MAJOR.MINOR`, in one place: `eukore/versions.py` (`STEPS`, each step's
+history beside it). Its kept results hold the MAJOR that made them (in `done.json`, in their key or in their file's
+name); a run makes again those of another MAJOR.
+- A change to a step's code that leaves its results as they were (a crash or its speed fixed, a message, a refactor)
+  raises its MINOR: nothing is run again.
+- A change that changes its results (another call, rule, threshold, column) raises its MAJOR, the MINOR back to 0:
+  the next run makes every kept result of the step again (a genome's unless `--reversion`), so that a package never
+  mixes the results of two MAJORs.
+
+The build's banner names every step's version (`steps`), and the package's `manifest.json` keeps them (`steps`). Where
+a step's key holds the values of its rules (RefSeq's parsing rules, the marker set's recipe, the rRNA joins' limits,
+the organelle searches' thresholds), a changed value makes its results again as a raised MAJOR would.
+
+| step | version | its kept results, where the MAJOR is |
+|---|---|---|
+| `genome` | 4.0 | a genome's run: `done.json`'s `genome_record` (`genomes.GENOME_RECORD`; `--reversion` above) |
+| `process_plan` | 1.0 | which genomes and passes a process run takes: `WORK/process.nothing_left` holds every step's MAJOR |
+| `protein_rows` | 1.0 | a locus' proteins' hmmalign rows, `WORK/align/<locus>.<HMM's MD5>` |
+| `qc_search`, `qc_cmsearch`, `qc_cmalign`, `qc_window_screen` | 1.0 | the checks' kept search parts in `WORK/qc/`: in their key |
+| `qc_uchime` | 2.0 | the kept UCHIME parts: in their key |
+| `ssu_models`, `ssu_regions` | 1.0 | the 18S' model calls and variable regions, `WORK/cmalign/models.*`, `ssu.*`, `unaligned.*` |
+| `rrna_audit` | 1.0 | a read's audit of its ends and flanks, in the regions caches' lines |
+| `rrna_join` | 1.0 | the 18S of joined pieces extracted again, `WORK/rrna/joined.*` |
+| `published_regions` | 4.0 | the published reads' regions, `WORK/published/regions.4.tsv` |
+| `markers` | 1.0 | Eukore's own marker set, `SOURCES/eukore_markers/` (its state's `recipe`) |
+| `organelle` | 5.0 | RefSeq's parsed organelle genes, `WORK/organelle/refseq_*`, and each assembly's search |
+| `organelle_candidates`, `organelle_one` | 1.0 | an assembly's search of its candidate contigs, and of one organelle a molecule |
+| `midori2_choice`, `reference_screen` | 1.0 | the MIDORI2 records screened and the screen's result, `WORK/reference_screen/<key>/` |
+
+A step that had no version before 2026-11-19 (`protein_rows`, `ssu_models`, `ssu_regions`) takes its MAJOR into
+its files' names from 2 on (`.v2`), so that its results kept until then stay good at 1. The steps whose results are
+kept only by their file being there (a done genome's metadata, sketch, FCS-GX table, gene models' comparison and
+backfilled steps, the rRNA donors, the release's downloads) have no version yet: none is made again but by deleting it.
 
 ### What a build leaves
 

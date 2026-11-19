@@ -86,7 +86,9 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 | [`benchmarks/`](#benchmarks-optional) | the build's measures of the package | |
 
 ## manifest.json
-`format` (7; a reader of 7 also takes 6, 5 and 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, e.g. `0.2.6`), `built` (ISO time),
+`format` (7; a reader of 7 also takes 6, 5 and 4), `version` (`YYYY.MM`), `eukore` (the version of Eukore that built it, e.g. `0.2.6`),
+`steps` (since 2026-11-19: the version, `MAJOR.MINOR`, of each of the build's steps that keeps results for later
+runs, `eukore/versions.py`; its kept results are of these MAJORs: [building.md](building.md#when-a-step-runs-again-the-steps-versions)), `built` (ISO time),
 `inputs` (BUSCO's dataset and its date, the taxdump's MD5,
 EUKARYOME's and ROD's versions, NCBI's assembly tables' MD5s, the `groups` built, the no-assembly records' MD5, RefSeq's
 organelle release files' MD5s (`refseq_organelle`), NCBI's FCS-GX and ANI reports' MD5s (`ncbi_quality`), the 18S

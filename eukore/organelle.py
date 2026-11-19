@@ -29,7 +29,7 @@ import subprocess
 import tempfile
 import time
 
-from . import gencode, rrna, util
+from . import gencode, rrna, util, versions
 
 REFSEQ_RELEASE = "https://ftp.ncbi.nlm.nih.gov/refseq/release"
 RELEASE_FILE = re.compile(r"\b((mitochondrion|plastid)\.\d+\.genomic\.gbff\.gz)\b")
@@ -75,14 +75,9 @@ CACHE_COLUMNS = ("seqid", "organelle", "taxid", "record_length", "gene", "start"
                  "transl_table",  # since 2026-11-10: a CDS's own /transl_table, `-` where it names none (table_of)
                  "transl_except")  # since 2026-11-10 (cache 3): its /transl_except codons (transl_excepts), or `-`
 # What RefSeq's parsed genes (refseq_genes) and an assembly's search file (assembly_pass) were made by, part of their
-# keys since 2026-11-10: to be raised where record_genes', the searches' or the models' logic changes what they hold.
-# Until then (1, never written) a cache outlived such a change. 2: /pseudo, the longest feature, /codon_start,
-# /transl_table, the spacer across the origin. 3 (2026-11-10), on two branches at once: /transl_except on one; on
-# the other a kinetoplastid's 12S its LSU (rrna_gene) and miniprot's model in place of nhmmer's single hit that is
-# not the gene's coding sequence (with_miniprot). 4: the two together, so that a cache either branch wrote is made
-# again. 5 (2026-11-15, the audit's O1 and O2): a gene read along its molecule spans its first base to its last
-# (turns_of), a candidate contig's genes kept only beside a protein-coding gene of its organelle.
-CACHE_VERSION = 5
+# keys since 2026-11-10: the organelle step's MAJOR (versions.STEPS["organelle"], its history there; since 2026-11-19),
+# raised where record_genes', the searches' or the models' logic changes what they hold.
+CACHE_VERSION = versions.major("organelle")
 ASSEMBLY_COLUMNS = ("gene", "organelle", "seqid", "start", "end", "strand", "exons", "copies", "partial", "sequence",
                     "parts", "model",  # parts, model: since 2026-11-07
                     "candidate")  # since 2026-11-15: t where the gene is on a candidate contig (candidate_molecules)
@@ -699,11 +694,13 @@ CANDIDATE_ANIMAL = (13_000, 25_000)
 CANDIDATE_PLASTID = (100_000, 250_000)
 CANDIDATE_GC_DROP = 0.08
 CANDIDATES = 30
-CANDIDATE_RECORD = "candidates1"  # in the search's models key: raised when the rules above change
+# in the search's models key: the step organelle_candidates' MAJOR (versions.STEPS), raised when the rules above change
+CANDIDATE_RECORD = f"candidates{versions.major('organelle_candidates')}"
 MITO_OWN = ("COX1", "COX3")  # a mitochondrion's protein-coding genes no plastid holds a homologue of
-# in the search's models key of a species that can hold a plastid (search_models): raised when the rules of one molecule,
-# one organelle change (a fungus' or an animal's search is not changed by them, nor searched again)
-ONE_ORGANELLE = "one_organelle1"
+# in the search's models key of a species that can hold a plastid (search_models): the step organelle_one's MAJOR
+# (versions.STEPS), raised when the rules of one molecule, one organelle change (a fungus' or an animal's search is not
+# changed by them, nor searched again)
+ONE_ORGANELLE = f"one_organelle{versions.major('organelle_one')}"
 
 # An assembly's search on several threads (since 2026-11-16). The pass runs -t assemblies at once, each on one thread
 # until then: the 2026-11-16 build's final job searched its last 79 assemblies in 3 h 28 m, the last hour one
@@ -1339,7 +1336,7 @@ MIDORI2_LENGTHS = {"SSU": (250, 3000), "COX1": (300, 2400), "CYTB": (300, 1600),
                    "atp6": (200, 1100), "atp8": (100, 400), "COX2": (200, 1200), "COX3": (250, 1300),
                    "nad1": (300, 1600), "nad2": (300, 1700), "nad3": (150, 600), "nad4": (400, 2200),
                    "nad4L": (150, 500), "nad5": (500, 2900), "nad6": (200, 850)}
-CHOICE_RECORD = 1  # what makes the screen's choice (midori2_choice): raised when its rules change
+CHOICE_RECORD = versions.major("midori2_choice")  # what makes the screen's choice (midori2_choice): versions.STEPS
 
 
 def midori2_choice(paths, ncbi, log=None):

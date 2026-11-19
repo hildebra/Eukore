@@ -16,7 +16,7 @@ import sys
 from . import gencode
 from . import qc
 from . import store
-from . import util
+from . import util, versions
 from . import __version__
 
 FORMAT = 7
@@ -939,6 +939,7 @@ def write(out, version, ncbi, collected, loci, rrna=None, genomes_folder=None, i
     for _n, _s, row in organelle:
         kinds_of[int(row["species_taxid"])].add(row["organelle"])
     manifest = {"format": FORMAT, "version": version, "eukore": __version__,
+                "steps": dict(versions.STEPS),  # the build's steps' versions (since 2026-11-19)
                 "built": datetime.datetime.now().isoformat(timespec="seconds"),
                 "inputs": inputs,
                 "counts": {"species": sum(1 for r in rows if r["representative"] != "-"),

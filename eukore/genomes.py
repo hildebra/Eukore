@@ -41,7 +41,7 @@ from . import annotation as annotation_mod
 from . import loci as loci_mod
 from . import metadata as metadata_mod
 from . import odb as odb_mod
-from . import placement, quality, species, store, util
+from . import placement, quality, species, store, util, versions
 
 EXCLUDE = {"contaminated", "unverified source organism", "misassembled", "chimeric", "low quality sequence"} \
     | quality.EXCLUDE
@@ -63,19 +63,13 @@ LOCI_COLUMNS = ("locus", "status", "contig", "contig_length", "start", "end", "s
 # package takes one where the chosen copy's lineage does not fit (package.collect). Their rows are LOCI_COLUMNS' with
 # `alt` (1, 2, ...) first; their copies >locus|alt; their features with `alt` after the locus.
 ALTERNATES = ("alternates.tsv", "alternates.fna", "alternates_features.tsv")
-# The genome record (since 2026-11-09): what made a done genome's calls, in its done.json's `genome_record`. A change to
-# what a genome's run makes (its calls, copies, features) that a package should not mix with older runs' is a new
-# record: a done genome of an older one is run again (fetched again where pruned), unless the build's --reversion
-# stamps it with this one (its calls then kept as they are). A done.json without one is of record 1.
-# 1: the runs until 2026-11-09.
-# 2: the coding sequence checked against the protein confirmed and recovered (loci.cds_state, cds_check); a region's
-#    clean alignment first; a Duplicated locus' other complete copies kept whole (ALTERNATES); an annotated model
-#    with a stop inside, or a fusion, not taken.
-# 3: a copy split across contigs joined (loci.join_split, `model` joined; since 2026-11-14), the first pass' miniprot
-#    at the join's --outs and its alignments of loci.OUTS taken from those.
-# 4: a call complete against its query protein's own HMM coverage (odb.relative; since 2026-11-15): a lineage's whole
-#    genes no longer Fragmented where its proteins lack a stretch of the profile.
-GENOME_RECORD = 4
+# The genome record (since 2026-11-09): what made a done genome's calls, in its done.json's `genome_record`: the genome
+# step's MAJOR (versions.STEPS["genome"], its history there; since 2026-11-19). A change to what a genome's run makes
+# (its calls, copies, features) that a package should not mix with older runs' raises it: a done genome of an older
+# one is run again (fetched again where pruned), unless the build's --reversion stamps it with this one (its calls then
+# kept as they are). A done.json without one is of record 1. A change that leaves the calls as they were raises the
+# step's MINOR: no genome is run again.
+GENOME_RECORD = versions.major("genome")
 
 
 def safe(name):
