@@ -246,6 +246,65 @@ class CandidateTest(unittest.TestCase):
                              [("COX1", "mitochondrion", "ctgA", "t")])
             self.assertIn("candidate_contig", organelle.confidence(dict(rows[0], own_species="t"))[1])
 
+    def test_a_plastome_with_a_petb_like_hit_under_one_organelle(self):
+        # since 2026-11-19: Galdieria partita's assembly titles its chloroplast AP025529.1 and no mitochondrion; the
+        # chloroplast was also the mitochondrion's candidate, its petB and petD the mitochondrion's partial CYTB (the
+        # protein-coding gene a candidate needed), its 16S the SSU: one molecule under both organelles, one record name
+        # twice. A titled molecule is no candidate; in a species that can hold a plastid an untitled plastome is no
+        # mitochondrion's candidate without a COX1 or COX3, and stays the plastid's; a mitochondrion's contig with its
+        # COX1 stays the mitochondrion's; a fungus' candidate needs a protein-coding gene alone, as before
+        from unittest import mock  # noqa: PLC0415
+        plastome = "AP025529.1"
+
+        def gene(name, kind, seqid, partial=False):
+            return dict(gene=name, organelle=kind, seqid=seqid, start=1, end=90, strand="+", exons=1, copies=1,
+                        partial=partial, sequence="ATG" * 30, parts="1-90", model="nhmmer")
+
+        def nhmmer(group, *_a, **_k):  # each organelle's queries' genes on the molecules searched
+            if not group:
+                return {}
+            kind, names, out = group[0][1], {m[0] for m in group}, {}
+            if plastome in names and kind == "mitochondrion":  # petB and petD: two halves of a cytochrome b
+                out.update(CYTB=gene("CYTB", kind, plastome, partial=True), SSU=gene("SSU", kind, plastome))
+            if plastome in names and kind == "plastid":
+                out.update({g: gene(g, kind, plastome) for g in ("SSU", "LSU", "rbcL", "tufA", "psbA")})
+            if "ctg_mito" in names and kind == "mitochondrion":
+                out.update(COX1=gene("COX1", kind, "ctg_mito"), nad5=gene("nad5", kind, "ctg_mito"))
+            return out
+
+        def candidates(_genome, kind, _animal):  # the plastome is AT-rich and of a mitochondrion's length too
+            return [(n, kind, "ACGT" * 10) for n in (plastome, "ctg_mito") if kind == "mitochondrion" or n == plastome]
+
+        def search(tmp, title, plastid=True, queries=("mitochondrion", "plastid"), mito=True):
+            path, out = os.path.join(tmp, "g.fna.gz"), os.path.join(tmp, title.replace(" ", "_"), "a.tsv")
+            with gzip.open(path, "wt") as fh:
+                fh.write(f">{plastome} {title}\n{random_seq(500, 6)}\n>c1 a nuclear contig\n{random_seq(500, 5)}\n")
+            with mock.patch.object(organelle, "candidate_molecules",
+                                   side_effect=candidates if mito else lambda *a: candidates(*a)[:1]), \
+                    mock.patch.object(organelle, "nhmmer_genes", side_effect=nhmmer), \
+                    mock.patch.object(organelle, "barrnap_genes", return_value={}):
+                args = (YEAST, path, out, False, {k: [] for k in queries}, "barrnap", "nhmmer", 1, {}, {}, None, path,
+                        None, plastid)
+                self.assertIsNone(organelle.run_assembly(args)[2])
+            return out, sorted((r["organelle"], r["seqid"], r["gene"]) for r in organelle.assembly_rows(out))
+        with tempfile.TemporaryDirectory() as tmp:
+            plastid_genes = [("plastid", plastome, g) for g in ("LSU", "SSU", "psbA", "rbcL", "tufA")]
+            # titled a chloroplast, no mitochondrion titled nor found (the real assembly): the plastid's genes alone
+            out, rows = search(tmp, "Galdieria partita NBRC 102759 chloroplast DNA", mito=False)
+            self.assertEqual(rows, plastid_genes)
+            with open(out) as fh:
+                self.assertIn(f"models:nhmmer+{organelle.CANDIDATE_RECORD}+{organelle.ONE_ORGANELLE}\t", fh.readline())
+            # titled, beside an untitled mitochondrion; untitled, a candidate of both: filed by its genes
+            for title in ("Galdieria partita NBRC 102759 chloroplast DNA", "Galdieria partita contig 9"):
+                _out, rows = search(tmp, title)
+                self.assertEqual(rows, [("mitochondrion", "ctg_mito", "COX1"), ("mitochondrion", "ctg_mito", "nad5")]
+                                 + plastid_genes, title)
+            # a fungus' (no plastid) mitochondrion's candidate with a CYTB alone: taken, its search's key as before
+            out, rows = search(tmp, "a fungus contig 9", plastid=False, queries=("mitochondrion",), mito=False)
+            self.assertEqual(rows, [("mitochondrion", plastome, "CYTB"), ("mitochondrion", plastome, "SSU")])
+            with open(out) as fh:
+                self.assertIn(f"models:nhmmer+{organelle.CANDIDATE_RECORD}\t", fh.readline())
+
 
 class JoinTest(unittest.TestCase):
     def test_hits_joined_in_the_querys_order_alone(self):

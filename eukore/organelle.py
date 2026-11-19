@@ -687,6 +687,12 @@ def organelle_molecules(path):
 # mitochondria are AT-rich), and in an animal those of an animal mitogenome's length (CANDIDATE_ANIMAL); for a plastid,
 # those of a plastome's length (CANDIDATE_PLASTID). At most CANDIDATES of each, the most AT-rich first. They are
 # searched as titled molecules are: a nuclear contig holds none of the genes, and gives no row.
+# One molecule, one organelle (since 2026-11-19): a molecule the genome titles an organelle is no candidate of the other
+# (until then a genome titling its plastid alone had the plastid among its mitochondrion's candidates: Galdieria
+# partita's chloroplast AP025529.1, its petB and petD the mitochondrion's "CYTB", its 16S and 23S its SSU and LSU,
+# filed under both organelles, one record name twice); and in a species that can hold a plastid a mitochondrion's
+# candidate needs its COX1 or COX3 (MITO_OWN), not one of its genes a plastid holds a homologue of (petB and petD: two
+# halves of CYTB; atpI: atp6; ndhA, ndhF: nad1, nad5). A contig the mitochondrion takes is no plastid candidate.
 CANDIDATE_GENOME = 1_000_000_000
 CANDIDATE_MITO = (12_000, 600_000)
 CANDIDATE_ANIMAL = (13_000, 25_000)
@@ -694,6 +700,10 @@ CANDIDATE_PLASTID = (100_000, 250_000)
 CANDIDATE_GC_DROP = 0.08
 CANDIDATES = 30
 CANDIDATE_RECORD = "candidates1"  # in the search's models key: raised when the rules above change
+MITO_OWN = ("COX1", "COX3")  # a mitochondrion's protein-coding genes no plastid holds a homologue of
+# in the search's models key of a species that can hold a plastid (search_models): raised when the rules of one molecule,
+# one organelle change (a fungus' or an animal's search is not changed by them, nor searched again)
+ONE_ORGANELLE = "one_organelle1"
 
 # An assembly's search on several threads (since 2026-11-16). The pass runs -t assemblies at once, each on one thread
 # until then: the 2026-11-16 build's final job searched its last 79 assemblies in 3 h 28 m, the last hour one
@@ -1005,6 +1015,14 @@ MODELS = ("nhmmer", "miniprot")  # the assembly pass' protein-coding gene models
 SAVED = "organelle.fna.gz"  # metadata.ORGANELLE: a genome's organelle molecules its scan kept
 
 
+def search_models(miniprot, genome, plastid):
+    """An assembly's search's models key (its #searched line's `models`): miniprot's or nhmmer's, with candidate contigs
+    (a genome given) CANDIDATE_RECORD, and with them in a species that can hold a plastid ONE_ORGANELLE (since
+    2026-11-19)."""
+    return ("miniprot" if miniprot else "nhmmer") + (f"+{CANDIDATE_RECORD}" if genome else "") \
+        + (f"+{ONE_ORGANELLE}" if genome and plastid else "")
+
+
 def stops_of(row, table):
     """The internal stops of a searched gene's coding sequence as the package will read it (coding_of: miniprot's
     exons joined, nhmmer's single hit whole) by the organelle's genetic code, or None where it ships none (an rRNA,
@@ -1064,19 +1082,26 @@ def run_assembly(args):
     the gene's coding sequence (with_miniprot). Since 2026-11-14 a 12th item, the genome whose candidate contigs
     are searched where it titles no organelle molecule, and a 13th, the inputs assembly_pass keyed the search by
     (search_key), written as they came: a worker that computed them again computed them by its own module, not
-    the caller's (a forkserver's or spawn's worker imports it anew: a CACHE_VERSION raised in the caller was not)."""
+    the caller's (a forkserver's or spawn's worker imports it anew: a CACHE_VERSION raised in the caller was not).
+    Since 2026-11-19 a 14th, whether the species can hold a plastid (organelles_of; a caller of before: whether its
+    plastid is searched): its mitochondrion's candidate contigs need a gene of MITO_OWN."""
     acc, path, out, animal, queries, barrnap, nhmmer, threads, *more = args
-    proteins, codes, miniprot, genome, given = (list(more) + [None, None])[:5] if more else ({}, {}, None, None, None)
-    candidates, taken = 0, set()
+    proteins, codes, miniprot, genome, given, plastid = (list(more) + [None] * 3)[:6] if more \
+        else ({}, {}, None, None, None, None)
+    plastid = "plastid" in queries if plastid is None else plastid
+    candidates = 0
     try:  # the molecules metadata.describe kept (since 2026-11-08), else the genome read again
         molecules = saved_molecules(path) if os.path.basename(path) == SAVED else organelle_molecules(path)
+        # no candidate: a molecule the genome titles an organelle (since 2026-11-19: a titled plastid was the
+        # mitochondrion's candidate, one molecule under both), nor a contig the mitochondrion's genes were found on
+        # (since 2026-11-15: one contig gave both)
+        taken = {m[0] for m in molecules}
         rows = []
         for organelle, kingdom in (("mitochondrion", "mito" if animal else "bac"), ("plastid", "bac")):
             if organelle not in queries:  # RefSeq's record taken, or none to hold
                 continue
             group, nominated = [m for m in molecules if m[1] == organelle], False
             if not group and genome and os.path.isfile(genome):  # its candidate contigs (since 2026-11-14)
-                # not a contig the mitochondrion's genes were found on (since 2026-11-15: one contig gave both)
                 group, nominated = [m for m in candidate_molecules(genome, organelle, animal) if m[0] not in taken], True
                 candidates += len(group)
             found = nhmmer_genes(group, queries.get(organelle, []), nhmmer, threads)
@@ -1089,15 +1114,18 @@ def run_assembly(args):
                                       codes.get(organelle, 1))
             if nominated:  # since 2026-11-15 (the audit's O1): a candidate contig's genes only on a contig holding a
                 # protein-coding gene of the organelle (a nuclear contig of a plastome's length holds an rRNA-like
-                # stretch more easily than a COX1 or rbcL), flagged candidate_contig
-                coding = {r["seqid"] for r in found.values() if r["gene"] in CODING}
+                # stretch more easily than a COX1 or rbcL), flagged candidate_contig; since 2026-11-19 a
+                # mitochondrion's, where the species can hold a plastid, one of MITO_OWN (a plastome's petB and petD
+                # gave its CYTB)
+                own = MITO_OWN if organelle == "mitochondrion" and plastid else CODING
+                coding = {r["seqid"] for r in found.values() if r["gene"] in own}
                 found = {g: dict(r, candidate="t") for g, r in found.items() if r["seqid"] in coding}
                 taken |= coding
             rows += found.values()
     except (OSError, EOFError, RuntimeError) as e:
         return acc, None, f"{type(e).__name__}: {e}"
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    models = ("miniprot" if miniprot else "nhmmer") + (f"+{CANDIDATE_RECORD}" if genome else "")
+    models = search_models(miniprot, genome, plastid)
     # what it was searched with: assembly_pass searches again where other inputs (as the caller made them: given)
     inputs = list(given) if given else [f"{k}={search_key(k, animal, queries[k], proteins.get(k, {}),
                                                             codes.get(k, 1), models)}" for k in KINDS if k in queries]
@@ -1131,27 +1159,27 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
     of the WORK (picklable: a partial), each assembly searched under its genome's claim (run_claimed; since 2026-11-11:
     a SLURM array's tasks run the pass) -> those run here."""
     nearest = Nearest(chosen, ncbi)
-    models = "miniprot" if miniprot else "nhmmer"
     asked = []
     for acc, job in sorted(job_map.items()):
         sp = int(job["species_taxid"])
         need = [k for k in organelles_of(ncbi, sp) if every or (sp, k) not in chosen]  # every: the panel's extras
         if job.get("path") or not need:
             continue
-        animal = is_animal(ncbi, sp)
+        animal, plastid = is_animal(ncbi, sp), "plastid" in organelles_of(ncbi, sp)
         queries, proteins = {k: nearest.queries(sp, k) for k in need}, {k: nearest.proteins(sp, k) for k in need}
         codes = {k: ncbi.code_of(sp, COMPARTMENT[k]) for k in need}
         # a genome small enough whose file is here: its candidate contigs searched where it titles no organelle
-        # molecule (since 2026-11-14; its models key says so, so that such a genome is searched again once)
+        # molecule (since 2026-11-14; its models key says so, so that such a genome is searched again once; since
+        # 2026-11-19 that of a species that can hold a plastid ONE_ORGANELLE: one molecule under one organelle)
         genome = genome_of(acc) if job.get("kind") != "transcriptome" and 0 < (job.get("size") or 0) \
             <= CANDIDATE_GENOME else None
         genome = genome if genome and os.path.isfile(genome) else None
-        key = models + (f"+{CANDIDATE_RECORD}" if genome else "")
+        key = search_models(miniprot, genome, plastid)
         # since 2026-11-10 searched again also where it was searched with other inputs (search_key: the queries of
         # another release, another genetic code, other thresholds, a CACHE_VERSION raised); the key made here alone
         # and handed to the task (since 2026-11-11: a forkserver's worker made it again by its own module)
         inputs = [f"{k}={search_key(k, animal, queries[k], proteins[k], codes[k], key)}" for k in KINDS if k in need]
-        asked.append((acc, assembly_file(work_folder, acc), animal, queries, proteins, codes, genome, inputs,
+        asked.append((acc, assembly_file(work_folder, acc), animal, queries, proteins, codes, genome, inputs, plastid,
                       (need, set(inputs), key)))
 
     def look(item):
@@ -1165,8 +1193,9 @@ def assembly_pass(work_folder, job_map, genome_of, chosen, ncbi, barrnap, nhmmer
         # molecules are written out for the search, store.py)
         path = (saved_of(acc) if saved_of else None) or genome_of(acc)
         return path if os.path.isfile(path) else None
-    todo = [(acc, path, out, animal, queries, barrnap, nhmmer, threads, proteins, codes, miniprot, genome, inputs)
-            for (acc, out, animal, queries, proteins, codes, genome, inputs, _c), path
+    todo = [(acc, path, out, animal, queries, barrnap, nhmmer, threads, proteins, codes, miniprot, genome, inputs,
+             plastid)
+            for (acc, out, animal, queries, proteins, codes, genome, inputs, plastid, _c), path
             in zip(asked, util.threaded(look, asked)) if path]
     if not todo:
         return 0, 0

@@ -206,6 +206,17 @@ The 30 loci themselves are EukDetect2's choice among the BUSCOs it kept after it
   (a nuclear contig of a plastome's length holds an rRNA-like stretch more easily than a COX1 or rbcL), barrnap's
   bacterial models are not run on candidates (a contaminant's 16S became an organelle's), a contig the
   mitochondrion's genes are on is no plastid candidate, and its genes are flagged `candidate_contig` (medium).
+- **One molecule, one organelle** (since 2026-11-19): a molecule the genome titles an organelle is no candidate of
+  the other, and in a species that can hold a plastid (not an animal or a fungus) a mitochondrion's candidate needs
+  its COX1 or COX3: a plastid holds homologues of the mitochondrion's other protein-coding genes (petB and petD, the
+  two halves of a cytochrome b; atpI of atp6; ndhA and ndhF of nad1 and nad5). Until then a genome titling its
+  plastid and no mitochondrion had the plastid among its mitochondrion's candidates: *Galdieria partita*'s
+  chloroplast `AP025529.1` gave the mitochondrion a partial CYTB (Eukore's search with the 3 nearest RefSeq
+  mitochondria hits its petB and petD, 84,458-85,606 on the minus strand, 43% of the query) and its 16S and 23S as
+  the SSU and LSU, beside its own plastid genes: one molecule under both organelles, its SSU and LSU one record name
+  twice (protal's conversion stopped on 11 such records, 2026-11-19). An untitled plastome was filed as a
+  mitochondrion alone, its plastid genes lost. Only searches of species that can hold a plastid change (their key's
+  `one_organelle1`); a fungus' or an animal's is kept.
 
 A gene read along its molecule spans its first base to its last, introns and all; one across a circular molecule's
 origin (its parts in the order transcribed turn once) runs from its first part across the origin to its last. Until
