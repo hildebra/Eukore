@@ -587,7 +587,11 @@ species' genes come from one source: its RefSeq organelle genome (the one with t
 species' own taxid, then the longest), else the organelle molecules of its own assembly (those NCBI's FASTA titles
 name a mitochondrion, chloroplast, plastid or apicoplast; since 2026-11-10 also a kinetoplast, maxicircle,
 minicircle, chromatophore or cyanelle; since 2026-11-18 not one that is another species' RefSeq organelle genome, which
-a RefSeq assembly can carry as its own: every `record` is under one species). Since format 7 the species are every species with a RefSeq organelle genome
+a RefSeq assembly can carry as its own: every `record` is under one species), else its candidate contigs
+(`candidate_contig`). Since 2026-11-19 an assembly's molecule (`seqid`) is under one organelle: one its genome titles
+an organelle is no candidate of the other, and a mitochondrion's candidate in a species that can hold a plastid needs
+its COX1 or COX3 (a plastid's petB and petD were taken for a CYTB: [methods](methods.md#organelle-genes-are-made)).
+Since format 7 the species are every species with a RefSeq organelle genome
 (until then the species with a genome or rRNA records alone): a species of organelle genes alone is a row of
 `species.tsv` (`source` `organelle`), its genes all those of its RefSeq genome (its rRNA, COX1, CYTB, ...). And
 EUKARYOME's organelle SSU (its SSU set's `k___mitochondrion`, `k___plastid` and `k___nucleomorph` records, labelled
@@ -643,7 +647,7 @@ or LSU is turned where an 8-mer model of the species' records of the gene taken 
 | `regions` | the trnH-psbA record's parts on it, `psbA3':0-200,spacer:200-...,trnH:...` (0-based, end excluded), else `-` (format 5) |
 | `internal_stops` | stops inside a protein-coding gene's protein by the organelle's code: a NUMT, a pseudogene, RNA editing, or a code NCBI does not give (format 5) |
 | `own_species`, `same_as`, `length_check` | as `busco/copies.tsv`'s, each gene of each organelle compared across species (its coding sequence where it has one, else its record; format 5) |
-| `confidence`, `flags` | `low` (`own_species` f, `ambiguous` over 0.005), `medium` (format 7: `screen_weak`, a MIDORI2 record the reference screen left for review; `internal_stops`: RNA editing or a code NCBI does not give leaves stops in a working gene, `low` until format 6; `partial`, `length_short` or `length_long`, `trans_spliced`, `exons_approximate`, `cross_shared`; since 2026-11-15 `candidate_contig`: found on an assembly's contig no title names an organelle, nominated by its length and GC, kept only where the contig holds a protein-coding gene of the organelle), `unverified` (`own_species_undecided`: format 6, `medium` until then), else `high` (format 5) |
+| `confidence`, `flags` | `low` (`own_species` f, `ambiguous` over 0.005), `medium` (format 7: `screen_weak`, a MIDORI2 record the reference screen left for review; `internal_stops`: RNA editing or a code NCBI does not give leaves stops in a working gene, `low` until format 6; `partial`, `length_short` or `length_long`, `trans_spliced`, `exons_approximate`, `cross_shared`; since 2026-11-15 `candidate_contig`: found on an assembly's contig no title names an organelle, nominated by its length and GC, kept only where the contig holds a protein-coding gene of the organelle (since 2026-11-19 a mitochondrion's in a species that can hold a plastid: its COX1 or COX3)), `unverified` (`own_species_undecided`: format 6, `medium` until then), else `high` (format 5) |
 | `cross` | the species of another clade whose organelle holds its sequence (as `busco/copies.tsv`'s; format 6) |
 | `via`, `source_label`, `label_from` | format 7: a published record's file (`EUKARYOME_SSU`, `MIDORI2_GB273`), its own label and how its taxid was found (`eukaryome_name`, `eukaryome_genus`, `eukaryome_upward`, as `rrna/records.tsv`'s; `midori2_taxid`); `refseq_taxid` or `assembly` for the others' |
 | `rank`, `ncbi_lineage`, `eukaryome_lineage`, `eukaryome_match` | format 7: as `rrna/records.tsv`'s |
@@ -899,7 +903,12 @@ them). `genomes.tsv`'s
   Since 2026-11-19, the same format: a record whose 18S Rfam's bacterial or archaeal SSU model scores best
   (`ssu_prokaryote`) is set apart in `rrna/prokaryote_ssu.tsv` and `.fna.gz` (`records.tsv`'s columns), out of
   `records.*`, `regions.tsv`, `amplicons.tsv` and the species' counts (a species known by such a record alone is no
-  row); the manifest's `counts.rrna_prokaryote_ssu`. A reader of `records.tsv` needs no change.
+  row); the manifest's `counts.rrna_prokaryote_ssu`. A reader of `records.tsv` needs no change. And
+  `organelle/genes.tsv`'s assembly molecule is under one organelle: a molecule the genome titles an organelle is no
+  candidate contig of the other (*Galdieria partita*'s chloroplast `AP025529.1` gave its mitochondrion a CYTB, its
+  petB and petD, and its SSU and LSU, one record name twice), and a mitochondrion's candidate in a species that can
+  hold a plastid needs its COX1 or COX3 (an untitled plastome was filed as a mitochondrion). Assemblies of such
+  species with candidate contigs are searched again (their search key's `one_organelle1`).
 - 2026-11-10, no new format (optional): `reference_screen.tsv` and the manifest's `inputs.references.MIDORI2.screen`
   (and `files`), where the build was given MIDORI2 files; `species.tsv`'s `midori2` no longer names a species by a
   record the screen drops. MIDORI2's later header layout (GB273's: a tab, every NCBI rank as `rank_Name_taxid`) is
