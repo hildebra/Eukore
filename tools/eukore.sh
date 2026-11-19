@@ -16,7 +16,8 @@
 # 2026-11-12; until then the `compare` step and the final job's --read_compare): benchmarks/README.md runs them on
 # the finished package, `bench_downloads` and `benchmark` here (since 2026-11-17; two jobs, each on its own
 # partition) with the settings' folders: the other references'
-# downloads and their comparable forms in BENCH (kept between builds), the results in BENCH_RESULTS.
+# downloads and their comparable forms in BENCH (kept between builds), the results in BENCH_RESULTS. Since 2026-11-19
+# `build` and `final` link both jobs after the final job themselves where BENCH is set (BENCH_AFTER_FINAL=0: not).
 #
 # `build` submits both jobs at once. The process jobs share the genomes out by their claims; each, once no genome
 # is left for it, goes on with the steps that take one done genome at a time under its claim (the backfill with its
@@ -46,7 +47,7 @@ fi
 TASKS=8; QC_TASKS=0; QC_IDLE=1800; MAMBA_ENV=eukore; GEN=; SOURCES=; SCR=; LOGS=
 BUILD_OPTS=(); FETCH_OPTS=(); FINAL_OPTS=(); SBATCH_ALL=(); SBATCH_FETCH=(); SBATCH_PROCESS=(); SBATCH_FINAL=(); SBATCH_QC=()
 BENCH=; BENCH_RESULTS=; BENCH_DOWNLOADS_OPTS=(); BENCH_OPTS=(); FIGURE_OPTS=(); SBATCH_BENCH_DOWNLOADS=()
-SBATCH_BENCH=()
+SBATCH_BENCH=(); BENCH_AFTER_FINAL=1; BENCH_JOBS=
 source "$CONF"
 : "${PDIR:?$CONF: PDIR}" "${WORK:?$CONF: WORK}" "${OUT:?$CONF: OUT}" "${VERSION:?$CONF: VERSION}"
 PACKAGE=$OUT/Eukore_$VERSION
@@ -129,6 +130,39 @@ need_bench() {  # the settings' BENCH: the benchmarks' steps need it
     fi
 }
 
+bench_chain() {  # the benchmark jobs after a final job (since 2026-11-19): `build` and `final` link them themselves
+    # bench_downloads once the final job ended well (afterok: the package written), benchmark after it however it
+    # ended (afterany: a download that failed leaves that reference out) and only after a final job that ended well
+    # (an old package at the same path is not measured). Without BENCH, or with BENCH_AFTER_FINAL=0, it says how to
+    # start them by hand.
+    local final=$1 downloads benchmark
+    local by_hand="bash $SELF bench_downloads (AFTER=$final to wait for the final job), then AFTER=<its job id> bash $SELF benchmark"
+    if [[ -z $BENCH ]]; then
+        echo "benchmarks: not linked (BENCH of $CONF is not set). After the final job: $by_hand"
+        return 0
+    fi
+    if [[ $BENCH_AFTER_FINAL == 0 ]]; then
+        echo "benchmarks: not linked (BENCH_AFTER_FINAL=0). After the final job: $by_hand"
+        return 0
+    fi
+    if ! downloads=$(submit Eukore-bench_downloads ${SBATCH_BENCH_DOWNLOADS[@]+"${SBATCH_BENCH_DOWNLOADS[@]}"} \
+        --dependency="afterok:$final" --kill-on-invalid-dep=yes -- _bench_downloads); then
+        echo "benchmarks: not linked (their downloads job refused). After the final job: $by_hand" >&2
+        return 0
+    fi
+    if ! benchmark=$(submit Eukore-benchmark ${SBATCH_BENCH[@]+"${SBATCH_BENCH[@]}"} \
+        --dependency="afterany:$downloads,afterok:$final" --kill-on-invalid-dep=yes -- _benchmark); then
+        scancel "$downloads"
+        echo "benchmarks: not linked (their job refused; downloads job $downloads cancelled). After the final job:" \
+            "$by_hand" >&2
+        return 0
+    fi
+    BENCH_JOBS="$benchmark $downloads"
+    echo "benchmarks after it: downloads job $downloads (once the package is written), benchmark job $benchmark" \
+        "(the tables and figures into $BENCH_RESULTS, the website's page, the bundle" \
+        "$OUT/$(basename "$BENCH_RESULTS")_evaluation.tar.gz)"
+}
+
 newest_log() {  # NEWEST_LOG: the most recently written LOGS/NAME.<job>.otxt, or empty where there is none
     local f
     NEWEST_LOG=
@@ -188,7 +222,9 @@ build)
         exit 1
     fi
     echo "process: array job $process, $tasks tasks; final (the genomes left, the passes, the package): job $final"
-    echo "to stop the chain: scancel $final $process (the final job first: it starts when the array ends)"
+    bench_chain "$final"  # the benchmarks after the final job (since 2026-11-19)
+    echo "to stop the chain: scancel ${BENCH_JOBS:+$BENCH_JOBS }$final $process (the later jobs first: each starts" \
+        "when the one before it ends)"
     ;;
 final)  # the final job alone (since 2026-11-12): its genomes all done, a package stage to run again (no array)
     [[ -z $LOGS ]] || mkdir -p "$LOGS"
@@ -196,6 +232,8 @@ final)  # the final job alone (since 2026-11-12): its genomes all done, a packag
     final=$(submit Eukore-final ${SBATCH_FINAL[@]+"${SBATCH_FINAL[@]}"} \
         ${after:+--dependency=$after --kill-on-invalid-dep=yes} -- _final)
     echo "final (the genomes left, the passes, the package): job $final"
+    bench_chain "$final"  # the benchmarks after it (since 2026-11-19)
+    [[ -z $BENCH_JOBS ]] || echo "to stop the chain: scancel $BENCH_JOBS $final"
     ;;
 _fetch)  # unfinished downloads on the node's local disk where it has one, else beside the genomes
     run_stage fetch ${SCR:+--local_tmp "$SCR"} ${FETCH_OPTS[@]+"${FETCH_OPTS[@]}"}

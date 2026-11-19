@@ -1185,7 +1185,9 @@ class ChainTest(unittest.TestCase):
                          "SOURCES=${TEST_SOURCES:-}\n"
                          "SCR=${SLURM_LOCAL_SCRATCH:+$SLURM_LOCAL_SCRATCH/Eukore}\nBUILD_OPTS=(--groups fungi)\n"
                          "FINAL_OPTS=(--keep_gb 1000)\nFETCH_OPTS=(--downloads 12)\nSBATCH_ALL=(--time=1:00:00)\n"
-                         "SBATCH_PROCESS=(--mem=200G)\nSBATCH_FINAL=(--mem=800G)\n")
+                         "SBATCH_PROCESS=(--mem=200G)\nSBATCH_FINAL=(--mem=800G)\n"
+                         "BENCH=${TEST_BENCH:-}\nBENCH_AFTER_FINAL=${TEST_BENCH_AFTER:-1}\n"
+                         "SBATCH_FETCH=(-p download)\n")
             env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "EUKORE_")) and k != "AFTER"}
             env.update(PATH=bin_dir + os.pathsep + env["PATH"], CALLS=log, EUKORE_CONF=conf)
 
@@ -1220,6 +1222,34 @@ class ChainTest(unittest.TestCase):
                 self.assertIn(said, calls[1])
             self.assertIn("array job 101, 3 tasks", got.stdout)
             self.assertIn("job 102", got.stdout)
+            # no BENCH: no benchmark jobs, the way to start them said (since 2026-11-19)
+            self.assertIn("benchmarks: not linked (BENCH of", got.stdout)
+            self.assertIn("bash tools/eukore.sh bench_downloads".replace("tools/eukore.sh", script), got.stdout)
+            # with BENCH: the downloads once the final job ended well, the benchmark after them and the final job
+            got, calls = run("build", TEST_BENCH=f"{tmp}/bench")
+            self.assertEqual((got.returncode, len(calls)), (0, 4), got.stderr)
+            for said in ("-J Eukore-bench_downloads", "-p download", "--dependency=afterok:102 --kill-on-invalid-dep=yes",
+                         f"{script} _bench_downloads", f"-o {tmp}/runs/bench_downloads.%j.otxt"):
+                self.assertIn(said, calls[2])
+            for said in ("-J Eukore-benchmark", "--mem=200G", "--dependency=afterany:103,afterok:102 "
+                         "--kill-on-invalid-dep=yes", f"{script} _benchmark"):
+                self.assertIn(said, calls[3])
+            self.assertIn("benchmarks after it: downloads job 103 (once the package is written), benchmark job 104",
+                          got.stdout)
+            self.assertIn("to stop the chain: scancel 104 103 102 101", got.stdout)
+            got, calls = run("final", TEST_BENCH=f"{tmp}/bench", AFTER="55")
+            self.assertEqual((got.returncode, len(calls)), (0, 3), got.stderr)
+            self.assertIn("--dependency=afterany:55 --kill-on-invalid-dep=yes", calls[0])
+            self.assertIn("--dependency=afterok:101 ", calls[1])
+            self.assertIn("--dependency=afterany:102,afterok:101 ", calls[2])
+            self.assertIn("to stop the chain: scancel 103 102 101", got.stdout)
+            got, calls = run("final", TEST_BENCH=f"{tmp}/bench", TEST_BENCH_AFTER="0")  # not asked
+            self.assertEqual((got.returncode, len(calls)), (0, 1), got.stderr)
+            self.assertIn("benchmarks: not linked (BENCH_AFTER_FINAL=0)", got.stdout)
+            # a benchmark job refused: its downloads job cancelled, the package's chain kept
+            got, calls = run("final", TEST_BENCH=f"{tmp}/bench", REFUSE="Eukore-benchmark")
+            self.assertEqual((got.returncode, calls[-1]), (0, "scancel 102"), got.stderr)
+            self.assertIn("benchmarks: not linked (their job refused; downloads job 102 cancelled)", got.stderr)
             # after a fetch job: both wait for it to end well, and are cancelled where it did not
             got, calls = run("build", "5", AFTER="77")
             self.assertIn("--array=1-5 --dependency=afterok:77 --kill-on-invalid-dep=yes", calls[0])

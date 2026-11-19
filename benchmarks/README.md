@@ -44,6 +44,11 @@ bash tools/eukore.sh bench_downloads                # eukore-bench-prep.sh: a jo
 AFTER=<its job id> bash tools/eukore.sh benchmark   # eukore-benchmark.sh and eukore-figures.sh: a compute node's job
 ```
 
+Since 2026-11-19 `bash tools/eukore.sh build` and `bash tools/eukore.sh final` submit both jobs after the final job
+themselves where `BENCH` is set: the downloads once the final job ended well, the benchmark after them (and only after
+a final job that ended well, so that an older package at the same path is not measured). `BENCH_AFTER_FINAL=0` in the
+settings leaves them out; without `BENCH` the two commands above are said.
+
 runs the three steps in the build's environment (envs/eukore.yaml holds every tool here; `BENCH_ENV=active`: no
 `BENCH/env` made), with the build's NCBI taxonomy and BUSCO dataset (`SOURCES`), its genomes folder and its
 alignments (`WORK/align`), SILVA's and UNITE's files (`SOURCES/labels`). `benchmark` draws every figure (since
