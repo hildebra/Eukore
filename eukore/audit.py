@@ -29,6 +29,13 @@ flanks (KSGP 4.4's 18S gene check, 4.5's flank screen)
     the primer site the read ends at (EUKARYOME 2.1: 255,487 long reads end at one 28S site), its divergent
     stretches aligned weakly by the model. An 18S read (no operon) whose flank holds its ITS's 5.8S or its 28S is cut
     to its 18S (KSGP 4.4's rule; a long read whose operon barrnap did not make whole, its 5.8S not found, so too).
+    Since 2026-11-20, before these: where nhmmer finds the gene going on into the flank past barrnap's end, its
+    region grows to it (a stretch the model aligns weakly), and where the gene goes on only after INSERTION bases or
+    more than the model skips (Drosophila's R1/R2 retrotransposons in the 28S), the read is cut before the insertion
+    (`flank_insertion`; its 28S partial; nhmmer's one hit across the insertion cut at barrnap's end). The rest of
+    the flank, beyond the gene, is then judged as above; one kept where the rRNA stops short is cut where it is
+    longer than twice the model positions not reached and INSERTION (`flank_long`: more than the rest of the gene
+    could be).
   - a read in which barrnap finds no rRNA: flagged `no_rrna` (low; KSGP 4.4 dropped such 18S).
 A read of which fewer than MIN_LEFT bases would stay is not cut, flagged `trim_short` (low).
 """
@@ -56,6 +63,10 @@ MAX_PRIMER = 2
 PRIMER_SLACK = 3
 HOMOPOLYMER_END = 12
 MIN_LEFT = 300      # KSGP 4.5's flank screen: a record of fewer bases left is dropped
+# a read's bases between two pieces of one rRNA gene beyond the model positions between them: this many more make an
+# insertion (since 2026-11-20; flank_cut). The 2026.11-013 package's ROD and EUKARYOME reads: a 28S barrnap stopped
+# short of went on within 5 bases of its model; Drosophila's R1/R2 insertions in the 28S held 1,388-8,319 more
+INSERTION = 500
 VECTOR_BATCH = 1 << 23  # bases encoded at a time (a uint64 a base)
 ADAPTERS = {  # the long-read platforms' adapters, which UniVec_Core (2017) lacks
     "PacBio_SMRTbell_hairpin": "ATCTCTCTCAACAACAACAACGGAGGAGGAGGAAAAGAGAGAGAT",
@@ -258,36 +269,73 @@ def nhmmer_hits(reads, nhmmer, hmm, threads=1, tmp=None, evalue=NHMMER_E):
 
 
 def flank_cut(length, unit, hits, lengths, side):
-    """One side of a read (side 5 or 3; the read on its rRNA's strand): (how many bases of it to cut, why) or (0,
-    `flank` where kept and flagged, or None where nothing beyond FLANK lies there). unit: its rRNA [start, end)
-    (barrnap's); hits: nhmmer_hits' of the read; lengths: the models' lengths. The bases cut are counted from nhmmer's
-    rRNA on that side, which may reach further into the flank than barrnap's (the second pass' E-value)."""
+    """One side of a read (side 5 or 3; the read on its rRNA's strand): (how many bases of it to cut, why, how many
+    bases its rRNA grows by on that side) or (0, `flank` where kept and flagged, or None where nothing beyond FLANK lies
+    there, ...). unit: its rRNA [start, end) (barrnap's); hits: nhmmer_hits' of the read; lengths: the models'
+    lengths. The bases cut are counted from nhmmer's rRNA on that side, which may reach further into the flank than
+    barrnap's (the second pass' E-value).
+    Since 2026-11-20 the gene going on into the flank (nhmmer's pieces of it, model positions after barrnap's) is
+    the rRNA's, piece by piece, while the bases between two pieces are about the model positions between them (a
+    stretch the model aligns weakly: its region grows to it); where they are INSERTION more, the gene holds an
+    insertion (Drosophila's R1/R2 retrotransposons in the 28S: 3-5 kb) and the read is cut before it
+    (`flank_insertion`; so too where nhmmer's one hit spans it, INSERTION bases longer on the read than on its model
+    and as many past barrnap's end: cut at barrnap's end). Until then such a flank was kept whole (Drosophila's ROD
+    units ended 3-5 kb past their region, the insertion and the 28S's 3' part beyond it). A flank kept where the
+    rRNA stops short is cut where it is longer than twice the model positions not reached and INSERTION
+    (`flank_long`: more than the rest of the gene could be; an 18S read with 4 kb of no rRNA after it)."""
     u0, u1 = unit
     flank = u0 if side == 5 else length - u1
     if flank <= FLANK:
-        return 0, None
+        return 0, None, 0
     own = [h for h in hits if h[5] == "+" and h[3] < u1 and h[4] > u0]
     edge = (min(own, key=lambda h: h[3]) if side == 5 else max(own, key=lambda h: h[4])) if own else None
-    if edge is not None:  # the bases beside nhmmer's rRNA
+    grow = 0
+    if edge is not None:
+        grow = max(0, u0 - edge[3] if side == 5 else edge[4] - u1)  # nhmmer's rRNA reaching further than barrnap's
+        if grow > INSERTION and (edge[4] - edge[3]) - (edge[2] - edge[1] + 1) > INSERTION:
+            # nhmmer's one hit across an insertion (its alignment's gap; Drosophila's ROD units): the read cut at
+            # barrnap's end, the insertion's start
+            return (u0 if side == 5 else length - u1) - KEEP, "flank_insertion", 0
+
+        def goes_on(h, e):  # h the same gene's, further on the model and on the read than e
+            return h[5] == "+" and h[0] == e[0] and (h[2] > e[2] and h[4] > e[4] if side == 3 else
+                                                     h[1] < e[1] and h[3] < e[3])
+        for h in sorted(hits, key=lambda h: h[3] if side == 3 else -h[4]):
+            if not goes_on(h, edge):
+                continue
+            bases, positions = (h[3] - edge[4], h[1] - edge[2] - 1) if side == 3 else (edge[3] - h[4],
+                                                                                        edge[1] - h[2] - 1)
+            if bases - positions > INSERTION:
+                return (edge[3] if side == 5 else length - edge[4]) - KEEP, "flank_insertion", grow
+            edge = h
+            grow = max(0, u0 - edge[3] if side == 5 else edge[4] - u1)
+        # the bases beside nhmmer's rRNA
         flank = min(flank, edge[3] if side == 5 else length - edge[4])
         if flank <= FLANK:
-            return 0, None
+            return 0, None, grow
+
+    def kept():  # the flank where the rRNA stops short, kept: unless more than the rest of its gene could be
+        if edge is not None:
+            unreached = edge[1] - 1 if side == 5 else lengths.get(edge[0], edge[2]) - edge[2]
+            if flank > 2 * unreached + INSERTION:
+                return flank - KEEP, "flank_long", grow
+        return 0, "flank", grow
     lo, hi = (0, flank) if side == 5 else (length - flank, length)
     inside = [h for h in hits if h[3] < hi and h[4] > lo and min(h[4], hi) - max(h[3], lo) >= 20]
     if any(h[5] == "-" for h in inside):
-        return flank - KEEP, "flank_joined"  # a reversed rRNA piece beside it: two parts joined
+        return flank - KEEP, "flank_joined", grow  # a reversed rRNA piece beside it: two parts joined
     if edge is not None:
         if any(h[0] != edge[0] for h in inside):  # another gene beside it (an 18S record's ITS's 5.8S, a second unit)
-            return flank - KEEP, "flank_gene"
+            return flank - KEEP, "flank_gene", grow
         same = [h for h in inside if h[0] == edge[0]]
         if same and (side == 5 and min(h[1] for h in same) < edge[1] or side == 3 and max(h[2] for h in same) >
                      edge[2]):
-            return 0, "flank"  # the same gene goes on into the flank: the rRNA as barrnap joined it stops short
+            return kept()  # the same gene goes on into the flank: the rRNA stops short
         reached = edge[1] <= MODEL_END if side == 5 else edge[2] >= lengths.get(edge[0], 10 ** 9) - MODEL_END
         if reached:
             unreached = edge[1] - 1 if side == 5 else lengths.get(edge[0], edge[2]) - edge[2]
-            return max(0, flank - KEEP - unreached), "flank_beyond"
-    return 0, "flank"
+            return max(0, flank - KEEP - unreached), "flank_beyond", grow
+    return kept()
 
 
 # --- the audit -------------------------------------------------------------------------------------------------------
@@ -380,9 +428,10 @@ def vectors_of(folder):
 
 def audit_reads(items, vectors=None, primers=None, nhmmer=None, hmm=None, threads=1, tmp=None):
     """The ends' and flanks' audit of reads [(name, sequence on its rRNA's strand, regions [(name, start, end)] or
-    None)] -> {name: (start, end, [why], [flags])}: the read's part kept [start, end) (0-based), each cut's why
-    (`5':vector NGB00848.1`, `3':flank_beyond`, ...; none: kept whole) and its flags (vector, flank, no_rrna,
-    trim_short)."""
+    None)] -> {name: (start, end, [why], [flags], (grow5, grow3))}: the read's part kept [start, end) (0-based), each
+    cut's why (`5':vector NGB00848.1`, `3':flank_beyond`, ...; none: kept whole), its flags (vector, flank, no_rrna,
+    trim_short) and the bases its first and last regions grow by (since 2026-11-20: the gene going on past barrnap's
+    end, flank_cut)."""
     seqs = [s for _n, s, _r in items]
     units = [unit_of({"regions_list": r}, len(s)) for _n, s, r in items]
     spans = vectors.hits(seqs) if vectors is not None else {}
@@ -397,7 +446,7 @@ def audit_reads(items, vectors=None, primers=None, nhmmer=None, hmm=None, thread
         a, cut_b, why, inside = end_cuts(seq, unit, spans.get(j, ()), ends.get(j, {}))
         if inside:
             flags.append("vector")
-        out[name] = [a, len(seq) - cut_b, why, flags]
+        out[name] = [a, len(seq) - cut_b, why, flags, (0, 0)]
     # the flanks: more than FLANK bases beside the rRNA after the ends' cuts, the read searched again whole
     flanked = [j for j, (name, seq, _r) in enumerate(items) if units[j] and
                (units[j][0] - out[name][0] > FLANK or out[name][1] - units[j][1] > FLANK)]
@@ -406,7 +455,7 @@ def audit_reads(items, vectors=None, primers=None, nhmmer=None, hmm=None, thread
     lengths = model_lengths(hmm) if hmm and os.path.isfile(hmm) else {}
     for j in flanked:
         name, seq, regions = items[j]
-        a, b, why, flags = out[name]
+        a, b, why, flags, grow = out[name]
         # after an operon's partial 28S the read's bases are its 28S going on (EUKARYOME's reads end at a 28S
         # primer's site, the model aligns its divergent stretches weakly): kept, not flagged
         lsu = any(n == "28S" for n, _x, _y in regions or ())
@@ -415,7 +464,8 @@ def audit_reads(items, vectors=None, primers=None, nhmmer=None, hmm=None, thread
             continue
         for side in (5, 3):
             sub_hits = [(m, f, t, s - a, e - a, st) for m, f, t, s, e, st in hits.get(name, ()) if e > a and s < b]
-            n, kind = flank_cut(b - a, (units[j][0] - a, units[j][1] - a), sub_hits, lengths, side)
+            n, kind, more = flank_cut(b - a, (units[j][0] - a, units[j][1] - a), sub_hits, lengths, side)
+            grow = (more, grow[1]) if side == 5 else (grow[0], more)
             if n > 0:
                 if side == 5:
                     a += n
@@ -424,33 +474,52 @@ def audit_reads(items, vectors=None, primers=None, nhmmer=None, hmm=None, thread
                 why.append(f"{side}':{kind}")
             elif kind == "flank" and not (side == 3 and lsu):
                 flags.append("flank")
-        out[name] = [a, b, why, flags]
+        out[name] = [a, b, why, flags, grow]
     for name, seq, _r in items:
-        a, b, why, flags = out[name]
+        a, b, why, flags, grow = out[name]
         if why and b - a < MIN_LEFT:  # not cut: too little would stay
-            out[name] = [0, len(seq), [], flags + ["trim_short"]]
+            out[name] = [0, len(seq), [], flags + ["trim_short"], grow]
     return {n: tuple(v) for n, v in out.items()}
 
 
 def audit_text(result):
-    """audit_reads' result of a read as the regions cache's field: `<AUDIT_RECORD>|start|end|why;..|flag,..`."""
-    a, b, why, flags = result
-    return f"{AUDIT_RECORD}|{a}|{b}|{';'.join(why)}|{','.join(sorted(set(flags)))}"
+    """audit_reads' result of a read as the regions cache's field:
+    `<AUDIT_RECORD>|start|end|why;..|flag,..|grow5,grow3` (the last since AUDIT_RECORD 2)."""
+    a, b, why, flags, grow = result
+    return f"{AUDIT_RECORD}|{a}|{b}|{';'.join(why)}|{','.join(sorted(set(flags)))}|{grow[0]},{grow[1]}"
 
 
 def parse_audit(text):
     """audit_text's field -> audit_reads' result, or None where missing or of another AUDIT_RECORD."""
     f = (text or "").split("|")
-    if len(f) != 5 or f[0] != str(AUDIT_RECORD):
+    if len(f) != 6 or f[0] != str(AUDIT_RECORD):
         return None
-    return int(f[1]), int(f[2]), [w for w in f[3].split(";") if w], [x for x in f[4].split(",") if x]
+    g5, g3 = f[5].split(",")
+    return (int(f[1]), int(f[2]), [w for w in f[3].split(";") if w], [x for x in f[4].split(",") if x],
+            (int(g5), int(g3)))
+
+
+def grown(regions, grow):
+    """A read's regions with its first one's start and its last one's end moved by grow (grow5, grow3)."""
+    if not regions or grow == (0, 0):
+        return regions
+    first = min(range(len(regions)), key=lambda i: regions[i][1])
+    last = max(range(len(regions)), key=lambda i: regions[i][2])
+    out = [list(r) for r in regions]
+    out[first][1] -= grow[0]
+    out[last][2] += grow[1]
+    return [tuple(r) for r in out]
 
 
 def apply(name, seq, row, result):
-    """A record with its audit applied -> (sequence, row, its TRIM_COLUMNS row or None): the read cut to its part,
-    its regions shifted, `trimmed` written and the flags added to row["flags_extra"]."""
-    a, b, why, flags = result
+    """A record with its audit applied -> (sequence, row, its TRIM_COLUMNS row or None): its regions grown where its
+    gene goes on past barrnap's ends (since 2026-11-20), the read cut to its part, its regions shifted, `trimmed`
+    written and the flags added to row["flags_extra"]. A 28S cut at an insertion is partial (lsu_complete false)."""
+    a, b, why, flags, grow = result
     flags = sorted(set(list(row.get("flags_extra") or ()) + list(flags)))
+    row = dict(row, regions_list=grown(row.get("regions_list"), grow))
+    if any(w == "3':flank_insertion" for w in why) and any(n == "28S" for n, _x, _y in row["regions_list"] or ()):
+        row["lsu_complete"] = False
     if not why or (a, b) == (0, len(seq)):
         return seq, dict(row, flags_extra=flags, trimmed=row.get("trimmed") or "-"), None
     trim = dict(record=name, source=row.get("source", "-"), length_before=len(seq), start=a + 1, end=b,
@@ -476,9 +545,11 @@ def clean(records, vectors=None, primers=None, nhmmer=None, hmm=None, threads=1,
         if name not in found:
             out.append((name, seq, row))
             continue
-        a, b, why, flags = found[name]
+        _a, _b, why, flags, grow = found[name]
         for f in flags:
             counts[f"flag: {f}"] += 1
+        if grow != (0, 0):
+            counts["rRNA grown past barrnap's end"] += 1
         for w in why:
             counts["cut: " + w.split(":", 1)[1].split()[0].split("+")[0]] += 1
         seq, row, trim = apply(name, seq, row, found[name])

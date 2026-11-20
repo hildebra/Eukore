@@ -469,7 +469,7 @@ manifest's `counts.marker_loci` the markers.
 | `taxid`, `species_taxid` | NCBI's; a record labelled above species (format 7: a genus, family, order, ... and Eukaryota, 2759, for a lineage of EUKARYOME's own NCBI names none of) has its taxon's in both |
 | `accession` | its genome (`-` for a published read without one) |
 | `source` | `genome`, `curated_unit`, `EUKARYOME`, `ROD` |
-| `regions` | `name:start-end,...` in order on the record: `18S`, `ITS1`, `5.8S`, `ITS2`, `28S`, and `5S` where a 5S lies in the same block (the unit as one stretch, on either strand: some protists' and fungi's repeats hold it; a tandem array's spacer 5S is one unit's, the one whose 28S it follows; of a unit's several the one after its 28S); a region not found is absent. A published read's record is the read on its unit's strand (reverse-complemented where its unit lies on -), its regions on it |
+| `regions` | `name:start-end,...` in order on the record, 0-based, the end excluded: `18S`, `ITS1`, `5.8S`, `ITS2`, `28S`; a region not found is absent. They run on from each other, without a gap, from the first's start to the last's end: the record's rRNA. A genome's record starts at 0 and ends at its last region's end. A published read may keep a few bases beside it (below): the bases of a primer before barrnap's 18S, up to 50 bases not searched again, the 10 bases and model positions kept beside a flank cut off, a flank flagged `flank`, or after a partial 28S the read's own 28S bases the model does not align. A published read's record is the read on its unit's strand (reverse-complemented where its unit lies on -), its regions on it. Until 2026-11-20 a unit's record held the 5S of the spacer beside it (within 3,000 bases after its 28S, else before its 18S) as a region, and the spacer between them in no region |
 | `length` | of the record |
 | `lsu_complete` | `t` where barrnap's 28S hit covers its whole model |
 | `ambiguous`, `homopolymer` | the share of non-ACGT bases; the longest one-base run |
@@ -490,7 +490,7 @@ manifest's `counts.marker_loci` the markers.
 | `rank` | format 7: the rank it is labelled at: its EUKARYOME lineage's deepest (`species`, `genus`, `family`, `order`, `class`, `phylum`, `kingdom`, ...); without EUKARYOME's taxonomy NCBI's |
 | `ncbi_lineage` | format 7: its taxon's NCBI lineage, domain;kingdom;phylum;class;order;family;genus;species, filled as `species.tsv`'s `ncbi_lineage_filled`, down to its taxon's rank (the ranks below it empty) |
 | `eukaryome_lineage`, `eukaryome_match` | format 7: its EUKARYOME lineage ([taxonomy/](#taxonomy)) and how it was found: its species' as `species.tsv`'s (`species`, `synonym`, `genus`, `upward`, `none`); of a record labelled above species its taxon's (`name`, `upward`, `none`), or its own label's where that reaches deeper (`label`: a EUKARYOME read of a genus or family NCBI does not name, labelled at the rank its label reaches) |
-| `trimmed` | format 7: what the audit cut off a published record, `start-end of length: why; ...` (the part kept, 1-based in the record as published, on its rRNA's strand; each cut's side and why: `vector <UniVec id>`, `leader before primer <name>`, `telomere`, `Ns`, `homopolymer`, `flank_beyond`, `flank_gene`, `flank_joined`, then a chimera's `window chimera: kept a-b`, `uchime chimera: kept a-b`), `-` for none |
+| `trimmed` | format 7: what the audit cut off a published record, `start-end of length: why; ...` (the part kept, 1-based in the record as published, on its rRNA's strand; each cut's side and why: `vector <UniVec id>`, `leader before primer <name>`, `telomere`, `Ns`, `homopolymer`, `flank_beyond`, `flank_gene`, `flank_joined`, `flank_insertion`, `flank_long` (since 2026-11-20), then a chimera's `window chimera: kept a-b`, `uchime chimera: kept a-b`), `-` for none |
 
 A record is `low` where a check calls it another organism's or of bad sequence: `own_species` (f), `screen`,
 `ambiguous` (over 0.5%), `homopolymer` (36 or longer), `ssu_prokaryote` (format 6: its 18S scored best by Rfam's
@@ -512,8 +512,9 @@ own-species check is undecided (`own_species_undecided`; `medium` until format 6
 read's, its check not made). Else `high`.
 
 An operon's spacers are its ITS1 and ITS2 (`regions`); the intergenic spacer between units is not taken (a unit runs
-from its 18S to its 28S, and its 5S where that lies in the same block). A 5S elsewhere in the genome (most animals' and
-plants' 5S arrays) is not searched.
+from its 18S to its 28S). A 5S in the spacer beside a unit (some fungi's and protists' repeats) is counted in
+`copy_numbers.tsv` (`5S`) and is not in the record (since 2026-11-20: it is a gene of its own, transcribed apart,
+often on the other strand); a 5S elsewhere in the genome (most animals' and plants' 5S arrays) is not searched.
 
 A record that fails a check is kept and flagged, so that a user chooses.
 
@@ -547,6 +548,14 @@ its records, KSGP 5.2's README and KSGP 4.5's describing them): what lies beside
   unflagged (its 28S going on to the primer site the read ends at). An 18S read whose flank holds its ITS's 5.8S or its
   28S is cut to its 18S (KSGP 4.4's rule; a long read whose operon barrnap did not make whole too). A read barrnap finds
   no rRNA in: `no_rrna`. A cut that would leave under 300 bases is not made (`trim_short`).
+  Before these (since 2026-11-20): where nhmmer finds the rRNA going on into a flank past barrnap's end, the region
+  grows to it (a stretch the model aligns weakly); where it goes on only after 500 bases or more than the model
+  positions between (an insertion in the gene: Drosophila's R1/R2 retrotransposons in the 28S, 1.4-8.3 kb in ROD's
+  units), the read is cut before the insertion (`flank_insertion`) and its 28S is partial (`lsu_complete` f). Until
+  then such a read kept the insertion and the 28S's 3' part beyond it, past its last region. A flank kept where the
+  rRNA stops short is cut where it is longer than twice the model positions the rRNA did not reach and 500
+  (`flank_long`: more than the rest of the gene could be, an 18S read with kilobases of no rRNA after it; until then
+  kept). A 5S beyond the 28S is another gene: cut off.
 - Chimeras, pieces of another kingdom (KSGP 4.5's window screen, its 16S phylum the 18S's EUKARYOME kingdom: Fungi,
   Metazoa, Alveolata, Amoebozoa, ...; a kingdom's phyla are as alike in the 18S as a bacterial phylum's families in the
   16S): each read's 18S cut into 300-base windows every 150, mapped against the 18S of genomes (Eukore's own, ROD's,
@@ -976,6 +985,13 @@ them). `genomes.tsv`'s
   and the protal sketch take a merged genome as a species' genome is taken (the sketch as the named species' further
   genome). A reader that maps a copy's accession to its species by `genomes.tsv` needs no change; one that takes
   every copy of `busco/` as a species' representative's takes `representative` t alone.
+  Also since 2026-11-20: `rrna/records.tsv`'s `regions` run on without a gap from the record's rRNA's start to its
+  end: a genome's unit is its 18S to its 28S, the 5S of the spacer beside it no longer a region of it (57 of the
+  2026.11-013 package's 157 genome units held one, 1-2 kb of spacer before it in no region); a published read whose
+  rRNA nhmmer finds going on past barrnap's end has its region grown to it, and one whose 28S holds an insertion
+  (Drosophila's R1/R2) is cut before it (`trimmed`'s `flank_insertion`; 106 of that package's ROD units ended 3-5 kb
+  past their last region), a flank longer than the rest of its gene could be is cut (`flank_long`). `regions` are
+  0-based, the end excluded, as they were.
 - 2026-11-10, no new format (optional): `reference_screen.tsv` and the manifest's `inputs.references.MIDORI2.screen`
   (and `files`), where the build was given MIDORI2 files; `species.tsv`'s `midori2` no longer names a species by a
   record the screen drops. MIDORI2's later header layout (GB273's: a tab, every NCBI rank as `rank_Name_taxid`) is

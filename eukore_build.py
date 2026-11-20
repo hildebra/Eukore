@@ -1118,7 +1118,8 @@ def published(opts, src_dir, ncbi):
         if name in unread:
             continue
         regions, complete, strand, _digest, audited = known.get(name, ("-", "f", "+", None, None))
-        regions_list = rrna.parse_regions(regions)
+        # a 5S beyond its 28S no region (since 2026-11-20: rrna.without_5s; the audit cuts it off as another gene)
+        regions_list = rrna.without_5s(rrna.parse_regions(regions))
         seq = rrna.revcomp(seq) if strand == "-" else seq  # the record on its unit's strand, as its regions
         result = audit_mod.parse_audit(audited)
         if result is not None:
@@ -1432,7 +1433,7 @@ def _annotate_batch(batch, barrnap=None, itsx=None, audit=None):
         audited = {}
         if audit is not None:
             univec, primers, nhmmer, hmm = audit
-            items = [(n, rrna.revcomp(s) if got[n][2] == "-" else s, rrna.parse_regions(got[n][0]))
+            items = [(n, rrna.revcomp(s) if got[n][2] == "-" else s, rrna.without_5s(rrna.parse_regions(got[n][0])))
                      for n, s, _t in batch]
             audited = {n: audit_mod.audit_text(r) for n, r in audit_mod.audit_reads(
                 items, audit_mod.vectors_of(univec), primers, nhmmer, hmm).items()}
