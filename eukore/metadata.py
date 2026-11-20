@@ -539,9 +539,10 @@ def annotation_source(work, row, job=None):
 def write(part, genomes, work, tables=(), jobs=None):
     """The package's metadata (in its unfinished folder part) of its genomes (package.collect's {accession: row};
     jobs: the plan's {accession: job}, where the sources' details are): metadata/ncbi.tsv.gz (NCBI's rows of every
-    genome and of the RefSeq copy fetched); metadata/assembly.tsv.gz, a row per species' genome (where it came from,
-    and the measures of those Eukore described); of those, metadata/tetranucleotides.tsv.gz, metadata/sketches.zip and
-    organelle/molecules.fna.gz -> counts for the manifest."""
+    genome and of the RefSeq copy fetched); metadata/assembly.tsv.gz, a row per species' genome and (since 2026-11-20)
+    per genome merged into a species (where it came from, and the measures of those Eukore described); of those,
+    metadata/tetranucleotides.tsv.gz, metadata/sketches.zip and organelle/molecules.fna.gz -> counts for the
+    manifest."""
     from . import store  # noqa: PLC0415
     from .genomes import done_dir  # noqa: PLC0415
     jobs = jobs or {}
@@ -561,7 +562,10 @@ def write(part, genomes, work, tables=(), jobs=None):
     molecules = os.path.join(part, "organelle", "molecules.fna.gz")
     sketch_zip = os.path.join(folder, "sketches.zip")  # a zip of signatures sourmash reads as one collection
     n_molecules = 0
-    reps = [acc for acc in sorted(genomes) if genomes[acc].get("representative") == "t"]
+    # each species' genome, and since 2026-11-20 each genome merged into a named species (same_species.py): their
+    # copies are the package's (package.holds_copies), what was measured of them too
+    from .package import holds_copies  # noqa: PLC0415
+    reps = [acc for acc in sorted(genomes) if holds_copies(genomes[acc])]
     # each genome's stats, molecules and sketch read in one look, READ_THREADS genomes at once, and its done.json
     # (annotation_source) by prefetch (since 2026-11-11: one genome after another, some 30,000 from the shared file
     # system, and the sketches a second time after)

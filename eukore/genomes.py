@@ -582,7 +582,10 @@ def fetch_genome(job, path, **how):
     return ""
 
 
+# "merged into a named species" (since 2026-11-20): a chosen isolate-named species the package stage merged into a
+# named species of its genus (same_species.FATE; set by the build after fates, which knows nothing of the sketches)
 FATES = ("chosen", "chosen, flagged", "model species", "no assembly (records)", "TOGA2's genome",
+         "merged into a named species",
          "every assembly excluded", "every assembly excluded, kept", "placeholder", "hybrid", "not a species", "not in the taxdump", "no download")
 
 

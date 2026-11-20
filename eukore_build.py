@@ -18,7 +18,9 @@ Stages:
   extracted (WORK/done/<accession>/); a genome not fetched yet waits for the next run; then the organelle genes
   (mitochondrial and plastid rRNA, mitochondrial COX1) of RefSeq's organelle genomes, and of the assemblies' own
   organelle molecules where RefSeq has none (WORK/organelle);
-- package: the copies' checks across species, the published rRNA reads' regions (WORK/published), the organelle genes
+- package: the same-species merge (since 2026-11-20: an isolate-named species whose genome is a named species' of its
+  genus filed under that species, by the genomes' sourmash sketches: eukore/same_species.py), the copies' checks
+  across species, the published rRNA reads' regions (WORK/published), the organelle genes
   of any assembly not searched yet, with --protal protal's genome sketch of the species (since 2026-11-19:
   eukore/protal_sketch.py), OUT/genomes (--genomes) cut back to --keep_gb where given (genomes.prune: the
   model species' and the smallest kept first; without it no genome file is deleted), then OUT/Eukore_<version>/ and,
@@ -70,6 +72,7 @@ from eukore import tiers as tiers_mod  # noqa: E402
 from eukore import qc as qc_mod  # noqa: E402
 from eukore import versions  # noqa: E402
 from eukore import protal_sketch  # noqa: E402
+from eukore import same_species  # noqa: E402
 
 TAXDUMP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
 TAXDUMP_AGE = 7 * 86400  # a taxdump this much older than the assembly tables is fetched again (fetch_sources)
@@ -504,6 +507,23 @@ def protal_step(opts, collected, stages):
             say(f"WARNING: protal sketch failed ({type(e).__name__}: {e}): no protal sketch in the package")
             return None, None
     return (functools.partial(protal_sketch.into_package, path) if path else None), about
+
+
+def species_merge_step(opts, job_map, ncbi, stages):
+    """The same-species merge (eukore/same_species.py; since 2026-11-20): within each genus, the species' genomes
+    compared by their sourmash sketches, an isolate-named species whose genome is a named species' merged into it,
+    named pairs and hybrids written to review -> same_species.Merges (False where nothing is merged). Nothing compared
+    with --no_species_merge, nor without sketches (--no_sketches, or no sourmash: the genomes were not sketched, or not
+    all of them): the package's species as NCBI files them, said so."""
+    if getattr(opts, "no_species_merge", False):
+        say("same-species merge: none (--no_species_merge): every NCBI species its own")
+        return same_species.off("off (--no_species_merge)")
+    if not sourmash_of(opts):
+        say("same-species merge: none: no sourmash sketches of the genomes to compare them by (--no_sketches, or no "
+            "sourmash); every NCBI species its own")
+        return same_species.off("no sketches (--no_sketches, or no sourmash)")
+    with timed(stages, "same-species merge", opts):
+        return same_species.find(job_map, ncbi, opts.work, opts.threads, log=say)
 
 
 def drop_superseded(opts, job_map):
@@ -2093,6 +2113,7 @@ def banner(opts, argv, whence):
                      f"cut back to {opts.keep_gb:g} GB (--keep_gb)"))
     off = [what for what, flag in (("rescue pass", opts.no_rescue), ("transcriptomes", opts.no_tsa),
                                    ("tiara", opts.no_tiara), ("sketches", opts.no_sketches),
+                                   ("same-species merge", getattr(opts, "no_species_merge", False)),
                                    ("benchmarks", opts.no_benchmarks),
                                    ("intraspecific panel", not opts.intraspecific)) if flag]
     if off:
@@ -2233,7 +2254,14 @@ def _main(argv, held):
     p.add_argument("--sourmash", default="sourmash", help="sourmash, which sketches each genome before the prune "
                                                           "(metadata/sketches.zip; default: sourmash on the PATH, else "
                                                           "none)")
-    p.add_argument("--no_sketches", action="store_true", help="no sourmash sketches of the genomes")
+    p.add_argument("--no_sketches", action="store_true", help="no sourmash sketches of the genomes (and so no "
+                                                              "same-species merge)")
+    p.add_argument("--no_species_merge", action="store_true",
+                   help="no same-species merge (default since 2026-11-20: within each genus the species' genomes are "
+                        "compared by their sourmash sketches, and an isolate-named species, '<Genus> sp. <isolate>', "
+                        "whose genome is 95%% ANI or more to a named species', 70%% of it or more held there, is "
+                        "merged into it: its genome that species' further genome; named pairs and hybrids written to "
+                        "review; metadata/species_merges.tsv, eukore/same_species.py)")
     p.add_argument("--protal", metavar="BIN",
                    help="protal, which makes its genome sketch of the package's species before the prune (BIN sketch, "
                         "on -t threads; metadata/protal_sketch.bin, which protal's database builds merge into their "
@@ -2739,6 +2767,13 @@ def _main(argv, held):
                 with timed(stages, "reference screen", opts):
                     return reference_screen_apart(opts, src_dir, ncbi)  # its own process (since 2026-11-16)
             screen_step = steps.submit(screen_references)
+        # each done genome still on disk that lacks its metadata described (its sourmash sketch too), before the prune
+        # and (since 2026-11-20; after the steps below until then) before the same-species merge reads the sketches
+        with timed(stages, "assembly metadata", opts):
+            describe_pass(opts, job_map)
+        # the isolate-named species whose genome is a named species' (since 2026-11-20): filed under that species from
+        # the copies' checks on, their rRNA and organelle records with them (merges.relabel)
+        merges = species_merge_step(opts, job_map, ncbi, stages)
         with timed(stages, "BUSCO copies and their checks", opts):
             # the marker copies checked again by the set's profiles, decoys too (since 2026-11-09: markers.recheck)
             collected = package.collect(ncbi, job_map, assemblies, opts.work, vsearch, opts.threads,
@@ -2746,7 +2781,12 @@ def _main(argv, held):
                                         markers_mod.recheck(marker_folder, opts.hmmsearch, opts.threads),
                                         progress=functools.partial(progress_of, opts, unit=""),
                                         searches=qc_searches(opts, "busco"),
-                                        drop_poor=not opts.keep_poor_genomes)
+                                        drop_poor=not opts.keep_poor_genomes, merges=merges)
+            unmerged = [r for r in merges.rows if r["rule"] == same_species.UNDONE]
+            if unmerged:  # (`undone` is the plan's genomes not done)
+                say(f"same-species merge: {len(unmerged):,} merges undone, the named species' genome not done or its "
+                    f"copies left out (e.g. {unmerged[0]['from_name']}: {unmerged[0]['note']}): those isolates stay "
+                    "species")
             if not getattr(opts, "no_eukore_queries", False):
                 write_queries(opts, ncbi, collected, markers_mod.kinds(marker_folder))
             reps = {a: g for a, g in collected["genomes"].items() if g["representative"] == "t"}
@@ -2779,7 +2819,8 @@ def _main(argv, held):
                     # nodes; a read of an older batch here), then the chimera screens, their searches shared with the
                     # helpers
                     published_records, audited = published(opts, src_dir, ncbi)
-                    records = genome_rrna_records(opts, job_map, ncbi, collected) + published_records
+                    # a merged species' records the named species' (since 2026-11-20), before their checks and types
+                    records = merges.relabel(genome_rrna_records(opts, job_map, ncbi, collected) + published_records)
                     # every record stays a record through the audit and the checks: the organelle step may begin
                     records_species["species"] = {int(r["species_taxid"]) for _n, _s, r in records}
                     records_known.set()
@@ -2883,11 +2924,14 @@ def _main(argv, held):
                 # every species of RefSeq's organelle genomes (since 2026-11-14, format 7: until then those of the
                 # package's genomes and rRNA records alone), EUKARYOME's organelle SSU and MIDORI2's mitochondrial SSU
                 refseq_species = {sp for sp, _o in chosen if opts.inside(sp)}
-                organelle = organelle_mod.collect(ncbi, job_map, held | records_species["species"] | refseq_species,
-                                                  chosen, os.path.join(opts.work, "organelle"))
+                # a merged species' own (its assembly's organelle genes) too, then the named species' (since
+                # 2026-11-20), before their checks
+                organelle = organelle_mod.collect(ncbi, job_map, held | records_species["species"] | refseq_species
+                                                  | set(merges.species), chosen, os.path.join(opts.work, "organelle"))
                 organelle += organelle_published(opts, src_dir, ncbi, chosen)
                 organelle += midori2_published(opts, ncbi, chosen, screened[0] if screened else None,
                                                screened[2] if screened and len(screened) > 2 else None)
+                organelle = merges.relabel(organelle)
                 organelle = organelle_mod.check(organelle, ncbi, vsearch, opts.threads,
                                                 progress=functools.partial(progress_of, opts, unit=""),
                                                 searches=qc_searches(opts, "organelle"))
@@ -2904,7 +2948,9 @@ def _main(argv, held):
         writers = []
         if extras:
             with timed(stages, "intraspecific barcode gap", opts):
-                writers.append(intraspecific_writer(opts, ncbi, extras, collected, records, organelle, vsearch))
+                # a merged species' panel assemblies the named species' (since 2026-11-20)
+                writers.append(intraspecific_writer(opts, ncbi, merges.jobs(extras), collected, records, organelle,
+                                                    vsearch))
         inputs = {"odb": odb_mod.state_of(src_dir), "taxdump_md5": util.md5(os.path.join(src_dir, "taxdump.tar.gz")),
                   "sources": {n: sources.state_of(src_dir, n).get("version")
                               for n in ("EUKARYOME", "EUKARYOME_SSU", "ROD", "UniVec")},
@@ -2927,11 +2973,15 @@ def _main(argv, held):
                                   if g.get("representative") == "t"))}}
         if wanted is not None:
             inputs["partial"] = {"species_clades": sorted(wanted)}  # a trial package: these clades only
+        # the same-species merge (since 2026-11-20): its state, thresholds and rows by rule; its table where it ran
+        inputs["species_merge"] = merges.about
+        if merges.about.get("state") == "made":
+            extra_tables.append((same_species.TABLE, same_species.COLUMNS, merges.rows))
         # every genome is called and extracted: the kept ones cut back to the budget, then the package names those kept
         firsts = {a for r in species.read_table() for a in species.accessions(r)}
         annotate_pass(opts, job_map, may_fetch="fetch" in opts.stages)
-        with timed(stages, "assembly metadata", opts):
-            describe_pass(opts, job_map)  # before the prune: measured while the genomes are there
+        # (the assembly metadata: described before the copies' collection since 2026-11-20: the merge reads the
+        # sketches)
         # protal's genome sketch of the species (since 2026-11-19, --protal): before the prune, the genomes there
         sketch_writer, inputs["protal_sketch"] = protal_step(opts, collected, stages)
         if sketch_writer is not None:
@@ -2960,10 +3010,14 @@ def _main(argv, held):
                 ncbi, held_species, references, os.path.join(labels.folder_of(src_dir), labels.OTT_FILE),
                 opts.bold_tsv, say)))
             groups_mod.check(ncbi, say)  # data/supergroups.tsv's clades against this taxdump
+        fates = None
+        if not opts.no_benchmarks:
+            fates = genomes.fates(ncbi, assemblies, job_map, opts.inside if wanted is not None else None)
+            for sp in merges.species:  # chosen, then merged into a named species (since 2026-11-20)
+                fates[sp] = same_species.FATE
         hook = None if opts.no_benchmarks else functools.partial(
             measure, opts=opts, src_dir=src_dir, ncbi=ncbi, collected=collected, vsearch=vsearch, stages=stages,
-            fates=genomes.fates(ncbi, assemblies, job_map, opts.inside if wanted is not None else None),
-            references=references)
+            fates=fates, references=references)
         meta = functools.partial(metadata_mod.write, work=opts.work, tables=tables(src_dir, "genbank", opts.groups)
                                  + tables(src_dir, "refseq", opts.groups), jobs=job_map)
         out = package.write(os.path.join(opts.out, f"Eukore_{opts.version}"), opts.version, ncbi, collected,

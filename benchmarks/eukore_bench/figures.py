@@ -68,7 +68,10 @@ NOT_IN_BREADTH = ("ROD", benchmarks.ODB_NAME)  # ROD's operons are Eukore's reco
 TICK_LABELS = {"Eukore exons": "Eukore\nexons", "Eukore 18S": "Eukore\n18S", "EukDetect2": "Euk-\nDetect2",
                "MetaPhlAn4": "MetaPhlAn\n4", "PR2": "PR2\n(18S)", "SILVA": "SILVA\n(18S)", "UNITE": "UNITE\n(ITS)"}
 FATES = (("chosen", BLUE[550]), ("chosen, flagged", BLUE[400]), ("model species", BLUE[700]),
-         ("no assembly (records)", BLUE[250]), ("every assembly excluded", "#b9b8b2"), ("placeholder", NONE),
+         ("no assembly (records)", BLUE[250]),
+         # an isolate-named species merged into a named one (since 2026-11-20, eukore/same_species.py: FATE)
+         ("merged into a named species", BLUE[100]),
+         ("every assembly excluded", "#b9b8b2"), ("placeholder", NONE),
          ("hybrid", NONE), ("not a species", NONE), ("not in the taxdump", NONE), ("no download", NONE))
 MIN_READS_LABEL = "3 or more, 1% or more of those placed,"  # eukore/reads.py's MIN_READS, MIN_SHARE
 DETECT_MODES = (("in", "species, its species in the reference", SERIES[0]),

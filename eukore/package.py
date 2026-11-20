@@ -172,6 +172,14 @@ def type_material_of(row):
 
 COPY_NUMBER_COLUMNS = ("accession", "species_taxid", "set", "element", "copies", "partial", "basis")
 COPY_NUMBERS = "copy_numbers.tsv.gz"
+MERGED = "merged"  # genomes.tsv's source of a genome merged into a named species (same_species.SOURCE; 2026-11-20)
+
+
+def holds_copies(g):
+    """Whether a genome's row (collect's) is of a genome whose copies busco/ and markers/ hold: a species'
+    representative, or (since 2026-11-20) a genome merged into a named species (same_species.py: representative f,
+    source merged), whose copies stay under its own accession."""
+    return g.get("representative") == "t" or g.get("source") == MERGED
 
 
 def write_gz(path, columns, rows):
@@ -208,7 +216,8 @@ def copy_numbers(genomes, copy_rows, loci, set_of, organelle=()):
     organelle, and the organelle genes found on them (organelle/genes.tsv's of source assembly: their copies on the
     molecules, a plastid's inverted repeat 2). basis: assembly, or transcripts for a transcriptome (TSA: its copies are
     isoforms, not genes). tools/rdna_depth.py adds rows of basis reads. genomes: collect's (their _searched,
-    _rrna_copies, _organelle_molecules)."""
+    _rrna_copies, _organelle_molecules). Since 2026-11-20 a genome merged into a named species (same_species.py)
+    too, under its species' taxid: its copies are the package's (holds_copies)."""
     by = collections.defaultdict(dict)
     for r in copy_rows:
         by[r["accession"]][r["locus"]] = r
@@ -218,7 +227,7 @@ def copy_numbers(genomes, copy_rows, loci, set_of, organelle=()):
             genes[row["accession"]].append(row)
     out = []
     for acc, g in sorted(genomes.items()):
-        if g.get("representative") != "t" or g.get("source") == "no_assembly":  # EukDetect2's records: no genome
+        if not holds_copies(g) or g.get("source") == "no_assembly":  # EukDetect2's records: no genome
             continue
         base = dict(accession=acc, species_taxid=g["species_taxid"],
                     basis="transcripts" if g.get("source") == "tsa" else "assembly")
@@ -408,7 +417,7 @@ def genome_part(args):
 
 
 def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None, paralogs_of=None, progress=None,
-            searches=None, drop_poor=True):
+            searches=None, drop_poor=True, merges=None):
     """What the package holds of the BUSCO genes -> dict(genomes {accession: row}, copy_rows [COPY_COLUMNS dicts],
     taxids, cds and proteins {(accession, locus): sequence}, intron_rows (introns.of_copy's, accession and locus set),
     work and done (the genomes whose copies and features write reads from WORK/done), copy_count, swaps {accession:
@@ -422,9 +431,16 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
     threads: the genomes read `threads` at once by a pool of processes (genome_part; since 2026-11-10), the result
     the same as one after another; vsearch's threads too. progress, searches: qc.check's (its loci's searches
     reported; kept, and shared with other nodes). drop_poor (since 2026-11-14; tiers.py): the copies of a genome of
-    tier poor or partial left out (`dropped`: those genomes), else kept, flagged poor_genome."""
+    tier poor or partial left out (`dropped`: those genomes), else kept, flagged poor_genome.
+    merges (since 2026-11-20; same_species.Merges): the isolate-named species merged into a named species. A merged
+    species' genome (and its other assemblies) is filed under the named species from the start, so that the checks
+    across species take the two genomes for one species; its tier and duplication are measured as a species' genome's
+    are; it is a further genome of the named species at the end (representative f, source same_species.SOURCE), its
+    copies kept under its own accession. A merge into a species whose representative is not here (not done) or whose
+    copies are left out (dropped) is undone (Merges.undo), before the checks: the isolate stays a species."""
     from . import introns as introns_mod  # noqa: PLC0415
     kinds = kinds or {}
+    merged_into = dict(merges.species) if merges else {}  # {isolate species: the named species}
     by_accession = {r["accession"]: r for r in assemblies}
     genomes, copy_rows, cds, intron_rows, done, count = {}, [], {}, [], [], 0
     alt_cds, alt_length = {}, {}  # a Duplicated locus' other copies' (since 2026-11-09)
@@ -439,7 +455,8 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             continue
         got_n = part["loci"]
         row = by_accession.get(acc, {})
-        genomes[acc] = dict(accession=acc, fetched=job.get("fetch", acc), species_taxid=job["species_taxid"],
+        species = merged_into.get(int(job["species_taxid"]), job["species_taxid"])  # a merged isolate's: the named
+        genomes[acc] = dict(accession=acc, fetched=job.get("fetch", acc), species_taxid=species,
                             taxid=job.get("taxid") or job["species_taxid"],
                             organism=row.get("organism") or job.get("organism", ""),
                             strain=row.get("strain") or row.get("isolate") or "-", level=row.get("level") or job.get(
@@ -481,7 +498,7 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
         for other in job.get("others", ()):
             o = by_accession.get(other)
             if o and other not in genomes:
-                genomes[other] = dict(accession=other, fetched=other, species_taxid=job["species_taxid"],
+                genomes[other] = dict(accession=other, fetched=other, species_taxid=species,
                                       taxid=o["taxid"], organism=o["organism"],
                                       strain=o.get("strain") or o.get("isolate") or "-", level=o["level"],
                                       genome_size=o["size"], contigs=o["contigs"], category=o["category"],
@@ -516,6 +533,23 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             # copy_numbers.tsv.gz nor a species failing every locus in busco/loci.tsv's call rates
             genomes[a]["_searched"] = ()
         done = [a for a in done if a not in dropped]
+    # a merge into a named species whose genome is not here (not done) or whose copies are left out undone (since
+    # 2026-11-20): the isolate's genome would stand for a species the package holds no copies of; it stays a species
+    own_species = {a: int(job_map[a]["species_taxid"]) for a in genomes if a in job_map}  # each genome's plan species
+    if merged_into:
+        rep_of = {sp: a for a, sp in own_species.items() if sp not in merged_into}
+        for sp, target in sorted(merged_into.items()):
+            why = ("the named species' genome is not done" if target not in rep_of else
+                   f"the named species' genome left out (tier {genomes[rep_of[target]].get('tier', '-')})"
+                   if rep_of[target] in dropped else None)
+            if why is None:
+                continue
+            merges.undo(sp, why)  # its records not relabelled either (the build's merges.relabel)
+            for acc in [a for a, s in own_species.items() if s == sp]:
+                for a in [acc] + [o for o in job_map[acc].get("others", ()) if o in genomes]:
+                    if int(genomes[a]["species_taxid"]) == target:
+                        genomes[a]["species_taxid"] = job_map[acc]["species_taxid"]
+    merged_genomes = [a for a, sp in own_species.items() if sp in merges.species] if merged_into else []
     lengths = {(r["accession"], r["locus"]): int(r["protein_length"]) for r in copy_rows}
     checks = qc.check(cds, {a: g["species_taxid"] for a, g in genomes.items()}, ncbi, vsearch, threads,
                       {**lengths, **alt_length}, alt_cds, progress=progress, searches=searches)
@@ -591,6 +625,9 @@ def collect(ncbi, job_map, assemblies, work, vsearch=None, threads=1, kinds=None
             g["foreign_copies"], g["foreign_source"] = qc.cross_summary(all_rows.get(acc, []), ncbi)
             if g["foreign_copies"] >= tiers_mod.FOREIGN_MIN:  # flagged on the genome too (since 2026-11-14)
                 g["flags"] = ",".join(sorted((set(g["flags"].split(",")) - {"-"}) | {tiers_mod.FOREIGN_FLAG}))
+    if merged_genomes:  # measured as a species' genome until here: now the named species' further genome
+        for acc in merged_genomes:
+            genomes[acc].update(representative="f", source=MERGED)
     taxids = {g["taxid"] for g in genomes.values()} | {int(r["same_as"]) for r in copy_rows if r["same_as"] != "-"} \
         | {int(g["foreign_source"]) for g in genomes.values() if str(g.get("foreign_source", "-")).isdigit()}
     return dict(genomes=genomes, copy_rows=copy_rows, taxids=taxids, cds=cds, proteins=proteins,
@@ -647,8 +684,10 @@ def genetics(collected, ncbi, hmm_of, hmmalign="hmmalign", work=None, log=print,
     from . import align as align_mod, codecheck, groups, introns as introns_mod  # noqa: PLC0415
     # hmmalign's files in tmp (the node's disk; since 2026-11-13, until then in work), its cache in work
     states = align_mod.align(collected, hmm_of, hmmalign, work, log, threads, tmp) if hmmalign else {}
+    # the genomes whose copies the package holds: a species' genome, and a genome merged into a species (since
+    # 2026-11-20, same_species.py) in its group as it was before
     group_of = {a: groups.group_of(ncbi, int(g["species_taxid"])) for a, g in collected["genomes"].items()
-                if g["representative"] == "t"}
+                if holds_copies(g)}
     rows, site_rows, site_columns, per_genome = introns_mod.annotate(collected, states, group_of)
     codons, checked = codecheck.run(collected, states, hmm_of, threads) if states else ([], {})
     for acc, g in collected["genomes"].items():
