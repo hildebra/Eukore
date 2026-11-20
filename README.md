@@ -73,6 +73,8 @@ seven taxonomies, and how far each sequence can be trusted.
 - an assembly NCBI flags (contaminated, unverified source organism, misassembled, chimeric, low quality), one FCS-GX
   finds mostly another organism's or that fails NCBI's ANI check, where the species has a better one; assemblies
   under 2 Mb or under 30% of the species' typical size; NCBI's placeholder species (`sp.`, uncultured) and crosses of two species ("A x B");
+- as a species of its own, an isolate-named species ("Saccharomyces sp. M14") whose genome is a named species' of its
+  genus (95% ANI): its genome is that species' further genome (`metadata/species_merges.tsv`, since 2026-11-20);
 - the BUSCO copies of a genome that is a part of one, holds under half its clade's expected BUSCOs, or is the
   flagged only assembly of its species (the species stays, with its rRNA and organelle genes;
   `--keep_poor_genomes` keeps the copies, `low`);

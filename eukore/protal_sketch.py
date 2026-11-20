@@ -8,11 +8,12 @@ The sketch's species (table_rows): each species' representative genome (genomes.
 in the genomes' folder; not a transcriptome (source tsa) or EukProt's records (no_assembly), nor a genome whose copies
 the package leaves out (tiers poor, partial and contaminated, unless --keep_poor_genomes: package.collect's dropped).
 Its key is the representative's accession as genomes.tsv has it, which protal maps to its own species names. The
-species' further assemblies still on disk (source assembly or intraspecific) follow it under the same key: protal
-keeps their windows out of the other species' sketches. The windows on the BUSCO and marker copies are left out
-(protal's alignment covers those genes): each copy's span on its contig, first to last codon, introns and all, from its
-genome's loci.tsv and alternates.tsv in WORK/done (positions; a copy joined across contigs gives its best piece's span
-alone, as loci.tsv does). A species' entries scale with its representative's size (entries()).
+species' further assemblies still on disk (source assembly or intraspecific, and since 2026-11-20 a genome merged into
+the species: an isolate-named species' genome, same_species.py) follow it under the same key: protal keeps their
+windows out of the other species' sketches, not out of their own species'. The windows on the BUSCO and marker copies
+are left out (protal's alignment covers those genes): each copy's span on its contig, first to last codon, introns and
+all, from its genome's loci.tsv and alternates.tsv in WORK/done (positions; a copy joined across contigs gives its best
+piece's span alone, as loci.tsv does). A species' entries scale with its representative's size (entries()).
 
 Its rerun cache (build), WORK/protal_sketch/: genomes.tsv and gene_positions.tsv (protal's --genomes and
 --gene_positions), key.json (KEY: the binary's real path, size and mtime, the entries' options, the two files' MD5s;
@@ -44,7 +45,9 @@ PARTIAL = ".partial"               # the sketch being written by protal
 KMERS = 5000
 MB = 500
 NOT_GENOMES = ("tsa", "no_assembly")  # a transcriptome, EukProt's records: no genome to sketch
-FURTHER = ("assembly", "intraspecific")  # a species' further assemblies (genomes.tsv's representative f)
+# a species' further assemblies (genomes.tsv's representative f); since 2026-11-20 a genome merged into a named species
+# (same_species.SOURCE): the named species' further genome, never a species keeping its windows out of that one's
+FURTHER = ("assembly", "intraspecific", "merged")
 POSITION_COLUMNS = ("contig", "start", "end", "genome", "locus")  # protal reads contig, start, end (1-based, inclusive)
 SUMMARY = "protal sketch: "        # protal's summary line starts so and holds "in the sketch ("
 VERSION_SECONDS = 60

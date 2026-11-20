@@ -243,6 +243,49 @@ organelle molecules whole; sourmash sketches it alongside (k 21 and 31, scaled 1
 `metadata/` with NCBI's assembly_summary rows of every genome ([FORMAT.md](FORMAT.md)). Each measure was checked
 against slow counts and in any chunking (`tests/test_metadata.py`).
 
+## Species named for an isolate, merged (since 2026-11-20)
+
+`eukore/same_species.py`, in the package stage before the copies' checks across species. Eukore takes every NCBI
+species with an assembly but NCBI's placeholders and crosses named "A b x C d", so an isolate NCBI never named stays a
+species of its own: "Saccharomyces sp. M14" and "Saccharomyces sp. KACC 48362" are strains of *S. cerevisiae*. A
+rare-taxa audit of protal (2026-11-20) found such genomes sharing 58-89% of a named species' protal-sketch entries,
+where two species' genomes share under 1%: kept apart, a strain's marker, rRNA and sketch evidence split between two
+labels, and the protal sketch left out the windows the two shared, so that both lost entries.
+
+Within each genus (NCBI's; never across genera) the species' genomes are compared by the sourmash sketches the build
+made of them (k 31, scaled 10,000; a sketch of fewer than 100 hashes, a genome under ~1 Mb, not compared), read as
+sourmash writes them, the genera on `-t` cores at once. Of two genomes A and B: the containment of A in B (the share
+of A's hashes B holds, as sourmash's), the ANI (sourmash's max-containment ANI: the larger of the two containments to
+the power 1/31, the identity of what the two share), and A's share in B (its containment over the larger of the two:
+the share of A's genome B holds at that identity, an aligned fraction). A k-mer containment alone mixes identity and
+coverage: a whole genome at 95% ANI holds 0.95^31 = 0.20 of another's hashes, half a genome at 99% (a hybrid's
+parent) 0.37; the share tells them apart.
+
+The rules, as the user set them:
+- an isolate-named species (`<Genus> sp. <something>`, or a genus' bare `<Genus> sp.`) whose genome is 95% ANI or more
+  to a named species' and 70% or more of it held there is merged into it: its genome is the named species' further
+  genome (`genomes.tsv`'s `source` `merged`), its copies, rRNA records and organelle genes the named species', from the
+  copies' checks on (a copy is not confirmed by its own species' second genome, nor `same_as` its genus for it). The
+  named species keeps its representative; several isolates may merge into one; of several named species an isolate
+  fits, the nearest takes it. A merge never chains (an isolate merges into a named species alone) and is undone
+  where the named species' genome is not done or its copies are left out (the isolate's copies would stand for a
+  species of none);
+- two named species of one genome (95% ANI or more): not merged, a row to review;
+- a hybrid stays a species, a row to review with its parents: a species named one (`Saccharomyces x bayanus`, which
+  genomes.HYBRID's "A b x C d" leaves in), or a genome wholly holding two species of its genus that are not one
+  species, itself wholly in neither (*S. pastorianus*: *S. cerevisiae*'s and *S. eubayanus*' genomes each wholly in it,
+  it half in each). A hybrid is no merge target (a strain of *S. cerevisiae* is wholly in *S. pastorianus* too), and
+  an isolate that is one is not merged;
+- two isolate-named species of one genome, not both merged (Blastocystis' subtype isolates, of no named species), and
+  an isolate 95% or more to a named species but under 70% of its genome held there: rows to review, not merged.
+
+Why 70%: an assembly of the same species holds 0.8-1.0 of another's genome at their identity (its completeness, a
+second haplotype, a contaminant's contigs), a hybrid half of each parent's (two thirds at most of one of two parents
+of 2:1 genome sizes). A raw containment cut instead (0.5, say) would have meant 97.8% ANI or more at k 31, and let a
+recent hybrid's 0.4-0.5 come near it. The rows, with the figures, are `metadata/species_merges.tsv`
+([FORMAT.md](FORMAT.md#metadata)). Tested on stand-in sketches of these cases (`tests/test_same_species.py`); not yet
+measured on a build's genomes.
+
 ## What else a package tells its user
 
 So that a user (protal's build) has what it needs without computing it again:

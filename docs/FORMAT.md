@@ -82,7 +82,7 @@ drops `low` and weighs `medium` weighs `unverified` as it sees fit: it is a lack
 | [`organelle/amplicons.tsv`](#organelle) | in-silico PCR of 8 COI, rbcL, matK, psbA-trnH, 12S and 16S primer pairs | 5 |
 | [`organelle/molecules.fna.gz`](#organelle) | the assemblies' organelle molecules, whole | 4 |
 | [`intraspecific/`](#intraspecific-format-5) | the panel's further assemblies' copies, rRNA and organelle genes; the barcode gap | 5, more in 6 |
-| [`metadata/`](#metadata) | each genome's measures (size, contiguity, GC, masking, telomeres, ...), tetranucleotides, sketches, NCBI's summary, codon evidence, protal's genome sketch | codons: 5; protal's sketch: 7, since 2026-11-19 |
+| [`metadata/`](#metadata) | each genome's measures (size, contiguity, GC, masking, telomeres, ...), tetranucleotides, sketches, NCBI's summary, codon evidence, protal's genome sketch, the isolate-named species merged into a named species and the pairs to review | codons: 5; protal's sketch: 7, since 2026-11-19; species_merges.tsv: 7, since 2026-11-20 |
 | [`benchmarks/`](#benchmarks-optional) | the build's measures of the package | |
 
 ## manifest.json
@@ -109,7 +109,11 @@ taxa by how they were placed); since 2026-11-19 `protal_sketch`, of the protal g
 `metadata/protal_sketch.bin` (its `file`, the `protal` binary that made it and its `version`, its entries' options
 `kmers`, `kmers_mb`, `kmers_min` and `kmers_max`, its `species` and `genomes`, the copies' `gene_spans` left out,
 when it was `made` and its `state`: `made`, `reused` from an earlier run, or `stale`, a kept sketch whose genomes were
-pruned since, `stale` saying why; `null` where the package holds none);
+pruned since, `stale` saying why; `null` where the package holds none); since 2026-11-20 `species_merge`, the
+same-species merge ([metadata/species_merges.tsv](#metadata)): its `state` (`made`; `off (--no_species_merge)`; `no
+sketches (--no_sketches, or no sourmash)`, nothing compared nor merged), and where it was made its `table`, the
+sketches' `k`, its thresholds `ani_min`, `share_min` and `hashes_min`, the `genera` compared, the `genomes` compared
+and those `without_sketch`, the `pairs` compared and the table's rows by `rules`;
 `inputs.partial.species_clades` in a trial package limited to those clades, which a user
 should not take for Eukore), `counts` (species, species with rRNA alone, genomes, copies and their
 calls, rRNA records, organelle genes by organelle and gene, species with organelle genes, taxa, `busco_loci`, the
@@ -276,7 +280,7 @@ The species' genomes and their other assemblies:
 | `level`, `genome_size`, `contigs`, `category` | the assembly's (`category`: isolate or derived from metagenome) |
 | `flags` | NCBI's reasons it would not take the assembly into RefSeq (`excluded_from_refseq`), and NCBI's quality reports' (`FCS-GX: mostly foreign`, `FCS-GX: contaminated`, `ANI: failed`, `ANI: inconclusive`; see below), comma-separated |
 | `ftp` | the assembly's folder on NCBI's FTP server |
-| `source` | as `species.tsv`'s; `assembly` for a further assembly of the species (no copies), `intraspecific` for one the barcode gap's panel ran (its copies in `intraspecific/`; format 5) |
+| `source` | as `species.tsv`'s; `assembly` for a further assembly of the species (no copies), `intraspecific` for one the barcode gap's panel ran (its copies in `intraspecific/`; format 5), `merged` (since 2026-11-20) for the genome of an isolate-named species merged into this named species (below) |
 | `representative` | `t` for the species' genome |
 | `loci` | BUSCO genes called in it |
 | `rrna_18s`, `rdna_units`, `rdna_complete`, `rdna_contigs` | its 18S spans, rDNA units (from the 18S to the 28S), units with a whole 28S, and the contigs holding units, as `rrna/` found them in the assembly: copies in the assembly, a lower bound of the copies in the genome (an rDNA array is usually collapsed in an assembly); `-` where its rRNA was not searched |
@@ -297,6 +301,17 @@ another eukaryote's sequence; `ANI: inconclusive`); then a RefSeq reference, the
 better assembly level, one FCS-GX finds no contaminant in, the fewer contigs per megabase, the newer. FCS-GX's summary
 is the fetched assembly's (its RefSeq copy where it has one).
 
+Since 2026-11-20 an NCBI species named for an isolate (`Saccharomyces sp. M14`, `Blastocystis sp. NMH`) whose genome is
+a named species' of its genus (95% ANI or more by the genomes' sourmash sketches, 70% of it or more held in the named
+species' genome: [methods.md](methods.md#species-named-for-an-isolate-merged-since-2026-11-20)) is no species of the
+package: its genome is a further genome of the named species, `species_taxid` the named species', `representative`
+f, `source` `merged`, its own NCBI `taxid` and `organism` kept (its other assemblies, `source` `assembly`, with it). The
+named species keeps its representative. The merged genome's copies stay in `busco/` and `markers/` under its own
+accession (`busco/loci.tsv`'s figures count the species' representative alone), its rRNA records and organelle genes
+are the named species' (their `species_taxid`; their `taxid`, NCBI's label, kept), and it has its rows in
+`copy_numbers.tsv.gz` and `metadata/` as a species' genome has. `metadata/species_merges.tsv` lists each merge and the
+pairs left to review (named species of one genome, hybrids).
+
 ## copy_numbers.tsv.gz (format 5)
 Since 2026-11-08: every species' genome's copy numbers in one long table, a row per genome and element, for a reader
 to pivot into a genome-by-element matrix. The same counts are in the files each element's own folder holds; this
@@ -304,7 +319,7 @@ table puts them side by side, with the zeros (a locus searched and not found).
 
 | column | |
 |---|---|
-| `accession`, `species_taxid` | the genome (`genomes.tsv`'s; a species' genome only, not EukDetect2's records) |
+| `accession`, `species_taxid` | the genome (`genomes.tsv`'s; a species' genome only, not EukDetect2's records; since 2026-11-20 a genome merged into a named species too, under that species' taxid) |
 | `set` | `busco`, `markers`, `rrna`, `mitochondrion`, `plastid` |
 | `element` | a BUSCO or marker locus (each one the genome was searched for: a genome run before a locus was has no row of it); `rDNA_unit`, `18S`, `5.8S`, `28S`, `5S`; `molecules` (the assembly's sequences its FASTA titles name that organelle), an organelle gene (`organelle/genes.tsv`'s `gene`, of source `assembly`: found on the genome's own molecules); `genome` (by reads) |
 | `copies` | basis `assembly`: a locus' complete copies (`copies.tsv`'s `copies`; 0 for a Fragmented or Missing one), the rRNA's (rDNA units; 18S spans alone or in units, and a unit's 18S shorter than an 18S span, at a contig's end, as partial; the units' 5.8S, 28S and inline 5S: 5S arrays apart from the units are not extracted), the organelle molecules, an organelle gene's copies on them (a plastid's inverted repeat: 2); basis `reads`: copies per haploid nuclear genome (`depth.tsv`'s `rdna_copies_reads`, `rdna_18s_copies`, `mt_copies_reads`, `pt_copies_reads`) |
@@ -671,8 +686,9 @@ was on disk, and NCBI's own summaries of the genomes (since 2026-11-07). A build
 genomes after: these stand for them. A genome done by a build before 2026-11-07 is described where its file was still
 there; one without a row was not.
 
-- `assembly.tsv.gz`: one row per species' genome (`representative` `t` of `genomes.tsv`): where it and its gene models
-  came from, and what `eukore/metadata.py` measured in one pass over its FASTA (`-` where it was not described):
+- `assembly.tsv.gz`: one row per species' genome (`representative` `t` of `genomes.tsv`; since 2026-11-20 also each
+  genome merged into a named species, `source` `merged`): where it and its gene models came from, and what
+  `eukore/metadata.py` measured in one pass over its FASTA (`-` where it was not described):
 
 | column | |
 |---|---|
@@ -714,7 +730,9 @@ there; one without a row was not.
   protal maps to its own species names. Its species are those of `genomes.tsv` whose representative genome was on
   disk, but a transcriptome (`source` `tsa`), EukProt's records (`no_assembly`) and a genome whose copies the package
   leaves out (tier poor, partial or contaminated, without `--keep_poor_genomes`); a species' further assemblies on
-  disk (`source` `assembly` or `intraspecific`) keep their windows out of the other species' entries. The manifest's
+  disk (`source` `assembly` or `intraspecific`, and since 2026-11-20 `merged`: an isolate-named species' genome merged
+  into it, under its key, never a species of its own whose windows the two would lose) keep their windows out of the
+  other species' entries. The manifest's
   `inputs.protal_sketch` says what made it. For all eukaryotes ~280 M entries, ~3.4 GB: protal's database build takes a
   subset (its smallest hashes). Not in the release's core: a download of its own (`Eukore_<version>_protal_sketch.bin`),
   as the sourmash sketches are; protal reads a package unpacked without it.
@@ -729,6 +747,23 @@ there; one without a row was not.
   conserved position of its BUSCO genes: `accession`, `codon`, `table_aa` (NCBI's table's amino acid, `*` a stop),
   `inferred_aa` (the amino acid those positions favour), `n` (the positions), `llr` (how much more likely the inferred
   amino acid is than the table's: natural log; a stop's against a uniform background).
+- `species_merges.tsv` (since 2026-11-20, where the build had the genomes' sourmash sketches and no
+  `--no_species_merge`; `eukore/same_species.py`, [methods.md](methods.md#species-named-for-an-isolate-merged-since-2026-11-20)):
+  the same-species merge's merges and the pairs it leaves to review, a row each. Within each genus the species'
+  genomes are compared by their sketches (k 31): `containment` is the share of one genome's hashes the other holds,
+  `ani` sourmash's max-containment ANI (the larger of the two containments to the power 1/31: the identity of what the
+  two share), `share` the `from` genome's containment over the larger of the two (the share of it the other holds at
+  that identity, 1 where it is wholly in it). A reader that names species (protal) takes `merged` rows as done (the
+  package is already so), the others as notes.
+
+| column | |
+|---|---|
+| `from_taxid`, `from_name`, `from_accession` | the species (NCBI's taxid and name) and its genome compared |
+| `to_taxid`, `to_name`, `to_accession` | the species it is merged into or set beside, and its genome; for a hybrid its nearer parent |
+| `ani`, `containment`, `share` | of `from`'s genome in `to`'s, as above |
+| `rule` | `merged` (an isolate-named species, `<Genus> sp. <isolate>`, whose genome is 95% ANI or more to a named species' and 70% or more of it held there: merged into it, `genomes.tsv`'s `source` `merged`); to review, nothing changed: `review: named pair` (two named species of one genome), `review: hybrid` (a species named a hybrid, `Saccharomyces x bayanus`, or a genome holding two species of its genus wholly that are not one species, itself in neither: Saccharomyces pastorianus; kept a species, never a merge target), `review: isolate pair` (two isolate-named species of one genome, not both merged: of no named species, or one merged and the other, near it, not near enough the named species itself), `review: partial` (an isolate 95% or more to a named species but under 70% of its genome held there), `review: target left out` (a merge undone: the named species' genome not done, or its copies left out, tier poor, partial or contaminated) |
+| `other_taxid`, `other_name` | a hybrid's other parent, `-` |
+| `note` | the other parent's figures; the other named species a merged isolate also fits; which of an isolate pair merged; why a merge was undone; `-` |
 
 ## intraspecific/ (format 5)
 The barcode gap: for a panel of well-sampled species (`data/intraspecific_panel.tsv`, 40 species), further assemblies
@@ -770,7 +805,7 @@ finished package, into a folder of its own (benchmarks/README.md). A benchmark w
 | `primers.tsv` | primer pair and supergroup (and `all`): the species with a record the pair runs on, those with one it amplifies, their share (`amplicons.tsv`; format 5); since 2026-11-17 `with_sites`, the species whose record holds both primers' sites, and `share_of_sites`, those amplified of them (a published barcode cut at its primers holds neither) |
 | `runtime.tsv` | genome timed (run since 2026-11-06): its size, bytes, BUSCOs searched, threads, seconds |
 | `stages.tsv` | step of the package stage: its seconds |
-| `selection.tsv` | supergroup and fate: NCBI's taxa with a GenBank assembly by what became of them (`chosen`, `chosen, flagged`, `model species`, `no assembly (records)`, `every assembly excluded`, `placeholder`, `hybrid`, `not a species`, `no download`) |
+| `selection.tsv` | supergroup and fate: NCBI's taxa with a GenBank assembly by what became of them (`chosen`, `chosen, flagged`, `model species`, `no assembly (records)`, `merged into a named species` (since 2026-11-20: an isolate-named species, `metadata/species_merges.tsv`), `every assembly excluded`, `placeholder`, `hybrid`, `not a species`, `no download`) |
 | `selection_taxa.tsv` | (since 2026-11-12) NCBI taxon with a GenBank assembly: its `taxid`, `name`, `rank`, `supergroup` (its group) and `fate` (`selection.tsv`'s), NCBI's `assemblies` of it and the `reasons`: a chosen genome's flags, or the flags that excluded an excluded taxon's assemblies, each with its assemblies where more than one (`contaminated:2`), `; ` between them. The list `selection.tsv` counts: for a reader looking a species up, the published list of the genomes left out and why, and the breadth at every rank (benchmarks/'s `breadth_ranks.tsv`) |
 | `breadth.tsv` | supergroup (and `all`): NCBI's species with an assembly, Eukore's (with a genome; with rRNA alone), another reference's (`compared`: `-` in a package since 2026-11-12; benchmarks/'s comparisons fill them), and the two's overlap |
 | `genes.tsv` | species' genome: the rank it shares with the nearest other species of BUSCO's dataset (`odb_nearest`), whether it is in the dataset itself (`odb_self`), its copies' exon and intron bases |
@@ -930,6 +965,14 @@ them). `genomes.tsv`'s
   petB and petD, and its SSU and LSU, one record name twice), and a mitochondrion's candidate in a species that can
   hold a plastid needs its COX1 or COX3 (an untitled plastome was filed as a mitochondrion). Assemblies of such
   species with candidate contigs are searched again (their search key's `one_organelle1`).
+  Since 2026-11-20, the same format: the same-species merge ([genomes.tsv](#genomestsv)): an isolate-named species
+  whose genome is a named species' of its genus is filed under that species, its genome `genomes.tsv`'s `source`
+  `merged`, `representative` f, its copies still in `busco/` and `markers/` under its accession (the first genomes
+  other than a species' representative whose copies are there), its records and organelle genes the named species';
+  `metadata/species_merges.tsv` and the manifest's `inputs.species_merge`; `assembly.tsv.gz`, `copy_numbers.tsv.gz`
+  and the protal sketch take a merged genome as a species' genome is taken (the sketch as the named species' further
+  genome). A reader that maps a copy's accession to its species by `genomes.tsv` needs no change; one that takes
+  every copy of `busco/` as a species' representative's takes `representative` t alone.
 - 2026-11-10, no new format (optional): `reference_screen.tsv` and the manifest's `inputs.references.MIDORI2.screen`
   (and `files`), where the build was given MIDORI2 files; `species.tsv`'s `midori2` no longer names a species by a
   record the screen drops. MIDORI2's later header layout (GB273's: a tab, every NCBI rank as `rank_Name_taxid`) is

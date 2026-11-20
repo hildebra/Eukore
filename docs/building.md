@@ -446,6 +446,17 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 - **package**, in turn:
   - makes what a tool missing at a genome's run left out, as the process stage does (tiara given here: its classes);
   - runs FCS-GX where asked (`-t / 4` genomes at once, 4 cores each);
+  - describes each done genome still on disk that lacks its metadata (`eukore/metadata.py`: a genome done before
+    2026-11-07), as the process stage does after its runs (since 2026-11-20 here, before the copies' checks: the
+    merge below reads its sketch);
+  - since 2026-11-20, unless `--no_species_merge` or without sketches (`--no_sketches`, no sourmash): the same-species
+    merge (`eukore/same_species.py`, [methods.md](methods.md#species-named-for-an-isolate-merged-since-2026-11-20)):
+    within each genus the species' genomes compared by their sourmash sketches (k 31, `-t` genera at once; seconds
+    to minutes), an isolate-named species (`<Genus> sp. <isolate>`) whose genome is 95% ANI or more to a named
+    species', 70% or more of it held there, filed under that species from the copies' checks on (its genome a further
+    genome, `source` `merged`; its rRNA records and organelle genes the named species'); named pairs, hybrids and the
+    isolates not merged left to review (`metadata/species_merges.tsv`). A merge into a species whose genome is not done
+    or whose copies are left out is undone, said in the log;
   - checks the copies across species;
   - since 0.2: aligns the copies' proteins to BUSCO's HMMs (hmmalign, `-t` loci at once; cached in `WORK/align`), places their introns,
     checks each genome's genetic code;
@@ -457,8 +468,6 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
   - since 0.2: measures the intraspecific panel's barcode gap;
   - names each species in PR2, EUKARYOME, KSGP and (since 0.2) SILVA, UNITE and MIDORI2, and finds its ids in Open
     Tree's taxonomy (`crossrefs.tsv`);
-  - describes each done genome still on disk that lacks its metadata (`eukore/metadata.py`: a genome done before
-    2026-11-07), as the process stage does after its runs;
   - since 2026-11-19, with `--protal BIN`: makes protal's genome sketch of the package's species from the genomes
     still on disk (`BIN sketch` on `-t` threads; `eukore/protal_sketch.py`), the windows on their BUSCO and marker
     copies left out, into `metadata/protal_sketch.bin` ([FORMAT.md](FORMAT.md#metadata)): about 5,000 entries for a
@@ -504,7 +513,8 @@ loci, the folders, the threads, the process stage's memory, the package stage's 
 | `--no_rrna_donors` | donors | a species whose genome holds no 18S takes none from its next assembly (since 2026-11-14: that assembly fetched and run by barrnap and ITSx alone, `WORK/rrna_donors/`) |
 | `--no_eukore_queries` | taken | no Eukore's own query proteins (since 2026-11-14: the package stage writes the clean copies' proteins of the groups BUSCO's dataset serves poorly, `WORK/eukore_queries.faa.gz`; the next build's genomes of those groups take them where nearer than the dataset's, never their own species', the held-out calls none, and a done one run without any is run again with them where its genome is on disk, once: since 2026-11-15 not again for a newer set, whose reruns changed the set again; the manifest's `inputs.queries` gives the set and how many genomes took which) |
 | `--no_midori2` | fetched | no MIDORI2 (since 2026-11-14 the fetch stage takes its newest release from Zenodo) |
-| `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`) |
+| `--sourmash PATH`, `--no_sketches` | `sourmash` on the PATH | sourmash, which sketches each genome before the prune (`metadata/sketches.zip`); without sketches no same-species merge |
+| `--no_species_merge` | merged | no same-species merge (since 2026-11-20: an isolate-named species whose genome is 95% ANI or more to a named species' of its genus, 70% or more of it held there, is filed under that species; named pairs and hybrids left to review; `metadata/species_merges.tsv`, `eukore/same_species.py`): every NCBI species its own, as before |
 | `--protal BIN` | none made | protal, which makes its genome sketch of the package's species before the prune (`metadata/protal_sketch.bin`, which protal's database builds merge into their own sketch; since 2026-11-19), in the release a download of its own (`Eukore_<version>_protal_sketch.bin`); not looked for on the PATH |
 | `--protal_sketch_kmers N` | 5000 | the protal sketch's entries for a species whose genome is `--protal_sketch_mb` Mb, scaling with its genome's size, from N / 5 to 20 x N (`protal sketch --kmers`, `--kmers_min`, `--kmers_max`): by default about 10 a Mb, 1,000 to 100,000 a species; for all eukaryotes ~280 M entries, ~3.4 GB, ~20 GB of memory while protal sketch runs. protal's database build takes a subset (its smallest hashes) |
 | `--protal_sketch_mb MB` | 500 | the genome size, Mb, that has `--protal_sketch_kmers` entries (`protal sketch --kmers_mb`) |
