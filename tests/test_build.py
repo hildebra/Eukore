@@ -111,6 +111,35 @@ class UnitTest(unittest.TestCase):
             self.assertTrue(all(a < b for _n, a, b in regions))
             self.assertTrue(all(x[2] <= y[1] for x, y in zip(regions, regions[1:])))
 
+    def test_a_genomes_record_is_its_18s_to_its_28s(self):
+        # since 2026-11-20 the spacer's 5S is no region of the record: cut to the 18S to the 28S, its place on the
+        # contig with it, on either strand; the extraction keeps it (copy_numbers.tsv's 5S)
+        rng = random.Random(1)
+        seq = "".join(rng.choice("ACGT") for _ in range(30000))
+        feats = {"18S_rRNA": [(1001, 2800, "+", False)], "5_8S_rRNA": [(3201, 3350, "+", False)],
+                 "28S_rRNA": [(3601, 9100, "+", False)], "5S_rRNA": [(10500, 10620, "-", False)]}
+        n = len(seq)
+        flip = {k: [(n - b + 1, n - a + 1, "-" if s == "+" else "+", p) for a, b, s, p in v] for k, v in feats.items()}
+        before = dict(feats, **{"5S_rRNA": [(200, 320, "+", False)]})  # a 5S before the 18S
+        for strand, s, f in (("+", seq, feats), ("-", rrna.revcomp(seq), flip), ("+", seq, before)):
+            unit = rrna.units_of(s, f)[0]
+            a, b = unit["unit_span"]
+            row = dict(kind="rDNA", contig="c1", start=a, end=b, strand=strand, sequence=unit["unit"],
+                       regions=unit["regions"], lsu_complete=True, introns=[])
+            self.assertIn("5S", [r[0] for r in row["regions"]])
+            (_name, record, got), = rrna.genome_records("GCA_1", [row], 4932, 4932)
+            self.assertEqual([r[0] for r in got["regions_list"]], ["18S", "ITS1", "5.8S", "ITS2", "28S"])
+            self.assertEqual((got["regions_list"][0][1], got["regions_list"][-1][2]), (0, len(record)))
+            self.assertEqual(record, seq[1000:9100])  # the 18S to the 28S, on the unit's strand
+            self.assertEqual((got["start"], got["end"]), (1001, 9100) if strand == "+" else (n - 9100 + 1, n - 1000))
+            self.assertEqual(rrna.element_counts([row])["5S"], (1, 0))
+        # a unit without a 5S, an 18S span: as they were
+        plain = dict(kind="rDNA", contig="c1", start=1, end=10, strand="+", sequence="A" * 10, regions=[("18S", 0, 10)],
+                     lsu_complete=False)
+        self.assertEqual(rrna.unit_core(plain), plain)
+        self.assertEqual(rrna.without_5s(None), None)
+        self.assertEqual(rrna.without_5s([("5S", 0, 120)]), None)
+
     def test_a_tandem_arrays_spacer_5s_is_one_units(self):
         # two units 9 kb apart, a 5S in the spacer: within 3 kb of the first's 28S end and of the second's 18S start;
         # it is the first's (the 28S it follows), the second has none (until 2026-11-06 both took it)

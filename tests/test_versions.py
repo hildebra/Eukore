@@ -30,7 +30,7 @@ class TestVersions(unittest.TestCase):
         self.assertEqual(genomes.GENOME_RECORD, 4)
         self.assertEqual((qc.SEARCH_RECORD, qc.CM_RECORD, qc.CMALIGN_RECORD, qc.MAP_RECORD, qc.UCHIME_RECORD),
                          (1, 1, 1, 1, 2))
-        self.assertEqual(audit.AUDIT_RECORD, 1)
+        self.assertEqual(audit.AUDIT_RECORD, 2)  # 2 since 2026-11-20: the gene going on into a flank, insertions
         self.assertEqual(rrna.JOIN_RECORD, 1)
         self.assertEqual(refscreen.VERSION, "1")
         self.assertEqual((organelle.CACHE_VERSION, organelle.CANDIDATE_RECORD, organelle.ONE_ORGANELLE,

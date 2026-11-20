@@ -450,31 +450,77 @@ class AuditTest(unittest.TestCase):
         lengths = {"18S_rRNA": 1800, "5_8S_rRNA": 150}
         # an 18S from its model's first position, 200 bases before it: beyond the gene, cut (10 kept)
         hits = [("18S_rRNA", 1, 1800, 200, 2000, "+")]
-        self.assertEqual(audit.flank_cut(2100, (200, 2000), hits, lengths, 5), (190, "flank_beyond"))
-        self.assertEqual(audit.flank_cut(2100, (200, 2000), hits, lengths, 3), (90, "flank_beyond"))
-        # nhmmer's 18S reaching 30 bases further than barrnap's: the cut counted from nhmmer's
+        self.assertEqual(audit.flank_cut(2100, (200, 2000), hits, lengths, 5), (190, "flank_beyond", 0))
+        self.assertEqual(audit.flank_cut(2100, (200, 2000), hits, lengths, 3), (90, "flank_beyond", 0))
+        # nhmmer's 18S reaching 30 bases further than barrnap's: the cut counted from nhmmer's, the region grown
         hits = [("18S_rRNA", 1, 1800, 170, 2000, "+")]
-        self.assertEqual(audit.flank_cut(2100, (200, 2000), hits, lengths, 5), (160, "flank_beyond"))
+        self.assertEqual(audit.flank_cut(2100, (200, 2000), hits, lengths, 5), (160, "flank_beyond", 30))
         hits = [("18S_rRNA", 1, 1800, 30, 2000, "+")]  # within FLANK of the read's start: nothing beside it
-        self.assertEqual(audit.flank_cut(2100, (200, 2000), hits, lengths, 5), (0, None))
+        self.assertEqual(audit.flank_cut(2100, (200, 2000), hits, lengths, 5), (0, None, 170))
         # the 18S from its model's 300th position: the flank in place of the gene, kept and flagged
         hits = [("18S_rRNA", 300, 1800, 200, 1700, "+")]
-        self.assertEqual(audit.flank_cut(1800, (200, 1700), hits, lengths, 5), (0, "flank"))
+        self.assertEqual(audit.flank_cut(1800, (200, 1700), hits, lengths, 5), (0, "flank", 0))
         # a 5.8S after an 18S record's 18S, a reversed piece: another gene or two parts joined, cut
         hits = [("18S_rRNA", 1, 1790, 0, 1790, "+"), ("5_8S_rRNA", 1, 150, 2000, 2150, "+")]
-        self.assertEqual(audit.flank_cut(2300, (0, 1790), hits, lengths, 3), (500, "flank_gene"))
+        self.assertEqual(audit.flank_cut(2300, (0, 1790), hits, lengths, 3), (500, "flank_gene", 0))
         hits = [("18S_rRNA", 1, 1790, 0, 1790, "+"), ("18S_rRNA", 1500, 1800, 1900, 2200, "-")]
-        self.assertEqual(audit.flank_cut(2300, (0, 1790), hits, lengths, 3), (500, "flank_joined"))
-        self.assertEqual(audit.flank_cut(1830, (0, 1790), hits[:1], lengths, 3), (0, None))
+        self.assertEqual(audit.flank_cut(2300, (0, 1790), hits, lengths, 3), (500, "flank_joined", 0))
+        self.assertEqual(audit.flank_cut(1830, (0, 1790), hits[:1], lengths, 3), (0, None, 0))
+
+    def test_the_gene_going_on_into_a_flank(self):
+        # since 2026-11-20. barrnap's 28S stops at model position 2980, nhmmer's goes on right after it to the
+        # model's end (EUK_CM005290's): the region grows to it, 10 bases kept beyond
+        lengths = {"28S_rRNA": 3729}
+        hits = [("28S_rRNA", 9, 2980, 2030, 5011, "+"), ("28S_rRNA", 3060, 3702, 5009, 5723, "+")]
+        self.assertEqual(audit.flank_cut(5737, (2423, 5011), hits, lengths, 3), (0, None, 712))
+        self.assertEqual(audit.flank_cut(6000, (2423, 5011), hits, lengths, 3), (277 - audit.KEEP - 27,
+                                                                                 "flank_beyond", 712))
+        # Drosophila's R1/R2: the 28S's 3' part 3,589 bases on (ROD's JSAE01000211.1 unit): cut before the insertion,
+        # nothing grown
+        hits = [("28S_rRNA", 12, 2664, 2722, 5942, "+"), ("28S_rRNA", 2665, 3700, 9531, 10796, "+")]
+        self.assertEqual(audit.flank_cut(10807, (3294, 5942), hits, lengths, 3),
+                         (10807 - 5942 - audit.KEEP, "flank_insertion", 0))
+        # a weakly aligned stretch first, then the insertion: grown to the first piece, cut after it
+        hits = [("28S_rRNA", 12, 2400, 2722, 5600, "+"), ("28S_rRNA", 2401, 2664, 5610, 5942, "+"),
+                ("28S_rRNA", 2665, 3700, 9531, 10796, "+")]
+        self.assertEqual(audit.flank_cut(10807, (3294, 5600), hits, lengths, 3),
+                         (10807 - 5942 - audit.KEEP, "flank_insertion", 342))
+        # nhmmer's one hit across the insertion (ROD's JAEMMZ010000036.1 unit: model 11-3701 over 8,133 bases): cut at
+        # barrnap's end, nothing grown
+        hits = [("28S_rRNA", 11, 3701, 2718, 10851, "+")]
+        self.assertEqual(audit.flank_cut(10860, (3290, 5935), hits, lengths, 3),
+                         (10860 - 5935 - audit.KEEP, "flank_insertion", 0))
+        # an 18S stopping at model position 1500, 4,000 bases of no rRNA after it: more than the rest of an 18S could
+        # be, cut (flank_long); 600 bases: kept, flagged
+        lengths18 = {"18S_rRNA": 1851}
+        hits = [("18S_rRNA", 3, 1500, 1, 1500, "+")]
+        self.assertEqual(audit.flank_cut(5500, (1, 1500), hits, lengths18, 3), (4000 - audit.KEEP, "flank_long", 0))
+        self.assertEqual(audit.flank_cut(2100, (1, 1500), hits, lengths18, 3), (0, "flank", 0))
+        # applied: the 28S region grown, the read cut, its 28S partial; the cache's field holds the growth
+        read = "A" * 10807
+        result = (0, 5952, ["3':flank_insertion"], [], (0, 342))
+        self.assertEqual(audit.parse_audit(audit.audit_text(result)), result)
+        seq, row, trim = audit.apply("ROD_X", read, dict(source="ROD", lsu_complete=True, regions_list=[
+            ("18S", 1, 1998), ("ITS1", 1998, 2722), ("5.8S", 2722, 2905), ("ITS2", 2905, 3294), ("28S", 3294, 5600)]),
+            result)
+        self.assertEqual((len(seq), row["regions_list"][-1], row["lsu_complete"], trim["why"]),
+                         (5952, ("28S", 3294, 5942), False, "3':flank_insertion"))
+        # grown, not cut: applied all the same
+        seq, row, trim = audit.apply("EUK_X", read[:5723], dict(source="EUKARYOME", lsu_complete=True,
+                                                                regions_list=[("18S", 0, 1672), ("28S", 2423, 5011)]),
+                                     (0, 5723, [], [], (0, 712)))
+        self.assertEqual((row["regions_list"], row["lsu_complete"], trim), ([("18S", 0, 1672), ("28S", 2423, 5723)],
+                                                                            True, None))
 
     def test_a_read_audited_and_applied(self):
         rng = random.Random(5)
         vectors = audit.Vectors([("NGB1", "GACTCTAGAGGATCCCCGGGTACCGAGCTCGAATTCACTGGCCGTCGTTTTAC")])
         read = "GACTCTAGAGGATCCCCGGGTACCGAGCTCGAATTC" + seq_of(rng, 1500)
         got = audit.audit_reads([("EUK_X", read, [("18S", 36, 1536)])], vectors)
-        self.assertEqual(got["EUK_X"], (36, 1536, ["5':vector NGB1"], []))
-        self.assertEqual(audit.parse_audit(audit.audit_text(got["EUK_X"])), (36, 1536, ["5':vector NGB1"], []))
+        self.assertEqual(got["EUK_X"], (36, 1536, ["5':vector NGB1"], [], (0, 0)))
+        self.assertEqual(audit.parse_audit(audit.audit_text(got["EUK_X"])), (36, 1536, ["5':vector NGB1"], [], (0, 0)))
         self.assertIsNone(audit.parse_audit("0|1|2||"))
+        self.assertIsNone(audit.parse_audit("1|0|1536||"))  # an audit of AUDIT_RECORD 1: made again
         seq, row, trim = audit.apply("EUK_X", read, dict(source="EUKARYOME", regions_list=[("18S", 36, 1536)]),
                                      got["EUK_X"])
         self.assertEqual((len(seq), row["regions_list"], row["trimmed"], trim["start"]),
@@ -482,7 +528,7 @@ class AuditTest(unittest.TestCase):
         self.assertEqual(audit.audit_reads([("EUK_Y", read, None)])["EUK_Y"][3], ["no_rrna"])
         # a cut that would leave too little: none, flagged
         got = audit.audit_reads([("EUK_Z", read[:300], [("18S", 36, 300)])], vectors)
-        self.assertEqual(got["EUK_Z"], (0, 300, [], ["trim_short"]))
+        self.assertEqual(got["EUK_Z"], (0, 300, [], ["trim_short"], (0, 0)))
 
     @unittest.skipUnless(shutil.which("nhmmer") and audit.barrnap_hmm(shutil.which("barrnap")),
                          "no nhmmer or barrnap's models")

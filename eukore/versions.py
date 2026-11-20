@@ -88,7 +88,9 @@ STEPS = {
     # A read's kept audit of its ends and flanks (audit.audit_text: the field's first value, in the regions caches).
     # MAJOR raised where the ends' or flanks' rules change.
     # 1.0 (2026-11-19): versioned here (audit.AUDIT_RECORD).
-    "rrna_audit": "1.0",
+    # 2.0 (2026-11-20): the gene going on past barrnap's end grows its region; a read cut before an insertion in its
+    #   gene (flank_insertion); the field holds the regions' growth.
+    "rrna_audit": "2.0",
     # The saved extractions' 18S records of joined pieces extracted again (rrna.resplit: WORK/rrna/joined.<key>, the key
     # its limits' and the MAJOR's). MAJOR raised where joined's rule changes again.
     # 1.0 (2026-11-19): versioned here (rrna.JOIN_RECORD).

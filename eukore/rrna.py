@@ -6,8 +6,9 @@ labelled by NCBI taxid, checked without any KSGP.
   barrnap (--kingdom euk) finds the 18S, 5.8S, 28S and 5S; an 18S cut by introns is one span. A unit is the 18S span's
   start to its 28S's end, uncut (protal cut its records at 8,191 bases), with its 5.8S; ITSx gives the ITS1/5.8S/ITS2
   borders and the 28S's start where installed. A 5S in the same block (within GAP_5S of the 28S's end or of the 18S's
-  start, on either strand, as in some fungi's and protists' repeats) extends the unit and is one of its regions; a 5S
-  elsewhere in the genome is not taken. `lsu_complete`: barrnap's 28S hit is not partial.
+  start, on either strand, as in some fungi's and protists' repeats) extends the extraction's unit and is one of its
+  regions (copy_numbers.tsv counts it); a 5S elsewhere in the genome is not taken. Since 2026-11-20 the record is the
+  unit's 18S to its 28S, the spacer's 5S left out (unit_core). `lsu_complete`: barrnap's 28S hit is not partial.
 - Published records: ROD's operon variants by their own NCBI taxid; EUKARYOME's long reads by their species name
   matched to NCBI's names and synonyms (else their genus's), its compromised-quality ids left out. Their regions as a
   genome's units'.
@@ -1515,10 +1516,36 @@ def finish(records, ncbi, vsearch=None, threads=1, log=None, ssu_models=None, se
     return sorted(out, key=lambda r: (int(r[2]["species_taxid"]), r[0]))
 
 
+def without_5s(regions):
+    """A unit's regions without its 5S (since 2026-11-20 a record's rRNA is its 18S to its 28S: the 5S a unit takes
+    from its spacer, units_of's, is a gene of its own, Pol III's, in the intergenic spacer; it left 1-2 kb of the
+    spacer uncovered by any region in a third of the genomes' units)."""
+    return [r for r in regions if r[0] != "5S"] or None if regions else regions
+
+
+def unit_core(row):
+    """A genome's extraction row of an rDNA unit cut to its 18S to its 28S (without_5s): its sequence, regions,
+    introns and place on the contig (1-based, inclusive; the record on its strand). The extraction keeps its 5S
+    (element_counts: copy_numbers.tsv's 5S)."""
+    regions = row.get("regions") or ()
+    keep = without_5s(regions)
+    if row["kind"] != "rDNA" or not keep or len(keep) == len(regions):
+        return row
+    lo, hi = min(a for _n, a, _b in keep), max(b for _n, _a, b in keep)
+
+    def shift(xs):
+        return [(n, a - lo, b - lo) for n, a, b in xs] if xs else xs
+    start, end = int(row["start"]), int(row["end"])
+    start, end = (start + lo, start + hi - 1) if row["strand"] == "+" else (end - hi + 1, end - lo)
+    return dict(row, sequence=row["sequence"][lo:hi], regions=shift(keep), introns=shift(row.get("introns")),
+                start=start, end=end)
+
+
 def genome_records(accession, rows, taxid, species_taxid, source="genome"):
-    """A genome's extraction (extract_genome's rows) -> records [(name, sequence, row)]."""
+    """A genome's extraction (extract_genome's rows) -> records [(name, sequence, row)], a unit cut to its 18S to its
+    28S (unit_core; since 2026-11-20)."""
     out, n = [], collections.Counter()
-    for r in rows:
+    for r in map(unit_core, rows):
         n[r["kind"]] += 1
         name = f"{accession}_{r['kind']}_{n[r['kind']]}"
         out.append((name, r["sequence"], dict(kind=r["kind"], accession=accession, source=source, taxid=taxid,
