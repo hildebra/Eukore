@@ -108,9 +108,9 @@ class World:
     def path(self, acc):
         return genomes.genome_file(self.folder, acc)
 
-    def build(self, protal=None, kmers=ps.KMERS, mb=ps.MB):
+    def build(self, protal=None, kmers=ps.KMERS, mb=ps.MB, exponent=ps.EXPONENT):
         return ps.build(protal or self.protal, GENOMES, self.path, self.work, kmers=kmers, mb=mb, threads=4,
-                        left_out=[POOR], log=self.said.append)
+                        left_out=[POOR], log=self.said.append, exponent=exponent)
 
     def ran(self):
         if not os.path.isfile(self.calls):
@@ -151,14 +151,14 @@ class ProtalSketchTest(unittest.TestCase):
             self.assertEqual(w.ran(), [["sketch", "--genomes", os.path.join(folder, ps.TABLE),
                                         "--out", os.path.join(folder, ps.SKETCH + ps.PARTIAL),
                                         "--gene_positions", os.path.join(folder, ps.POSITIONS),
-                                        "--kmers", "5000", "--kmers_mb", "500", "--kmers_min", "1000",
-                                        "--kmers_max", "100000", "-t", "4"]])
+                                        "--kmers", "5000", "--kmers_mb", "4", "--kmers_exponent", "0.25",
+                                        "--kmers_min", "5000", "--kmers_max", "0", "-t", "4"]])
             self.assertFalse(os.path.exists(os.path.join(folder, ps.SKETCH + ps.PARTIAL)))
             with open(path) as fh:
                 self.assertEqual(fh.read(), f"PSK 5000 {YEAST},{ASCARIS}")
             self.assertEqual(about, dict(file=ps.IN_PACKAGE, protal=os.path.realpath(w.protal),
-                                         version="protal 9.9.9 (stand-in)", kmers=5000, kmers_mb=500, kmers_min=1000,
-                                         kmers_max=100000, species=2, genomes=4,
+                                         version="protal 9.9.9 (stand-in)", kmers=5000, kmers_mb=4, kmers_exponent=0.25,
+                                         kmers_min=5000, kmers_max=0, species=2, genomes=4,
                                          gene_spans=6, made=about["made"], state="made"))
             # the log: the species without their genome file, the summary line of protal's echoed
             said = "\n".join(w.said)
@@ -191,11 +191,11 @@ class ProtalSketchTest(unittest.TestCase):
             _p, about = w.build(kmers=500)
             self.assertEqual((len(w.ran()), w.ran()[-1][w.ran()[-1].index("--kmers") + 1], about["state"]),
                              (2, "500", "made"))
-            # another genome size for those entries: made again, the bounds of --kmers
-            _p, about = w.build(kmers=500, mb=100)
-            self.assertEqual((len(w.ran()), w.ran()[-1][-10:], about["state"], about["kmers_max"]),
-                             (3, ["--kmers", "500", "--kmers_mb", "100", "--kmers_min", "100", "--kmers_max", "10000",
-                                  "-t", "4"], "made", 10000))
+            # another genome size and power for those entries: made again, at least --kmers, no upper bound
+            _p, about = w.build(kmers=500, mb=100, exponent=0.5)
+            self.assertEqual((len(w.ran()), w.ran()[-1][-12:], about["state"], about["kmers_exponent"]),
+                             (3, ["--kmers", "500", "--kmers_mb", "100", "--kmers_exponent", "0.5", "--kmers_min", "500",
+                                  "--kmers_max", "0", "-t", "4"], "made", 0.5))
             _p, about = w.build(kmers=500)  # and back: made again
             self.assertEqual(len(w.ran()), 4)
             # a new genome on disk (a further assembly fetched since): made again with it
@@ -308,8 +308,8 @@ class ProtalSketchTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             w = World(tmp)
             collected = dict(genomes=GENOMES, dropped=[POOR])
-            opts = types.SimpleNamespace(protal=None, protal_sketch_kmers=7, protal_sketch_mb=100, threads=3, genomes=w.folder,
-                                         work=w.work, report_minutes=10)
+            opts = types.SimpleNamespace(protal=None, protal_sketch_kmers=7, protal_sketch_mb=100, protal_sketch_exponent=1,
+                                         threads=3, genomes=w.folder, work=w.work, report_minutes=10)
             stages = []
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 self.assertEqual(eukore_build.protal_step(opts, collected, stages), (None, None))
@@ -324,8 +324,8 @@ class ProtalSketchTest(unittest.TestCase):
                 writer, about = eukore_build.protal_step(opts, collected, stages)
             self.assertEqual((about["kmers"], about["species"], [s for s, _t in stages]),
                              (7, 2, ["protal genome sketch"] * 2))
-            self.assertEqual(w.ran()[-1][-10:], ["--kmers", "7", "--kmers_mb", "100", "--kmers_min", "1", "--kmers_max",
-                                                "140", "-t", "3"])
+            self.assertEqual(w.ran()[-1][-12:], ["--kmers", "7", "--kmers_mb", "100", "--kmers_exponent", "1.0",
+                                                "--kmers_min", "7", "--kmers_max", "0", "-t", "3"])
             part = os.path.join(tmp, "part")
             writer(part)
             self.assertTrue(os.path.isfile(os.path.join(part, ps.IN_PACKAGE)))
@@ -335,7 +335,11 @@ class ProtalSketchTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()) as err, \
                 self.assertRaises(SystemExit):
             eukore_build.main(["--build_dir", tmp, "--out", tmp, "--protal_sketch_kmers", "0"])
-        self.assertIn("--protal_sketch_kmers 0, --protal_sketch_mb 500: 1 or more each", err.getvalue())
+        self.assertIn("--protal_sketch_kmers 0, --protal_sketch_mb 4: 1 or more each", err.getvalue())
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(SystemExit):
+            eukore_build.main(["--build_dir", tmp, "--out", tmp, "--protal_sketch_exponent", "0"])
+        self.assertIn("--protal_sketch_exponent 0.0: above 0", err.getvalue())
 
 
 if __name__ == "__main__":

@@ -107,7 +107,8 @@ were there, and its counts: the ends' and flanks' cuts and flags, `ends_and_flan
 from, `eukaryome` the table, `eukaryome_label` EUKARYOME's records' labels, `ncbi` NCBI's names added, and the NCBI
 taxa by how they were placed); since 2026-11-19 `protal_sketch`, of the protal genome sketch
 `metadata/protal_sketch.bin` (its `file`, the `protal` binary that made it and its `version`, its entries' options
-`kmers`, `kmers_mb`, `kmers_min` and `kmers_max`, its `species` and `genomes`, the copies' `gene_spans` left out,
+`kmers`, `kmers_mb`, `kmers_exponent` (since 2026-11-20), `kmers_min` and `kmers_max` (0: no upper bound), its
+`species` and `genomes`, the copies' `gene_spans` left out,
 when it was `made` and its `state`: `made`, `reused` from an earlier run, or `stale`, a kept sketch whose genomes were
 pruned since, `stale` saying why; `null` where the package holds none); since 2026-11-20 `species_merge`, the
 same-species merge ([metadata/species_merges.tsv](#metadata)): its `state` (`made`; `off (--no_species_merge)`; `no
@@ -722,8 +723,10 @@ there; one without a row was not.
 - `protal_sketch.bin` (since 2026-11-19, where the build was given `--protal`): protal's genome sketch of the package's
   species, made by protal's own `protal sketch` while the genomes were on disk, in protal's format. protal reads it,
   Eukore does not: protal's database builds merge it into their own sketch, so that its eukaryote part is made once
-  per Eukore release. Per species about 5,000 entries for a genome of 500 Mb (10 a Mb; `--protal_sketch_kmers` for a
-  genome of `--protal_sketch_mb` Mb), 1,000 to 100,000, scaling with its representative genome's size: windows of that
+  per Eukore release. Per species 5,000 entries for a genome of 4 Mb (`--protal_sketch_kmers` for a genome of
+  `--protal_sketch_mb` Mb), growing with its representative genome's size to the power 0.25
+  (`--protal_sketch_exponent`; since 2026-11-20, 5,000 at 500 Mb in proportion, 1,000 to 100,000, before), at least
+  5,000, with no upper bound: 6,600 for a genome of 12 Mb, 16,700 for 500 Mb, 26,200 for 3 Gb; windows of that
   genome that no other species' genome in the sketch holds, off its BUSCO and marker copies (each copy's span from
   first to last codon, introns and all, as `busco/copies.tsv` places it, Duplicated loci's other copies too, is left
   out: protal aligns those genes). Its keys are the representatives' accessions (`genomes.tsv`'s `accession`), which
@@ -733,8 +736,8 @@ there; one without a row was not.
   disk (`source` `assembly` or `intraspecific`, and since 2026-11-20 `merged`: an isolate-named species' genome merged
   into it, under its key, never a species of its own whose windows the two would lose) keep their windows out of the
   other species' entries. The manifest's
-  `inputs.protal_sketch` says what made it. For all eukaryotes ~280 M entries, ~3.4 GB: protal's database build takes a
-  subset (its smallest hashes). Not in the release's core: a download of its own (`Eukore_<version>_protal_sketch.bin`),
+  `inputs.protal_sketch` says what made it. For all eukaryotes (33,341 species) ~490 M entries, ~5.9 GB: protal's
+  database build takes them all (up to 20 times its prokaryotes' entries a species). Not in the release's core: a download of its own (`Eukore_<version>_protal_sketch.bin`),
   as the sourmash sketches are; protal reads a package unpacked without it.
 - `ncbi.tsv.gz`: NCBI's assembly_summary row (GenBank's and RefSeq's tables the build read; `inputs.assembly_tables`) of
   every assembly of `genomes.tsv` and of the RefSeq copy fetched: `genome` (its `genomes.tsv` accession), `fetched`

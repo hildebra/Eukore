@@ -38,12 +38,15 @@ IN_PACKAGE = "metadata/protal_sketch.bin"
 TABLE, POSITIONS, KEY, LOG = "genomes.tsv", "gene_positions.tsv", "key.json", "sketch.log"
 NEXT = ".next"                     # a table being written, before the key says whether it is taken
 PARTIAL = ".partial"               # the sketch being written by protal
-# Entries per species scale with its representative genome's size (since 2026-11-19; protal counts the bases as it
-# reads the genome): KMERS for a genome of MB Mb (10 a Mb), clamped to [KMERS / 5, 20 x KMERS] (entries()). For all of
-# Eukore ~280 M entries, ~3.4 GB on disk, ~20 GB of memory while protal sketch runs (4 candidates of 19 bytes an
-# entry); protal's database build takes a subset (its smallest hashes).
+# Entries per species grow with its representative genome's size (since 2026-11-19; protal counts the bases as it
+# reads the genome): KMERS x (its size / MB Mb)^EXPONENT, at least KMERS, with no upper bound (entries(); since
+# 2026-11-20, protal 2.3.10's --kmers_exponent; KMERS at 500 Mb in proportion, KMERS / 5 to 20 x KMERS, before): a
+# prokaryote's 5,000 at a prokaryote's size, 6,600 for a yeast of 12 Mb, 16,700 for 500 Mb, 26,200 for 3 Gb. For all of
+# Eukore (33,341 species, 2026-11-17) ~490 M entries, ~5.9 GB on disk, ~37 GB of memory while protal sketch runs (4
+# candidates of 19 bytes an entry); protal's database build takes them all (up to 20 x its prokaryotes' entries).
 KMERS = 5000
-MB = 500
+MB = 4
+EXPONENT = 0.25
 NOT_GENOMES = ("tsa", "no_assembly")  # a transcriptome, EukProt's records: no genome to sketch
 # a species' further assemblies (genomes.tsv's representative f); since 2026-11-20 a genome merged into a named species
 # (same_species.SOURCE): the named species' further genome, never a species keeping its windows out of that one's
@@ -110,11 +113,12 @@ def positions(work, accessions, path, threads=util.READ_THREADS):
     return n, without
 
 
-def entries(kmers=KMERS, mb=MB):
-    """protal sketch's options of the entries per species: kmers for a genome of mb Mb, from kmers / 5 to 20 x kmers ->
-    {kmers, kmers_mb, kmers_min, kmers_max} (the key's and the manifest's)."""
+def entries(kmers=KMERS, mb=MB, exponent=EXPONENT):
+    """protal sketch's options of the entries per species: kmers x (the genome's size / mb Mb)^exponent, at least kmers,
+    no upper bound (kmers_max 0) -> {kmers, kmers_mb, kmers_exponent, kmers_min, kmers_max} (the key's and the
+    manifest's)."""
     kmers, mb = int(kmers), int(mb)
-    return dict(kmers=kmers, kmers_mb=mb, kmers_min=max(1, kmers // 5), kmers_max=20 * kmers)
+    return dict(kmers=kmers, kmers_mb=mb, kmers_exponent=float(exponent), kmers_min=kmers, kmers_max=0)
 
 
 def binary_state(path):
@@ -200,10 +204,11 @@ def about_of(kept, state, stale=None):
     return out
 
 
-def build(binary, genomes, genome_file, work, kmers=KMERS, mb=MB, threads=1, left_out=(), log=print):
+def build(binary, genomes, genome_file, work, kmers=KMERS, mb=MB, threads=1, left_out=(), log=print, exponent=EXPONENT):
     """protal's sketch of the package's species (module docstring), made by binary in WORK/protal_sketch/ or kept from
     an earlier run -> (its path, or None where there is none: a failure is said, never raised past here; the
-    manifest's inputs.protal_sketch, or None). genomes, genome_file, left_out: table_rows'; kmers, mb: entries'."""
+    manifest's inputs.protal_sketch, or None). genomes, genome_file, left_out: table_rows'; kmers, mb, exponent:
+    entries'."""
     folder = os.path.join(work, FOLDER)
     os.makedirs(folder, exist_ok=True)
     sketch, partial = os.path.join(folder, SKETCH), os.path.join(folder, SKETCH + PARTIAL)
@@ -222,7 +227,7 @@ def build(binary, genomes, genome_file, work, kmers=KMERS, mb=MB, threads=1, lef
            "the sketch made without their spans" if reps_without else "")
         + (f"; {len(without) - len(reps_without):,} further assemblies without (none called)"
            if len(without) > len(reps_without) else ""))
-    options = entries(kmers, mb)
+    options = entries(kmers, mb, exponent)
     key = dict(protal=binary_state(binary), entries=options, table_md5=util.md5(nxt[TABLE]),
                positions_md5=util.md5(nxt[POSITIONS]))
     kept = read_key(folder)

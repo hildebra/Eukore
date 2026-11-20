@@ -502,7 +502,7 @@ def protal_step(opts, collected, stages):
             path, about = protal_sketch.build(
                 binary, collected["genomes"], functools.partial(genomes.genome_file, os.path.abspath(opts.genomes)),
                 opts.work, opts.protal_sketch_kmers, opts.protal_sketch_mb, opts.threads, collected.get("dropped", ()),
-                say)
+                say, opts.protal_sketch_exponent)
         except Exception as e:  # noqa: BLE001  the package is written without it
             say(f"WARNING: protal sketch failed ({type(e).__name__}: {e}): no protal sketch in the package")
             return None, None
@@ -2265,18 +2265,22 @@ def _main(argv, held):
     p.add_argument("--protal", metavar="BIN",
                    help="protal, which makes its genome sketch of the package's species before the prune (BIN sketch, "
                         "on -t threads; metadata/protal_sketch.bin, which protal's database builds merge into their "
-                        "own; kept in WORK/protal_sketch/ for a rerun; since 2026-11-19). For all eukaryotes ~280 M "
-                        "entries, ~3.4 GB in the package (a release download of its own), ~20 GB of memory while it "
-                        "runs (4 candidates of 19 bytes an entry). Default: none made (protal is not looked for on the "
-                        "PATH)")
+                        "own; kept in WORK/protal_sketch/ for a rerun; since 2026-11-19; protal 2.3.10 or later since "
+                        "2026-11-20). For all eukaryotes ~490 M entries, ~5.9 GB in the package (a release download of "
+                        "its own), ~37 GB of memory while it runs (4 candidates of 19 bytes an entry). Default: none "
+                        "made (protal is not looked for on the PATH)")
     p.add_argument("--protal_sketch_kmers", type=int, default=protal_sketch.KMERS, metavar="N",
-                   help="the protal sketch's entries for a species whose genome is --protal_sketch_mb Mb, scaling "
-                        "with its genome's size, from N / 5 to 20 x N (protal sketch --kmers, --kmers_min, "
-                        "--kmers_max; default %(default)s: 10 a Mb, 1,000 to 100,000 a species; protal's database "
-                        "build takes a subset, its smallest hashes)")
+                   help="the protal sketch's entries for a species whose genome is --protal_sketch_mb Mb, growing with "
+                        "its genome's size to the power --protal_sketch_exponent, at least N, no upper bound (protal "
+                        "sketch --kmers, --kmers_min; default %(default)s: 6,600 for a genome of 12 Mb, 16,700 for 500 "
+                        "Mb, 26,200 for 3 Gb; protal's database build takes them all)")
     p.add_argument("--protal_sketch_mb", type=int, default=protal_sketch.MB, metavar="MB",
                    help="the genome size, Mb, that has --protal_sketch_kmers entries (protal sketch --kmers_mb; "
-                        "default %(default)s)")
+                        "default %(default)s: a prokaryote's)")
+    p.add_argument("--protal_sketch_exponent", type=float, default=protal_sketch.EXPONENT, metavar="A",
+                   help="the power of the genome's size over --protal_sketch_mb that scales its entries (protal sketch "
+                        "--kmers_exponent; since 2026-11-20; default %(default)s: a genome 10,000 times the size has 10 "
+                        "times the entries; 1: in proportion)")
     p.add_argument("--refresh", action="store_true",
                    help="fetch again what chooses the genomes and their gene models (NCBI's assembly tables, its "
                         "FCS-GX and ANI reports, Ensembl's, VEuPathDB's and TOGA2's indexes): a species' newer or "
@@ -2402,6 +2406,8 @@ def _main(argv, held):
     if opts.protal_sketch_kmers < 1 or opts.protal_sketch_mb < 1:
         p.error(f"--protal_sketch_kmers {opts.protal_sketch_kmers}, --protal_sketch_mb {opts.protal_sketch_mb}: "
                 "1 or more each")
+    if not opts.protal_sketch_exponent > 0:
+        p.error(f"--protal_sketch_exponent {opts.protal_sketch_exponent}: above 0")
     warning = None  # said after the banner
     if opts.scratch:  # checked now, not after the minutes of planning (since 2026-11-08)
         why = scratch_problem(opts.scratch)
